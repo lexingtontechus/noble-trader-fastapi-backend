@@ -70,6 +70,7 @@ except ImportError:
     MCP_AVAILABLE = False
 
 from regime_platform.core.gpu_engine import gpu_capabilities
+from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_COMPUTE, RATE_LIMIT_WRITE
 
 # v2.x routers
 from regime_platform.routers import (
@@ -217,6 +218,14 @@ Endpoints:
         license_info={"name": "MIT"},
         lifespan=lifespan,
     )
+
+    # ── Rate Limiting (SlowAPI) ───────────────────────────────────────────────
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from fastapi import Request as _Request
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # CORS — locked to specific origins via env var
     # CORS_ORIGINS="https://your-app.vercel.app,http://localhost:3000"
@@ -371,6 +380,11 @@ Exposes all trading risk management endpoints as MCP tools:
             "discord": discord_status,
             "gpu_backend": caps["hmm_backend"],
             "device": caps["active_device"],
+            "rate_limits": {
+                "default": RATE_LIMIT_DEFAULT,
+                "compute": RATE_LIMIT_COMPUTE,
+                "write": RATE_LIMIT_WRITE,
+            },
         }
 
     return app

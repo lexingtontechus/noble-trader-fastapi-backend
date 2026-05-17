@@ -34,12 +34,13 @@ from pydantic import BaseModel, Field
 
 # FastAPI is optional — the module works without it for backtesting
 try:
-    from fastapi import APIRouter, HTTPException, Depends
+    from fastapi import APIRouter, HTTPException, Depends, Request
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
 
 from regime_platform.auth import get_authed_user, require_write, require_admin, TokenData
+from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
@@ -122,8 +123,9 @@ def _get_pipeline(symbol: str = "SPY", config: Optional[RenkoConfig] = None) -> 
 if FASTAPI_AVAILABLE:
     renko_router = APIRouter(prefix="/renko", tags=["renko"])
 
+    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick")
-    async def process_tick(body: TickInput, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def process_tick(request: Request, body: TickInput, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
         pipeline = _get_pipeline(symbol)
@@ -134,8 +136,9 @@ if FASTAPI_AVAILABLE:
 
         return result
 
+    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick/batch")
-    async def process_batch(body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up)."""
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
@@ -237,8 +240,9 @@ if FASTAPI_AVAILABLE:
         _pipelines[symbol] = pipeline
         return {"status": "ok", "config": config.to_dict()}
 
+    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/reset")
-    async def reset_pipeline(symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict:
+    async def reset_pipeline(request: Request, symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict:
         """Reset the pipeline for a symbol."""
         pipeline = _get_pipeline(symbol)
         pipeline.reset()

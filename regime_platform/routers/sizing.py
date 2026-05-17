@@ -1,6 +1,6 @@
 """Position sizing endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from ..models.schemas import (
     SizeRequest, SizeResponse,
     MasanielloSizeRequest, MasanielloSizeResponse,
@@ -13,6 +13,7 @@ from ..core.position_sizer import (
     DynamicMasanielloSizer, SizingConfig, TradeContext,
 )
 from ..auth.jwt_auth import get_authed_user, TokenData
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
 router = APIRouter(prefix="/size", tags=["Position Sizing"])
@@ -61,12 +62,14 @@ async def kelly_size(req: SizeRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello",
     response_model=MasanielloSizeResponse,
     summary="Dynamic Masaniello position sizing (Path B)",
 )
 async def masaniello_size(
+    request: Request,
     req: MasanielloSizeRequest,
     user: TokenData = Depends(get_authed_user),
 ):
@@ -164,12 +167,14 @@ async def masaniello_size(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello/batch",
     response_model=MasanielloBatchResponse,
     summary="Batch Dynamic Masaniello sizing for a sequence of trades",
 )
 async def masaniello_batch(
+    request: Request,
     req: MasanielloBatchRequest,
     user: TokenData = Depends(get_authed_user),
 ):
@@ -273,12 +278,14 @@ async def masaniello_batch(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello/portfolio",
     response_model=PortfolioMasanielloResponse,
     summary="Portfolio-optimised Masaniello sizing across multiple assets",
 )
 async def masaniello_portfolio(
+    request: Request,
     req: PortfolioMasanielloRequest,
     user: TokenData = Depends(get_authed_user),
 ):

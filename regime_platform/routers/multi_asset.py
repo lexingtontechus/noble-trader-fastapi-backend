@@ -10,7 +10,7 @@ Multi-asset correlation regime + drawdown-optimised portfolio endpoints.
 from __future__ import annotations
 
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -26,6 +26,7 @@ from ..models.schemas import (
     PortfolioMasanielloRequest, PortfolioMasanielloResponse, AssetMasanielloResult,
 )
 from ..auth.jwt_auth import get_authed_user, TokenData
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 
 router = APIRouter(tags=["Multi-Asset"])
 
@@ -182,12 +183,14 @@ async def detect_correlation_regime(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/optimise",
     response_model=OptimiseResponse,
     summary="Drawdown-controlled regime-aware portfolio optimisation",
 )
 async def optimise_portfolio(
+    request: Request,
     req: OptimiseRequest,
     user: TokenData = Depends(get_authed_user),
 ):
@@ -237,12 +240,14 @@ async def optimise_portfolio(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/optimise/full",
     response_model=FullOptimiseResponse,
     summary="One-shot: correlation regime detection + portfolio optimisation",
 )
 async def full_optimise(
+    request: Request,
     req: FullOptimiseRequest,
     user: TokenData = Depends(get_authed_user),
 ):
@@ -306,12 +311,14 @@ async def full_optimise(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/optimise/masaniello",
     response_model=PortfolioMasanielloResponse,
     summary="Two-stage pipeline: portfolio optimisation + per-asset Masaniello sizing",
 )
 async def optimise_with_masaniello(
+    request: Request,
     req: PortfolioMasanielloRequest,
     user: TokenData = Depends(get_authed_user),
 ):

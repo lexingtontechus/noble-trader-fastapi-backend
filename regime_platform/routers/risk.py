@@ -1,10 +1,11 @@
 """Risk analysis endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from ..models.schemas import RiskRequest, RiskResponse, RiskAnalyzeRequest, RiskAnalyzeResponse, StressTestResult
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
 router   = APIRouter(prefix="/risk", tags=["Risk Analysis"])
@@ -12,8 +13,9 @@ sizer    = PositionSizer()
 riskman  = RiskManager()
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post("/analyse", response_model=RiskResponse, summary="Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions")
-async def risk_analyse(req: RiskRequest):
+async def risk_analyse(request: Request, req: RiskRequest):
     """
     Computes comprehensive risk metrics including parametric + historical VaR/CVaR,
     max drawdown, Sortino & Calmar ratios, and regime-adjusted stop-loss/take-profit.
@@ -65,12 +67,13 @@ async def risk_analyse(req: RiskRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/analyze",
     response_model=RiskAnalyzeResponse,
     summary="Enhanced risk analysis with VaR/CVaR, stress tests, and regime context",
 )
-async def risk_analyze(req: RiskAnalyzeRequest):
+async def risk_analyze(request: Request, req: RiskAnalyzeRequest):
     """
     Enhanced risk analysis (US spelling endpoint):
     1. Full VaR/CVaR computation (parametric + historical)
