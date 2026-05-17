@@ -9,6 +9,13 @@ Mount with::
     from renko.router import renko_router
     app.include_router(renko_router, prefix="/renko", tags=["renko"])
 
+Authentication:
+  All endpoints require authentication via the unified auth dependency
+  (Clerk JWT → local JWT → API key → dev bypass). Auth levels:
+    - get_authed_user: Read endpoints + tick ingestion (any role)
+    - require_write: State mutations — /regime, /equity (admin/trader)
+    - require_admin: Destructive — /config, /reset (admin only)
+
 Discord notifications:
   When a signal is detected or a trade is closed, the router
   automatically sends a rich embed to the configured Discord
@@ -27,11 +34,12 @@ from pydantic import BaseModel, Field
 
 # FastAPI is optional — the module works without it for backtesting
 try:
-    from fastapi import APIRouter, HTTPException
+    from fastapi import APIRouter, HTTPException, Depends
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
 
+from regime_platform.auth import get_authed_user, require_write, require_admin, TokenData
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
@@ -115,7 +123,7 @@ if FASTAPI_AVAILABLE:
     renko_router = APIRouter(prefix="/renko", tags=["renko"])
 
     @renko_router.post("/tick")
-    async def process_tick(body: TickInput) -> Dict[str, Any]:
+    async def process_tick(body: TickInput, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
         pipeline = _get_pipeline(symbol)
@@ -127,7 +135,7 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.post("/tick/batch")
-    async def process_batch(body: BatchTickInput, symbol: str = "SPY") -> Dict[str, Any]:
+    async def process_batch(body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up)."""
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
@@ -144,68 +152,68 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.get("/state")
-    async def get_state(symbol: str = "SPY") -> Dict[str, Any]:
+    async def get_state(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Get current pipeline state."""
         pipeline = _get_pipeline(symbol)
         return pipeline.get_state().to_dict()
 
     @renko_router.get("/stats")
-    async def get_stats(symbol: str = "SPY") -> Dict[str, Any]:
+    async def get_stats(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics."""
         pipeline = _get_pipeline(symbol)
         return pipeline.get_stats()
 
     @renko_router.get("/bricks")
-    async def get_bricks(symbol: str = "SPY", last_n: int = 100) -> List[Dict]:
+    async def get_bricks(symbol: str = "SPY", last_n: int = 100, user: TokenData = Depends(get_authed_user)) -> List[Dict]:
         """Get recent bricks."""
         pipeline = _get_pipeline(symbol)
         bricks = list(pipeline.brick_engine.history)
         return [b.to_dict() for b in bricks[-last_n:]]
 
     @renko_router.get("/classified")
-    async def get_classified(symbol: str = "SPY", last_n: int = 100) -> List[Dict]:
+    async def get_classified(symbol: str = "SPY", last_n: int = 100, user: TokenData = Depends(get_authed_user)) -> List[Dict]:
         """Get recent classified bricks."""
         pipeline = _get_pipeline(symbol)
         classified = list(pipeline.swing_classifier.classified_history)
         return [c.to_dict() for c in classified[-last_n:]]
 
     @renko_router.get("/signals")
-    async def get_signals(symbol: str = "SPY", last_n: int = 50) -> List[Dict]:
+    async def get_signals(symbol: str = "SPY", last_n: int = 50, user: TokenData = Depends(get_authed_user)) -> List[Dict]:
         """Get recent pattern signals."""
         pipeline = _get_pipeline(symbol)
         signals = pipeline.pattern_detector.signals
         return [s.to_dict() for s in signals[-last_n:]]
 
     @renko_router.get("/trades")
-    async def get_trades(symbol: str = "SPY", last_n: int = 50) -> List[Dict]:
+    async def get_trades(symbol: str = "SPY", last_n: int = 50, user: TokenData = Depends(get_authed_user)) -> List[Dict]:
         """Get recent trade records."""
         pipeline = _get_pipeline(symbol)
         trades = list(pipeline.journal.trades)
         return [t.to_dict() for t in trades[-last_n:]]
 
     @renko_router.get("/swing-points")
-    async def get_swing_points(symbol: str = "SPY", last_n: int = 50) -> List[Dict]:
+    async def get_swing_points(symbol: str = "SPY", last_n: int = 50, user: TokenData = Depends(get_authed_user)) -> List[Dict]:
         """Get detected swing points."""
         pipeline = _get_pipeline(symbol)
         points = pipeline.swing_classifier.swing_points
         return [p.to_dict() for p in points[-last_n:]]
 
     @renko_router.post("/regime")
-    async def set_regime(body: RegimeInput, symbol: str = "SPY") -> Dict:
+    async def set_regime(body: RegimeInput, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict:
         """Update the current HMM regime."""
         pipeline = _get_pipeline(symbol)
         pipeline.set_regime(body.regime)
         return {"status": "ok", "regime": body.regime}
 
     @renko_router.post("/equity")
-    async def set_equity(body: EquityInput, symbol: str = "SPY") -> Dict:
+    async def set_equity(body: EquityInput, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict:
         """Update the current account equity."""
         pipeline = _get_pipeline(symbol)
         pipeline.set_equity(body.equity)
         return {"status": "ok", "equity": body.equity}
 
     @renko_router.post("/config")
-    async def update_config(body: ConfigInput, symbol: str = "SPY") -> Dict:
+    async def update_config(body: ConfigInput, symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict:
         """Update pipeline configuration (resets the pipeline)."""
         config = RenkoConfig(
             brick_size=body.brick_size,
@@ -230,7 +238,7 @@ if FASTAPI_AVAILABLE:
         return {"status": "ok", "config": config.to_dict()}
 
     @renko_router.post("/reset")
-    async def reset_pipeline(symbol: str = "SPY") -> Dict:
+    async def reset_pipeline(symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict:
         """Reset the pipeline for a symbol."""
         pipeline = _get_pipeline(symbol)
         pipeline.reset()
@@ -241,7 +249,7 @@ if FASTAPI_AVAILABLE:
         return {"status": "ok"}
 
     @renko_router.get("/backtest/stats")
-    async def backtest_stats(symbol: str = "SPY") -> Dict[str, Any]:
+    async def backtest_stats(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Get backtest/trading statistics from the journal."""
         pipeline = _get_pipeline(symbol)
         return pipeline.journal.get_stats()

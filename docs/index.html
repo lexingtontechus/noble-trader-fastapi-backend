@@ -1081,7 +1081,7 @@
                 <div class="sidebar-logo"></div>
                 <div>
                     <div class="sidebar-title">Regime Risk</div>
-                    <div class="sidebar-subtitle">API Documentation v2.0</div>
+                    <div class="sidebar-subtitle">API Documentation v5.0</div>
                 </div>
             </div>
 
@@ -1145,6 +1145,18 @@
                 <a class="nav-link" onclick="show('stream-sessions')"
                     ><span class="nav-icon">≡</span> Sessions
                     <span class="method-tag tag-get">GET</span></a
+                >
+            </div>
+
+            <div class="nav-section">
+                <div class="nav-section-label">v5.0 Renko HFT</div>
+                <a class="nav-link" onclick="show('renko-overview')"
+                    ><span class="nav-icon">◈</span> Renko Pipeline
+                    <span class="method-tag tag-post">POST</span></a
+                >
+                <a class="nav-link" onclick="show('renko-auth')"
+                    ><span class="nav-icon">◈</span> Auth Levels
+                    </a
                 >
             </div>
 
@@ -6100,6 +6112,335 @@ xdg-open sse_alert_monitor.html      <span class="cmt"># Linux</span></code></pr
                     </li>
                 </ul>
             </div>
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- v5.0 RENKO HFT PIPELINE -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+
+            <div class="page" id="page-renko-overview">
+                <h1>Renko HFT <span class="accent-word">Pipeline</span></h1>
+                <div class="hero">
+                    <div class="hero-eyebrow">v5.0 — 6-Layer Renko Pipeline</div>
+                    <p class="hero-desc">
+                        A high-frequency trading pipeline built on Renko brick charts.
+                        Each tick flows through six sequential layers: Brick Engine,
+                        Swing Classifier, Pattern Detector, Signal Filter, Order Executor,
+                        and Risk Manager. All 14 endpoints now require authentication.
+                    </p>
+                </div>
+
+                <h2>Pipeline Flow</h2>
+                <div class="flow">
+                    <div class="flow-step">
+                        <div class="flow-step-num">L1</div>
+                        <div class="flow-step-title">Brick Engine</div>
+                        <div class="flow-step-sub">Renko construction</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-num">L2</div>
+                        <div class="flow-step-title">Swing Classifier</div>
+                        <div class="flow-step-sub">HH / HL / LH / LL</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-num">L3</div>
+                        <div class="flow-step-title">Pattern Detector</div>
+                        <div class="flow-step-sub">3-brick patterns</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-num">L4</div>
+                        <div class="flow-step-title">Signal Filter</div>
+                        <div class="flow-step-sub">Session + regime gate</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-num">L5</div>
+                        <div class="flow-step-title">Order Executor</div>
+                        <div class="flow-step-sub">Alpaca bracket</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-num">L6</div>
+                        <div class="flow-step-title">Risk Manager</div>
+                        <div class="flow-step-sub">SL/TP + trailing</div>
+                    </div>
+                </div>
+
+                <h2>Endpoints</h2>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Method</th>
+                                <th>Endpoint</th>
+                                <th>Auth Level</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/tick</code></td>
+                                <td><code>any</code></td>
+                                <td>Process single tick through pipeline</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/tick/batch</code></td>
+                                <td><code>any</code></td>
+                                <td>Batch tick processing (backtest / warm-up)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/state</code></td>
+                                <td><code>any</code></td>
+                                <td>Current pipeline state</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/stats</code></td>
+                                <td><code>any</code></td>
+                                <td>Comprehensive pipeline statistics</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/bricks</code></td>
+                                <td><code>any</code></td>
+                                <td>Recent Renko bricks</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/classified</code></td>
+                                <td><code>any</code></td>
+                                <td>Bricks with swing labels (HH/HL/LH/LL)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/signals</code></td>
+                                <td><code>any</code></td>
+                                <td>Pattern signals</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/trades</code></td>
+                                <td><code>any</code></td>
+                                <td>Trade journal records</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/swing-points</code></td>
+                                <td><code>any</code></td>
+                                <td>Detected swing points</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/regime</code></td>
+                                <td><code>write</code></td>
+                                <td>Update HMM regime for gate filter</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/equity</code></td>
+                                <td><code>write</code></td>
+                                <td>Update account equity</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/config</code></td>
+                                <td><code>admin</code></td>
+                                <td>Update pipeline config (resets pipeline)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-post">POST</span></td>
+                                <td><code>/renko/reset</code></td>
+                                <td><code>admin</code></td>
+                                <td>Reset pipeline for a symbol</td>
+                            </tr>
+                            <tr>
+                                <td><span class="endpoint-method m-get">GET</span></td>
+                                <td><code>/renko/backtest/stats</code></td>
+                                <td><code>any</code></td>
+                                <td>Backtest/trading statistics</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>Quick Start</h2>
+                <div class="code-label">bash <span>Process a tick</span></div>
+                <pre><code><span class="cmt"># Authenticate and process a tick</span>
+<span class="fn">curl</span> <span class="str">-X POST</span> <span class="url">https://noble-trader-fastapi-backend.onrender.com/renko/tick</span> \
+  <span class="str">-H</span> <span class="str">"Authorization: Bearer &lt;your-jwt&gt;"</span> \
+  <span class="str">-H</span> <span class="str">"Content-Type: application/json"</span> \
+  <span class="str">-d</span> <span class="str">'{"price": 450.25, "symbol": "SPY"}'</span></code></pre>
+
+                <div class="code-label">bash <span>Read pipeline state</span></div>
+                <pre><code><span class="cmt"># Check current pipeline state (any auth)</span>
+<span class="fn">curl</span> <span class="url">https://noble-trader-fastapi-backend.onrender.com/renko/state?symbol=SPY</span> \
+  <span class="str">-H</span> <span class="str">"Authorization: Bearer &lt;your-jwt&gt;"</span></code></pre>
+
+                <div class="code-label">bash <span>Admin: reset pipeline</span></div>
+                <pre><code><span class="cmt"># Reset requires admin role</span>
+<span class="fn">curl</span> <span class="str">-X POST</span> <span class="url">https://noble-trader-fastapi-backend.onrender.com/renko/reset?symbol=SPY</span> \
+  <span class="str">-H</span> <span class="str">"Authorization: Bearer &lt;admin-jwt&gt;"</span></code></pre>
+
+                <div class="callout callout-danger">
+                    <span class="callout-icon">&#9888;</span>
+                    <div class="callout-body">
+                        <strong>Destructive Endpoints</strong>
+                        <code>/renko/config</code> and <code>/renko/reset</code> are admin-only because
+                        they destroy all pipeline state — bricks, signals, and trade history are
+                        permanently lost on reset.
+                    </div>
+                </div>
+
+                <h2>Configuration Schema</h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td><code>brick_size</code></td><td>float</td><td>0.50</td><td>Fixed brick size in dollars</td></tr>
+                            <tr><td><code>brick_size_mode</code></td><td>string</td><td>fixed</td><td>fixed | atr | dynamic</td></tr>
+                            <tr><td><code>reversal_bricks</code></td><td>int</td><td>2</td><td>Bricks needed for reversal</td></tr>
+                            <tr><td><code>bull_trigger_n</code></td><td>int</td><td>3</td><td>N consecutive HH/HL for bull trigger</td></tr>
+                            <tr><td><code>bear_trigger_n</code></td><td>int</td><td>3</td><td>N consecutive LL/LH for bear trigger</td></tr>
+                            <tr><td><code>sl_bricks</code></td><td>int</td><td>3</td><td>Stop-loss in brick units</td></tr>
+                            <tr><td><code>tp_bricks</code></td><td>int</td><td>5</td><td>Take-profit in brick units</td></tr>
+                            <tr><td><code>trailing_stop</code></td><td>bool</td><td>true</td><td>Enable trailing stop</td></tr>
+                            <tr><td><code>trail_after_bricks</code></td><td>int</td><td>3</td><td>Activate trail after N bricks profit</td></tr>
+                            <tr><td><code>trail_distance_bricks</code></td><td>int</td><td>2</td><td>Trail distance in bricks</td></tr>
+                            <tr><td><code>max_trades_per_session</code></td><td>int</td><td>15</td><td>Max trades per session</td></tr>
+                            <tr><td><code>max_daily_loss_bricks</code></td><td>float</td><td>10.0</td><td>Max daily loss in bricks</td></tr>
+                            <tr><td><code>max_consecutive_losses</code></td><td>int</td><td>3</td><td>Pause after N consecutive losses</td></tr>
+                            <tr><td><code>cooldown_seconds</code></td><td>float</td><td>30.0</td><td>Min seconds between trades</td></tr>
+                            <tr><td><code>regime_gate</code></td><td>bool</td><td>true</td><td>Only trade with HMM regime alignment</td></tr>
+                            <tr><td><code>symbol</code></td><td>string</td><td>SPY</td><td>Trading symbol</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="callout callout-info">
+                    <span class="callout-icon">&#9432;</span>
+                    <div class="callout-body">
+                        <strong>Discord Notifications</strong>
+                        The Renko router sends real-time alerts to Discord webhooks:
+                        trade signals to <code>#trade-signals</code>, executions to
+                        <code>#trade-executions</code>, and status/risk alerts to
+                        <code>#system-status</code>. Configure via environment variables.
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" id="page-renko-auth">
+                <h1>Renko <span class="accent-word">Auth Levels</span></h1>
+                <div class="hero">
+                    <div class="hero-eyebrow">Authentication</div>
+                    <p class="hero-desc">
+                        All Renko endpoints require authentication using the unified auth
+                        dependency: Clerk JWT (primary) → local JWT → API key → dev bypass.
+                        Three auth levels control access based on endpoint risk.
+                    </p>
+                </div>
+
+                <h2>Auth Flow</h2>
+                <div class="flow">
+                    <div class="flow-step">
+                        <div class="flow-step-title">Clerk JWT</div>
+                        <div class="flow-step-sub">Primary</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-title">Local JWT</div>
+                        <div class="flow-step-sub">Fallback</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-title">API Key</div>
+                        <div class="flow-step-sub">X-API-Key header</div>
+                    </div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-step">
+                        <div class="flow-step-title">Dev Mode</div>
+                        <div class="flow-step-sub">AUTH_ENABLED=false</div>
+                    </div>
+                </div>
+
+                <h2>Permission Levels</h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Level</th>
+                                <th>Dependency</th>
+                                <th>Roles</th>
+                                <th>Renko Endpoints</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="sev-info">any</span></td>
+                                <td><code>get_authed_user</code></td>
+                                <td>viewer, trader, admin</td>
+                                <td>Read + tick ingestion (10 endpoints)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="sev-warning">write</span></td>
+                                <td><code>require_write</code></td>
+                                <td>trader, admin</td>
+                                <td>/regime, /equity (state mutations)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="sev-critical">admin</span></td>
+                                <td><code>require_admin</code></td>
+                                <td>admin</td>
+                                <td>/config, /reset (destructive)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>Auth Methods</h2>
+
+                <h3>Bearer Token (Clerk or Local JWT)</h3>
+                <div class="code-label">bash</div>
+                <pre><code><span class="fn">curl</span> <span class="url">https://backend.onrender.com/renko/state</span> \
+  <span class="str">-H</span> <span class="str">"Authorization: Bearer eyJhbGciOiJ..."</span></code></pre>
+
+                <h3>API Key</h3>
+                <div class="code-label">bash</div>
+                <pre><code><span class="fn">curl</span> <span class="url">https://backend.onrender.com/renko/state</span> \
+  <span class="str">-H</span> <span class="str">"X-API-Key: your-api-key"</span></code></pre>
+
+                <h2>Environment Variables</h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Variable</th><th>Purpose</th><th>Required</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td><code>JWT_SECRET_KEY</code></td><td>Local JWT signing secret</td><td>Yes</td></tr>
+                            <tr><td><code>CLERK_SECRET_KEY</code></td><td>Enables Clerk JWT verification</td><td>Recommended</td></tr>
+                            <tr><td><code>CLERK_PUBLISHABLE_KEY</code></td><td>Clerk client-side key</td><td>If using Clerk</td></tr>
+                            <tr><td><code>API_KEYS</code></td><td>Comma-separated API keys</td><td>Optional</td></tr>
+                            <tr><td><code>AUTH_ENABLED</code></td><td>Set "false" for dev bypass</td><td>Dev only</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="callout callout-warning">
+                    <span class="callout-icon">&#9888;</span>
+                    <div class="callout-body">
+                        <strong>Dev Mode</strong>
+                        When <code>AUTH_ENABLED=false</code>, all auth checks are bypassed
+                        and a synthetic admin user is returned. Never use this in production.
+                    </div>
+                </div>
+            </div>
+
         </main>
 
         <script>

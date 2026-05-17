@@ -1,23 +1,38 @@
 openapi: "3.1.0"
 
 info:
-  title: Dynamic Regime Risk Management Platform
-  version: "2.0.0"
+  title: Noble Trader Dynamic Regime Risk Management Platform
+  version: "5.0.0"
   description: |
     A production-grade FastAPI service for quantitative trading risk management.
     Detects market regimes with Hidden Markov Models, gates position sizes via
     the Kelly Criterion, computes real-time VaR/CVaR, and streams live regime
     snapshots and alerts over WebSocket and SSE.
+
+    ## Authentication
+    All protected endpoints require authentication via one of:
+    - **Clerk JWT** (primary) — Bearer token issued by Clerk
+    - **Local JWT** — Bearer token issued by `/auth/token`
+    - **API Key** — via `X-API-Key` header
+
+    Auth levels: `any` (viewer+), `write` (trader+), `admin` (admin only).
   contact:
-    name: Regime Risk Platform
+    name: Noble Trader
+    email: nobletrader@0xdweb.com
   license:
     name: MIT
 
 servers:
+  - url: https://noble-trader-fastapi-backend.onrender.com
+    description: Production (Render)
   - url: http://localhost:8000
     description: Local development
 
 tags:
+  - name: Health
+    description: Service health and status
+  - name: Auth
+    description: Authentication — JWT + Clerk + API key
   - name: Full Pipeline
     description: One-shot batch analysis
   - name: Regime Detection
@@ -26,289 +41,48 @@ tags:
     description: Kelly Criterion position sizing
   - name: Risk Analysis
     description: VaR, CVaR, drawdown, stop/TP
+  - name: Renko HFT
+    description: 6-layer Renko HFT pipeline — bricks, signals, executions
+  - name: Simulation
+    description: Monte Carlo regime transition simulation
+  - name: Portfolio
+    description: Multi-symbol portfolio aggregation
+  - name: Correlation
+    description: DCC-based portfolio correlation regime
+  - name: Optimisation
+    description: Drawdown-controlled max-Sharpe optimisation
+  - name: GPU HMM
+    description: GPU-accelerated HMM capabilities
+  - name: Feed Adapters
+    description: Live OHLCV feed management (Alpaca, Binance, IB)
   - name: Live Stream
     description: REST tick ingestion and session management
   - name: Real-Time Streaming
     description: WebSocket and Server-Sent Events
-  - name: Health
+  - name: Observation
+    description: 24-feature observation vector building
+  - name: Strategy
+    description: Strategy signal generation
+  - name: Backtest
+    description: Backtesting engine
+  - name: TDA
+    description: Topological data analysis features
 
 # ─────────────────────────────────────────────────────────────────────────────
-paths:
-
-  /health:
-    get:
-      tags: [Health]
-      summary: Health check
-      responses:
-        "200":♥
-          description: Service is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: ok }
-                  version: { type: string, example: "2.0.0" }
-
-  # ── BATCH ────────────────────────────────────────────────────────────────
-
-  /analyse/full:
-    post:
-      tags: [Full Pipeline]
-      summary: One-shot full pipeline — regime + sizing + risk
-      description: |
-        Runs the complete pipeline in a single request:
-        1. Fit dual Gaussian HMMs → regime posteriors + risk_multiplier
-        2. Fractional Kelly → vol-scaled → regime-gated position size
-        3. Historical VaR/CVaR, drawdown, stop/TP suggestions
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/FullAnalysisRequest' }
-            example:
-              symbol: SPY
-              prices: [450.1, 451.3, 449.8, 452.0]
-              kelly_fraction: 0.5
-              target_vol: 0.15
-              base_risk_limit: 0.02
-      responses:
-        "200":
-          description: Full analysis result
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/FullAnalysisResponse' }
-        "422":
-          $ref: '#/components/responses/ValidationError'
-
-  /regime/detect:
-    post:
-      tags: [Regime Detection]
-      summary: Detect market regime from price series
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PricePayload' }
-      responses:
-        "200":
-          description: Regime classification result
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/RegimeResponse' }
-        "422":
-          $ref: '#/components/responses/ValidationError'
-
-  /size/kelly:
-    post:
-      tags: [Position Sizing]
-      summary: Regime-aware fractional Kelly position sizing
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SizeRequest' }
-      responses:
-        "200":
-          description: Kelly sizing result
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SizeResponse' }
-        "422":
-          $ref: '#/components/responses/ValidationError'
-
-  /risk/analyse:
-    post:
-      tags: [Risk Analysis]
-      summary: Full risk decomposition — VaR, CVaR, drawdown, stop/TP
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/RiskRequest' }
-      responses:
-        "200":
-          description: Risk analysis result
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/RiskResponse' }
-        "422":
-          $ref: '#/components/responses/ValidationError'
-
-  # ── STREAMING REST ────────────────────────────────────────────────────────
-
-  /stream/seed:
-    post:
-      tags: [Live Stream]
-      summary: Seed a symbol streaming session with historical prices
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SeedRequest' }
-      responses:
-        "200":
-          description: Session created and seeded
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SessionStatus' }
-        "422":
-          $ref: '#/components/responses/ValidationError'
-
-  /stream/tick:
-    post:
-      tags: [Live Stream]
-      summary: Push one price tick — receive regime snapshot
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/TickIngest' }
-      responses:
-        "200":
-          description: Tick snapshot or buffering stub
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/TickResponse'
-                  - $ref: '#/components/schemas/BufferingStub'
-        "404":
-          $ref: '#/components/responses/NotFound'
-
-  /stream/ticks:
-    post:
-      tags: [Live Stream]
-      summary: Batch tick ingestion / backtest replay
-      parameters:
-        - name: symbol
-          in: query
-          required: true
-          schema: { type: string }
-        - name: prices
-          in: query
-          required: true
-          schema: { type: array, items: { type: number } }
-        - name: timestamps
-          in: query
-          required: false
-          schema: { type: array, items: { type: number } }
-      responses:
-        "200":
-          description: Array of tick snapshots
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  oneOf:
-                    - $ref: '#/components/schemas/TickResponse'
-                    - $ref: '#/components/schemas/BufferingStub'
-        "404":
-          $ref: '#/components/responses/NotFound'
-
-  /stream/sessions:
-    get:
-      tags: [Live Stream]
-      summary: List all active streaming sessions and their stats
-      responses:
-        "200":
-          description: Map of symbol → session stats
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties:
-                  $ref: '#/components/schemas/SessionStats'
-
-  /stream/session/{symbol}:
-    get:
-      tags: [Live Stream]
-      summary: Get status of a single streaming session
-      parameters:
-        - name: symbol
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Session status
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SessionStatus' }
-        "404":
-          $ref: '#/components/responses/NotFound'
-    delete:
-      tags: [Live Stream]
-      summary: Remove a streaming session
-      parameters:
-        - name: symbol
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Session removed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: removed }
-                  symbol: { type: string }
-
-  # ── SSE ───────────────────────────────────────────────────────────────────
-
-  /sse/{symbol}:
-    get:
-      tags: [Real-Time Streaming]
-      summary: SSE stream — per-symbol regime snapshots
-      description: |
-        Server-Sent Events stream. Pushes a TickResponse JSON on every tick
-        processed for `symbol`. Requires a seeded session. Sends comment
-        heartbeats every 15 seconds of inactivity.
-
-        Connect with: `new EventSource('/sse/SPY')`
-      parameters:
-        - name: symbol
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: SSE event stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: |
-                  Each `data:` line is a JSON-serialised TickResponse.
-                  First event: `{"type": "connected", "symbol": "SPY"}`
-        "404":
-          $ref: '#/components/responses/NotFound'
-
-  /sse/alerts:
-    get:
-      tags: [Real-Time Streaming]
-      summary: SSE stream — global regime-change alert broadcast
-      description: |
-        Broadcasts RegimeAlert events across all active symbol sessions.
-        Only fires on transitions that persist for 3+ bars (debounced).
-
-        Connect with: `new EventSource('/sse/alerts')`
-      responses:
-        "200":
-          description: SSE alert stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: |
-                  Each `data:` line is a JSON-serialised RegimeAlert.
-                  First event: `{"type": "connected", "scope": "alerts"}`
-
+# Security schemes
 # ─────────────────────────────────────────────────────────────────────────────
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Clerk JWT or local JWT token"
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "Pre-shared API key"
 
   responses:
     ValidationError:
@@ -329,8 +103,26 @@ components:
                         msg:  { type: string }
                         type: { type: string }
 
+    UnauthorizedError:
+      description: Authentication required — provide Bearer token or X-API-Key
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail: { type: string, example: "Not authenticated" }
+
+    ForbiddenError:
+      description: Insufficient permissions for this action
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail: { type: string, example: "Admin access required" }
+
     NotFound:
-      description: Session not found for symbol
+      description: Resource not found
       content:
         application/json:
           schema:
@@ -355,6 +147,132 @@ components:
           items: { type: number, exclusiveMinimum: 0 }
           minItems: 81
           description: Ordered close price series. All values must be positive.
+
+    # ── Renko models ───────────────────────────────────────────────────────
+
+    TickInput:
+      type: object
+      required: [price]
+      properties:
+        price:
+          type: number
+          description: Latest trade price
+        timestamp:
+          type: number
+          nullable: true
+          description: Unix timestamp
+        symbol:
+          type: string
+          nullable: true
+          description: Override symbol (defaults to SPY)
+
+    BatchTickInput:
+      type: object
+      required: [prices]
+      properties:
+        prices:
+          type: array
+          items: { type: number }
+          description: Price series
+        timestamps:
+          type: array
+          items: { type: number }
+          nullable: true
+          description: Timestamps
+        regimes:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Pre-computed regime labels
+        symbol:
+          type: string
+          nullable: true
+          description: Override symbol (defaults to query param)
+
+    ConfigInput:
+      type: object
+      properties:
+        brick_size:
+          type: number
+          default: 0.50
+          description: Fixed brick size in dollars
+        brick_size_mode:
+          type: string
+          default: fixed
+          enum: [fixed, atr, dynamic]
+          description: Brick size calculation mode
+        reversal_bricks:
+          type: integer
+          default: 2
+          description: Bricks needed for reversal
+        bull_trigger_n:
+          type: integer
+          default: 3
+          description: N consecutive HH/HL for bull trigger
+        bear_trigger_n:
+          type: integer
+          default: 3
+          description: N consecutive LL/LH for bear trigger
+        sl_bricks:
+          type: integer
+          default: 3
+          description: Stop-loss in brick units
+        tp_bricks:
+          type: integer
+          default: 5
+          description: Take-profit in brick units
+        trailing_stop:
+          type: boolean
+          default: true
+          description: Enable trailing stop
+        trail_after_bricks:
+          type: integer
+          default: 3
+          description: Activate trail after N bricks profit
+        trail_distance_bricks:
+          type: integer
+          default: 2
+          description: Trail distance in bricks
+        max_trades_per_session:
+          type: integer
+          default: 15
+          description: Max trades per session
+        max_daily_loss_bricks:
+          type: number
+          default: 10.0
+          description: Max daily loss in bricks
+        max_consecutive_losses:
+          type: integer
+          default: 3
+          description: Pause after N consecutive losses
+        cooldown_seconds:
+          type: number
+          default: 30.0
+          description: Min seconds between trades
+        regime_gate:
+          type: boolean
+          default: true
+          description: Only trade with HMM regime alignment
+        symbol:
+          type: string
+          default: SPY
+          description: Trading symbol
+
+    RegimeInput:
+      type: object
+      required: [regime]
+      properties:
+        regime:
+          type: string
+          description: Current regime name
+
+    EquityInput:
+      type: object
+      required: [equity]
+      properties:
+        equity:
+          type: number
+          description: Current account equity
 
     # ── Batch requests ──────────────────────────────────────────────────────
 
@@ -605,21 +523,6 @@ components:
         severity:  { type: string, enum: [info, warning, critical] }
         message:   { type: string }
 
-    WsMessage:
-      type: object
-      required: [type, symbol]
-      properties:
-        type:
-          type: string
-          enum: [seed, tick, subscribe, ping]
-        symbol:  { type: string }
-        price:   { type: number, nullable: true }
-        prices:
-          type: array
-          items: { type: number }
-          nullable: true
-        ts:      { type: number, nullable: true }
-
     Observation:
       type: object
       description: 24-feature observation vector from InferenceObservationBuilder
@@ -638,48 +541,757 @@ components:
             16=vol_prob_high, 17=trend_prob_down, 18=trend_prob_neutral,
             19=trend_prob_up, 20=regime_quality, 21=state_confidence,
             22=masaniello_pressure, 23=drawdown_factor
-        vol_probs:
-          type: array
-          items: { type: number }
-          minItems: 4
-          maxItems: 4
-          description: "4-state vol posteriors: [low, med_low, med_high, high]"
-        trend_probs:
-          type: array
-          items: { type: number }
-          minItems: 4
-          maxItems: 4
-          description: "4-state trend posteriors: [strong_bear, bear, bull, strong_bull]"
-        regime_label:   { type: string }
-        confidence:     { type: number, minimum: 0, maximum: 1 }
-        bar_index:      { type: integer }
-        markov_uniform: { type: boolean, description: "true if Markov features appear uniform (bug indicator)" }
 
-    FeatureIndex:
-      type: object
-      description: Feature index constants (F namespace)
-      properties:
-        LOG_RET_1:          { type: integer, example: 0 }
-        LOG_RET_3:          { type: integer, example: 1 }
-        LOG_RET_10:         { type: integer, example: 2 }
-        NORMALISED_ATR:     { type: integer, example: 3 }
-        ROLLING_VOL_20:     { type: integer, example: 4 }
-        EMA_DISTANCE:       { type: integer, example: 5 }
-        HHLL_SCORE:         { type: integer, example: 6 }
-        VOL_REGIME_PCT:     { type: integer, example: 7 }
-        ATR_VS_BASELINE:    { type: integer, example: 8 }
-        VOL_TREND_SLOPE:    { type: integer, example: 9 }
-        REGIME_PROB_0:      { type: integer, example: 10 }
-        REGIME_PROB_3:      { type: integer, example: 13 }
-        VOL_PROB_LOW:       { type: integer, example: 14 }
-        VOL_PROB_MEDIUM:    { type: integer, example: 15 }
-        VOL_PROB_HIGH:      { type: integer, example: 16 }
-        TREND_PROB_DOWN:    { type: integer, example: 17 }
-        TREND_PROB_NEUTRAL: { type: integer, example: 18 }
-        TREND_PROB_UP:      { type: integer, example: 19 }
-        REGIME_QUALITY:     { type: integer, example: 20 }
-        STATE_CONFIDENCE:   { type: integer, example: 21 }
-        MASANIELLO:         { type: integer, example: 22 }
-        DRAWDOWN_FACTOR:    { type: integer, example: 23 }
-        N_FEATURES:         { type: integer, example: 24 }
-        MARKOV_SLICE:       { type: string,  example: "slice(14, 20)" }
+# ─────────────────────────────────────────────────────────────────────────────
+paths:
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string, example: "5.0.0" }
+                  redis: { type: boolean }
+                  discord: { type: object }
+                  gpu_backend: { type: string }
+                  device: { type: string }
+
+  # ── AUTH ────────────────────────────────────────────────────────────────
+
+  /auth/token:
+    post:
+      tags: [Auth]
+      summary: Issue a local JWT token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: JWT token issued
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Current user info
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /auth/clerk/me:
+    get:
+      tags: [Auth]
+      summary: Get current Clerk-authenticated user
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Clerk user info
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ── RENKO HFT PIPELINE ─────────────────────────────────────────────────
+
+  /renko/tick:
+    post:
+      tags: [Renko HFT]
+      summary: Process a single tick through the 6-layer Renko pipeline
+      description: |
+        Ingests a single price tick through the full pipeline:
+        Brick Engine → Swing Classifier → Pattern Detector → Signal Filter →
+        Order Executor → Risk Manager.
+
+        **Auth**: Any authenticated user (viewer+)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TickInput' }
+      responses:
+        "200":
+          description: Tick processing result
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/tick/batch:
+    post:
+      tags: [Renko HFT]
+      summary: Batch tick processing (backtest / warm-up)
+      description: |
+        Processes a batch of price ticks for backtesting or pipeline warm-up.
+
+        **Auth**: Any authenticated user (viewer+)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchTickInput' }
+      responses:
+        "200":
+          description: Batch processing result
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/state:
+    get:
+      tags: [Renko HFT]
+      summary: Get current pipeline state
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline state snapshot
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/stats:
+    get:
+      tags: [Renko HFT]
+      summary: Get comprehensive pipeline statistics
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline statistics
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/bricks:
+    get:
+      tags: [Renko HFT]
+      summary: Get recent Renko bricks
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: List of recent bricks
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/classified:
+    get:
+      tags: [Renko HFT]
+      summary: Get classified bricks with swing labels (HH/HL/LH/LL)
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: List of classified bricks
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/signals:
+    get:
+      tags: [Renko HFT]
+      summary: Get recent pattern signals
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: List of pattern signals
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/trades:
+    get:
+      tags: [Renko HFT]
+      summary: Get recent trade records
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: List of trade records
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/swing-points:
+    get:
+      tags: [Renko HFT]
+      summary: Get detected swing points
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: List of swing points
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /renko/regime:
+    post:
+      tags: [Renko HFT]
+      summary: Update the current HMM regime
+      description: |
+        Updates the HMM regime used by the signal filter for regime gate logic.
+
+        **Auth**: Trader role or higher (require_write)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegimeInput' }
+      responses:
+        "200":
+          description: Regime updated
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /renko/equity:
+    post:
+      tags: [Renko HFT]
+      summary: Update the current account equity
+      description: |
+        Updates the account equity used by the risk manager.
+
+        **Auth**: Trader role or higher (require_write)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EquityInput' }
+      responses:
+        "200":
+          description: Equity updated
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /renko/config:
+    post:
+      tags: [Renko HFT]
+      summary: Update pipeline configuration (resets the pipeline)
+      description: |
+        Updates the pipeline configuration. **Warning**: This resets the entire
+        pipeline — all bricks, signals, and trade history are lost.
+
+        **Auth**: Admin only (require_admin)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigInput' }
+      responses:
+        "200":
+          description: Configuration updated, pipeline reset
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /renko/reset:
+    post:
+      tags: [Renko HFT]
+      summary: Reset the pipeline for a symbol
+      description: |
+        Resets the pipeline, clearing all bricks, signals, and trade history.
+
+        **Auth**: Admin only (require_admin)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline reset
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /renko/backtest/stats:
+    get:
+      tags: [Renko HFT]
+      summary: Get backtest/trading statistics from the journal
+      description: "**Auth**: Any authenticated user (viewer+)"
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Backtest statistics
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ── BATCH ────────────────────────────────────────────────────────────────
+
+  /analyse/full:
+    post:
+      tags: [Full Pipeline]
+      summary: One-shot full pipeline — regime + sizing + risk
+      description: |
+        Runs the complete pipeline in a single request:
+        1. Fit dual Gaussian HMMs → regime posteriors + risk_multiplier
+        2. Fractional Kelly → vol-scaled → regime-gated position size
+        3. Historical VaR/CVaR, drawdown, stop/TP suggestions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FullAnalysisRequest' }
+            example:
+              symbol: SPY
+              prices: [450.1, 451.3, 449.8, 452.0]
+              kelly_fraction: 0.5
+              target_vol: 0.15
+              base_risk_limit: 0.02
+      responses:
+        "200":
+          description: Full analysis result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullAnalysisResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /regime/detect:
+    post:
+      tags: [Regime Detection]
+      summary: Detect market regime from price series
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricePayload' }
+      responses:
+        "200":
+          description: Regime classification result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegimeResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /size/kelly:
+    post:
+      tags: [Position Sizing]
+      summary: Regime-aware fractional Kelly position sizing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SizeRequest' }
+      responses:
+        "200":
+          description: Kelly sizing result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SizeResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /risk/analyse:
+    post:
+      tags: [Risk Analysis]
+      summary: Full risk decomposition — VaR, CVaR, drawdown, stop/TP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RiskRequest' }
+      responses:
+        "200":
+          description: Risk analysis result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── SIMULATION ──────────────────────────────────────────────────────────
+
+  /simulate/{symbol}:
+    post:
+      tags: [Simulation]
+      summary: Simulate regime transition paths forward in time
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prices]
+              properties:
+                symbol: { type: string, default: UNKNOWN }
+                prices: { type: array, items: { type: number }, minItems: 81 }
+                horizon: { type: integer, default: 20, minimum: 1, maximum: 252 }
+                n_paths: { type: integer, default: 500, minimum: 50, maximum: 5000 }
+                seed: { type: integer, default: 42 }
+      responses:
+        "200":
+          description: Simulation results
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── PORTFOLIO ───────────────────────────────────────────────────────────
+
+  /portfolio:
+    get:
+      tags: [Portfolio]
+      summary: Multi-symbol aggregated regime + risk
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Portfolio overview
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ── CORRELATION / OPTIMISATION ──────────────────────────────────────────
+
+  /correlation/detect:
+    post:
+      tags: [Correlation]
+      summary: DCC-based portfolio correlation regime detection
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Correlation regime result
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /optimise:
+    post:
+      tags: [Optimisation]
+      summary: Drawdown-controlled max-Sharpe portfolio optimisation
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Optimisation result
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /optimise/full:
+    post:
+      tags: [Optimisation]
+      summary: Correlation + optimisation one-shot
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Full optimisation result
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ── GPU HMM ─────────────────────────────────────────────────────────────
+
+  /gpu/capabilities:
+    get:
+      tags: [GPU HMM]
+      summary: Get GPU HMM backend capabilities
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: GPU capabilities
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /gpu/benchmark:
+    post:
+      tags: [GPU HMM]
+      summary: Run HMM fit/predict latency benchmark
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Benchmark results
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ── FEED ADAPTERS ───────────────────────────────────────────────────────
+
+  /feeds/status:
+    get:
+      tags: [Feed Adapters]
+      summary: Get feed adapter status
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Feed status
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /feeds/start:
+    post:
+      tags: [Feed Adapters]
+      summary: Start live feed adapters (Alpaca / Binance / IB)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Feeds started
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  /feeds/stop:
+    post:
+      tags: [Feed Adapters]
+      summary: Stop all running feed adapters
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Feeds stopped
+        "401":
+          $ref: '#/components/responses/UnauthorizedError'
+        "403":
+          $ref: '#/components/responses/ForbiddenError'
+
+  # ── STREAMING REST ────────────────────────────────────────────────────────
+
+  /stream/seed:
+    post:
+      tags: [Live Stream]
+      summary: Seed a symbol streaming session with historical prices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeedRequest' }
+      responses:
+        "200":
+          description: Session created and seeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionStatus' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /stream/tick:
+    post:
+      tags: [Live Stream]
+      summary: Push one price tick — receive regime snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TickIngest' }
+      responses:
+        "200":
+          description: Tick snapshot or buffering stub
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TickResponse'
+                  - $ref: '#/components/schemas/BufferingStub'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /stream/sessions:
+    get:
+      tags: [Live Stream]
+      summary: List all active streaming sessions
+      responses:
+        "200":
+          description: Map of symbol → session stats
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/SessionStats'
+
+  /stream/session/{symbol}:
+    get:
+      tags: [Live Stream]
+      summary: Get status of a single streaming session
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionStatus' }
+        "404":
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Live Stream]
+      summary: Remove a streaming session
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session removed
+
+  # ── SSE ───────────────────────────────────────────────────────────────────
+
+  /sse/{symbol}:
+    get:
+      tags: [Real-Time Streaming]
+      summary: SSE stream — per-symbol regime snapshots
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /sse/alerts:
+    get:
+      tags: [Real-Time Streaming]
+      summary: SSE stream — global regime-change alert broadcast
+      responses:
+        "200":
+          description: SSE alert stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
