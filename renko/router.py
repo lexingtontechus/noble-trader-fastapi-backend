@@ -8,10 +8,18 @@ Mount with::
 
     from renko.router import renko_router
     app.include_router(renko_router, prefix="/renko", tags=["renko"])
+
+Discord notifications:
+  When a signal is detected or a trade is closed, the router
+  automatically sends a rich embed to the configured Discord
+  webhooks (fire-and-forget, non-blocking). Configure via:
+    DISCORD_WEBHOOK_SIGNALS, DISCORD_WEBHOOK_EXECUTIONS, DISCORD_WEBHOOK_STATUS
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +35,15 @@ except ImportError:
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
+
+# Discord notifications (graceful import — not required for pipeline to work)
+try:
+    from notifications.discord import discord_notifier, AlertLevel
+    DISCORD_AVAILABLE = True
+except ImportError:
+    DISCORD_AVAILABLE = False
+
+log = logging.getLogger(__name__)
 
 
 # ── Pydantic models ───────────────────────────────────────────────
@@ -103,6 +120,10 @@ if FASTAPI_AVAILABLE:
         symbol = body.symbol or "SPY"
         pipeline = _get_pipeline(symbol)
         result = pipeline.process_tick(body.price, body.timestamp)
+
+        # ── Fire Discord notifications (non-blocking) ────────────
+        _notify_tick_result(symbol, result, pipeline)
+
         return result
 
     @renko_router.post("/tick/batch")
@@ -116,6 +137,10 @@ if FASTAPI_AVAILABLE:
             timestamps=body.timestamps,
             regimes=body.regimes,
         )
+
+        # ── Fire Discord status notification for batch completion ─
+        _notify_batch_complete(active_symbol, result)
+
         return result
 
     @renko_router.get("/state")
@@ -209,6 +234,10 @@ if FASTAPI_AVAILABLE:
         """Reset the pipeline for a symbol."""
         pipeline = _get_pipeline(symbol)
         pipeline.reset()
+
+        # ── Fire Discord status notification ─────────────────────
+        _notify_reset(symbol)
+
         return {"status": "ok"}
 
     @renko_router.get("/backtest/stats")
@@ -220,3 +249,140 @@ if FASTAPI_AVAILABLE:
 else:
     # Stub router for environments without FastAPI
     renko_router = None
+
+
+# ── Notification helpers (non-blocking, fire-and-forget) ────────────────
+
+
+def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipeline) -> None:
+    """
+    Fire Discord notifications for signals and trade closes from a tick result.
+
+    This is called after each tick is processed. It inspects the result
+    dict for filtered signals and trade close events, then fires the
+    appropriate Discord embeds asynchronously (fire-and-forget).
+
+    Never blocks or raises — all notification errors are caught and logged.
+    """
+    if not DISCORD_AVAILABLE:
+        return
+
+    try:
+        # 1. Signal detected → send to #trade-signals
+        filtered_data = result.get("filtered")
+        if filtered_data and isinstance(filtered_data, dict):
+            signal_data = filtered_data.get("original_signal", filtered_data)
+            direction = signal_data.get("direction", "UNKNOWN")
+            pattern = signal_data.get("pattern_type", signal_data.get("pattern", "unknown"))
+            price = signal_data.get("price", 0.0)
+            confidence = signal_data.get("strength", signal_data.get("confidence"))
+            velocity = signal_data.get("velocity")
+
+            # Get regime and brick_size from pipeline
+            regime = pipeline._current_regime
+            brick_size = pipeline.config.get_brick_size()
+
+            # Calculate SL/TP prices for the execution embed
+            if direction.upper() in ("LONG", "BUY"):
+                sl_price = round(price - 3 * brick_size, 4) if price else None
+                tp_price = round(price + 5 * brick_size, 4) if price else None
+            else:
+                sl_price = round(price + 3 * brick_size, 4) if price else None
+                tp_price = round(price - 5 * brick_size, 4) if price else None
+
+            # Signal alert → #trade-signals
+            asyncio.create_task(discord_notifier.send_signal(
+                symbol=symbol,
+                direction=direction,
+                pattern=pattern,
+                price=price or 0.0,
+                confidence=confidence,
+                velocity=velocity,
+                brick_size=brick_size,
+                regime=regime,
+            ))
+
+            # Execution alert → #trade-executions
+            asyncio.create_task(discord_notifier.send_execution(
+                symbol=symbol,
+                side="buy" if direction.upper() in ("LONG", "BUY") else "sell",
+                qty=1,  # qty managed by executor
+                price=price or 0.0,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                status="submitted",
+                order_type="bracket",
+            ))
+
+        # 2. Trade closed (SL/TP hit) → send to #trade-executions
+        trade_result = result.get("trade_result")
+        if trade_result and isinstance(trade_result, dict):
+            pnl_bricks = trade_result.get("pnl_bricks", 0.0)
+            pnl_dollars = trade_result.get("pnl_dollars", 0.0)
+            status = trade_result.get("status", "closed")
+            direction = trade_result.get("direction", "")
+
+            asyncio.create_task(discord_notifier.send_execution(
+                symbol=symbol,
+                side="sell" if direction.upper() in ("LONG", "BUY") else "buy",
+                qty=1,
+                pnl_bricks=pnl_bricks,
+                pnl_dollars=pnl_dollars,
+                status=status,
+            ))
+
+            # Risk alert for significant losses
+            if pnl_bricks <= -5:
+                asyncio.create_task(discord_notifier.send_risk_alert(
+                    symbol=symbol,
+                    risk_type="large_loss",
+                    message=f"{symbol} trade closed with significant loss: {pnl_bricks:+.2f} bricks (${pnl_dollars:+.2f})",
+                    level=AlertLevel.ERROR,
+                    data={"pnl_bricks": pnl_bricks, "pnl_dollars": pnl_dollars},
+                ))
+
+    except Exception as e:
+        log.warning(f"Discord notification failed (non-critical): {e}")
+
+
+def _notify_batch_complete(symbol: str, result: Dict[str, Any]) -> None:
+    """Fire a status notification when batch processing completes."""
+    if not DISCORD_AVAILABLE:
+        return
+
+    try:
+        total_bricks = result.get("total_bricks", 0)
+        total_trades = len(result.get("trades", []))
+        total_ticks = result.get("total_ticks", 0)
+
+        # Only notify for significant batches (not tiny test batches)
+        if total_ticks < 50:
+            return
+
+        asyncio.create_task(discord_notifier.send_status(
+            message=f"Batch processing complete: {total_bricks} bricks, {total_trades} trades from {total_ticks} ticks",
+            symbol=symbol,
+            level=AlertLevel.INFO,
+            data={
+                "bricks": total_bricks,
+                "trades": total_trades,
+                "ticks": total_ticks,
+            },
+        ))
+    except Exception as e:
+        log.warning(f"Discord batch notification failed (non-critical): {e}")
+
+
+def _notify_reset(symbol: str) -> None:
+    """Fire a status notification when the pipeline is reset."""
+    if not DISCORD_AVAILABLE:
+        return
+
+    try:
+        asyncio.create_task(discord_notifier.send_status(
+            message=f"Pipeline reset for {symbol}",
+            symbol=symbol,
+            level=AlertLevel.WARNING,
+        ))
+    except Exception as e:
+        log.warning(f"Discord reset notification failed (non-critical): {e}")

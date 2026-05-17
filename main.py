@@ -50,6 +50,7 @@
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -118,6 +119,14 @@ async def lifespan(app: FastAPI):
                 log.info(f"  ✓ {symbol}: restored {n} bars")
 
     yield
+
+    # Close Discord notifier HTTP client
+    try:
+        from notifications.discord import discord_notifier
+        await discord_notifier.close()
+        log.info("Discord notifier closed")
+    except ImportError:
+        pass
 
     await persistence.close()
     from regime_platform.routers.feeds import _manager
@@ -297,11 +306,26 @@ Exposes all trading risk management endpoints as MCP tools:
 
         symbols = await registry.list_symbols()
         caps = gpu_capabilities()
+
+        # Discord notification status
+        discord_status = {"configured": False, "channels": {}}
+        try:
+            from notifications.discord import discord_notifier
+            discord_status["configured"] = discord_notifier.is_configured
+            discord_status["channels"] = {
+                "signals": bool(os.getenv("DISCORD_WEBHOOK_SIGNALS")),
+                "executions": bool(os.getenv("DISCORD_WEBHOOK_EXECUTIONS")),
+                "status": bool(os.getenv("DISCORD_WEBHOOK_STATUS")),
+            }
+        except ImportError:
+            pass
+
         return {
             "status": "ok",
             "version": "5.0.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
+            "discord": discord_status,
             "gpu_backend": caps["hmm_backend"],
             "device": caps["active_device"],
         }
