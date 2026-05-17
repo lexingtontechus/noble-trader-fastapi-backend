@@ -405,3 +405,169 @@ class ObservationV2Response(BaseModel):
     tda_included: bool = Field(default=False, description="Whether TDA features were appended.")
     tda_anomaly_score: Optional[float] = Field(default=None, description="TDA anomaly score if included.")
     tda_regime_change_prob: Optional[float] = Field(default=None, description="TDA regime change probability if included.")
+
+
+# ─── Dynamic Masaniello Position Sizing ──────────────────────────────────────
+
+class MasanielloSizeRequest(BaseModel):
+    """Request for Dynamic Masaniello position sizing (Path B)."""
+    equity: float = Field(..., gt=0, description="Current account equity in $.")
+    stop_distance_price: float = Field(..., gt=0, description="Stop distance in price units.")
+    point_value: float = Field(default=1.0, gt=0, description="$ value per 1 price unit (1.0 for stocks/FX).")
+    p_win: float = Field(..., ge=0.0, le=1.0, description="Estimated win probability.")
+    reward_risk: float = Field(..., gt=0, description="Expected reward/risk ratio (R multiple).")
+    direction: Literal["long", "short"] = Field(default="long")
+    symbol: str = Field(default="UNKNOWN")
+    # ATR values for volatility factor
+    atr_baseline: float = Field(..., gt=0, description="Historical ATR reference.")
+    atr_current: float = Field(..., gt=0, description="Current ATR value.")
+    # Optional: provide prices to auto-detect regime
+    prices: Optional[list[float]] = Field(default=None, min_length=81, description="Price series for auto regime detection.")
+    # Batch state (optional — if not provided, fresh batch is assumed)
+    wins_so_far: int = Field(default=0, ge=0)
+    losses_so_far: int = Field(default=0, ge=0)
+    trade_index: int = Field(default=1, ge=1)
+    current_drawdown: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Sizing config overrides
+    base_risk: float = Field(default=0.005, gt=0, le=0.05, description="Base risk fraction β (default 0.5%).")
+    min_risk: float = Field(default=0.0025, ge=0.0001, le=0.01)
+    max_risk: float = Field(default=0.010, ge=0.001, le=0.05)
+    min_prob: float = Field(default=0.50, ge=0.0, le=1.0)
+    min_rr: float = Field(default=1.50, ge=0.5, le=10.0, description="Min reward/risk (lowered from 2.50 default).")
+    use_regime: bool = Field(default=True, description="Auto-detect regime from prices if True.")
+    use_kelly_overlay: bool = Field(default=False)
+    kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
+    batch_size: int = Field(default=5, ge=2, le=50)
+    target_wins: int = Field(default=3, ge=1, le=25)
+
+
+class MasanielloSizeResponse(BaseModel):
+    """Response from Dynamic Masaniello position sizing."""
+    allowed: bool
+    risk_fraction: float
+    risk_amount: float
+    units: float
+    contracts: int
+    # Factors (for inspection/logging)
+    masaniello_factor: float = Field(description="M_i: urgency factor (wins needed / trades left).")
+    quality_factor: float = Field(description="Q_i: model quality composite (prob × regime × confidence).")
+    drawdown_factor: float = Field(description="DD_i: drawdown scaling factor.")
+    volatility_factor: float = Field(description="V_i: volatility adjustment factor.")
+    expected_edge: float = Field(description="E = p·R - (1-p).")
+    kelly_cap: Optional[float] = Field(default=None, description="Fractional Kelly cap if overlay active.")
+    reason: str
+    # Regime context
+    regime_label: str = ""
+    regime_quality: float = 0.0
+    # Batch state
+    batch_num: int = 1
+    trade_index: int = 1
+    wins_so_far: int = 0
+    losses_so_far: int = 0
+    drawdown: float = 0.0
+    # Symbol/direction
+    symbol: str = ""
+    direction: str = "long"
+
+
+class MasanielloBatchRequest(BaseModel):
+    """Request to size an entire batch of trades sequentially."""
+    # Base context (shared fields)
+    equity: float = Field(..., gt=0)
+    point_value: float = Field(default=1.0, gt=0)
+    direction: Literal["long", "short"] = Field(default="long")
+    symbol: str = Field(default="UNKNOWN")
+    atr_baseline: float = Field(..., gt=0)
+    # Per-trade details (must be same length)
+    stop_distances: list[float] = Field(..., min_length=1, max_length=50, description="Stop distance per trade.")
+    p_wins: list[float] = Field(..., min_length=1, max_length=50, description="Win probability per trade.")
+    reward_risks: list[float] = Field(..., min_length=1, max_length=50, description="R multiple per trade.")
+    atr_currents: list[float] = Field(..., min_length=1, max_length=50, description="Current ATR per trade.")
+    # Outcomes (optional — if provided, updates batch state)
+    outcomes: Optional[list[bool]] = Field(default=None, description="Win/loss outcomes (True=win, False=loss).")
+    pnls: Optional[list[float]] = Field(default=None, description="PnL per trade.")
+    # Config
+    base_risk: float = Field(default=0.005, gt=0, le=0.05)
+    min_rr: float = Field(default=1.50, ge=0.5, le=10.0)
+    batch_size: int = Field(default=5, ge=2, le=50)
+    target_wins: int = Field(default=3, ge=1, le=25)
+    use_kelly_overlay: bool = Field(default=False)
+    kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
+    # Regime
+    prices: Optional[list[float]] = Field(default=None, min_length=81, description="For auto regime detection.")
+
+
+class MasanielloBatchResponse(BaseModel):
+    """Response from batch Masaniello sizing."""
+    results: list[MasanielloSizeResponse]
+    batch_summary: dict = Field(description="Batch statistics: total wins, losses, PnL, drawdown.")
+
+
+class PortfolioMasanielloRequest(BaseModel):
+    """Request for portfolio-optimised Masaniello sizing across multiple assets.
+    
+    Two-stage pipeline:
+      Stage 1: DrawdownOptimiser → portfolio weights
+      Stage 2: DynamicMasanielloSizer → per-asset position sizes
+    """
+    symbols: list[str] = Field(..., min_length=2, max_length=50)
+    returns_matrix: list[list[float]] = Field(..., description="(n_bars × n_assets) matrix of log-returns.")
+    equity: float = Field(..., gt=0, description="Total account equity.")
+    # Per-asset trade context
+    stop_distances: list[float] = Field(..., description="Stop distance per asset.")
+    point_values: list[float] = Field(default=None, description="$ per 1 price unit per asset (null = all 1.0).")
+    p_wins: list[float] = Field(..., description="Win probability per asset.")
+    reward_risks: list[float] = Field(..., description="R multiple per asset.")
+    atr_baselines: list[float] = Field(..., description="Historical ATR per asset.")
+    atr_currents: list[float] = Field(..., description="Current ATR per asset.")
+    directions: Optional[list[str]] = Field(default=None, description="Direction per asset (default all 'long').")
+    # Optimiser config
+    max_dd_limit: float = Field(default=0.20, ge=0.01, le=1.0)
+    max_weight: float = Field(default=0.40, ge=0.05, le=1.0)
+    # Masaniello config
+    base_risk: float = Field(default=0.005, gt=0, le=0.05)
+    min_rr: float = Field(default=1.50, ge=0.5, le=10.0)
+    batch_size: int = Field(default=5, ge=2, le=50)
+    target_wins: int = Field(default=3, ge=1, le=25)
+    use_kelly_overlay: bool = Field(default=False)
+    kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
+
+
+class AssetMasanielloResult(BaseModel):
+    """Masaniello sizing result for a single asset within a portfolio."""
+    symbol: str
+    # Optimizer output
+    portfolio_weight: float
+    capital_allocation: float = Field(description="portfolio_weight × equity in $.")
+    # Masaniello output
+    allowed: bool
+    risk_fraction: float
+    risk_amount: float
+    contracts: int
+    masaniello_factor: float
+    quality_factor: float
+    drawdown_factor: float
+    volatility_factor: float
+    expected_edge: float
+    reason: str
+    regime_label: str = ""
+
+
+class PortfolioMasanielloResponse(BaseModel):
+    """Full two-stage pipeline response: optimizer weights + per-asset Masaniello sizing."""
+    # Stage 1: Portfolio optimisation
+    symbols: list[str]
+    weights: list[float]
+    regime_adj_weights: list[float]
+    expected_return: float
+    expected_vol: float
+    sharpe_ratio: float
+    expected_max_drawdown: float
+    regime_exposure: float
+    # Stage 2: Per-asset Masaniello sizing
+    asset_sizes: list[AssetMasanielloResult]
+    total_risk_amount: float = Field(description="Sum of risk_amount across all assets.")
+    total_contracts: int = Field(description="Sum of contracts across all assets.")
+    # Correlation regime
+    corr_regime: str = ""
+    corr_confidence: float = 0.0

@@ -17,11 +17,10 @@ Run: python test_position_sizer.py
 """
 
 import sys, warnings
-sys.path.insert(0, "/home/claude")
 warnings.filterwarnings("ignore")
 
 import numpy as np
-from position_sizer_v31 import (
+from regime_platform.core.position_sizer import (
     # Path B
     SizingConfig, TradeContext, PositionSizeResult, BatchState,
     DynamicMasanielloSizer,
@@ -46,10 +45,6 @@ class _Snap:
     confidence:   float
     risk_multiplier: float
     n_bars_fitted:   int = 200
-
-    @property
-    def _snap_risk_multiplier(self):
-        return self.risk_multiplier
 
 def make_snap(mult=1.0, conf=0.75, label="low_vol_bull"):
     return _Snap(
@@ -189,6 +184,7 @@ check("Gate: edge≤0",       "Expected edge non-positive" in blocked_reason({"p
 
 # Batch halt
 s2 = DynamicMasanielloSizer(SizingConfig(batch_halt_dd=0.05, min_rr=1.0, regime_floor=0.0))
+s2.batch._initial_equity = 100_000
 s2.batch.peak_equity = 100_000
 s2.batch.pnl         = -6_000   # 6% drawdown → triggers halt
 ctx2 = TradeContext(
@@ -325,7 +321,8 @@ check("snapshot bear: reason mentions regime",  "Regime quality" in r_bear.reaso
 print("\n▶ Test 7: BatchState lifecycle")
 
 bs = BatchState()
-bs.peak_equity = 100_000
+bs.reset(equity=100_000)
+bs.batch_num = 1  # reset() increments to 2; override for test clarity
 check("Batch: initial drawdown 0",     bs.drawdown, 0.0)
 check("Batch: initial wins 0",         bs.wins, 0)
 check("Batch: trade_index starts 1",   bs.trade_index, 1)
@@ -339,6 +336,7 @@ check("Batch: pnl = 300",             bs.pnl, 300.0, tol=0.01)
 check("Batch: trade_index = 3",        bs.trade_index, 3)
 
 bs.pnl = -3000.0  # simulate drawdown
+bs.peak_equity = 100_000  # reset peak for clean drawdown calc
 dd = bs.drawdown
 check("Batch: drawdown computed",      dd > 0.0, True)
 check("Batch: drawdown ≈ 3%",         dd, 3000.0/100_000, tol=0.003)
@@ -356,6 +354,7 @@ print("\n▶ Test 8: run_batch")
 s_batch = DynamicMasanielloSizer(SizingConfig(
     min_rr=1.0, regime_floor=0.0, min_prob=0.50,
 ))
+s_batch.batch._initial_equity = 100_000
 s_batch.batch.peak_equity = 100_000
 
 base_ctx = TradeContext(

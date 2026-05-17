@@ -404,8 +404,10 @@ class BatchState:
     wins: int = 0
     losses: int = 0
     pnl: float = 0.0
-    peak_equity: float = 0.0
+    peak_equity: float = 0.0  # High-water mark of total equity
+    _initial_equity: float = 0.0  # Equity at the start of the batch (set by reset)
     halted: bool = False
+    batch_size: int = 5  # N trades per batch
     history: List[dict] = field(default_factory=list)
 
     @property
@@ -413,13 +415,15 @@ class BatchState:
         """Current drawdown from peak as a fraction [0, 1]."""
         if self.peak_equity <= 0:
             return 0.0
-        current_equity = self.peak_equity + self.pnl
-        return max(0.0, (self.peak_equity - current_equity) / self.peak_equity)
+        current_equity = self._initial_equity + self.pnl
+        if current_equity >= self.peak_equity:
+            return 0.0
+        return (self.peak_equity - current_equity) / self.peak_equity
 
     @property
     def trades_remaining(self) -> int:
-        """Trades left in the current batch (before incrementing trade_index)."""
-        return self.trade_index
+        """Trades left in the current batch (including current trade)."""
+        return max(0, self.batch_size - self.trade_index + 1)
 
     def record(
         self,
@@ -454,8 +458,11 @@ class BatchState:
             self.pnl += pnl
 
         self.trade_index += 1
-        if self.peak_equity > 0:
-            self.peak_equity = max(self.peak_equity, self.peak_equity + self.pnl)
+        # Update peak equity: high-water mark of total equity
+        # current_total = initial_equity + cumulative_pnl
+        if self._initial_equity > 0:
+            current_total = self._initial_equity + self.pnl
+            self.peak_equity = max(self.peak_equity, current_total)
 
     def reset(self, equity: float = 0.0) -> None:
         """Start a new batch. Increments batch_num; resets all per-batch counters."""
@@ -464,6 +471,7 @@ class BatchState:
         self.wins = 0
         self.losses = 0
         self.pnl = 0.0
+        self._initial_equity = equity
         self.peak_equity = equity
         self.halted = False
 
@@ -608,6 +616,26 @@ class DynamicMasanielloSizer:
     def __init__(self, config: Optional[SizingConfig] = None):
         self.config = config or SizingConfig()
         self.batch = BatchState()
+
+    @classmethod
+    def create(
+        cls,
+        config: Optional[SizingConfig] = None,
+        equity: float = 0.0,
+    ) -> "DynamicMasanielloSizer":
+        """Create a fresh sizer instance with initialised batch state for a new request.
+
+        Thread-safe for FastAPI async endpoints: each call produces an
+        independent sizer with its own BatchState.
+        """
+        sizer = cls(config)
+        sizer.batch = BatchState(
+            batch_size=sizer.config.batch_size,
+        )
+        sizer.batch.reset(equity=equity)
+        # reset() increments batch_num to 2; set back to 1 for a fresh start
+        sizer.batch.batch_num = 1
+        return sizer
 
     # ── Public factor accessors (for inspection / testing) ────────────────────
 

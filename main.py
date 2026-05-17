@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v3.0.0       ║
+║     Dynamic Regime Risk Management Platform — FastAPI Service  v5.1.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -43,6 +43,11 @@
 ║    POST /renko/config       — Update pipeline configuration                 ║
 ║    POST /renko/reset        — Reset pipeline for a symbol                   ║
 ║    GET  /renko/backtest/stats — Backtest/trading statistics                 ║
+║                                                                              ║
+║  v5.1 Dynamic Masaniello Pipeline:                                            ║
+║    POST /size/masaniello        — Single-trade Masaniello sizing              ║
+║    POST /size/masaniello/batch  — Batch Masaniello sizing                    ║
+║    POST /optimise/masaniello    — Full two-stage: optimise + Masaniello       ║
 ║                                                                              ║
 ║  Auth: Clerk JWT (primary) → local JWT → API key fallback                   ║
 ║  MCP:   FastAPI-MCP exposes all endpoints as Model Context Protocol tools   ║
@@ -100,7 +105,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v5.0.0 ...")
+    log.info("Starting up v5.1.0 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -154,6 +159,7 @@ A quantitative trading risk management web service built on:
 | **Risk Analysis** | `numpy` / `scipy.stats` | VaR, CVaR, drawdown, Sortino, Calmar |
 | **Correlation** | `hmmlearn` + DCC | Portfolio-level correlation regime detection |
 | **Optimisation** | `scipy.optimize` | Drawdown-controlled max-Sharpe portfolio |
+| **Dynamic Masaniello** | Adaptive batch sizing | Progress-dependent position sizing with regime quality overlay |
 | **GPU HMM** | `pomegranate` (optional) | 10-50x HMM speedup on CUDA/MPS |
 | **API Framework** | `FastAPI` + `pydantic v2` | Typed, validated, auto-documented REST API |
 
@@ -181,9 +187,29 @@ Clerk JWT (primary) -> local JWT -> API key fallback.
 POST /analyse/full  ->  regime + sizing + risk in one call
 POST /correlation/detect  ->  portfolio-level correlation regime
 POST /optimise/full  ->  correlation + optimisation one-shot
+POST /optimise/masaniello  ->  portfolio optimise + per-asset Masaniello sizing
 ```
+
+## Dynamic Masaniello (v5.1)
+
+Two-stage pipeline connecting portfolio optimisation to per-trade position sizing:
+
+1. **DrawdownOptimiser** → regime-adjusted portfolio weights (what to hold)
+2. **DynamicMasanielloSizer** → per-asset contract sizes (how much to hold)
+
+Formula: `f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i`
+
+- M_i = urgency (wins needed / trades left)
+- Q_i = quality (prob × regime × confidence)
+- DD_i = drawdown scaling (floor 0.25)
+- V_i = volatility adjustment (ATR-based)
+
+Endpoints:
+- `POST /size/masaniello` — single-trade Masaniello sizing
+- `POST /size/masaniello/batch` — batch Masaniello sizing
+- `POST /optimise/masaniello` — full two-stage pipeline
         """,
-        version="5.0.0",
+        version="5.1.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -261,7 +287,7 @@ Exposes all trading risk management endpoints as MCP tools:
         return JSONResponse(
             {
                 "service": "Noble Trader Dynamic Regime Risk Management Platform",
-                "version": "5.0.0",
+                "version": "5.1.0",
                 "docs": "/docs",
                 "mcp": "/mcp" if MCP_AVAILABLE else "not installed",
                 "gpu": caps,
@@ -296,6 +322,10 @@ Exposes all trading risk management endpoints as MCP tools:
                     "renko_signals": "GET /renko/signals",
                     "renko_trades": "GET /renko/trades",
                     "renko_config": "POST /renko/config",
+                    # v5.1 Dynamic Masaniello
+                    "masaniello_sizing": "POST /size/masaniello",
+                    "masaniello_batch": "POST /size/masaniello/batch",
+                    "portfolio_masaniello": "POST /optimise/masaniello",
                 },
             }
         )
@@ -322,7 +352,7 @@ Exposes all trading risk management endpoints as MCP tools:
 
         return {
             "status": "ok",
-            "version": "5.0.0",
+            "version": "5.1.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
             "discord": discord_status,
