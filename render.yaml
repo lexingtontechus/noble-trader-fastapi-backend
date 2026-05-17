@@ -27,3 +27,12 @@ services:
       # ── Auth (Clerk) ─────────────────────────────────────────────
       - key: CLERK_SECRET_KEY
         sync: false
+      # ── CORS ──────────────────────────────────────────────────────
+      - key: CORS_ORIGINS
+        value: https://noble-trader-agent-frontend.vercel.app
+      # ── MCP Auth ──────────────────────────────────────────────────
+      - key: MCP_AUTH_ENABLED
+        value: "true"
+      # ── JWT ───────────────────────────────────────────────────────
+      - key: JWT_SECRET_KEY
+        sync: false

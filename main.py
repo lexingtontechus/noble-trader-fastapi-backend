@@ -50,7 +50,7 @@
 ║    POST /optimise/masaniello    — Full two-stage: optimise + Masaniello       ║
 ║                                                                              ║
 ║  Auth: Clerk JWT (primary) → local JWT → API key fallback                   ║
-║  MCP:   FastAPI-MCP exposes all endpoints as Model Context Protocol tools   ║
+║  MCP:   FastAPI-MCP with auth + operation filtering (read-only/analysis)    ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -59,16 +59,19 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 try:
     from fastapi_mcp import FastApiMCP
+    from fastapi_mcp.types import AuthConfig
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
 
+from regime_platform.auth.jwt_auth import get_authed_user
+from regime_platform.auth.jwt_auth import TokenData
 from regime_platform.core.gpu_engine import gpu_capabilities
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_COMPUTE, RATE_LIMIT_WRITE
 
@@ -278,28 +281,95 @@ Endpoints:
         app.include_router(renko_router)
 
     # ─── MCP (Model Context Protocol) ──────────────────────────────────────────
-    # Expose all FastAPI endpoints as MCP tools so AI agents can discover
-    # and call them via the MCP protocol at /mcp
+    # Expose READ-ONLY / analysis FastAPI endpoints as MCP tools so AI agents
+    # can discover and call them via the MCP protocol at /mcp.
+    #
+    # Security measures:
+    #   1. AuthConfig with get_authed_user dependency — MCP endpoint requires
+    #      JWT / API-key auth; unauthenticated connections get 401
+    #   2. exclude_operations — dangerous write / infrastructure / auth-circular
+    #      endpoints are NOT exposed as MCP tools
+    #   3. headers=["authorization", "x-api-key"] — forwarded to REST calls so
+    #      per-route Depends() auth is also enforced
     if MCP_AVAILABLE:
+        # Operation IDs to EXCLUDE from MCP exposure
+        # Rationale:
+        #   - Auth endpoints: circular (MCP shouldn't issue/refresh tokens)
+        #   - Feed start/stop: infrastructure control (not for AI agents)
+        #   - Renko write ops: pipeline mutation (tick, batch, reset, config, equity, regime)
+        #   - Stream seed/tick: data injection endpoints
+        #   - Stream session delete: resource teardown
+        _mcp_excluded_ops = [
+            # ── Auth (circular — MCP clients should already have tokens) ──
+            "clerk_config_auth_clerk_config_get",
+            "clerk_me_auth_clerk_me_get",
+            "verify_clerk_token_endpoint_auth_clerk_verify_post",
+            "me_auth_me_get",
+            "refresh_auth_refresh_post",
+            "login_auth_token_post",
+            # ── Feed adapters (infrastructure control) ──
+            "start_feeds_feeds_start_post",
+            "stop_feeds_feeds_stop_post",
+            # ── Renko write / mutation (pipeline manipulation) ──
+            "process_tick_renko_tick_post",
+            "process_batch_renko_tick_batch_post",
+            "update_config_renko_config_post",
+            "set_equity_renko_equity_post",
+            "set_regime_renko_regime_post",
+            "reset_pipeline_renko_reset_post",
+            # ── Stream data injection / teardown ──
+            "seed_session_stream_seed_post",
+            "ingest_tick_stream_tick_post",
+            "ingest_ticks_stream_ticks_post",
+            "remove_session_stream_session__symbol__delete",
+        ]
+
+        # Build AuthConfig: require JWT / API-key on the MCP endpoint itself
+        # Only include issuer if MCP_ISSUER is set (avoids empty-string validation issues)
+        if os.getenv("MCP_AUTH_ENABLED", "true").lower() != "false":
+            _mcp_auth_kwargs = dict(dependencies=[Depends(get_authed_user)])
+            _mcp_issuer = os.getenv("MCP_ISSUER", "")
+            if _mcp_issuer:
+                _mcp_auth_kwargs["issuer"] = _mcp_issuer
+            _mcp_auth = AuthConfig(**_mcp_auth_kwargs)
+        else:
+            _mcp_auth = None
+
         mcp = FastApiMCP(
             app,
             name="Noble Trader MCP",
             description="""Noble Trader Dynamic Regime Risk Management Platform — MCP Server
 
-Exposes all trading risk management endpoints as MCP tools:
+Exposes trading risk management endpoints as MCP tools (read-only / analysis):
 - Regime detection (HMM-based vol + trend classification)
-- Position sizing (regime-gated fractional Kelly)
+- Position sizing (regime-gated fractional Kelly + Dynamic Masaniello)
 - Risk analysis (VaR, CVaR, drawdown, stop/TP suggestions)
 - Full analysis pipeline (regime + sizing + risk in one call)
 - Monte Carlo simulation (Markov-chain regime transitions)
 - Portfolio aggregation (multi-symbol regime + risk)
 - Correlation detection (DCC-based portfolio regime)
 - Portfolio optimisation (drawdown-controlled max-Sharpe)
+- Dynamic Masaniello two-stage pipeline
 - Observation building (24-feature HMM observation vector)
-- GPU HMM capabilities and benchmarks""",
+- GPU HMM capabilities and benchmarks
+- Backtesting, strategy signals, TDA features
+- Renko read-only: state, stats, bricks, signals, trades, swing-points
+
+Excluded from MCP (use REST API directly):
+- Auth endpoints, feed start/stop, Renko write ops, stream data injection""",
+            exclude_operations=_mcp_excluded_ops,
+            auth_config=_mcp_auth,
+            headers=["authorization", "x-api-key"],
         )
         mcp.mount_http()
-        log.info("MCP server mounted at /mcp")
+        _tool_count = len(mcp.tools)
+        _excluded_count = len(_mcp_excluded_ops)
+        _auth_status = "enabled" if _mcp_auth else "DISABLED (dev mode)"
+        log.info(
+            f"MCP server mounted at /mcp — "
+            f"{_tool_count} tools exposed, {_excluded_count} excluded, "
+            f"auth {_auth_status}"
+        )
     else:
         log.warning("fastapi-mcp not installed — MCP endpoint disabled")
 
@@ -372,12 +442,21 @@ Exposes all trading risk management endpoints as MCP tools:
         except ImportError:
             pass
 
+        # MCP security status
+        mcp_status = {"available": MCP_AVAILABLE}
+        if MCP_AVAILABLE:
+            mcp_status["endpoint"] = "/mcp"
+            mcp_status["auth"] = "enabled" if os.getenv("MCP_AUTH_ENABLED", "true").lower() != "false" else "disabled"
+            mcp_status["header_forwarding"] = ["authorization", "x-api-key"]
+
         return {
             "status": "ok",
             "version": "5.1.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
+            "cors_origins": os.getenv("CORS_ORIGINS", "http://localhost:3000"),
             "discord": discord_status,
+            "mcp": mcp_status,
             "gpu_backend": caps["hmm_backend"],
             "device": caps["active_device"],
             "rate_limits": {
