@@ -6,3 +6,21 @@ services:
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # ── Alpaca Trading API ───────────────────────────────────────
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: https://paper-api.alpaca.markets
+      # ── Discord Webhooks (Notifications) ─────────────────────────
+      - key: DISCORD_WEBHOOK_SIGNALS
+        sync: false
+      - key: DISCORD_WEBHOOK_EXECUTIONS
+        sync: false
+      - key: DISCORD_WEBHOOK_STATUS
+        sync: false
+      # ── Auth (Clerk) ─────────────────────────────────────────────
+      - key: CLERK_SECRET_KEY
+        sync: false
