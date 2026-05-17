@@ -1,8 +1,10 @@
-# Noble Trader — Dynamic Regime Risk Management Platform API
+# Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-> **Version**: 5.0.0 | **Status**: Stable | **Base URL**: `https://noble-trader-fastapi-backend.onrender.com`
-
-A production-grade FastAPI service for quantitative trading risk management. Detects market regimes with Hidden Markov Models, gates position sizes via the Kelly Criterion, computes real-time VaR/CVaR, and streams live regime snapshots and alerts over WebSocket and SSE.
+**Version:** 5.1.0  
+**Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
+**Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
+**Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
+**MCP Server:** `/mcp` (Model Context Protocol — exposes all endpoints as AI agent tools)
 
 ---
 
@@ -10,682 +12,1287 @@ A production-grade FastAPI service for quantitative trading risk management. Det
 
 - [Overview](#overview)
 - [Authentication](#authentication)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Core Concepts](#core-concepts)
-- [Renko HFT Pipeline (v5.0)](#renko-hft-pipeline-v50)
-- [Batch API](#batch-api)
-- [Streaming API](#streaming-api)
-- [Simulation](#simulation)
-- [Portfolio](#portfolio)
-- [GPU HMM (v3.0)](#gpu-hmm-v30)
-- [Feed Adapters (v3.0)](#feed-adapters-v30)
-- [Correlation & Optimisation (v3.0)](#correlation--optimisation-v30)
+- [Regime Detection](#regime-detection)
+- [Position Sizing](#position-sizing)
+- [Risk Analysis](#risk-analysis)
+- [Strategy](#strategy)
+- [Full Pipeline](#full-pipeline)
+- [Backtest](#backtest)
+- [Multi-Asset](#multi-asset)
 - [Observation Builder](#observation-builder)
-- [Discord Notifications (v5.0)](#discord-notifications-v50)
-- [Reference](#reference)
+- [TDA Features](#tda-features)
+- [Portfolio](#portfolio)
+- [Simulation](#simulation)
+- [Streaming](#streaming)
+- [GPU](#gpu)
+- [Feed Adapters](#feed-adapters)
+- [Renko HFT Pipeline](#renko-hft-pipeline)
+- [Health](#health)
+- [Recommended Workflows](#recommended-workflows)
 
 ---
 
 ## Overview
 
-### What it Does
+The Noble Trader Platform is a quantitative trading risk management web service that provides:
 
-The platform runs a multi-stage pipeline on every price update:
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| **Regime Detection** | `hmmlearn` GaussianHMM | Classify market into volatility × trend regimes |
+| **Position Sizing** | `scipy` + Kelly formula | Fractional Kelly with vol-scaling & regime gating |
+| **Risk Analysis** | `numpy` / `scipy.stats` | VaR, CVaR, drawdown, Sortino, Calmar |
+| **Correlation** | `hmmlearn` + DCC | Portfolio-level correlation regime detection |
+| **Optimisation** | `scipy.optimize` | Drawdown-controlled max-Sharpe portfolio |
+| **Dynamic Masaniello** | Adaptive batch sizing | Progress-dependent position sizing with regime quality overlay |
+| **Renko HFT** | 6-layer pipeline | Brick construction → swing classification → pattern detection → signal filter → risk manager → execution |
+| **GPU HMM** | `pomegranate` (optional) | 10-50× HMM speedup on CUDA/MPS |
+| **API Framework** | `FastAPI` + `pydantic v2` | Typed, validated, auto-documented REST API |
 
-```
-01 Regime HMM  →  02 Kelly Sizer  →  03 Risk Engine  →  04 Stream Out
-Dual GaussianHMM   Fractional Kelly    VaR / CVaR         WS / SSE / REST
-vol + trend states  vol-scaled + gated  stop + TP targets  + regime alerts
-```
+### Regime Labels
 
-### API Surface
+The HMM produces a **2D regime** combining:
+- **Volatility**: `low` / `med_low` / `med_high` / `high`
+- **Trend**: `strong_bear` / `bear` / `bull` / `strong_bull`
 
-| Method | Path | Description | Auth |
-|--------|------|-------------|------|
-| `GET` | `/health` | Service health + status | Public |
-| `POST` | `/auth/token` | Issue a local JWT token | Public |
-| `GET` | `/auth/me` | Current authenticated user | Any |
-| `GET` | `/auth/clerk/me` | Current Clerk-authenticated user | Bearer |
-| `POST` | `/analyse/full` | Full pipeline: regime + sizing + risk | Public |
-| `POST` | `/regime/detect` | HMM regime detection only | Public |
-| `POST` | `/size/kelly` | Kelly position sizing only | Public |
-| `POST` | `/risk/analyse` | Risk metrics only | Public |
-| `POST` | `/stream/seed` | Seed a symbol session | Public |
-| `POST` | `/stream/tick` | Push one price tick | Public |
-| `GET` | `/stream/sessions` | List active sessions + stats | Public |
-| `WS` | `/ws/{symbol}` | Full-duplex WebSocket stream | Public |
-| `SSE` | `/sse/{symbol}` | Server-Sent Events per symbol | Public |
-| `SSE` | `/sse/alerts` | Global regime-change alert broadcast | Public |
-| `POST` | `/renko/tick` | Single tick through Renko pipeline | Any |
-| `POST` | `/renko/tick/batch` | Batch tick processing | Any |
-| `GET` | `/renko/state` | Current Renko pipeline state | Any |
-| `GET` | `/renko/stats` | Pipeline statistics | Any |
-| `GET` | `/renko/bricks` | Recent Renko bricks | Any |
-| `GET` | `/renko/classified` | Bricks with swing labels | Any |
-| `GET` | `/renko/signals` | Pattern signals | Any |
-| `GET` | `/renko/trades` | Trade journal | Any |
-| `GET` | `/renko/swing-points` | Detected swing points | Any |
-| `POST` | `/renko/regime` | Update HMM regime | Write |
-| `POST` | `/renko/equity` | Update account equity | Write |
-| `POST` | `/renko/config` | Update pipeline config (resets pipeline) | Admin |
-| `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
-| `GET` | `/renko/backtest/stats` | Backtest/trading statistics | Any |
-| `POST` | `/simulate/{symbol}` | Monte Carlo regime simulation | Any |
-| `GET` | `/portfolio` | Multi-symbol aggregated regime + risk | Any |
-| `GET` | `/gpu/capabilities` | GPU HMM backend capabilities | Any |
-| `POST` | `/gpu/benchmark` | HMM fit/predict latency benchmark | Any |
-| `GET` | `/feeds/status` | Feed adapter status | Write |
-| `POST` | `/feeds/start` | Start live feed adapters | Write |
-| `POST` | `/feeds/stop` | Stop all feed adapters | Write |
-| `POST` | `/correlation/detect` | DCC-based portfolio correlation regime | Any |
-| `POST` | `/optimise` | Drawdown-controlled max-Sharpe optimisation | Any |
-| `POST` | `/optimise/full` | Correlation + optimisation one-shot | Any |
+Combined label example: `low_vol_bull`, `high_vol_bear`, etc.
+
+### Risk Multiplier
+
+Each regime maps to a **risk_multiplier** [0.25 – 1.50] that scales the Kelly fraction:
+- `low_vol_bull` → 1.5× (max risk-on)
+- `high_vol_bear` → 0.25× (max defensive)
 
 ---
 
 ## Authentication
 
-All protected endpoints require authentication via one of three methods, tried in priority order:
+The platform supports three authentication methods, tried in priority order:
 
-| Method | Header | Description |
-|--------|--------|-------------|
-| **Clerk JWT** (primary) | `Authorization: Bearer <token>` | JWT issued by Clerk (verified via JWKS) |
-| **Local JWT** | `Authorization: Bearer <token>` | JWT issued by `/auth/token` |
-| **API Key** | `X-API-Key: <key>` | Pre-shared key for service-to-service calls |
+1. **Clerk JWT** (primary) — verified via Clerk's JWKS endpoint
+2. **Local JWT** — signed with `JWT_SECRET_KEY`, issued via `/auth/token`
+3. **API Key** — `X-API-Key` header for service-to-service calls
 
-### Auth Levels
+When `AUTH_ENABLED=false` (dev mode), all requests are treated as `admin`.
 
-Three role-based access levels control what actions a user can perform:
+### Roles
 
-| Level | Dependency | Roles | Use Case |
-|-------|-----------|-------|----------|
-| **Any** | `Depends(get_authed_user)` | viewer, trader, admin | Read endpoints, tick ingestion |
-| **Write** | `Depends(require_write)` | trader, admin | State mutations: regime/equity updates |
-| **Admin** | `Depends(require_admin)` | admin only | Destructive ops: config changes, resets |
-
-### Unified Auth Flow
-
-The `get_authed_user` dependency resolves authentication in this order:
-
-1. `AUTH_ENABLED=false` → Return synthetic admin (dev bypass)
-2. `X-API-Key` header valid → Return `TokenData(sub="apikey:...", role="trader")`
-3. Bearer token present → Try Clerk JWT verification (checks `iss` claim for `clerk` or `.accounts.dev`)
-4. Clerk fails → Fall back to local JWT verification (`JWT_SECRET_KEY` + python-jose)
-5. Nothing works → 401 Unauthorized
-
-### Auth Endpoints
-
-```
-POST /auth/token          — Issue local JWT (OAuth2 password flow)
-GET  /auth/me             — Current user from local JWT
-POST /auth/refresh        — Refresh local JWT
-GET  /auth/clerk/me       — Current user from Clerk JWT
-POST /auth/clerk/verify   — Verify a Clerk JWT token
-GET  /auth/clerk/config   — Clerk configuration status
-```
+| Role | Access Level |
+|------|-------------|
+| `admin` | Full access — all endpoints, configuration, feed management |
+| `trader` | Read + write — sizing, risk, streaming, simulation |
+| `viewer` | Read-only — regime detection, portfolio view, health checks |
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JWT_SECRET_KEY` | _(empty)_ | Signing secret for local JWTs (required in production) |
-| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
-| `JWT_EXPIRE_MINS` | `60` | Token lifetime in minutes |
-| `API_KEYS` | _(empty)_ | Comma-separated valid API keys |
-| `AUTH_ENABLED` | `true` | Set `false` to disable auth (dev mode) |
-| `CLERK_PUBLISHABLE_KEY` | _(empty)_ | Clerk client-side key |
-| `CLERK_SECRET_KEY` | _(empty)_ | Clerk server-side key (enables Clerk auth) |
-
-> **Dev mode**: Set `AUTH_ENABLED=false` to bypass all auth. Every request gets a synthetic admin user. Never use in production.
-
----
-
-## Quick Start
-
-### Installation
-
-```bash
-# Clone the project
-git clone https://github.com/lexingtontechus/noble-trader-agent-backend.git
-cd noble-trader-agent-backend
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Start the server
-uvicorn main:app --reload --port 8000
-
-# Interactive Swagger docs
-open http://localhost:8000/docs
-```
-
-### Batch Request — Full Pipeline
-
-The fastest way to get started. Send a price series and receive regime, sizing, and risk in one JSON response.
-
-```bash
-curl -X POST http://localhost:8000/analyse/full \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "SPY",
-    "prices": [450.1, 451.3, 449.8, ...],
-    "kelly_fraction": 0.5,
-    "target_vol": 0.15,
-    "base_risk_limit": 0.02
-  }'
-```
-
-```python
-import requests
-
-prices = [450.1, 451.3, 449.8, ...]  # min 81 bars
-
-resp = requests.post("http://localhost:8000/analyse/full", json={
-    "symbol":          "SPY",
-    "prices":          prices,
-    "kelly_fraction":  0.5,
-    "target_vol":      0.15,
-    "base_risk_limit": 0.02,
-})
-
-data = resp.json()
-print(data["regime"]["regime_label"])    # e.g. "low_vol_bull"
-print(data["sizing"]["recommended_f"])   # e.g. 0.3247
-print(data["risk"]["var_95"])            # e.g. 0.0187
-```
-
-### Streaming — WebSocket
-
-```python
-import asyncio, json, websockets
-
-async def stream():
-    async with websockets.connect("ws://localhost:8000/ws/SPY") as ws:
-
-        # 1. Seed with historical prices
-        await ws.send(json.dumps({
-            "type": "seed", "symbol": "SPY",
-            "prices": prices  # list of 200+ floats
-        }))
-        await ws.recv()  # {"type": "seeded", ...}
-
-        # 2. Stream live ticks
-        for price in live_feed:
-            await ws.send(json.dumps({
-                "type": "tick", "symbol": "SPY", "price": price
-            }))
-            msg = json.loads(await ws.recv())
-            print(msg["regime_label"], msg["recommended_f"])
-
-asyncio.run(stream())
-```
-
-### Streaming — Browser SSE
-
-```javascript
-// Per-symbol regime stream
-const feed = new EventSource('/sse/SPY');
-feed.onmessage = e => {
-  const tick = JSON.parse(e.data);
-  console.log(tick.regime_label, tick.recommended_f);
-};
-
-// Global regime-change alert hub
-const alerts = new EventSource('/sse/alerts');
-alerts.onmessage = e => {
-  const a = JSON.parse(e.data);
-  // { symbol, previous, current, severity, message }
-  if (a.severity === 'critical') triggerAlert(a);
-};
-```
-
-> **Minimum bars requirement**: All batch endpoints require at least 81 price bars (50 log-returns for HMM fitting + 1 observation). For stable HMM convergence, 200+ bars is recommended.
-
----
-
-## Architecture
-
-### Project Structure
-
-```
-noble-trader-agent-backend/
-├── main.py                              # FastAPI app factory (v5.0.0)
-├── requirements.txt
-├── render.yaml                          # Render deployment config
-├── .env.example                         # Environment variable template
-├── notifications/
-│   ├── __init__.py                      # Exports DiscordNotifier
-│   └── discord.py                       # Discord webhook notifier (rich embeds)
-├── renko/
-│   ├── __init__.py
-│   ├── router.py                        # 14 REST endpoints under /renko/*
-│   ├── brick_engine.py                  # Layer 1: Renko brick construction
-│   ├── swing_classifier.py              # Layer 2: HH/HL/LH/LL classification
-│   ├── pattern_detector.py              # Layer 3: Breakout/triple pattern signals
-│   ├── signal_filter.py                 # Layer 4: Regime-gate + velocity filter
-│   ├── executor.py                      # Layer 5: Alpaca bracket order executor
-│   ├── risk_manager.py                  # Layer 6: SL=3bricks / TP=5bricks manager
-│   ├── pipeline.py                      # Pipeline orchestrator
-│   ├── config.py                        # RenkoConfig dataclass
-│   ├── trade_journal.py                 # Trade logging + statistics
-│   ├── integration.py                   # End-to-end integration helpers
-│   └── tests.py                         # Unit + integration tests
-├── regime_platform/
-│   ├── auth/
-│   │   ├── __init__.py                  # Re-exports all auth symbols
-│   │   ├── jwt_auth.py                  # JWT auth + unified Clerk→JWT→API-key dep
-│   │   └── clerk_auth.py               # Clerk JWT verification via JWKS
-│   ├── core/
-│   │   ├── regime_engine.py             # Dual GaussianHMM (vol + trend)
-│   │   ├── position_sizer.py            # Fractional Kelly + vol-scaling + regime gating
-│   │   ├── risk_manager.py              # VaR, CVaR, drawdown, stop/TP
-│   │   └── gpu_engine.py                # pomegranate GPU HMM auto-select
-│   ├── models/
-│   │   ├── schemas.py                   # Pydantic v2 batch request/response models
-│   │   └── stream_schemas.py            # Pydantic v2 streaming models
-│   ├── routers/
-│   │   ├── auth_router.py               # /auth/* endpoints
-│   │   ├── pipeline.py                  # POST /analyse/full
-│   │   ├── regime.py                    # POST /regime/detect
-│   │   ├── sizing.py                    # POST /size/kelly
-│   │   ├── risk.py                      # POST /risk/analyse
-│   │   ├── simulate.py                  # POST /simulate/{symbol} (auth)
-│   │   ├── portfolio.py                 # GET /portfolio (auth)
-│   │   ├── feeds.py                     # /feeds/* (write auth)
-│   │   ├── gpu.py                       # /gpu/* (auth)
-│   │   ├── multi_asset.py               # /correlation/*, /optimise/* (auth)
-│   │   ├── stream_rest.py               # /stream/* (REST tick ingestion)
-│   │   ├── stream_ws.py                 # /ws/*, /sse/* (WebSocket + SSE)
-│   │   ├── observation.py               # /observation/* (24-feature vectors)
-│   │   ├── strategy.py                  # /strategy/*
-│   │   ├── backtest.py                  # /backtest/*
-│   │   └── tda.py                       # /tda/* (topological data analysis)
-│   └── services/
-│       ├── registry.py                  # Singleton session store
-│       ├── stream_session.py            # Per-symbol stateful streaming engine
-│       └── redis_persistence.py         # Upstash Redis session persistence
-└── docs/
-    ├── API.md                           # This file
-    ├── openapi.yaml                     # Full OpenAPI 3.1 spec
-    └── deployment.md                    # Deployment guide
-```
-
-### Pipeline Stages
-
-| # | Stage | Module | Output |
-|---|-------|--------|--------|
-| 01 | RegimeHMM | `core/regime_engine.py` | RegimeSnapshot (vol_probs, trend_probs, risk_multiplier) |
-| 02 | PositionSizer | `core/position_sizer.py` | KellyResult (full_kelly_f → fractional_f → vol_scaled_f → regime_gated_f) |
-| 03 | RiskManager | `core/risk_manager.py` | RiskMetrics (VaR, CVaR, drawdown, stop, TP) |
-| 04 | StreamSession | `services/stream_session.py` | StreamTick pushed to all WS / SSE subscribers |
-
-### Streaming Architecture
-
-Each symbol maintains an independent `StreamSession` managed by the `SessionRegistry` singleton. Sessions have three concurrent responsibilities:
-
-| Responsibility | Mechanism | Latency |
-|---------------|-----------|---------|
-| **Tick path** | HMM predict → Kelly → VaR/CVaR → push to subscriber queues | ~7 ms/tick |
-| **Background refit** | `asyncio.run_in_executor` — non-blocking EM fitting every N bars | ~200-500 ms, async |
-| **Alert debounce** | 3-bar hysteresis before firing `RegimeAlert` | 3 bars delay |
-
-> **Multiple concurrent subscribers**: Any number of WebSocket clients and SSE consumers can subscribe to the same symbol session. The session pushes to an `asyncio.Queue` per subscriber. Slow consumers drop ticks (queue bounded at 500 items) to prevent backpressure from blocking the tick path.
-
----
-
-## Core Concepts
-
-### Regime Detection
-
-Two independent 3-state Gaussian HMMs are fitted on log-returns — one for **volatility regimes**, one for **trend regimes**. Each returns posterior state probabilities (not just Viterbi hard assignments), so confidence scores are smooth and differentiable.
-
-| Dimension | States | Features |
-|-----------|--------|----------|
-| Volatility | `low` · `med_low` · `med_high` · `high` | 20-bar & 5-bar realised vol + \|return\| |
-| Trend | `strong_bear` · `bear` · `bull` · `strong_bull` | Raw return + 10-bar & 30-bar cumulative return |
-
-States are semantically labelled by sorting the HMM component means — no manual label assignment needed. The combined `regime_label` (e.g. `low_vol_bull`) is produced by joining the dominant vol and trend states.
-
-### Kelly Criterion
-
-Position sizes are computed using the continuous-returns Kelly formula:
-
-```
-f* = mu / sigma^2
-```
-
-where `mu` is the mean daily log-return and `sigma^2` is the variance. The raw Kelly fraction then passes through three scaling stages:
-
-| Stage | Field | Formula |
-|-------|-------|---------|
-| 1. Fractional Kelly | `fractional_f` | `full_kelly_f × kelly_fraction` (default 0.5) |
-| 2. Vol scaling | `vol_scaled_f` | `fractional_f × (target_vol / realised_annual_vol)` |
-| 3. Regime gating | `regime_gated_f` | `vol_scaled_f × risk_multiplier` |
-
-> **Warning**: Full Kelly maximises long-run geometric growth but implies roughly 50% drawdowns. The 50% fractional Kelly default reduces drawdown risk while preserving most of the compounding benefit.
-
-### Risk Multiplier
-
-Each regime maps to a `risk_multiplier` in the range [0.10, 1.75]:
-
-```python
-vol_scale   = {low: 1.75, med_low: 1.20, med_high: 0.70, high: 0.35}[vol_state]
-trend_scale = {strong_bull: 1.00, bull: 0.88, bear: 0.60, strong_bear: 0.40}[trend_state]
-risk_multiplier = clip(vol_scale * trend_scale, 0.10, 1.75)
-```
-
-### Regime Risk Multiplier Matrix
-
-| | low vol | med_low vol | med_high vol | high vol |
-|---|---|---|---|---|
-| **strong_bull** | 1.75 | 1.20 | 0.70 | 0.35 |
-| **bull** | 1.54 | 1.06 | 0.62 | 0.31 |
-| **bear** | 1.05 | 0.72 | 0.42 | 0.21 |
-| **strong_bear** | 0.70 | 0.48 | 0.28 | 0.14 |
-
-### VaR and CVaR
-
-Risk metrics use **historical (empirical) VaR/CVaR** rather than parametric estimates. This is more accurate for fat-tailed return distributions common in financial assets.
-
-| Metric | Definition |
-|--------|-----------|
-| `var_95` | 5th percentile of the return distribution (95% of days lose less than this) |
-| `cvar_95` | Mean loss in the worst 5% of days (Expected Shortfall) |
-| `suggested_stop` | 2x CVaR95 — initial stop-loss suggestion |
-| `suggested_tp` | 3x CVaR95 — take-profit at 3:1 reward/risk |
-
-### Alert Severity Levels
-
-| Severity | Trigger Condition | Action Suggested |
-|----------|-------------------|-----------------|
-| `critical` | New regime is `high_vol_bear` or `high_vol_neutral` | Reduce exposure immediately |
-| `warning` | New regime contains `bear` or `high` (but not critical) | Review position sizing |
-| `info` | All other transitions (e.g. neutral→bull) | Log and monitor |
-
-> **3-bar debounce**: Alerts only fire when the new regime persists for 3 consecutive bars. This prevents noise-driven micro-transitions from flooding downstream consumers with false alarms.
-
----
-
-## Renko HFT Pipeline (v5.0)
-
-The Renko HFT pipeline is a 6-layer processing chain that converts raw price ticks into filtered, risk-managed trade signals:
-
-```
-Layer 1: Brick Engine       →  Renko bricks from price ticks
-Layer 2: Swing Classifier   →  HH/HL/LH/LL labels on bricks
-Layer 3: Pattern Detector   →  Breakout, triple-top/bottom signals
-Layer 4: Signal Filter      →  Regime gate + velocity filter
-Layer 5: Order Executor     →  Alpaca bracket order submission
-Layer 6: Risk Manager       →  SL=3bricks / TP=5bricks, trailing stop
-```
+| Variable | Description |
+|----------|-------------|
+| `JWT_SECRET_KEY` | Signing secret for local JWTs (required in production) |
+| `JWT_ALGORITHM` | Default `HS256` |
+| `JWT_EXPIRE_MINS` | Token lifetime in minutes (default 60) |
+| `API_KEYS` | Comma-separated valid API keys |
+| `AUTH_ENABLED` | Set `false` to disable auth (dev mode) |
+| `AUTH_USERS` | `"user1:pass1:role1,user2:pass2:role2"` |
+| `CLERK_SECRET_KEY` | Clerk JWT verification key |
 
 ### Endpoints
 
-#### Read Endpoints (Any authenticated user)
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/auth/token` | Issue a JWT access token | None |
+| POST | `/auth/refresh` | Refresh a non-expired token | JWT |
+| GET | `/auth/me` | Return current user info from token | JWT |
+| POST | `/auth/clerk/verify` | Verify a Clerk JWT token | None |
+| GET | `/auth/clerk/config` | Get Clerk authentication configuration | None |
+| GET | `/auth/clerk/me` | Return Clerk user info from Clerk JWT | Clerk JWT |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/tick` | Process a single tick through the 6-layer pipeline |
-| `POST` | `/renko/tick/batch` | Batch tick processing (backtest / warm-up) |
-| `GET` | `/renko/state` | Current pipeline state |
-| `GET` | `/renko/stats` | Comprehensive pipeline statistics |
-| `GET` | `/renko/bricks` | Recent Renko bricks |
-| `GET` | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) |
-| `GET` | `/renko/signals` | Pattern signals |
-| `GET` | `/renko/trades` | Trade journal |
-| `GET` | `/renko/swing-points` | Detected swing points |
-| `GET` | `/renko/backtest/stats` | Backtest/trading statistics |
+#### POST /auth/token
 
-#### Write Endpoints (Trader or Admin)
+Standard OAuth2 password flow. Supply `username` and `password` as form fields.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/regime` | Update the current HMM regime |
-| `POST` | `/renko/equity` | Update the current account equity |
+**Request** (form-data):
 
-#### Admin Endpoints (Admin only)
+| Field | Type | Description |
+|-------|------|-------------|
+| `username` | string | Login username |
+| `password` | string | Login password |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/config` | Update pipeline configuration (resets the pipeline) |
-| `POST` | `/renko/reset` | Reset the pipeline for a symbol |
-
-### Auth Level Summary
-
-| Dependency | Endpoints | Roles |
-|-----------|-----------|-------|
-| `get_authed_user` | `/tick`, `/tick/batch`, `/state`, `/stats`, `/bricks`, `/classified`, `/signals`, `/trades`, `/swing-points`, `/backtest/stats` | viewer, trader, admin |
-| `require_write` | `/regime`, `/equity` | trader, admin |
-| `require_admin` | `/config`, `/reset` | admin only |
-
-### Tick Input Schema
+**Response:**
 
 ```json
 {
-  "price": 450.25,
-  "timestamp": 1700000000.0,
-  "symbol": "SPY"
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer",
+  "expires_in": 3600,
+  "sub": "admin",
+  "role": "admin"
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `price` | float | Yes | — | Latest trade price |
-| `timestamp` | float | No | `null` | Unix timestamp |
-| `symbol` | string | No | `null` | Override symbol (defaults to SPY) |
+#### POST /auth/refresh
 
-### Batch Tick Input Schema
+Issues a fresh token with a new expiry, keeping the same subject and role. Requires a valid (non-expired) Bearer token.
+
+**Response:** Same as `/auth/token`.
+
+#### GET /auth/me
+
+Returns the identity and role extracted from the Bearer JWT.
+
+**Response:**
 
 ```json
 {
-  "prices": [450.1, 451.3, 449.8, ...],
-  "timestamps": [1700000000, 1700000060, ...],
-  "regimes": ["low_vol_bull", "low_vol_bull", ...],
-  "symbol": "SPY"
+  "sub": "admin",
+  "role": "admin",
+  "auth_enabled": true
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `prices` | float[] | Yes | — | Price series |
-| `timestamps` | float[] | No | `null` | Timestamps |
-| `regimes` | string[] | No | `null` | Pre-computed regime labels |
-| `symbol` | string | No | `null` | Override symbol |
+#### POST /auth/clerk/verify
 
-### Config Input Schema
+Verifies a Clerk JWT token and returns decoded user information.
+
+**Request:**
 
 ```json
 {
-  "brick_size": 0.50,
-  "brick_size_mode": "fixed",
-  "reversal_bricks": 2,
-  "bull_trigger_n": 3,
-  "bear_trigger_n": 3,
-  "sl_bricks": 3,
-  "tp_bricks": 5,
-  "trailing_stop": true,
-  "trail_after_bricks": 3,
-  "trail_distance_bricks": 2,
-  "max_trades_per_session": 15,
-  "max_daily_loss_bricks": 10.0,
-  "max_consecutive_losses": 3,
-  "cooldown_seconds": 30.0,
-  "regime_gate": true,
-  "symbol": "SPY"
+  "token": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..."
 }
 ```
 
-> **Warning**: Updating config via `POST /renko/config` **resets the entire pipeline** — all bricks, signals, and trade history are lost.
+**Response:**
 
-### Example: Process a Tick
-
-```bash
-curl -X POST https://noble-trader-fastapi-backend.onrender.com/renko/tick \
-  -H "Authorization: Bearer <clerk-jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{"price": 450.25, "symbol": "SPY"}'
+```json
+{
+  "valid": true,
+  "user": {
+    "sub": "user_2xyz...",
+    "role": "viewer",
+    "email": "trader@example.com",
+    "first_name": "Jane",
+    "last_name": "Trader",
+    "username": "janetrader",
+    "clerk_auth_enabled": true
+  },
+  "error": null
+}
 ```
 
-### Example: Batch Warm-up
+#### GET /auth/clerk/config
 
-```bash
-curl -X POST "https://noble-trader-fastapi-backend.onrender.com/renko/tick/batch?symbol=SPY" \
-  -H "Authorization: Bearer <clerk-jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{"prices": [445.0, 446.0, 447.5, ...], "symbol": "SPY"}'
+Returns Clerk authentication configuration status (publishable key truncated for security).
+
+**Response:**
+
+```json
+{
+  "clerk_auth_enabled": true,
+  "publishable_key": "pk_test_X...",
+  "jwt_algorithm": "RS256",
+  "jwks_endpoint": "https://large-shark-21.clerk.accounts.dev/.well-known/jwks.json"
+}
 ```
+
+#### GET /auth/clerk/me
+
+Returns Clerk user identity extracted from a valid Clerk JWT in the Authorization header.
+
+**Response:** Same `ClerkUserInfo` as in `/auth/clerk/verify`.
 
 ---
 
-## Batch API
+## Regime Detection
 
-### POST /analyse/full
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/regime/detect` | Detect market regime from price series | None |
+| POST | `/regime/detect-v2` | Enhanced regime detection with configurable 2-4 states | None |
 
-One-shot full pipeline — regime + sizing + risk in a single request.
+### POST /regime/detect
 
-**Request Body** (FullAnalysisRequest):
+Fits dual Gaussian HMMs (volatility + trend) on the supplied price series and returns posterior regime probabilities plus a risk multiplier.
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `symbol` | string | No | `UNKNOWN` | Ticker label |
-| `prices` | float[] | Yes | — | Ordered close price series (min 81 values, all positive) |
-| `kelly_fraction` | float | No | `0.5` | Fractional Kelly multiplier [0.1, 1.0] |
-| `target_vol` | float | No | `0.15` | Target annualised volatility (0, 1.0] |
-| `base_risk_limit` | float | No | `0.02` | Base risk limit (0, 0.5] |
+**Request:**
 
-**Response** (FullAnalysisResponse):
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (OHLCV close preferred). Min 81 bars. |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol for labelling |
+
+**Example Request:**
+
+```json
+{
+  "prices": [450.10, 451.20, 449.80, ...],
+  "symbol": "SPY"
+}
+```
+
+**Response:**
 
 ```json
 {
   "symbol": "SPY",
-  "regime": {
-    "symbol": "SPY",
-    "vol_probs": {"low": 0.72, "medium": 0.20, "high": 0.08},
-    "trend_probs": {"bear": 0.05, "neutral": 0.15, "bull": 0.80},
-    "vol_state": "low",
-    "trend_state": "bull",
-    "regime_label": "low_vol_bull",
-    "confidence": 0.72,
-    "risk_multiplier": 1.35,
-    "n_bars_fitted": 200
-  },
-  "sizing": {
-    "symbol": "SPY",
-    "full_kelly_f": 0.68,
-    "fractional_f": 0.34,
-    "vol_scaled_f": 0.31,
-    "regime_gated_f": 0.42,
-    "recommended_f": 0.42,
-    "kelly_edge": 0.025,
-    "sharpe_ratio": 1.85,
-    "regime_label": "low_vol_bull",
-    "regime_multiplier": 1.35,
-    "fraction_type": "50% Kelly",
-    "notes": ["Regime gate: low_vol_bull -> 1.35x"]
-  },
-  "risk": {
-    "symbol": "SPY",
-    "recommended_f": 0.42,
-    "var_95": 0.0187,
-    "var_99": 0.0312,
-    "cvar_95": 0.0245,
-    "cvar_99": 0.0389,
-    "max_drawdown": 0.087,
-    "annual_vol": 0.14,
-    "annual_return": 0.22,
-    "calmar_ratio": 2.53,
-    "sortino_ratio": 2.87,
-    "regime_label": "low_vol_bull",
-    "regime_max_loss": 0.025,
-    "suggested_stop": 0.049,
-    "suggested_tp": 0.0735,
-    "risk_budget_used": 0.35,
-    "notes": ["Stop at 2x CVaR95", "TP at 3x CVaR95 (3:1 R:R)"]
+  "vol_probs": {"low": 0.65, "med_low": 0.20, "med_high": 0.10, "high": 0.05},
+  "trend_probs": {"strong_bear": 0.02, "bear": 0.08, "bull": 0.60, "strong_bull": 0.30},
+  "vol_state": "low",
+  "trend_state": "bull",
+  "regime_label": "low_vol_bull",
+  "confidence": 0.78,
+  "risk_multiplier": 1.50,
+  "n_bars_fitted": 200
+}
+```
+
+### POST /regime/detect-v2
+
+Enhanced HMM regime detection with configurable state count, auto-labeled states, transition entropy, and regime stability.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `n_states` | `int` | `4` | Number of HMM states per dimension (2-4) |
+| `n_iter` | `int` | `100` | Maximum EM iterations (10-500) |
+
+**State Configurations:**
+
+| n_states | Volatility Labels | Trend Labels | Combined Regimes |
+|----------|-------------------|-------------|-----------------|
+| 2 | `low`, `high` | `bear`, `bull` | 4 |
+| 3 | `low`, `medium`, `high` | `bear`, `neutral`, `bull` | 9 |
+| 4 | `low`, `med_low`, `med_high`, `high` | `strong_bear`, `bear`, `bull`, `strong_bull` | 16 |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "n_states": 3,
+  "vol_probs": {"low": 0.55, "medium": 0.30, "high": 0.15},
+  "trend_probs": {"bear": 0.10, "neutral": 0.25, "bull": 0.65},
+  "vol_state": "low",
+  "trend_state": "bull",
+  "regime_label": "low_vol_bull",
+  "confidence": 0.82,
+  "risk_multiplier": 1.35,
+  "n_bars_fitted": 200,
+  "transition_entropy": 1.45,
+  "regime_stability": 0.85
+}
+```
+
+---
+
+## Position Sizing
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/size/kelly` | Regime-aware fractional Kelly position sizing (Path A) | None |
+| POST | `/size/masaniello` | Dynamic Masaniello position sizing (Path B) | JWT/Key |
+| POST | `/size/masaniello/batch` | Batch Dynamic Masaniello sizing | JWT/Key |
+| POST | `/size/masaniello/portfolio` | Portfolio-optimised Masaniello sizing across multiple assets | JWT/Key |
+
+### POST /size/kelly
+
+Computes fractional Kelly position size, optionally scaled by current realised volatility vs target volatility and the dynamic regime risk multiplier from HMM.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `returns` | `list[float]` | `null` | Use explicit returns instead of computing from prices |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly multiplier (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target volatility for scaling (0–1.0) |
+| `use_regime` | `bool` | `true` | Enable regime-gated sizing |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "full_kelly_f": 0.18,
+  "fractional_f": 0.09,
+  "vol_scaled_f": 0.075,
+  "regime_gated_f": 0.1125,
+  "recommended_f": 0.1125,
+  "kelly_edge": 0.035,
+  "sharpe_ratio": 1.42,
+  "regime_label": "low_vol_bull",
+  "regime_multiplier": 1.50,
+  "fraction_type": "half_kelly",
+  "notes": ["Regime gate: 1.50x multiplier applied (low_vol_bull)"]
+}
+```
+
+### POST /size/masaniello
+
+Computes position size using the **Dynamic Masaniello formula**:
+
+```
+f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
+```
+
+Where:
+- **β** = base risk fraction (default 0.5%)
+- **M_i** = Masaniello progress factor — urgency = wins_needed / trades_remaining
+- **Q_i** = Model quality composite — prob × regime_quality × confidence
+- **DD_i** = Drawdown scaling factor — never below 0.25
+- **V_i** = Volatility adjustment — ATR-based ratio
+
+Supports optional Kelly overlay cap and regime auto-detection from prices.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `equity` | `float` | *required* | Current account equity in $ |
+| `stop_distance_price` | `float` | *required* | Stop distance in price units |
+| `point_value` | `float` | `1.0` | $ value per 1 price unit (1.0 for stocks/FX) |
+| `p_win` | `float` | *required* | Estimated win probability (0–1) |
+| `reward_risk` | `float` | *required* | Expected reward/risk ratio (R multiple) |
+| `direction` | `string` | `"long"` | `"long"` or `"short"` |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `atr_baseline` | `float` | *required* | Historical ATR reference |
+| `atr_current` | `float` | *required* | Current ATR value |
+| `prices` | `list[float]` | `null` | Price series for auto regime detection (min 81) |
+| `wins_so_far` | `int` | `0` | Wins in current batch |
+| `losses_so_far` | `int` | `0` | Losses in current batch |
+| `trade_index` | `int` | `1` | Trade number within batch (≥1) |
+| `current_drawdown` | `float` | `0.0` | Current drawdown fraction (0–1) |
+| `base_risk` | `float` | `0.005` | Base risk fraction β (0–5%) |
+| `min_risk` | `float` | `0.0025` | Minimum risk fraction |
+| `max_risk` | `float` | `0.010` | Maximum risk fraction |
+| `min_prob` | `float` | `0.50` | Minimum win probability to trade |
+| `min_rr` | `float` | `1.50` | Minimum reward/risk ratio |
+| `use_regime` | `bool` | `true` | Auto-detect regime from prices |
+| `use_kelly_overlay` | `bool` | `false` | Apply Kelly cap on top of Masaniello |
+| `kelly_fraction` | `float` | `0.25` | Kelly fraction for overlay (0.01–1.0) |
+| `batch_size` | `int` | `5` | Trades per Masaniello batch (2–50) |
+| `target_wins` | `int` | `3` | Target wins per batch (1–25) |
+
+**Example Request:**
+
+```json
+{
+  "equity": 100000,
+  "stop_distance_price": 2.50,
+  "point_value": 1.0,
+  "p_win": 0.62,
+  "reward_risk": 2.0,
+  "direction": "long",
+  "symbol": "SPY",
+  "atr_baseline": 5.20,
+  "atr_current": 4.80,
+  "prices": [450.10, 451.20, 449.80, 452.30, ...],
+  "current_drawdown": 0.02,
+  "base_risk": 0.005,
+  "use_regime": true
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "allowed": true,
+  "risk_fraction": 0.0063,
+  "risk_amount": 630.00,
+  "units": 252.0,
+  "contracts": 252,
+  "masaniello_factor": 0.60,
+  "quality_factor": 0.93,
+  "drawdown_factor": 0.95,
+  "volatility_factor": 1.08,
+  "expected_edge": 0.24,
+  "kelly_cap": null,
+  "reason": "Masaniello sizing: f=0.63% (M=0.60, Q=0.93, DD=0.95, V=1.08)",
+  "regime_label": "low_vol_bull",
+  "regime_quality": 1.50,
+  "batch_num": 1,
+  "trade_index": 1,
+  "wins_so_far": 0,
+  "losses_so_far": 0,
+  "drawdown": 0.02,
+  "symbol": "SPY",
+  "direction": "long"
+}
+```
+
+### POST /size/masaniello/batch
+
+Sizes an entire batch of trades sequentially, with batch state (wins, losses, drawdown) flowing between trades automatically. Optionally provide outcomes and PnLs to update batch state as the batch is sized.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `equity` | `float` | *required* | Current account equity |
+| `point_value` | `float` | `1.0` | $ per 1 price unit |
+| `direction` | `string` | `"long"` | Direction for all trades |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `atr_baseline` | `float` | *required* | Historical ATR reference |
+| `stop_distances` | `list[float]` | *required* | Stop distance per trade (1–50 items) |
+| `p_wins` | `list[float]` | *required* | Win probability per trade (1–50 items) |
+| `reward_risks` | `list[float]` | *required* | R multiple per trade (1–50 items) |
+| `atr_currents` | `list[float]` | *required* | Current ATR per trade (1–50 items) |
+| `outcomes` | `list[bool]` | `null` | Win/loss outcomes (True=win, False=loss) |
+| `pnls` | `list[float]` | `null` | PnL per trade |
+| `base_risk` | `float` | `0.005` | Base risk fraction β |
+| `min_rr` | `float` | `1.50` | Minimum reward/risk ratio |
+| `batch_size` | `int` | `5` | Trades per batch (2–50) |
+| `target_wins` | `int` | `3` | Target wins per batch (1–25) |
+| `use_kelly_overlay` | `bool` | `false` | Apply Kelly cap |
+| `kelly_fraction` | `float` | `0.25` | Kelly fraction for overlay |
+| `prices` | `list[float]` | `null` | For auto regime detection (min 81) |
+
+**Example Request:**
+
+```json
+{
+  "equity": 100000,
+  "symbol": "SPY",
+  "atr_baseline": 5.20,
+  "direction": "long",
+  "stop_distances": [2.50, 2.30, 2.60],
+  "p_wins": [0.62, 0.58, 0.65],
+  "reward_risks": [2.0, 2.5, 1.8],
+  "atr_currents": [4.80, 5.10, 4.70]
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "results": [
+    {
+      "allowed": true,
+      "risk_fraction": 0.0063,
+      "risk_amount": 630.0,
+      "units": 252.0,
+      "contracts": 252,
+      "masaniello_factor": 0.60,
+      "quality_factor": 0.93,
+      "drawdown_factor": 1.00,
+      "volatility_factor": 1.08,
+      "expected_edge": 0.24,
+      "kelly_cap": null,
+      "reason": "Masaniello sizing: f=0.63%",
+      "regime_label": "low_vol_bull",
+      "symbol": "SPY",
+      "direction": "long"
+    }
+  ],
+  "batch_summary": {
+    "batch_num": 1,
+    "wins": 0,
+    "losses": 0,
+    "pnl": 0.0,
+    "drawdown": 0.0,
+    "trade_index": 3
   }
 }
 ```
 
-### POST /regime/detect
+### POST /size/masaniello/portfolio
 
-HMM regime detection only. Same `PricePayload` body as `/analyse/full`.
+Two-stage pipeline for multi-asset position sizing:
 
-### POST /size/kelly
+**Stage 1** — `DrawdownOptimiser` → regime-adjusted portfolio weights (what to hold)  
+**Stage 2** — `DynamicMasanielloSizer` → per-asset contract sizes (how much to hold)
 
-Kelly position sizing only. Accepts `SizeRequest` with optional `returns` array and `use_regime` flag.
+**Request:**
 
-### POST /risk/analyse
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbols` | `list[str]` | *required* | Asset tickers (2–50) |
+| `returns_matrix` | `list[list[float]]` | *required* | (n_bars × n_assets) matrix of log-returns |
+| `equity` | `float` | *required* | Total account equity |
+| `stop_distances` | `list[float]` | *required* | Stop distance per asset |
+| `point_values` | `list[float]` | `null` | $ per 1 price unit per asset (null = all 1.0) |
+| `p_wins` | `list[float]` | *required* | Win probability per asset |
+| `reward_risks` | `list[float]` | *required* | R multiple per asset |
+| `atr_baselines` | `list[float]` | *required* | Historical ATR per asset |
+| `atr_currents` | `list[float]` | *required* | Current ATR per asset |
+| `directions` | `list[str]` | `null` | Direction per asset (default all `"long"`) |
+| `max_dd_limit` | `float` | `0.20` | Max acceptable expected drawdown (0.01–1.0) |
+| `max_weight` | `float` | `0.40` | Maximum single-asset weight (0.05–1.0) |
+| `base_risk` | `float` | `0.005` | Masaniello base risk β |
+| `min_rr` | `float` | `1.50` | Min reward/risk for Masaniello |
+| `batch_size` | `int` | `5` | Trades per Masaniello batch |
+| `target_wins` | `int` | `3` | Target wins per batch |
+| `use_kelly_overlay` | `bool` | `false` | Apply Kelly cap on Masaniello |
+| `kelly_fraction` | `float` | `0.25` | Kelly fraction for overlay |
 
-Risk metrics only. Accepts `RiskRequest` (extends `SizeRequest` with `base_risk_limit`).
+**Response:** See [`PortfolioMasanielloResponse`](#post-optimisemasaniello) below.
 
 ---
 
-## Streaming API
+## Risk Analysis
 
-### POST /stream/seed
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/risk/analyse` | Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions | None |
+| POST | `/risk/analyze` | Enhanced risk analysis with stress tests and regime context | None |
 
-Seed a symbol streaming session with historical prices.
+### POST /risk/analyse
 
-**Request Body** (SeedRequest):
+Computes comprehensive risk metrics including parametric + historical VaR/CVaR, max drawdown, Sortino & Calmar ratios, and regime-adjusted stop-loss/take-profit.
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `symbol` | string | Yes | — | Symbol identifier |
-| `prices` | float[] | Yes | — | Historical prices (min 81, all positive) |
-| `window` | int | No | `500` | Rolling window size [51, 5000] |
-| `kelly_fraction` | float | No | `0.5` | Kelly multiplier [0.1, 1.0] |
-| `target_vol` | float | No | `0.15` | Target volatility (0, 1.0] |
-| `base_risk_limit` | float | No | `0.02` | Base risk limit (0, 0.5] |
-| `refit_every` | int | No | `50` | Refit HMM every N bars [5, 500] |
+**Request:**
 
-### POST /stream/tick
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `returns` | `list[float]` | `null` | Explicit returns (optional) |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `use_regime` | `bool` | `true` | Enable regime gating |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss fraction (0–0.5) |
 
-Push one price tick and receive a regime snapshot.
-
-**Request Body** (TickIngest):
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `symbol` | string | Yes | Symbol identifier |
-| `price` | float | Yes | Price (must be positive) |
-| `ts` | float | No | Unix timestamp |
-
-**Response**: Returns `TickResponse` with regime snapshot, or `BufferingStub` if not enough bars yet.
-
-### GET /stream/sessions
-
-List all active streaming sessions with stats per symbol.
-
-### WebSocket /ws/{symbol}
-
-Full-duplex stream. Supports `?token=<jwt>` or `?api_key=<key>` for auth.
-
-**Client → Server messages**:
-- `{"type": "seed", "symbol": "SPY", "prices": [...]}`
-- `{"type": "tick", "symbol": "SPY", "price": 450.25}`
-
-**Server → Client messages**:
-- `{"type": "seeded", "symbol": "SPY", "n_bars": 200, ...}`
-- `{"type": "tick", "regime_label": "low_vol_bull", "recommended_f": 0.42, ...}`
-- `{"type": "alert", "severity": "critical", ...}`
-
-### SSE /sse/{symbol}
-
-Server-Sent Events stream for a single symbol. Each event is a JSON `TickResponse`.
-
-### SSE /sse/alerts
-
-Global regime-change alert broadcast. Events are `RegimeAlert` objects:
+**Response:**
 
 ```json
 {
-  "type": "alert",
   "symbol": "SPY",
-  "ts": 1700000000,
-  "previous": "low_vol_bull",
-  "current": "high_vol_bear",
-  "severity": "critical",
-  "message": "Regime changed to high_vol_bear"
+  "recommended_f": 0.1125,
+  "var_95": 0.0128,
+  "var_99": 0.0214,
+  "cvar_95": 0.0189,
+  "cvar_99": 0.0295,
+  "max_drawdown": 0.0842,
+  "annual_vol": 0.142,
+  "annual_return": 0.185,
+  "calmar_ratio": 2.20,
+  "sortino_ratio": 2.85,
+  "regime_label": "low_vol_bull",
+  "regime_max_loss": 0.008,
+  "suggested_stop": 439.25,
+  "suggested_tp": 468.50,
+  "risk_budget_used": 0.45,
+  "notes": ["Regime gate: 1.50x multiplier applied"]
+}
+```
+
+### POST /risk/analyze
+
+Enhanced risk analysis (US spelling) with five built-in stress test scenarios.
+
+**Additional Request Fields** (beyond `/risk/analyse`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `n_hmm_states` | `int` | `4` | HMM states (2–4) |
+| `stress_scenarios` | `bool` | `true` | Include stress tests |
+
+**Stress Test Scenarios:**
+
+| Scenario | Description |
+|----------|-------------|
+| `2008_crash` | Sustained -2%/day with elevated vol |
+| `flash_crash` | -10% single-day drop |
+| `volatility_spike` | 3× normal vol for 20 bars |
+| `rate_shock` | +2% rates reducing equity returns |
+| `liquidity_crisis` | Wider spreads and asymmetric slippage |
+
+**Response:** Same as `/risk/analyse` plus:
+
+```json
+{
+  "stress_tests": [
+    {
+      "scenario": "2008_crash",
+      "description": "2008-style crash: sustained -2%/day with elevated vol",
+      "simulated_return": -0.482,
+      "simulated_var_95": 0.0456,
+      "simulated_max_dd": -0.512
+    },
+    {
+      "scenario": "flash_crash",
+      "description": "Flash crash: -10% single-day drop",
+      "simulated_return": -0.115,
+      "simulated_var_95": 0.1005,
+      "simulated_max_dd": -0.115
+    }
+  ]
+}
+```
+
+---
+
+## Strategy
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/strategy/signal` | Generate strategy signal with regime context and position sizing | None |
+
+### POST /strategy/signal
+
+Full strategy signal pipeline:
+1. Fit HMM regime model → detect current regime
+2. Generate trading signal based on regime (`long` / `short` / `flat`)
+3. Compute regime-gated Kelly position size
+4. Compute risk metrics and guidance (stop/TP, VaR/CVaR)
+5. Return combined signal with all context
+
+**Signal Logic:**
+- **Long**: low/med_low vol + bull/strong_bull trend
+- **Short**: high/med_high vol + bear/strong_bear trend (reduced strength × 0.5)
+- **Flat**: all other regimes
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `use_regime` | `bool` | `true` | Enable regime gating |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+| `n_hmm_states` | `int` | `4` | HMM states (2–4) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "signal": "long",
+  "signal_strength": 0.975,
+  "confidence": 0.65,
+  "regime_label": "low_vol_bull",
+  "vol_state": "low",
+  "trend_state": "bull",
+  "risk_multiplier": 1.50,
+  "recommended_f": 0.1125,
+  "full_kelly_f": 0.18,
+  "fractional_f": 0.09,
+  "vol_scaled_f": 0.075,
+  "regime_gated_f": 0.1125,
+  "sharpe_ratio": 1.42,
+  "suggested_stop": 439.25,
+  "suggested_tp": 468.50,
+  "var_95": 0.0128,
+  "cvar_95": 0.0189,
+  "notes": ["Regime gate: 1.50x multiplier applied"]
+}
+```
+
+---
+
+## Full Pipeline
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/analyse/full` | One-shot: regime + Kelly sizing + risk metrics | None |
+
+### POST /analyse/full
+
+Runs the complete pipeline in a single request:
+1. Fit HMM regime model → get vol/trend posteriors
+2. Compute regime-gated Kelly position size
+3. Compute VaR, CVaR, drawdown, and trade guidance
+
+Returns a nested JSON with all three result objects.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "regime": { "...RegimeResponse..." },
+  "sizing": { "...SizeResponse..." },
+  "risk": { "...RiskResponse..." }
+}
+```
+
+---
+
+## Backtest
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/backtest/run` | Run walk-forward backtest with regime-aware strategy (30+ metrics) | None |
+
+### POST /backtest/run
+
+Walk-forward backtest pipeline:
+1. Rolling HMM fit on trailing window
+2. Strategy signal generation based on regime
+3. Regime-gated Kelly position sizing
+4. Risk check gates (VaR, max drawdown)
+5. Trade execution with commission/slippage
+6. Comprehensive performance metrics (30+)
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `window` | `int` | `200` | Trailing window for HMM fit (≥81) |
+| `refit_every` | `int` | `50` | Refit HMM every N bars (≥10) |
+| `n_hmm_states` | `int` | `4` | HMM states (2–4) |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+| `initial_equity` | `float` | `100000` | Starting equity |
+| `commission_bps` | `float` | `5.0` | Commission in basis points (0–50) |
+| `slippage_bps` | `float` | `2.0` | Slippage in basis points (0–50) |
+| `max_position_pct` | `float` | `0.25` | Max position as % of equity (0–1.0) |
+| `risk_check` | `bool` | `true` | Enable risk check gates |
+| `regime_gate` | `bool` | `true` | Enable regime gate filter |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "n_bars": 1250,
+  "n_trades": 42,
+  "n_wins": 28,
+  "n_losses": 14,
+  "win_rate": 0.667,
+  "total_return": 0.245,
+  "annual_return": 0.152,
+  "buy_hold_return": 0.108,
+  "excess_return": 0.137,
+  "monthly_return_avg": 0.0127,
+  "max_drawdown": 0.068,
+  "max_drawdown_duration": 18,
+  "avg_drawdown": 0.022,
+  "var_95": 0.0142,
+  "cvar_95": 0.0218,
+  "annual_vol": 0.118,
+  "downside_vol": 0.082,
+  "sharpe_ratio": 1.29,
+  "sortino_ratio": 1.85,
+  "calmar_ratio": 2.24,
+  "information_ratio": 0.92,
+  "avg_win_pct": 0.028,
+  "avg_loss_pct": -0.015,
+  "avg_win_loss_ratio": 1.87,
+  "max_consecutive_wins": 7,
+  "max_consecutive_losses": 3,
+  "avg_hold_bars": 12.5,
+  "profit_factor": 3.73,
+  "regime_distribution": {"low_vol_bull": 0.45, "high_vol_bear": 0.12, "...": "..."},
+  "trades_by_regime": {"low_vol_bull": {"n": 22, "win_rate": 0.82}, "...": "..."},
+  "equity_curve": [100000, 100250, 100100, ...],
+  "drawdown_curve": [0.0, -0.002, -0.005, ...],
+  "trade_log": [{"entry_bar": 201, "exit_bar": 215, "pnl": 1250.0, "...": "..."}]
+}
+```
+
+---
+
+## Multi-Asset
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/correlation/detect` | Detect portfolio-level correlation regime | JWT/Key |
+| POST | `/optimise` | Drawdown-controlled regime-aware portfolio optimisation | JWT/Key |
+| POST | `/optimise/full` | One-shot: correlation regime + portfolio optimisation | JWT/Key |
+| POST | `/optimise/masaniello` | Two-stage pipeline: optimise + per-asset Masaniello sizing | JWT/Key |
+
+### POST /correlation/detect
+
+Fits a 4-state Gaussian HMM on rolling correlation features across all assets. Returns the current correlation regime:
+
+| Regime | Description | Mean \|ρ\| |
+|--------|-------------|-----------|
+| `low_corr` | Healthy diversification | < 0.30 |
+| `mid_corr` | Moderate comovement | 0.30–0.55 |
+| `high_corr` | Elevated stress | 0.55–0.75 |
+| `crisis` | Diversification collapsed | > 0.75 |
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbols` | `list[str]` | *required* | Asset tickers (2–50) |
+| `returns_matrix` | `list[list[float]]` | *required* | (n_bars × n_assets) matrix of log-returns |
+| `window` | `int` | `60` | Rolling window (20–252) |
+| `ewma_span` | `int` | `20` | EWMA span for correlation (5–60) |
+| `n_hmm_states` | `int` | `4` | HMM states (2–6) |
+
+**Response:**
+
+```json
+{
+  "symbols": ["SPY", "QQQ", "TLT"],
+  "n_assets": 3,
+  "corr_regime": "low_corr",
+  "corr_confidence": 0.82,
+  "corr_risk_multiplier": 1.20,
+  "blended_risk_multiplier": 1.35,
+  "mean_abs_correlation": 0.28,
+  "correlation_matrix": [[1.0, 0.85, -0.22], [0.85, 1.0, -0.18], [-0.22, -0.18, 1.0]],
+  "corr_probs": {"low_corr": 0.72, "mid_corr": 0.18, "high_corr": 0.07, "crisis": 0.03},
+  "n_bars_fitted": 252,
+  "asset_regimes": [
+    {"symbol": "SPY", "regime_label": "low_vol_bull", "vol_state": "low", "trend_state": "bull", "confidence": 0.78, "risk_multiplier": 1.50},
+    {"symbol": "QQQ", "regime_label": "low_vol_bull", "vol_state": "low", "trend_state": "bull", "confidence": 0.82, "risk_multiplier": 1.50},
+    {"symbol": "TLT", "regime_label": "med_high_vol_bear", "vol_state": "med_high", "trend_state": "bear", "confidence": 0.65, "risk_multiplier": 0.50}
+  ]
+}
+```
+
+### POST /optimise
+
+Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constraint. Three regime layers applied:
+1. **Regime-adjusted μ** — per-asset expected returns scaled by risk multiplier
+2. **Regime weight bounds** — tighter upper bounds in high-risk regimes
+3. **Correlation exposure** — gross portfolio exposure reduced in crisis regimes
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbols` | `list[str]` | *required* | Asset tickers (2–50) |
+| `returns_matrix` | `list[list[float]]` | *required* | (n_bars × n_assets) matrix of log-returns |
+| `max_dd_limit` | `float` | `0.20` | Max acceptable expected drawdown (0.01–1.0) |
+| `max_weight` | `float` | `0.40` | Maximum single-asset weight (0.05–1.0) |
+| `risk_free_rate` | `float` | `0.04` | Risk-free rate for Sharpe calculation (0–0.20) |
+| `corr_regime` | `string` | `null` | Override correlation regime |
+| `kelly_fractions` | `list[float]` | `null` | Per-asset Kelly fractions |
+| `use_asset_regimes` | `bool` | `true` | Auto-detect per-asset regimes |
+
+**Response:**
+
+```json
+{
+  "symbols": ["SPY", "QQQ", "TLT"],
+  "weights": [0.35, 0.30, 0.35],
+  "regime_adj_weights": [0.40, 0.35, 0.25],
+  "expected_return": 0.142,
+  "expected_vol": 0.098,
+  "sharpe_ratio": 1.04,
+  "expected_max_drawdown": 0.158,
+  "dd_constraint_met": true,
+  "regime_exposure": 0.72,
+  "per_asset_bounds": [[0.0, 0.40], [0.0, 0.40], [0.0, 0.35]],
+  "converged": true,
+  "solver_message": "Optimization terminated successfully"
+}
+```
+
+### POST /optimise/full
+
+Runs the complete multi-asset pipeline in one request:
+1. Fit per-asset HMMs → per-asset RegimeSnapshots
+2. Detect correlation regime → corr_regime label + blended multiplier
+3. Solve drawdown-controlled max-Sharpe with both regime layers applied
+
+**Additional Request Fields** (beyond `/optimise`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `corr_window` | `int` | `60` | Correlation rolling window |
+| `corr_ewma` | `int` | `20` | Correlation EWMA span |
+
+**Response:**
+
+```json
+{
+  "correlation": { "...CorrRegimeResponse..." },
+  "optimisation": { "...OptimiseResponse..." }
+}
+```
+
+### POST /optimise/masaniello
+
+Full two-stage pipeline connecting portfolio optimisation to per-trade position sizing.
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    POST /optimise/masaniello                     │
+│                                                                  │
+│  ┌──────────────────────────────────┐                           │
+│  │  STAGE 1: DrawdownOptimiser      │                           │
+│  │  ─────────────────────────────── │                           │
+│  │  • Per-asset HMM regime detect   │                           │
+│  │  • Correlation regime detect     │                           │
+│  │  • Max-Sharpe with DD constraint │                           │
+│  │  • Regime-adjusted weights       │                           │
+│  │                                  │                           │
+│  │  Output: weights[], regime_adj_  │                           │
+│  │          weights[], capital_      │                           │
+│  │          allocation per asset     │                           │
+│  └──────────────┬───────────────────┘                           │
+│                 │                                                │
+│                 ▼                                                │
+│  ┌──────────────────────────────────┐                           │
+│  │  STAGE 2: DynamicMasanielloSizer │                           │
+│  │  ─────────────────────────────── │                           │
+│  │  f_i = β × (0.5 + M_i)          │                           │
+│  │        × Q_i × DD_i × V_i       │                           │
+│  │                                  │                           │
+│  │  Per asset:                      │                           │
+│  │  • M_i = wins_needed/trades_left │                           │
+│  │  • Q_i = prob × regime × conf   │                           │
+│  │  • DD_i = drawdown scaling       │                           │
+│  │  • V_i = ATR-based vol adj       │                           │
+│  │                                  │                           │
+│  │  Output: risk_amount, contracts, │                           │
+│  │          allowed, factor details │                           │
+│  └──────────────────────────────────┘                           │
+│                                                                  │
+│  "The optimiser says WHAT to hold;                               │
+│   Masaniello says HOW MUCH to hold."                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Request:** Same as `PortfolioMasanielloRequest` — see [`/size/masaniello/portfolio`](#post-sizemasanielloportfolio) for full parameter documentation.
+
+**Example Request:**
+
+```json
+{
+  "symbols": ["SPY", "QQQ", "TLT"],
+  "returns_matrix": [[0.001, 0.002, -0.001], [0.0005, 0.0015, -0.0008], ...],
+  "equity": 500000,
+  "stop_distances": [2.50, 3.80, 1.20],
+  "p_wins": [0.60, 0.58, 0.55],
+  "reward_risks": [2.0, 2.2, 1.8],
+  "atr_baselines": [5.20, 8.50, 1.80],
+  "atr_currents": [4.80, 7.90, 2.10],
+  "max_dd_limit": 0.15,
+  "max_weight": 0.40,
+  "base_risk": 0.005
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "symbols": ["SPY", "QQQ", "TLT"],
+  "weights": [0.35, 0.30, 0.35],
+  "regime_adj_weights": [0.40, 0.35, 0.25],
+  "expected_return": 0.142,
+  "expected_vol": 0.098,
+  "sharpe_ratio": 1.04,
+  "expected_max_drawdown": 0.158,
+  "regime_exposure": 0.72,
+  "asset_sizes": [
+    {
+      "symbol": "SPY",
+      "portfolio_weight": 0.40,
+      "capital_allocation": 200000,
+      "allowed": true,
+      "risk_fraction": 0.0058,
+      "risk_amount": 1160.0,
+      "contracts": 464,
+      "masaniello_factor": 0.60,
+      "quality_factor": 0.90,
+      "drawdown_factor": 1.00,
+      "volatility_factor": 1.08,
+      "expected_edge": 0.20,
+      "reason": "Masaniello sizing: f=0.58%",
+      "regime_label": "low_vol_bull"
+    },
+    {
+      "symbol": "QQQ",
+      "portfolio_weight": 0.35,
+      "capital_allocation": 175000,
+      "allowed": true,
+      "risk_fraction": 0.0052,
+      "risk_amount": 910.0,
+      "contracts": 239,
+      "masaniello_factor": 0.60,
+      "quality_factor": 0.87,
+      "drawdown_factor": 1.00,
+      "volatility_factor": 1.06,
+      "expected_edge": 0.16,
+      "reason": "Masaniello sizing: f=0.52%",
+      "regime_label": "low_vol_bull"
+    },
+    {
+      "symbol": "TLT",
+      "portfolio_weight": 0.25,
+      "capital_allocation": 125000,
+      "allowed": false,
+      "risk_fraction": 0.0,
+      "risk_amount": 0.0,
+      "contracts": 0,
+      "masaniello_factor": 0.60,
+      "quality_factor": 0.33,
+      "drawdown_factor": 1.00,
+      "volatility_factor": 1.17,
+      "expected_edge": -0.01,
+      "reason": "Trade rejected: expected edge negative",
+      "regime_label": "med_high_vol_bear"
+    }
+  ],
+  "total_risk_amount": 2070.0,
+  "total_contracts": 703,
+  "corr_regime": "low_corr",
+  "corr_confidence": 0.82
+}
+```
+
+---
+
+## Observation Builder
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/observation/build` | Build a 24-feature observation vector from price series | None |
+| POST | `/observation/build-v2` | Build enhanced 24+ feature observation vector with optional TDA | None |
+
+### POST /observation/build
+
+Constructs the full 24-feature observation vector used by the RL/ML policy layer. Features 14–19 are **Markov features**: live HMM posterior probabilities — never defaulted to uniform priors.
+
+**24 Feature Labels:**
+
+| Index | Label | Description |
+|-------|-------|-------------|
+| 0 | `log_return_1bar` | 1-bar log return |
+| 1 | `log_return_3bar` | 3-bar log return |
+| 2 | `log_return_10bar` | 10-bar log return |
+| 3 | `normalised_atr` | ATR normalised by price |
+| 4 | `rolling_vol_20` | 20-bar rolling volatility |
+| 5 | `ema_distance` | Price distance from EMA |
+| 6 | `hhll_score` | Higher-high/lower-low score |
+| 7 | `vol_regime_percentile` | Volatility regime percentile |
+| 8 | `atr_vs_baseline` | ATR vs historical baseline |
+| 9 | `vol_trend_slope` | Volatility trend slope |
+| 10 | `regime_prob_0` | HMM state 0 posterior |
+| 11 | `regime_prob_1` | HMM state 1 posterior |
+| 12 | `regime_prob_2` | HMM state 2 posterior |
+| 13 | `regime_prob_3` | HMM state 3 posterior |
+| 14 | `vol_prob_low` | Low volatility posterior |
+| 15 | `vol_prob_medium` | Medium volatility posterior |
+| 16 | `vol_prob_high` | High volatility posterior |
+| 17 | `trend_prob_down` | Down trend posterior |
+| 18 | `trend_prob_neutral` | Neutral trend posterior |
+| 19 | `trend_prob_up` | Up trend posterior |
+| 20 | `regime_quality` | Regime quality (risk multiplier) |
+| 21 | `state_confidence` | HMM confidence scalar |
+| 22 | `masaniello_pressure` | Masaniello urgency factor |
+| 23 | `drawdown_factor` | Drawdown scaling factor |
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `high` | `list[float]` | *required* | Ordered high-price series (min 81 bars) |
+| `low` | `list[float]` | *required* | Ordered low-price series (min 81 bars) |
+| `window` | `int` | `200` | Rolling window length (≥81) |
+| `refit_every` | `int` | `50` | HMM refit interval (≥1) |
+| `n_hmm_states` | `int` | `4` | HMM states (2–8) |
+| `recommended_f` | `float` | `0.0` | Kelly fraction for Masaniello feature (idx 22) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "observation_vector": [0.0023, 0.0045, 0.0120, 0.0118, 0.00142, -0.0035, 0.65, 0.72, 0.92, 0.0015, 0.05, 0.15, 0.60, 0.20, 0.65, 0.20, 0.15, 0.08, 0.12, 0.80, 1.50, 0.78, 0.60, 1.00],
+  "feature_labels": ["log_return_1bar", "..."],
+  "vol_probs": [0.65, 0.20, 0.10, 0.05],
+  "trend_probs": [0.02, 0.08, 0.60, 0.30],
+  "regime_label": "low_vol_bull",
+  "confidence": 0.78,
+  "bar_index": 199,
+  "is_markov_uniform": false,
+  "n_bars_fitted": 200
+}
+```
+
+### POST /observation/build-v2
+
+Enhanced observation builder that optionally appends 10 TDA features, extending the vector to 34 dimensions.
+
+**Additional TDA Feature Labels (indices 24–33):**
+
+| Index | Label | Description |
+|-------|-------|-------------|
+| 24 | `tda_n_components` | Connected components |
+| 25 | `tda_n_loops` | Topological loops |
+| 26 | `tda_max_persistence_0d` | Max 0-dim persistence |
+| 27 | `tda_mean_persistence_0d` | Mean 0-dim persistence |
+| 28 | `tda_max_persistence_1d` | Max 1-dim persistence |
+| 29 | `tda_mean_persistence_1d` | Mean 1-dim persistence |
+| 30 | `tda_entropy_0d` | 0-dim persistence entropy |
+| 31 | `tda_entropy_1d` | 1-dim persistence entropy |
+| 32 | `tda_anomaly_score` | Topology deviation score |
+| 33 | `tda_regime_change_probability` | Regime transition probability |
+
+**Additional Request Fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `include_tda` | `bool` | `false` | Append 10 TDA features (extends to 34) |
+| `embedding_dim` | `int` | `3` | Takens embedding dimension (2–10) |
+| `embedding_delay` | `int` | `1` | Time delay for embedding (1–5) |
+
+**Response:** Same as `/observation/build` plus:
+
+```json
+{
+  "tda_included": true,
+  "tda_anomaly_score": 0.42,
+  "tda_regime_change_prob": 0.15
+}
+```
+
+---
+
+## TDA Features
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/tda/features` | Extract TDA features from price series using persistent homology | None |
+
+### POST /tda/features
+
+Topological Data Analysis feature extraction pipeline:
+1. Compute log-returns from price series
+2. Create Takens time-delay embedding (point cloud)
+3. Compute distance matrix
+4. Compute persistent homology (0-dim: connected components, 1-dim: loops)
+5. Compute Betti numbers at each filtration step
+6. Compute persistence entropy (topological complexity)
+7. Compute anomaly score (deviation from baseline topology)
+8. Estimate regime change probability
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Ordered price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `embedding_dim` | `int` | `3` | Takens embedding dimension (2–10) |
+| `embedding_delay` | `int` | `1` | Time delay for embedding (1–5) |
+| `max_filtration` | `float` | `2.0` | Maximum filtration value in std units (0–10) |
+| `n_filtration_steps` | `int` | `20` | Filtration resolution (5–100) |
+| `anomaly_threshold` | `float` | `1.5` | Std deviations for anomaly detection (0–5) |
+| `baseline_prices` | `list[float]` | `null` | Baseline series for anomaly comparison |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "n_bars": 200,
+  "n_components": 1,
+  "n_loops": 2,
+  "max_persistence_0d": 0.85,
+  "mean_persistence_0d": 0.32,
+  "max_persistence_1d": 0.42,
+  "mean_persistence_1d": 0.18,
+  "persistence_entropy_0d": 1.25,
+  "persistence_entropy_1d": 0.78,
+  "total_persistence_entropy": 2.03,
+  "anomaly_score": 0.42,
+  "regime_change_probability": 0.15,
+  "feature_vector": [1.0, 2.0, 0.85, 0.32, 0.42, 0.18, 1.25, 0.78, 0.42, 0.15],
+  "feature_labels": ["n_components", "n_loops", "..."],
+  "betti_0": [1, 1, 2, 1, ...],
+  "betti_1": [0, 0, 1, 1, ...]
+}
+```
+
+---
+
+## Portfolio
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/portfolio` | Aggregated regime + risk summary across all active sessions | JWT/Key |
+| GET | `/portfolio/symbols` | List symbols with active sessions | JWT/Key |
+
+### GET /portfolio
+
+Returns a portfolio-level view aggregating all (or specified) active streaming sessions.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `symbols` | `string` | `null` | Comma-separated symbols. Omit for all active sessions. |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+
+**Risk Flags:**
+
+| Flag | Meaning |
+|------|---------|
+| `high_risk_count` | Number of symbols with risk_multiplier < 0.5 |
+| `concentration_flag` | Any symbol with recommended_f > 40% |
+| `regime_divergence_flag` | Portfolio spans many different regime buckets |
+| `active_alerts` | Symbols that recently changed regime |
+
+**Response:**
+
+```json
+{
+  "n_symbols": 3,
+  "symbols": [
+    {
+      "symbol": "SPY",
+      "regime_label": "low_vol_bull",
+      "vol_state": "low",
+      "trend_state": "bull",
+      "confidence": 0.78,
+      "risk_multiplier": 1.50,
+      "recommended_f": 0.1125,
+      "var_95": 0.0128,
+      "cvar_95": 0.0189,
+      "sharpe_ratio": 1.42,
+      "last_price": 452.30,
+      "n_bars": 250,
+      "ready": true
+    }
+  ],
+  "regime_counts": {"low_vol_bull": 2, "med_vol_neutral": 1},
+  "dominant_regime": "low_vol_bull",
+  "regime_consensus": 0.67,
+  "avg_risk_multiplier": 1.25,
+  "avg_recommended_f": 0.095,
+  "avg_sharpe": 1.28,
+  "portfolio_var95": 0.022,
+  "portfolio_cvar95": 0.031,
+  "high_risk_count": 0,
+  "concentration_flag": false,
+  "regime_divergence_flag": false,
+  "active_alerts": ["SPY: regime changed to high_vol_bear"]
+}
+```
+
+### GET /portfolio/symbols
+
+Returns all symbols currently registered in the session registry.
+
+**Response:**
+
+```json
+{
+  "symbols": ["SPY", "QQQ", "TLT"]
 }
 ```
 
@@ -693,199 +1300,579 @@ Global regime-change alert broadcast. Events are `RegimeAlert` objects:
 
 ## Simulation
 
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/simulate/{symbol}` | Simulate regime transition paths forward in time | JWT/Key |
+
 ### POST /simulate/{symbol}
 
-Simulate regime transition paths forward in time using Monte Carlo methods.
+Fits a 4-state HMM on the supplied price series, then simulates `n_paths` forward paths of `horizon` bars using the fitted Markov transition matrix.
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `prices` | float[] | Yes | — | Price series (min 81) |
-| `horizon` | int | No | `20` | Forward bars to simulate [1, 252] |
-| `n_paths` | int | No | `500` | Monte Carlo paths [50, 5000] |
-| `seed` | int | No | `42` | Random seed |
+**Request:**
 
-**Auth**: Any authenticated user.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `horizon` | `int` | `20` | Forward steps to simulate (1–252) |
+| `n_paths` | `int` | `500` | Monte Carlo paths (50–5000) |
+| `seed` | `int` | `42` | Random seed for reproducibility |
+| `current_price` | `float` | `null` | Override starting price (>0) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "horizon": 20,
+  "n_paths": 500,
+  "current_regime": "low_vol_bull",
+  "current_price": 452.30,
+  "price_p5": [449.8, 448.2, 446.5, ...],
+  "price_p25": [451.0, 450.5, 449.8, ...],
+  "price_median": [452.5, 452.8, 453.2, ...],
+  "price_p75": [454.0, 455.2, 456.5, ...],
+  "price_p95": [455.8, 457.5, 459.8, ...],
+  "expected_risk_mult": [1.50, 1.48, 1.45, ...],
+  "return_mean": 0.018,
+  "return_std": 0.042,
+  "return_var95": -0.052,
+  "return_cvar95": -0.071,
+  "terminal_regime_mode": "low_vol_bull",
+  "pct_paths_positive": 0.68,
+  "max_drawdown_mean": 0.035,
+  "step_dominant_regime": ["low_vol_bull", "low_vol_bull", "med_low_vol_bull", ...]
+}
+```
 
 ---
 
-## Portfolio
+## Streaming
 
-### GET /portfolio
+The streaming subsystem provides real-time regime detection on live price data. Sessions must be seeded with historical prices before streaming ticks.
 
-Multi-symbol aggregated regime + risk overview.
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/stream/seed` | Seed a symbol session with historical prices | None |
+| POST | `/stream/tick` | Ingest one price tick and receive regime snapshot | None |
+| POST | `/stream/ticks` | Ingest a batch of price ticks | None |
+| GET | `/stream/sessions` | List all active streaming sessions | None |
+| GET | `/stream/session/{symbol}` | Get session status | None |
+| DELETE | `/stream/session/{symbol}` | Remove a streaming session | None |
+| GET | `/sse/{symbol}` | Server-Sent Events stream for a symbol | None |
+| GET | `/sse/alerts` | Global SSE stream for all regime-change alerts | None |
 
-**Auth**: Any authenticated user.
+### POST /stream/seed
+
+Creates (or resets) a streaming session for a symbol and pre-loads historical prices so the HMM can be fitted immediately. **Must be called before streaming ticks.**
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `string` | *required* | Ticker symbol |
+| `prices` | `list[float]` | *required* | Historical prices (min 81 bars) |
+| `window` | `int` | `500` | Window length (81–5000) |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+| `refit_every` | `int` | `50` | Refit interval (5–500) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "ready": true,
+  "n_bars": 500,
+  "refit_count": 1,
+  "tick_count": 0,
+  "last_regime": "low_vol_bull"
+}
+```
+
+### POST /stream/tick
+
+Push a single price tick. Returns a full `TickResponse` once the session has enough bars; returns `{"status": "buffering", "n_bars": N}` while warming up.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `string` | *required* | Ticker symbol |
+| `price` | `float` | *required* | Latest price (>0) |
+| `ts` | `float` | `null` | Unix timestamp (auto-filled if omitted) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "ts": 1710000000.0,
+  "price": 452.30,
+  "n_bars": 501,
+  "regime_label": "low_vol_bull",
+  "vol_state": "low",
+  "trend_state": "bull",
+  "vol_probs": {"low": 0.65, "med_low": 0.20, "med_high": 0.10, "high": 0.05},
+  "trend_probs": {"strong_bear": 0.02, "bear": 0.08, "bull": 0.60, "strong_bull": 0.30},
+  "confidence": 0.78,
+  "risk_multiplier": 1.50,
+  "recommended_f": 0.1125,
+  "sharpe_ratio": 1.42,
+  "var_95": 0.0128,
+  "cvar_95": 0.0189,
+  "suggested_stop": 439.25,
+  "suggested_tp": 468.50,
+  "regime_changed": false,
+  "alert": null,
+  "refit_count": 1
+}
+```
+
+### POST /stream/ticks
+
+Replay or batch-ingest multiple ticks. Returns a snapshot for each tick (or a buffering stub).
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `symbol` | `string` | Ticker symbol |
+| `prices` | `list[float]` | Price series |
+| `timestamps` | `list[float]` | Optional timestamps |
+
+### GET /stream/sessions
+
+Lists all active streaming sessions with statistics.
+
+### GET /stream/session/{symbol}
+
+Returns session status for a specific symbol.
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "ready": true,
+  "n_bars": 523,
+  "refit_count": 2,
+  "tick_count": 23,
+  "last_regime": "low_vol_bull"
+}
+```
+
+### DELETE /stream/session/{symbol}
+
+Removes a streaming session.
+
+**Response:**
+
+```json
+{
+  "status": "removed",
+  "symbol": "SPY"
+}
+```
+
+### GET /sse/{symbol}
+
+Server-Sent Events stream that pushes a JSON regime snapshot on every tick received for `symbol`. Subscribe from any browser with `EventSource`.
+
+```javascript
+const es = new EventSource('/sse/SPY');
+es.onmessage = e => console.log(JSON.parse(e.data));
+```
+
+### GET /sse/alerts
+
+Broadcasts regime-change alerts for **all symbols** to connected listeners. Only fires on regime state transitions (not every tick). Severity levels: `info` | `warning` | `critical`.
 
 ---
 
-## GPU HMM (v3.0)
+## GPU
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/gpu/capabilities` | Report GPU availability and active HMM backend | JWT |
+| POST | `/gpu/benchmark` | Benchmark HMM fit + predict on synthetic data | JWT |
 
 ### GET /gpu/capabilities
 
-Get GPU HMM backend capabilities (pomegranate auto-selection).
+Returns which HMM backend will be used and what hardware is available.
 
-**Auth**: Any authenticated user.
+**Response:**
+
+```json
+{
+  "hmm_backend": "GpuRegimeHMM (pomegranate)",
+  "active_device": "cuda",
+  "pomegranate_installed": true,
+  "cuda_available": true,
+  "mps_available": false
+}
+```
 
 ### POST /gpu/benchmark
 
-Run HMM fit/predict latency benchmark.
+Runs `n_iterations` fit+predict cycles on synthetic price data. Returns mean latency for fit and predict separately.
 
-**Auth**: Any authenticated user.
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `n_bars` | `int` | `500` | Synthetic data length (81–50000) |
+| `n_iterations` | `int` | `3` | Number of fit+predict cycles (1–10) |
+| `force_cpu` | `bool` | `false` | Force hmmlearn baseline for comparison |
+
+**Response:**
+
+```json
+{
+  "backend": "GpuRegimeHMM (pomegranate)",
+  "device": "cuda",
+  "n_bars": 500,
+  "n_iterations": 3,
+  "mean_fit_ms": 12.45,
+  "mean_predict_ms": 1.23,
+  "regime_label": "low_vol_bull",
+  "pomegranate_available": true,
+  "cuda_available": true,
+  "mps_available": false
+}
+```
 
 ---
 
-## Feed Adapters (v3.0)
+## Feed Adapters
 
-Live OHLCV feed management for Alpaca, Binance, and Interactive Brokers.
-
-### GET /feeds/status
-
-Get feed adapter status, bar counts, and health.
-
-**Auth**: Write (trader or admin).
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/feeds/start` | Start live feed adapters | Trader/Admin |
+| POST | `/feeds/stop` | Stop all running feed adapters | Trader/Admin |
+| GET | `/feeds/status` | Get feed adapter status | Trader/Admin |
 
 ### POST /feeds/start
 
-Start live feed adapters.
+Start one or more live feed adapters. Symbols must be seeded via `POST /stream/seed` before starting feeds — bars for unseeded symbols are silently dropped. Adapters reconnect automatically on disconnect (exponential backoff).
 
-**Auth**: Write (trader or admin).
+**Request** (array of configs):
+
+```json
+[
+  {
+    "source": "alpaca",
+    "symbols": ["SPY", "QQQ"],
+    "bar_size": "1Min",
+    "feed": "sip"
+  },
+  {
+    "source": "binance",
+    "symbols": ["BTCUSDT"],
+    "bar_size": "1m"
+  }
+]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `source` | `string` | *required* | `"alpaca"`, `"binance"`, or `"ib"` |
+| `symbols` | `list[str]` | *required* | Symbols to stream |
+| `bar_size` | `string` | `"1Min"` | Bar interval |
+| `feed` | `string` | `"sip"` | Alpaca feed type: `"sip"` or `"iex"` |
 
 ### POST /feeds/stop
 
-Stop all running feed adapters.
+Gracefully stops all feed adapter tasks.
 
-**Auth**: Write (trader or admin).
+### GET /feeds/status
 
----
+Returns running state and per-symbol bar counts for all active feed adapters.
 
-## Correlation & Optimisation (v3.0)
+**Response:**
 
-### POST /correlation/detect
-
-DCC-based portfolio correlation regime detection.
-
-**Auth**: Any authenticated user.
-
-### POST /optimise
-
-Drawdown-controlled max-Sharpe portfolio optimisation.
-
-**Auth**: Any authenticated user.
-
-### POST /optimise/full
-
-Correlation + optimisation one-shot.
-
-**Auth**: Any authenticated user.
+```json
+{
+  "running": true,
+  "adapters": [
+    {"source": "alpaca", "symbols": ["SPY", "QQQ"], "status": "connected"}
+  ],
+  "total_bars": {"SPY": 1250, "QQQ": 980}
+}
+```
 
 ---
 
-## Observation Builder
+## Renko HFT Pipeline
 
-### POST /observation/build
+The Renko HFT pipeline processes price ticks through a 6-layer architecture for high-frequency trading signals.
 
-Build a 24-feature observation vector from the InferenceObservationBuilder.
+### 6-Layer Pipeline Architecture
 
-**Feature Index Reference**:
+```
+Tick ──→ [Layer 1: Brick Engine] ──→ [Layer 2: Swing Classifier]
+                                              │
+                     [Layer 6: Executor] ←── [Layer 5: Risk Manager]
+                           │                        │
+                           ▼                        │
+                     Trade Journal      [Layer 4: Signal Filter]
+                                                  │
+                                        [Layer 3: Pattern Detector]
+```
 
-| Index | Feature | Index | Feature |
-|-------|---------|-------|---------|
-| 0 | log_ret_1bar | 12 | regime_prob_2 |
-| 1 | log_ret_3bar | 13 | regime_prob_3 |
-| 2 | log_ret_10bar | 14 | vol_prob_low |
-| 3 | norm_atr | 15 | vol_prob_medium |
-| 4 | rolling_vol_20 | 16 | vol_prob_high |
-| 5 | ema_distance | 17 | trend_prob_down |
-| 6 | hhll_score | 18 | trend_prob_neutral |
-| 7 | vol_regime_pct | 19 | trend_prob_up |
-| 8 | atr_vs_baseline | 20 | regime_quality |
-| 9 | vol_slope | 21 | state_confidence |
-| 10 | regime_prob_0 | 22 | masaniello_pressure |
-| 11 | regime_prob_1 | 23 | drawdown_factor |
+| Layer | Module | Purpose |
+|-------|--------|---------|
+| 1 | `brick_engine.py` | Renko brick construction with 2-brick reversal rule |
+| 2 | `swing_classifier.py` | Labels bricks HH/HL/LH/LL, detects swing points |
+| 3 | `pattern_detector.py` | Detects bull_run, bear_run, reversal, double_top, double_bottom, consolidation_break |
+| 4 | `signal_filter.py` | 7-layer risk governance: session window, max trades, daily loss, consecutive losses, cooldown, velocity, HMM regime gate |
+| 5 | `risk_manager.py` | Brick-denominated SL/TP/trailing stop/time-stop/partial-exit |
+| 6 | `executor.py` | Alpaca order executor with bracket orders (dry-run simulation mode when no API keys) |
+
+### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/renko/tick` | Process single tick through 6-layer pipeline |
+| POST | `/renko/tick/batch` | Batch tick processing (backtest / warm-up) |
+| GET | `/renko/state` | Current pipeline state |
+| GET | `/renko/stats` | Comprehensive pipeline statistics |
+| GET | `/renko/bricks` | Recent Renko bricks |
+| GET | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) |
+| GET | `/renko/signals` | Pattern signals |
+| GET | `/renko/trades` | Trade journal |
+| GET | `/renko/swing-points` | Detected swing points |
+| POST | `/renko/regime` | Update HMM regime for gate filter |
+| POST | `/renko/equity` | Update account equity |
+| POST | `/renko/config` | Update pipeline configuration (resets pipeline) |
+| POST | `/renko/reset` | Reset pipeline for a symbol |
+| GET | `/renko/backtest/stats` | Backtest/trading statistics |
+
+All Renko endpoints accept an optional `symbol` query parameter (default `"SPY"`). The backend maintains one `RenkoPipeline` instance per symbol in memory.
+
+### POST /renko/tick
+
+Process a single tick through the 6-layer pipeline.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `price` | `float` | *required* | Latest trade price |
+| `timestamp` | `float` | `null` | Unix timestamp |
+| `symbol` | `string` | `null` | Override symbol |
+
+### POST /renko/tick/batch
+
+Process a batch of ticks for backtest or warm-up.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Price series |
+| `timestamps` | `list[float]` | `null` | Timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+| `symbol` | `string` | `null` | Override symbol |
+
+### GET /renko/bricks
+
+Recent Renko bricks.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `last_n` | `int` | `100` | Number of bricks to return |
+
+### GET /renko/classified
+
+Bricks with swing labels (HH/HL/LH/LL).
+
+**Query Parameters:** Same as `/renko/bricks`.
+
+### GET /renko/signals
+
+Pattern signals (bull_run, bear_run, reversal, double_top, double_bottom, consolidation_break).
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `last_n` | `int` | `50` | Number of signals to return |
+
+### GET /renko/trades
+
+Trade journal entries.
+
+### GET /renko/swing-points
+
+Detected swing points.
+
+### POST /renko/regime
+
+Update the current HMM regime for the gate filter (Layer 4).
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `regime` | `string` | Current regime name (e.g. `"low_vol_bull"`) |
+
+### POST /renko/equity
+
+Update the current account equity (used by risk manager).
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `equity` | `float` | Current account equity |
+
+### POST /renko/config
+
+Update pipeline configuration. **Resets the pipeline** for the symbol.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `brick_size` | `float` | `0.50` | Fixed brick size in dollars |
+| `brick_size_mode` | `string` | `"fixed"` | `"fixed"`, `"atr"`, or `"dynamic"` |
+| `reversal_bricks` | `int` | `2` | Bricks needed for direction reversal |
+| `bull_trigger_n` | `int` | `3` | Consecutive HH/HL for bull trigger |
+| `bear_trigger_n` | `int` | `3` | Consecutive LL/LH for bear trigger |
+| `sl_bricks` | `int` | `3` | Stop-loss distance in brick units |
+| `tp_bricks` | `int` | `5` | Take-profit distance in brick units |
+| `trailing_stop` | `bool` | `true` | Enable trailing stop |
+| `trail_after_bricks` | `int` | `3` | Activate trail after N bricks profit |
+| `trail_distance_bricks` | `int` | `2` | Trail distance in bricks |
+| `max_trades_per_session` | `int` | `15` | Maximum trades per session |
+| `max_daily_loss_bricks` | `float` | `10.0` | Maximum daily loss in bricks |
+| `max_consecutive_losses` | `int` | `3` | Pause after N consecutive losses |
+| `cooldown_seconds` | `float` | `30.0` | Minimum seconds between trades |
+| `regime_gate` | `bool` | `true` | Only trade with HMM regime alignment |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+
+### POST /renko/reset
+
+Reset the pipeline for a symbol (clears all bricks, signals, trades).
+
+### GET /renko/backtest/stats
+
+Returns trading statistics from the journal: win rate, profit factor, Sharpe, max drawdown, Kelly estimates, etc.
 
 ---
 
-## Discord Notifications (v5.0)
+## Health
 
-The Renko pipeline sends real-time Discord notifications via rich embeds to three webhook channels:
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/health` | Health check | None |
 
-| Channel | Webhook Env Var | Trigger |
-|---------|----------------|---------|
-| `#trade-signals` | `DISCORD_WEBHOOK_SIGNALS` | Pattern signal detected (breakout, triple-top, etc.) |
-| `#trade-executions` | `DISCORD_WEBHOOK_EXECUTIONS` | Order submitted, SL/TP hit, trade closed |
-| `#system-status` | `DISCORD_WEBHOOK_STATUS` | Pipeline reset, batch complete, risk alerts |
+### GET /health
 
-### Notification Flow
+**Response:**
 
-1. **Signal detected** (Layer 4 filter passes) → `#trade-signals` embed with direction, pattern, confidence, regime
-2. **Execution submitted** (Layer 5) → `#trade-executions` embed with side, qty, price, SL, TP
-3. **Trade closed** (SL/TP hit) → `#trade-executions` embed with PnL in bricks and dollars
-4. **Large loss** (≤ -5 bricks) → `#system-status` risk alert
-5. **Pipeline reset** → `#system-status` warning notification
-6. **Batch complete** (≥50 ticks) → `#system-status` info notification
-
-All notifications are fire-and-forget (non-blocking) and gracefully degrade if Discord is unavailable.
-
----
-
-## Reference
-
-### Error Responses
-
-| Code | Meaning | When |
-|------|---------|------|
-| `401` | Unauthorized | Missing or invalid auth credentials |
-| `403` | Forbidden | Insufficient role (e.g. viewer trying write endpoint) |
-| `404` | Not Found | Symbol session doesn't exist |
-| `422` | Validation Error | Invalid request body (Pydantic validation) |
-| `500` | Internal Error | Server-side failure |
-
-### Environment Variables (Complete)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8000` | Listening port |
-| `WORKERS` | `1` | Uvicorn worker count |
-| `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
-| `JWT_SECRET_KEY` | _(empty)_ | Local JWT signing secret |
-| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
-| `JWT_EXPIRE_MINS` | `60` | Token lifetime in minutes |
-| `API_KEYS` | _(empty)_ | Comma-separated valid API keys |
-| `AUTH_ENABLED` | `true` | Set `false` to disable auth |
-| `CLERK_PUBLISHABLE_KEY` | _(empty)_ | Clerk client-side key |
-| `CLERK_SECRET_KEY` | _(empty)_ | Clerk server-side key |
-| `UPSTASH_REDIS_REST_URL` | _(empty)_ | Upstash Redis REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | _(empty)_ | Upstash Redis REST token |
-| `DISCORD_WEBHOOK_SIGNALS` | _(empty)_ | Discord webhook for trade signals |
-| `DISCORD_WEBHOOK_EXECUTIONS` | _(empty)_ | Discord webhook for trade executions |
-| `DISCORD_WEBHOOK_STATUS` | _(empty)_ | Discord webhook for system status |
-
-### Key Libraries
-
-| Library | Purpose |
-|---------|---------|
-| `fastapi` | API framework |
-| `pydantic v2` | Request/response validation |
-| `hmmlearn` | Gaussian HMM fitting |
-| `scipy` | Kelly formula, optimisation, stats |
-| `numpy` | Array operations, VaR/CVaR |
-| `pandas` | Data manipulation |
-| `python-jose` | JWT encoding/decoding |
-| `httpx` | Async HTTP client (Discord webhooks) |
-| `pomegranate` | GPU-accelerated HMM (optional) |
-| `uvicorn` | ASGI server |
-| `fastapi-mcp` | Model Context Protocol exposure (optional) |
-
-### Performance Characteristics
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Tick latency (p50) | ~7 ms | HMM predict + Kelly + VaR/CVaR |
-| HMM refit latency | 200-500 ms | Background, non-blocking |
-| Max concurrent sessions | ~500 | Per worker, memory-bound |
-| Price buffer memory | ~32 KB | Per session at window=500 |
-| SSE fan-out overhead | ~0.1 ms/subscriber | Queue put_nowait |
+```json
+{
+  "status": "ok",
+  "version": "5.1.0",
+  "sessions": 3,
+  "redis": true,
+  "gpu_backend": "RegimeHMM (hmmlearn)",
+  "device": "cpu"
+}
+```
 
 ---
 
-*See also: [openapi.yaml](./openapi.yaml) for the full OpenAPI 3.1 spec and [deployment.md](./deployment.md) for operational reference.*
+## Recommended Workflows
+
+### Quick Analysis (Single Asset)
+
+```
+POST /analyse/full  →  regime + sizing + risk in one call
+```
+
+Best for: One-shot analysis of a single symbol with minimal round trips.
+
+### Signal-Driven Trading
+
+```
+POST /strategy/signal  →  signal (long/short/flat) + sizing + risk guidance
+```
+
+Best for: Getting an actionable trading decision with full context.
+
+### Multi-Asset Portfolio Construction
+
+```
+POST /correlation/detect  →  portfolio-level correlation regime
+POST /optimise/full       →  correlation + optimisation one-shot
+POST /optimise/masaniello →  portfolio optimise + per-asset Masaniello sizing
+```
+
+Best for: Building a regime-aware portfolio with precise per-asset position sizing.
+
+### Live Streaming Pipeline
+
+```
+POST /stream/seed           →  seed symbol with historical prices
+POST /stream/tick           →  push live ticks, receive regime snapshots
+GET  /sse/{symbol}          →  subscribe to real-time SSE stream
+GET  /sse/alerts            →  monitor regime changes across all symbols
+GET  /portfolio             →  aggregated portfolio view
+```
+
+Best for: Real-time monitoring with regime change alerts.
+
+### Renko HFT Trading
+
+```
+POST /renko/tick            →  process ticks through 6-layer pipeline
+GET  /renko/signals         →  check for pattern signals
+GET  /renko/trades          →  review trade journal
+POST /renko/regime          →  update HMM regime for gate filter
+GET  /renko/stats           →  comprehensive pipeline statistics
+```
+
+Best for: High-frequency Renko-based trading with pattern detection and risk management.
+
+### Walk-Forward Backtesting
+
+```
+POST /backtest/run  →  30+ metrics with full equity/drawdown curves
+```
+
+Best for: Validating strategy performance with realistic regime-aware execution.
+
+### Dynamic Masaniello Sizing
+
+```
+POST /size/masaniello           →  single-trade sizing (Path B)
+POST /size/masaniello/batch     →  batch sizing with state flow
+POST /optimise/masaniello       →  full two-stage: optimise + Masaniello
+```
+
+Best for: Progress-dependent position sizing where batch outcomes influence future trade sizes.
+
+### Observation Building for RL/ML
+
+```
+POST /observation/build-v2  →  24 or 34 feature vector (with TDA)
+```
+
+Best for: Feeding structured feature vectors into reinforcement learning or ML policy networks.
+
+### GPU-Accelerated Regime Detection
+
+```
+GET  /gpu/capabilities  →  check GPU availability
+POST /gpu/benchmark      →  measure speedup
+```
+
+Best for: Enabling 10-50× HMM speedup with pomegranate on CUDA/MPS hardware.
