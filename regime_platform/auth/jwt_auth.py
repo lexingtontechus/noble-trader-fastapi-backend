@@ -22,10 +22,11 @@ Usage
   async def handler(user=Depends(get_current_user)):
       ...
 
-  # Protect a WebSocket endpoint
+  # Protect a WebSocket endpoint (auth BEFORE accept)
   @router.websocket("/ws/{symbol}")
   async def ws(websocket, symbol, token=Query(None)):
-      user = await ws_auth(websocket, token)
+      user = await ws_auth(websocket, token)  # raises WebSocketAuthError if invalid
+      await websocket.accept()                # only reached if auth passes
       ...
 
   # Issue a token (login endpoint)
@@ -305,21 +306,35 @@ async def get_authed_user(
 
 # ── WebSocket authentication ──────────────────────────────────────────────────
 
+class WebSocketAuthError(Exception):
+    """
+    Raised when WebSocket authentication fails before accept().
+
+    The caller should NOT call websocket.accept(). The ASGI server
+    will reject the connection automatically since it was never accepted.
+    """
+    def __init__(self, reason: str = "Unauthorised"):
+        self.reason = reason
+        super().__init__(reason)
+
+
 async def ws_auth(
     websocket: WebSocket,
     token: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> TokenData:
     """
-    Authenticate a WebSocket connection before accepting it.
+    Authenticate a WebSocket connection BEFORE calling accept().
 
     Checks (in order):
-      1. ?token=<jwt> query parameter
+      1. AUTH_ENABLED=false → dev mode, always accept
       2. ?api_key=<key> query parameter
-      3. X-API-Key header
-      4. AUTH_ENABLED=false → dev mode, always accept
+      3. ?token=<jwt> query parameter  (Clerk JWT → local JWT)
+      4. X-API-Key header
 
-    Closes the WebSocket with 4001 (Unauthorised) if authentication fails.
+    Raises WebSocketAuthError if authentication fails.
+    The caller should NOT call websocket.accept() after this exception.
+    The ASGI server will reject the unaccepted connection automatically.
 
     Usage:
         @router.websocket("/ws/{symbol}")
@@ -342,28 +357,26 @@ async def ws_auth(
 
     # Query-param JWT / Clerk JWT
     if token:
-        try:
-            # Try Clerk verification first (dynamic)
-            clerk_result = _try_clerk_verification(token)
-            if clerk_result:
-                return clerk_result
+        # Try Clerk verification first (dynamic)
+        clerk_result = _try_clerk_verification(token)
+        if clerk_result:
+            return clerk_result
 
-            # Fall back to local JWT
-            if JWT_SECRET_KEY:
+        # Fall back to local JWT
+        if JWT_SECRET_KEY:
+            try:
                 return decode_token(token)
-            
-            raise HTTPException(status_code=401, detail="No auth method available")
-        except HTTPException:
-            await websocket.close(code=4001, reason="Invalid token")
-            raise
+            except HTTPException:
+                raise WebSocketAuthError("Invalid token")
+
+        raise WebSocketAuthError("No auth method available")
 
     # Header API key
     hdr_key = websocket.headers.get("x-api-key")
     if hdr_key and hdr_key in API_KEYS:
         return TokenData(sub=f"apikey:{hdr_key[:8]}...", role="trader")
 
-    await websocket.close(code=4001, reason="Unauthorised")
-    raise HTTPException(status_code=401, detail="WebSocket authentication failed")
+    raise WebSocketAuthError("Unauthorised — provide ?token=<jwt> or ?api_key=<key>")
 
 
 # ── Login endpoint helper ─────────────────────────────────────────────────────

@@ -218,12 +218,25 @@ Endpoints:
         lifespan=lifespan,
     )
 
-    # CORS
+    # CORS — locked to specific origins via env var
+    # CORS_ORIGINS="https://your-app.vercel.app,http://localhost:3000"
+    # Falls back to localhost-only in development when not set.
+    _cors_origins_str = os.getenv("CORS_ORIGINS", "")
+    if _cors_origins_str.strip():
+        _cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
+    else:
+        # Dev fallback: only localhost
+        _cors_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    log.info(f"CORS origins: {_cors_origins}")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=["Authorization", "X-API-Key", "Content-Type", "Accept"],
     )
 
     # v2.x routers

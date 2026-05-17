@@ -25,13 +25,18 @@ import json
 import time
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from typing import Optional
 
 from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM
 from ..services.stream_session import RegimeAlert
 from ..models.stream_schemas import WsMessage
+from ..auth.jwt_auth import ws_auth, WebSocketAuthError
+
+import logging
+_log = logging.getLogger("regime.stream")
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
@@ -42,20 +47,39 @@ _alert_broadcast: asyncio.Queue = asyncio.Queue(maxsize=1000)
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{symbol}")
-async def websocket_stream(websocket: WebSocket, symbol: str):
+async def websocket_stream(
+    websocket: WebSocket,
+    symbol: str,
+    token: Optional[str] = Query(None),
+    api_key: Optional[str] = Query(None),
+):
     """
     Full-duplex WebSocket for a single symbol.
+
+    Authentication is required before the connection is accepted.
+    Pass a Clerk/local JWT as ?token=<jwt> or an API key as ?api_key=<key>.
+    Unauthenticated connections are closed with code 4001.
 
     Connect, then send JSON messages to seed / push ticks.
     The server pushes back a regime snapshot after every tick
     and an alert message on regime transitions.
 
     Example client flow:
-      1. {"type":"seed",  "symbol":"SPY", "prices":[...]}
-      2. {"type":"tick",  "symbol":"SPY", "price":512.34}
-      3. ... receive tick snapshots ...
+      1. Connect: ws://host/ws/SPY?token=<your-jwt>
+      2. {"type":"seed",  "symbol":"SPY", "prices":[...]}
+      3. {"type":"tick",  "symbol":"SPY", "price":512.34}
+      4. ... receive tick snapshots ...
     """
+    # Authenticate BEFORE accepting — rejects connection if invalid
+    try:
+        user = await ws_auth(websocket, token, api_key)
+    except WebSocketAuthError as e:
+        _log.warning(f"WS auth rejected for /ws/{symbol}: {e.reason}")
+        # Don't accept — ASGI server will reject the connection automatically
+        return
+
     await websocket.accept()
+    _log.info(f"WS connected: /ws/{symbol} user={user.sub} role={user.role}")
 
     async def _send(data: dict):
         try:
@@ -151,7 +175,7 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
                 await _send({"type": "error", "detail": f"Unknown type '{msg.type}'"})
 
     except WebSocketDisconnect:
-        pass
+        _log.info(f"WS disconnected: /ws/{symbol}")
 
 
 # ─── SSE — per symbol ────────────────────────────────────────────────────────
