@@ -44,6 +44,7 @@ class BatchTickInput(BaseModel):
     prices: List[float] = Field(..., description="Price series")
     timestamps: Optional[List[float]] = Field(None, description="Timestamps")
     regimes: Optional[List[str]] = Field(None, description="Pre-computed regime labels")
+    symbol: Optional[str] = Field(None, description="Override symbol (defaults to query param)")
 
 
 class ConfigInput(BaseModel):
@@ -105,9 +106,11 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.post("/tick/batch")
-    async def process_batch(body: BatchTickInput) -> Dict[str, Any]:
+    async def process_batch(body: BatchTickInput, symbol: str = "SPY") -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up)."""
-        pipeline = _get_pipeline("SPY")
+        # Body symbol takes precedence over query param
+        active_symbol = body.symbol or symbol
+        pipeline = _get_pipeline(active_symbol)
         result = pipeline.backtest(
             prices=body.prices,
             timestamps=body.timestamps,
