@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINS: int = 60
     API_KEYS: str = ""
     AUTH_ENABLED: bool = True
+    AUTH_USERS: str = ""
 
     # ── Clerk ───────────────────────────────────────────────────────────────
     CLERK_PUBLISHABLE_KEY: str = ""
@@ -58,6 +59,14 @@ class Settings(BaseSettings):
     ALPACA_API_KEY: str = ""
     ALPACA_SECRET_KEY: str = ""
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
+
+    # ── Binance ─────────────────────────────────────────────────────────────
+    BINANCE_TESTNET: bool = False
+
+    # ── Interactive Brokers ─────────────────────────────────────────────────
+    IB_HOST: str = "127.0.0.1"
+    IB_PORT: int = 7497
+    IB_CLIENT_ID: int = 1
 
     # ── Discord ─────────────────────────────────────────────────────────────
     DISCORD_WEBHOOK_SIGNALS: str = ""
@@ -90,6 +99,22 @@ class Settings(BaseSettings):
     def api_keys_set(self) -> set[str]:
         """Split API_KEYS by comma, filter empty strings, return as set."""
         return set(filter(None, self.API_KEYS.split(",")))
+
+    @property
+    def auth_users_dict(self) -> dict[str, dict]:
+        """Parse AUTH_USERS format "user:pass:role,user2:pass2:role2" into dict."""
+        users: dict[str, dict] = {}
+        for entry in self.AUTH_USERS.split(","):
+            parts = entry.strip().split(":")
+            if len(parts) == 3:
+                username, password, role = parts
+                users[username] = {"password": password, "role": role}
+        return users
+
+    @property
+    def clerk_auth_enabled(self) -> bool:
+        """True if CLERK_SECRET_KEY is configured."""
+        return bool(self.CLERK_SECRET_KEY)
 
     @property
     def discord_configured(self) -> bool:

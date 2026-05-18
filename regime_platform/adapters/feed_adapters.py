@@ -46,11 +46,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Optional
+
+from regime_platform.core.settings import settings
 
 log = logging.getLogger("regime.adapters")
 
@@ -149,9 +150,9 @@ class AlpacaFeedAdapter(FeedAdapter):
         super().__init__(symbols, reconnect)
         self.bar_size = bar_size
         self.feed     = feed
-        self._api_key    = os.getenv("ALPACA_API_KEY", "")
-        self._secret_key = os.getenv("ALPACA_SECRET_KEY", "")
-        self._base_url   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        self._api_key    = settings.ALPACA_API_KEY
+        self._secret_key = settings.ALPACA_SECRET_KEY
+        self._base_url   = settings.ALPACA_BASE_URL
 
     async def stream(self) -> AsyncGenerator[OHLCVBar, None]:
         """Stream bars from Alpaca WebSocket data stream."""
@@ -230,7 +231,7 @@ class BinanceFeedAdapter(FeedAdapter):
     ):
         super().__init__(symbols, reconnect)
         self.interval = interval
-        self._testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
+        self._testnet = settings.BINANCE_TESTNET
 
     async def stream(self) -> AsyncGenerator[OHLCVBar, None]:
         """Stream kline bars from Binance WebSocket."""
@@ -301,9 +302,9 @@ class IBFeedAdapter(FeedAdapter):
         self.sec_type     = sec_type
         self.exchange     = exchange
         self.currency     = currency
-        self._host        = os.getenv("IB_HOST",      "127.0.0.1")
-        self._port        = int(os.getenv("IB_PORT",  "7497"))
-        self._client_id   = int(os.getenv("IB_CLIENT_ID", "1"))
+        self._host        = settings.IB_HOST
+        self._port        = settings.IB_PORT
+        self._client_id   = settings.IB_CLIENT_ID
 
     async def stream(self) -> AsyncGenerator[OHLCVBar, None]:
         """Stream real-time bars from IB TWS."""

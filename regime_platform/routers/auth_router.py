@@ -25,7 +25,6 @@ Clerk Authentication:
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -48,6 +47,7 @@ from ..auth.jwt_auth import (
     get_current_user,
     make_login_response,
 )
+from ..core.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -55,14 +55,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def _load_users() -> dict[str, dict]:
-    raw = os.getenv("AUTH_USERS", "")
-    users = {}
-    for entry in raw.split(","):
-        parts = entry.strip().split(":")
-        if len(parts) == 3:
-            username, password, role = parts
-            users[username] = {"password": password, "role": role}
-    return users
+    return settings.auth_users_dict
 
 
 _USERS = _load_users()

@@ -36,12 +36,13 @@ Usage
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from regime_platform.core.settings import settings
 
 try:
     import jwt
@@ -57,15 +58,15 @@ log = logging.getLogger("regime.auth.clerk")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-CLERK_PUBLISHABLE_KEY = os.getenv("CLERK_PUBLISHABLE_KEY", "")
-CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
-CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", None)  # Optional: explicit JWKS URL
+CLERK_PUBLISHABLE_KEY = settings.CLERK_PUBLISHABLE_KEY
+CLERK_SECRET_KEY = settings.CLERK_SECRET_KEY
+CLERK_JWKS_URL = settings.CLERK_JWKS_URL or None  # Optional: explicit JWKS URL
 
 # Clerk uses RS256 algorithm for signing JWTs
 CLERK_JWT_ALGORITHM = "RS256"
 
 # Enable/disable Clerk authentication
-CLERK_AUTH_ENABLED = bool(CLERK_SECRET_KEY)
+CLERK_AUTH_ENABLED = settings.clerk_auth_enabled
 
 if not CLERK_AUTH_ENABLED:
     log.warning(
