@@ -1,3 +1,58 @@
+## [3.2.0] — 2026-05-19
+
+### Added — Walk-Forward Backtest Engine + Persistence + Optimization
+
+#### `core/backtester.py` — NEW FILE
+- 503-line walk-forward HMM backtest engine
+- Rolling HMM fit on trailing window with configurable refit interval
+- Strategy signal generation based on detected regime
+- Regime-gated Kelly position sizing
+- Risk check gates (VaR, max drawdown)
+- Trade execution with configurable commission and slippage
+- 30+ performance metrics: win rate, Sharpe, Sortino, Calmar, profit factor,
+  max drawdown, VaR/CVaR, avg hold bars, regime distribution, trades by regime
+- Equity curve, drawdown curve, and full trade log output
+- Optional date labels in trade log (pass `dates` array)
+
+#### `services/backtest_store.py` — NEW FILE
+- Supabase persistence layer for backtest results
+- `save_backtest_result()` — persist to `ta_backtest_result` table (user-scoped)
+- `get_backtest_history()` — paginated history with summary metrics only
+- `get_backtest_detail()` — full result by ID (user-scoped)
+- `delete_backtest()` — delete by ID (user-scoped)
+- Graceful degradation when Supabase is not configured
+
+#### `routers/backtest.py` — NEW FILE
+- `POST /backtest/run` — run walk-forward backtest (rate-limited, Clerk/JWT auth)
+- `GET /backtest/history` — paginated list of saved results
+- `GET /backtest/{id}` — full result by ID
+- `POST /backtest/compare` — side-by-side comparison with diff summary
+- `POST /backtest/optimize` — parameter grid sweep (max 50 combos)
+- `POST /backtest/export` — CSV/JSON export with section selection
+- `DELETE /backtest/{id}` — delete saved result
+
+#### `models/schemas.py` — Updated
+- `BacktestRequest` — extended with `dates` and `save` fields
+- `BacktestResponse` — full response with 30+ metric fields
+- `BacktestSummary` — lightweight summary for list views
+- `BacktestHistoryResponse` — paginated summary list
+- `BacktestCompareRequest` / `BacktestCompareResponse` — comparison + diff
+- `BacktestOptimizeRequest` / `BacktestOptimizeResponse` — grid sweep
+- `BacktestExportRequest` — export format + section selection
+
+#### `supabase/migrations/00000000000007_backtest_results.sql` — NEW FILE
+- `ta_backtest_result` table with RLS policies (user-scoped access)
+- Summary columns + JSONB columns for heavy data (equity curve, trade log, etc.)
+
+### Fixed
+- `pnl_pct` was always returning 0.0 in backtest trade log — now correctly computed
+
+### Changed
+- All backtest endpoints require Clerk/JWT authentication
+- Rate-limited under `RATE_LIMIT_COMPUTE`
+
+---
+
 ## [3.1.0] — 2026-Q2
 
 ### Changed — Dynamic Masaniello + Kelly Unified Sizing Engine

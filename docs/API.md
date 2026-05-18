@@ -1,6 +1,6 @@
 # Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-**Version:** 5.1.0  
+**Version:** 5.2.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
@@ -728,7 +728,13 @@ Returns a nested JSON with all three result objects.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/backtest/run` | Run walk-forward backtest with regime-aware strategy (30+ metrics) | None |
+| POST | `/backtest/run` | Run walk-forward backtest with regime-aware strategy (30+ metrics) | Clerk/JWT |
+| GET | `/backtest/history` | List saved backtest results (paginated) | Clerk/JWT |
+| GET | `/backtest/{id}` | Get full backtest result by ID | Clerk/JWT |
+| POST | `/backtest/compare` | Compare two or more saved backtest results | Clerk/JWT |
+| POST | `/backtest/optimize` | Parameter grid sweep (max 50 combos) | Clerk/JWT |
+| POST | `/backtest/export` | Export backtest result as CSV/JSON | Clerk/JWT |
+| DELETE | `/backtest/{id}` | Delete a saved backtest result | Clerk/JWT |
 
 ### POST /backtest/run
 
@@ -799,6 +805,144 @@ Walk-forward backtest pipeline:
   "trade_log": [{"entry_bar": 201, "exit_bar": 215, "pnl": 1250.0, "...": "..."}]
 }
 ```
+
+### GET /backtest/history
+
+Returns a paginated list of the authenticated user's saved backtest results, ordered by most recent first. Only summary metrics are included (equity curves and trade logs omitted for performance).
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `offset` | `int` | `0` | Pagination offset (≥0) |
+| `limit` | `int` | `20` | Page size (1-100) |
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "id": "uuid",
+      "symbol": "SPY",
+      "n_trades": 42,
+      "win_rate": 0.595,
+      "total_return": 0.245,
+      "annual_return": 0.152,
+      "sharpe_ratio": 1.29,
+      "max_drawdown": 0.068,
+      "profit_factor": 3.73,
+      "n_hmm_states": 4,
+      "created_at": "2026-05-19T12:00:00Z"
+    }
+  ],
+  "total": 15,
+  "offset": 0,
+  "limit": 20
+}
+```
+
+### GET /backtest/{id}
+
+Retrieve the full backtest result (including equity curve, trade log, and all 30+ metrics) for a previously saved backtest. Scoped to the authenticated user.
+
+**Response:** Same as `POST /backtest/run` response, plus `id` and `created_at` fields.
+
+### POST /backtest/compare
+
+Side-by-side comparison of 2-10 saved backtest results. Returns full results for each ID plus a diff summary highlighting key metric differences between the first and best result (by Sharpe ratio).
+
+**Request:**
+
+```json
+{
+  "ids": ["uuid-1", "uuid-2", "uuid-3"]
+}
+```
+
+**Response:**
+
+```json
+{
+  "comparisons": ["...BacktestResponse for each ID..."],
+  "diff": {
+    "total_return": {"first": 0.245, "best": 0.312, "delta": 0.067},
+    "sharpe_ratio": {"first": 1.29, "best": 1.58, "delta": 0.29},
+    "...": "..."
+  }
+}
+```
+
+### POST /backtest/optimize
+
+Grid-search parameter sweep. Accepts a `param_grid` dict mapping parameter names to lists of values. For each combination, runs a full walk-forward backtest and returns summary metrics.
+
+**Warning:** The number of combinations is the product of all grid values. Maximum 50 combinations per request.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Price series (min 81 bars) |
+| `symbol` | `string` | `"UNKNOWN"` | Ticker symbol |
+| `param_grid` | `dict[str, list]` | *required* | Map of parameter name to values to sweep |
+| `window` | `int` | `200` | Fixed: trailing HMM window |
+| `...` | `...` | `...` | All other BacktestRequest fields as fixed defaults |
+| `save` | `bool` | `false` | Save each result (default false for sweeps) |
+
+**Example Request:**
+
+```json
+{
+  "prices": [450.10, 451.20, ...],
+  "symbol": "SPY",
+  "param_grid": {
+    "kelly_fraction": [0.3, 0.5, 0.7],
+    "window": [150, 200]
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "params": {"kelly_fraction": 0.3, "window": 150},
+      "total_return": 0.182,
+      "annual_return": 0.108,
+      "sharpe_ratio": 0.95,
+      "sortino_ratio": 1.32,
+      "max_drawdown": 0.054,
+      "profit_factor": 2.41,
+      "win_rate": 0.55,
+      "n_trades": 38
+    }
+  ],
+  "best_by_sharpe": {"...best result by Sharpe..."},
+  "best_by_return": {"...best result by total return..."},
+  "n_combinations": 6
+}
+```
+
+### POST /backtest/export
+
+Export a saved backtest result as CSV or JSON. Returns a streaming file download with appropriate Content-Disposition header.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | `string` | *required* | Backtest result UUID |
+| `format` | `"csv"` \| `"json"` | `"json"` | Export format |
+| `sections` | `list[string]` | `["all"]` | Which sections: `summary`, `equity_curve`, `drawdown_curve`, `trade_log`, `all` |
+
+**Response:** Streaming file download with `Content-Disposition: attachment; filename=backtest_{id}.{csv|json}`.
+
+### DELETE /backtest/{id}
+
+Delete a saved backtest result. Scoped to the authenticated user. Returns 204 on success.
 
 ---
 

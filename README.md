@@ -10,8 +10,8 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v3.1.0** — GPU HMM · Live feeds · Correlation regimes · Portfolio optimisation ·
-Dynamic Masaniello+Kelly sizer · Streaming test tools
+**v3.2.0** — GPU HMM · Live feeds · Correlation regimes · Portfolio optimisation ·
+Dynamic Masaniello+Kelly sizer · Streaming test tools · Walk-forward backtest · Parameter sweep · Export
 
 ---
 
@@ -29,7 +29,8 @@ regime_risk_platform/
 │   │   ├── simulator.py              Markov-chain Monte Carlo regime simulation
 │   │   ├── gpu_engine.py             Pomegranate GPU HMM + create_regime_hmm()
 │   │   ├── correlation_regime.py     DCC multi-asset correlation regime detector
-│   │   └── portfolio_optimiser.py    Drawdown-controlled max-Sharpe optimiser
+│   │   ├── portfolio_optimiser.py    Drawdown-controlled max-Sharpe optimiser
+│   │   └── backtester.py          Walk-forward HMM backtest engine (503 lines)
 │   ├── adapters/
 │   │   └── feed_adapters.py          Alpaca / Binance / IB live OHLCV adapters
 │   ├── auth/
@@ -50,12 +51,14 @@ regime_risk_platform/
 │   │   ├── auth_router.py            POST /auth/token | GET /auth/me | Clerk endpoints
 │   │   ├── gpu.py                    GET /gpu/capabilities | POST /gpu/benchmark
 │   │   ├── feeds.py                  POST /feeds/start | /stop | GET /feeds/status
-│   │   └── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
-│   └── services/
-│       ├── stream_session.py         Per-symbol stateful streaming engine
-│       ├── registry.py               Singleton session store
-│       ├── portfolio_service.py      Multi-symbol regime + risk aggregation
-│       └── redis_persistence.py      Optional Redis Streams price buffer persistence
+│   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
+│   │   └── backtest.py            POST /backtest/run | /history | /compare | /optimize | /export
+│   ├── services/
+│   │   ├── stream_session.py         Per-symbol stateful streaming engine
+│   │   ├── registry.py               Singleton session store
+│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
+│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
+│   │   └── backtest_store.py      Supabase persistence for backtest results
 │
 ├── main.py                           v1 — batch API only
 ├── main_v2.py                        v2 — batch + streaming
@@ -148,6 +151,18 @@ open docs/index.html
 | `POST` | `/optimise` | Drawdown-controlled max-Sharpe |
 | `POST` | `/optimise/full` | Correlation + optimise one-shot |
 | `GET` | `/portfolio` | Multi-symbol aggregated risk view |
+
+### Backtesting
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/backtest/run` | Walk-forward backtest with 30+ metrics, Supabase persistence |
+| `GET` | `/backtest/history` | Paginated list of saved backtest results |
+| `GET` | `/backtest/{id}` | Full backtest result by ID |
+| `POST` | `/backtest/compare` | Side-by-side comparison of saved results |
+| `POST` | `/backtest/optimize` | Parameter grid sweep (max 50 combinations) |
+| `POST` | `/backtest/export` | Export result as CSV or JSON download |
+| `DELETE` | `/backtest/{id}` | Delete a saved backtest result |
 
 ### Live Streaming
 
@@ -503,6 +518,47 @@ GET /gpu/capabilities
 ```
 
 Transparent fallback to hmmlearn on CPU — no code changes required.
+
+---
+
+## Walk-Forward Backtest Engine
+
+`core/backtester.py` runs a comprehensive walk-forward backtest with HMM regime detection:
+
+1. **Rolling HMM fit** on a trailing window (default 200 bars)
+2. **Strategy signal generation** based on detected regime
+3. **Regime-gated Kelly position sizing**
+4. **Risk check gates** (VaR, max drawdown)
+5. **Trade execution** with configurable commission and slippage
+6. **30+ performance metrics** computed
+
+Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) for history, comparison, and export.
+
+### Parameters
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `window` | 200 | 81+ | Trailing HMM window |
+| `refit_every` | 50 | 10+ | HMM refit interval |
+| `n_hmm_states` | 4 | 2-4 | Number of HMM hidden states |
+| `kelly_fraction` | 0.5 | 0.1-1.0 | Fractional Kelly multiplier |
+| `target_vol` | 0.15 | 0-1.0 | Annualised target volatility |
+| `base_risk_limit` | 0.02 | 0-0.5 | Max daily loss fraction |
+| `initial_equity` | 100000 | >0 | Starting equity |
+| `commission_bps` | 5.0 | 0-50 | Commission in basis points |
+| `slippage_bps` | 2.0 | 0-50 | Slippage in basis points |
+| `max_position_pct` | 0.25 | 0-1.0 | Max position as equity fraction |
+| `risk_check` | true | — | Enable VaR/drawdown risk gates |
+| `regime_gate` | true | — | Only trade in favorable regimes |
+| `save` | true | — | Persist result to Supabase |
+
+### Optimization (Grid Search)
+
+`POST /backtest/optimize` accepts a `param_grid` dict mapping parameter names to arrays of values. For each combination, a full walk-forward backtest runs and returns summary metrics. Maximum 50 combinations per request to prevent timeout. Returns `best_by_sharpe` and `best_by_return` highlights.
+
+### Export
+
+`POST /backtest/export` streams a saved result as CSV or JSON with section selection (`summary`, `equity_curve`, `drawdown_curve`, `trade_log`).
 
 ---
 
