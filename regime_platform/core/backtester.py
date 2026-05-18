@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, List
+from datetime import datetime
 
 from .regime_engine import RegimeHMM, RegimeSnapshot
 from .position_sizer import PositionSizer, PositionRequest
@@ -56,6 +57,8 @@ class BacktestTrade:
     commission: float = 0.0
     hold_bars: int = 0
     exit_reason: str = ""
+    entry_date: Optional[str] = None   # ISO date string if dates provided
+    exit_date: Optional[str] = None    # ISO date string if dates provided
 
 
 @dataclass
@@ -108,6 +111,9 @@ class BacktestResult:
     equity_curve: list              # [equity at each bar]
     drawdown_curve: list            # [drawdown at each bar]
     trade_log: list                 # [BacktestTrade dicts]
+    
+    # Config snapshot (for persistence / comparison)
+    config_used: dict = field(default_factory=dict)
 
 
 class Backtester:
@@ -119,16 +125,16 @@ class Backtester:
       - High vol + bear/strong_bear → short (if enabled)
       - All other regimes → flat / exit
       - Risk gate: block new trades if CVaR exceeds base_risk_limit
-    """
     
-    VOL_LABELS = ["low", "med_low", "med_high", "high"]
-    TREND_LABELS = ["strong_bear", "bear", "bull", "strong_bull"]
+    Supports n-state HMM (2, 3, or 4 states) with auto-mapped labels.
+    """
     
     def run(
         self,
         prices: np.ndarray,
         symbol: str = "UNKNOWN",
         config: Optional[BacktestConfig] = None,
+        dates: Optional[list[str]] = None,
     ) -> BacktestResult:
         cfg = config or BacktestConfig()
         prices = np.asarray(prices, dtype=float)
@@ -139,6 +145,17 @@ class Backtester:
                 f"Need at least {cfg.window + 20} bars for backtest. Got {n}."
             )
         
+        # Validate dates if provided
+        if dates is not None and len(dates) != n:
+            raise ValueError(
+                f"dates length ({len(dates)}) must match prices length ({n})."
+            )
+        
+        # Get n-state label maps for signal generation
+        n_states = cfg.n_hmm_states
+        vol_labels = RegimeHMM.VOL_LABELS_BY_N.get(n_states, RegimeHMM.VOL_LABELS_BY_N[4])
+        trend_labels = RegimeHMM.TREND_LABELS_BY_N.get(n_states, RegimeHMM.TREND_LABELS_BY_N[4])
+        
         equity = cfg.initial_equity
         equity_curve = [equity]
         drawdown_curve = [0.0]
@@ -146,6 +163,7 @@ class Backtester:
         position = 0.0          # fraction of equity in position
         position_dir = 0        # 0 = flat, 1 = long, -1 = short
         entry_price = 0.0
+        entry_equity = 0.0      # equity at trade entry (for pnl_pct)
         entry_bar = 0
         trades: List[BacktestTrade] = []
         regime_counts = {}
@@ -165,7 +183,9 @@ class Backtester:
         buy_hold_start = prices[0]
         
         for bar_idx in range(cfg.window, n):
-            window_prices = prices[bar_idx - cfg.window : bar_idx + 1]
+            # Use prices up to (but not including) current bar for HMM fit
+            # to avoid look-ahead bias. Use bar_idx as the execution price.
+            window_prices = prices[bar_idx - cfg.window : bar_idx]
             current_price = prices[bar_idx]
             
             # Refit HMM periodically
@@ -173,7 +193,8 @@ class Backtester:
                 try:
                     hmm = RegimeHMM(n_components=cfg.n_hmm_states)
                     hmm.fit(window_prices)
-                    snap = hmm.predict(window_prices)
+                    # Predict on the full window including current bar for signal
+                    snap = hmm.predict(prices[bar_idx - cfg.window : bar_idx + 1])
                     last_fit_bar = bar_idx
                 except Exception:
                     snap = None
@@ -181,7 +202,7 @@ class Backtester:
             # If no snap, try predict with existing model
             if snap is None and hmm.fitted:
                 try:
-                    snap = hmm.predict(window_prices)
+                    snap = hmm.predict(prices[bar_idx - cfg.window : bar_idx + 1])
                 except Exception:
                     snap = None
             
@@ -190,8 +211,8 @@ class Backtester:
                 label = snap.regime_label
                 regime_counts[label] = regime_counts.get(label, 0) + 1
             
-            # Generate strategy signal
-            signal = self._generate_signal(snap, cfg)
+            # Generate strategy signal (n-state aware)
+            signal = self._generate_signal(snap, cfg, vol_labels, trend_labels)
             
             # Calculate PnL for existing position
             if position_dir != 0 and bar_idx > 0:
@@ -227,7 +248,7 @@ class Backtester:
                     if position_dir == 1 and snap.risk_multiplier < 0.3:
                         should_exit = True
                         exit_reason = "regime_exit"
-                    elif position_dir == -1 and snap.vol_state == "low" and snap.trend_state in ("bull", "strong_bull"):
+                    elif position_dir == -1 and snap.vol_state in vol_labels[:len(vol_labels)//2] and snap.trend_state in trend_labels[len(trend_labels)//2:]:
                         should_exit = True
                         exit_reason = "regime_exit"
                 
@@ -242,13 +263,18 @@ class Backtester:
                     slippage = abs(position * equity) * cfg.slippage_bps / 10000
                     equity -= commission + slippage
                     
-                    trade_pnl = 0.0
                     if trades and trades[-1].exit_price is None:
                         trades[-1].exit_price = current_price
-                        trades[-1].pnl = equity - trades[-1].entry_price * position * position_dir
+                        # PnL = exit equity contribution - entry equity contribution
+                        if entry_price > 0:
+                            price_change_pct = (current_price - entry_price) / entry_price * position_dir
+                            trades[-1].pnl = entry_equity * position * price_change_pct - (commission + slippage)
+                            trades[-1].pnl_pct = price_change_pct * position  # percentage return on position
                         trades[-1].commission = commission + slippage
                         trades[-1].hold_bars = bar_idx - entry_bar
                         trades[-1].exit_reason = exit_reason
+                        if dates is not None:
+                            trades[-1].exit_date = dates[bar_idx] if bar_idx < len(dates) else None
                         trade_pnl = trades[-1].pnl
                     
                     if trade_pnl > 0:
@@ -273,6 +299,7 @@ class Backtester:
                     position = 0.0
                     position_dir = 0
                     entry_price = 0.0
+                    entry_equity = 0.0
             
             # Enter new position
             if position_dir == 0 and signal in ("long", "short"):
@@ -307,6 +334,7 @@ class Backtester:
                     position = pos_size
                     position_dir = 1 if signal == "long" else -1
                     entry_price = current_price
+                    entry_equity = equity
                     entry_bar = bar_idx
                     
                     commission = position * equity * cfg.commission_bps / 10000
@@ -321,17 +349,23 @@ class Backtester:
                         regime_multiplier=snap.risk_multiplier if snap else 1.0,
                         position_size=position,
                         entry_price=entry_price,
+                        entry_date=dates[bar_idx] if dates is not None and bar_idx < len(dates) else None,
                     )
                     trades.append(trade)
         
         # Close any open position at end
         if position_dir != 0 and trades:
-            trades[-1].exit_price = prices[-1]
-            final_pnl = equity * position * ((prices[-1] - entry_price) / entry_price * position_dir)
-            trades[-1].pnl = final_pnl
-            trades[-1].hold_bars = n - 1 - entry_bar
+            exit_price = prices[-1]
+            trades[-1].exit_price = exit_price
+            if entry_price > 0:
+                price_change_pct = (exit_price - entry_price) / entry_price * position_dir
+                trades[-1].pnl = entry_equity * position * price_change_pct
+                trades[-1].pnl_pct = price_change_pct * position
+            trades[-1].hold_bars = len(prices) - 1 - entry_bar
             trades[-1].exit_reason = "end_of_data"
-            equity += final_pnl
+            if dates is not None:
+                trades[-1].exit_date = dates[-1] if len(dates) > 0 else None
+            equity += trades[-1].pnl
             equity_curve.append(equity)
         
         # Calculate metrics
@@ -340,20 +374,34 @@ class Backtester:
             trades_by_regime, regime_counts, prices, symbol, cfg
         )
     
-    def _generate_signal(self, snap: Optional[RegimeSnapshot], cfg: BacktestConfig) -> str:
-        """Generate a trading signal based on regime state."""
+    def _generate_signal(
+        self,
+        snap: Optional[RegimeSnapshot],
+        cfg: BacktestConfig,
+        vol_labels: list[str],
+        trend_labels: list[str],
+    ) -> str:
+        """Generate a trading signal based on regime state (n-state aware)."""
         if snap is None:
             return "flat"
         
         vol = snap.vol_state
         trend = snap.trend_state
         
+        # "Low" half of vol labels + "bull" half of trend labels → long
+        low_vol_labels = vol_labels[:len(vol_labels) // 2]      # e.g. ["low", "med_low"] for 4-state
+        bull_trend_labels = trend_labels[len(trend_labels) // 2:]  # e.g. ["bull", "strong_bull"] for 4-state
+        
+        # "High" half of vol labels + "bear" half of trend labels → short
+        high_vol_labels = vol_labels[len(vol_labels) // 2:]     # e.g. ["med_high", "high"] for 4-state
+        bear_trend_labels = trend_labels[:len(trend_labels) // 2]  # e.g. ["strong_bear", "bear"] for 4-state
+        
         # Long conditions
-        if vol in ("low", "med_low") and trend in ("bull", "strong_bull"):
+        if vol in low_vol_labels and trend in bull_trend_labels:
             return "long"
         
         # Short conditions (only in high vol bear regimes)
-        if vol in ("high", "med_high") and trend in ("bear", "strong_bear"):
+        if vol in high_vol_labels and trend in bear_trend_labels:
             return "short"
         
         return "flat"
@@ -420,9 +468,9 @@ class Backtester:
         calmar = float(annual_return / abs(max_dd)) if max_dd != 0 else 0.0
         information = float(excess_return / annual_vol) if annual_vol > 0 else 0.0
         
-        # Trade stats
+        # Trade stats — now using pnl_pct (fixed from always-0 bug)
         win_pcts = [t.pnl_pct for t in wins] if wins else [0.0]
-        loss_pcts = [t.pnl_pct for t in losses] if losses else [0.0]
+        loss_pcts = [abs(t.pnl_pct) for t in losses] if losses else [0.0]
         avg_win_pct = float(np.mean(win_pcts))
         avg_loss_pct = float(np.mean(loss_pcts))
         avg_win_loss = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else 999.0
@@ -489,14 +537,33 @@ class Backtester:
             drawdown_curve=[round(x, 6) for x in drawdown_curve],
             trade_log=[{
                 "bar": t.bar,
+                "date_idx": t.date_idx,
+                "entry_date": t.entry_date,
+                "exit_date": t.exit_date,
                 "signal": t.signal,
                 "regime_label": t.regime_label,
-                "regime_multiplier": t.regime_multiplier,
-                "position_size": t.position_size,
-                "entry_price": t.entry_price,
-                "exit_price": t.exit_price,
+                "regime_multiplier": round(t.regime_multiplier, 4),
+                "position_size": round(t.position_size, 4),
+                "entry_price": round(t.entry_price, 4),
+                "exit_price": round(t.exit_price, 4) if t.exit_price is not None else None,
                 "pnl": round(t.pnl, 4),
+                "pnl_pct": round(t.pnl_pct, 6),
+                "commission": round(t.commission, 4),
                 "hold_bars": t.hold_bars,
                 "exit_reason": t.exit_reason,
             } for t in trades],
+            config_used={
+                "window": cfg.window,
+                "refit_every": cfg.refit_every,
+                "n_hmm_states": cfg.n_hmm_states,
+                "kelly_fraction": cfg.kelly_fraction,
+                "target_vol": cfg.target_vol,
+                "base_risk_limit": cfg.base_risk_limit,
+                "initial_equity": cfg.initial_equity,
+                "commission_bps": cfg.commission_bps,
+                "slippage_bps": cfg.slippage_bps,
+                "max_position_pct": cfg.max_position_pct,
+                "risk_check": cfg.risk_check,
+                "regime_gate": cfg.regime_gate,
+            },
         )

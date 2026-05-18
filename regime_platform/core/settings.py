@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     RATE_LIMIT_COMPUTE: str = "10/minute"
     RATE_LIMIT_WRITE: str = "20/minute"
 
+    # ── Supabase ─────────────────────────────────────────────────────────────
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+
     # ── MCP ─────────────────────────────────────────────────────────────────
     MCP_AUTH_ENABLED: bool = True
     MCP_ISSUER: str = ""

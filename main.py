@@ -395,6 +395,8 @@ Endpoints:
             "ingest_tick_stream_tick_post",
             "ingest_ticks_stream_ticks_post",
             "remove_session_stream_session__symbol__delete",
+            # ── Backtest delete (destructive — MCP should run, read, compare, not delete) ──
+            "delete_backtest_result_backtest__backtest_id__delete",
         ]
 
         # Build AuthConfig: require JWT / API-key on the MCP endpoint itself
@@ -425,11 +427,12 @@ Exposes trading risk management endpoints as MCP tools (read-only / analysis):
 - Dynamic Masaniello two-stage pipeline
 - Observation building (24-feature HMM observation vector)
 - GPU HMM capabilities and benchmarks
-- Backtesting, strategy signals, TDA features
+- Backtesting (walk-forward HMM with 30+ metrics), backtest history, comparison
+- Strategy signals, TDA features
 - Renko read-only: state, stats, bricks, signals, trades, swing-points
 
 Excluded from MCP (use REST API directly):
-- Auth endpoints, feed start/stop, Renko write ops, stream data injection""",
+- Auth endpoints, feed start/stop, Renko write ops, stream data injection, backtest delete""",
             exclude_operations=_mcp_excluded_ops,
             auth_config=_mcp_auth,
             headers=["authorization", "x-api-key"],

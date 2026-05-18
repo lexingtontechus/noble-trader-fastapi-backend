@@ -286,10 +286,16 @@ class BacktestRequest(PricePayload):
     max_position_pct: float   = Field(default=0.25, gt=0, le=1.0)
     risk_check: bool          = Field(default=True)
     regime_gate: bool         = Field(default=True)
+    dates: Optional[list[str]] = Field(
+        default=None,
+        description="ISO date strings matching prices length. Enables date labels in trade log.",
+    )
+    save: bool = Field(default=True, description="Persist result to database for later retrieval.")
 
 
 class BacktestResponse(BaseModel):
     """Walk-forward backtest result with 30+ metrics."""
+    id: Optional[str] = Field(default=None, description="Database ID if result was saved.")
     symbol: str
     n_bars: int
     n_trades: int
@@ -324,6 +330,42 @@ class BacktestResponse(BaseModel):
     equity_curve: list[float]
     drawdown_curve: list[float]
     trade_log: list[dict]
+    config_used: dict = Field(default_factory=dict, description="Config snapshot used for this backtest.")
+    created_at: Optional[str] = Field(default=None, description="ISO timestamp when result was saved.")
+
+
+class BacktestSummary(BaseModel):
+    """Lightweight backtest summary for list views."""
+    id: str
+    symbol: str
+    n_trades: int
+    win_rate: float
+    total_return: float
+    annual_return: float
+    sharpe_ratio: float
+    max_drawdown: float
+    profit_factor: float
+    n_hmm_states: int
+    created_at: str
+
+
+class BacktestHistoryResponse(BaseModel):
+    """Paginated list of saved backtest summaries."""
+    results: list[BacktestSummary]
+    total: int
+    offset: int
+    limit: int
+
+
+class BacktestCompareRequest(BaseModel):
+    """Request to compare two or more saved backtests."""
+    ids: list[str] = Field(..., min_length=2, max_length=10, description="Backtest IDs to compare.")
+
+
+class BacktestCompareResponse(BaseModel):
+    """Side-by-side comparison of backtest results."""
+    comparisons: list[BacktestResponse]
+    diff: dict = Field(default_factory=dict, description="Key metric differences between first and best result.")
 
 
 # ─── TDA Features ──────────────────────────────────────────────────────────────

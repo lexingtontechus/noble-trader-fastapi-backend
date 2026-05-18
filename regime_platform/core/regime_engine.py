@@ -33,36 +33,27 @@ class RegimeSnapshot:
     @property
     def risk_multiplier(self) -> float:
         """
-        Risk scaling factor [0.10 – 1.75] across the 4×4 regime grid.
+        Risk scaling factor [0.10 – 1.75] across the regime grid.
+        Supports 2, 3, and 4-state labels via centralized scale maps.
 
         Vol scale:
-          low       → 1.75  (quietest — max leverage headroom)
-          med_low   → 1.20
-          med_high  → 0.70
-          high      → 0.35  (most volatile — strongly defensive)
+          low       → 1.50 (2-state) / 1.75 (4-state)
+          med       → 1.00 (3-state)
+          med_low   → 1.20 (4-state)
+          med_high  → 0.70 (4-state)
+          high      → 0.40 (2-state) / 0.35 (4-state)
 
         Trend scale:
-          strong_bull → 1.00
-          bull        → 0.88
-          bear        → 0.60
-          strong_bear → 0.40  (confirmed downtrend — minimal exposure)
+          strong_bull → 1.00 (4-state)
+          bull        → 0.88 (4-state) / 1.00 (2/3-state)
+          neutral     → 0.80 (3-state)
+          bear        → 0.50 (2-state) / 0.60 (4-state)
+          strong_bear → 0.40 (4-state)
 
         Combined = clip(vol_scale × trend_scale, 0.10, 1.75)
         """
-        vol_scale = {
-            "low":      1.75,
-            "med_low":  1.20,
-            "med_high": 0.70,
-            "high":     0.35,
-        }[self.vol_state]
-
-        trend_scale = {
-            "strong_bull": 1.00,
-            "bull":        0.88,
-            "bear":        0.60,
-            "strong_bear": 0.40,
-        }[self.trend_state]
-
+        vol_scale = RegimeHMM.VOL_RISK_SCALE.get(self.vol_state, 1.0)
+        trend_scale = RegimeHMM.TREND_RISK_SCALE.get(self.trend_state, 1.0)
         return round(max(0.10, min(1.75, vol_scale * trend_scale)), 4)
 
 
@@ -70,9 +61,11 @@ class RegimeSnapshot:
 
 class RegimeHMM:
     """
-    Dual HMM: separate 4-state Gaussian HMMs for volatility and trend regimes.
+    Dual HMM: separate n-state Gaussian HMMs for volatility and trend regimes.
 
-    States per dimension
+    Supports 2, 3, or 4 states per dimension.
+
+    States per dimension (4-state default)
     ─────────────────────
     Volatility  : low | med_low | med_high | high
     Trend       : strong_bear | bear | bull | strong_bull
@@ -83,8 +76,39 @@ class RegimeHMM:
     no manual mapping required.
     """
 
+    # Centralized label maps for n-state support
+    VOL_LABELS_BY_N: dict[int, list[str]] = {
+        2: ["low", "high"],
+        3: ["low", "med", "high"],
+        4: ["low", "med_low", "med_high", "high"],
+    }
+    TREND_LABELS_BY_N: dict[int, list[str]] = {
+        2: ["bear", "bull"],
+        3: ["bear", "neutral", "bull"],
+        4: ["strong_bear", "bear", "bull", "strong_bull"],
+    }
+
+    # Backward-compatible class-level defaults (4-state)
     VOL_LABELS   = ["low", "med_low", "med_high", "high"]
     TREND_LABELS = ["strong_bear", "bear", "bull", "strong_bull"]
+
+    # Risk scale maps for all n-state variants
+    VOL_RISK_SCALE: dict[str, float] = {
+        # 2-state
+        "low": 1.50, "high": 0.40,
+        # 3-state
+        "med": 1.00,
+        # 4-state
+        "med_low": 1.20, "med_high": 0.70,
+    }
+    TREND_RISK_SCALE: dict[str, float] = {
+        # 2-state
+        "bear": 0.50, "bull": 1.00,
+        # 3-state
+        "neutral": 0.80,
+        # 4-state
+        "strong_bear": 0.40, "strong_bull": 1.00,
+    }
 
     def __init__(
         self,
@@ -92,6 +116,8 @@ class RegimeHMM:
         n_iter: int = 100,
         covariance_type: str = "diag",
     ):
+        if n_components not in (2, 3, 4):
+            raise ValueError(f"n_components must be 2, 3, or 4. Got {n_components}.")
         self.n_components    = n_components
         self.n_iter          = n_iter
         self.covariance_type = covariance_type
@@ -100,6 +126,10 @@ class RegimeHMM:
         self._vol_label_map:   dict[int, str] = {}
         self._trend_label_map: dict[int, str] = {}
         self.fitted = False
+
+        # Active label sets for current n_components
+        self._vol_labels   = self.VOL_LABELS_BY_N[n_components]
+        self._trend_labels = self.TREND_LABELS_BY_N[n_components]
 
     # ── Fitting ──────────────────────────────────────────────────────────────
 
@@ -130,8 +160,8 @@ class RegimeHMM:
         self._sanitize_model(self._vol_model)
         self._sanitize_model(self._trend_model)
 
-        self._vol_label_map   = self._label_vol_states(self._vol_model)
-        self._trend_label_map = self._label_trend_states(self._trend_model)
+        self._vol_label_map   = self._label_states(self._vol_model, self._vol_labels)
+        self._trend_label_map = self._label_states(self._trend_model, self._trend_labels)
         self.fitted = True
         return self
 
@@ -149,15 +179,15 @@ class RegimeHMM:
         vol_posteriors   = self._vol_model.predict_proba(vol_features)[-1]
         trend_posteriors = self._trend_model.predict_proba(trend_features)[-1]
 
-        vol_probs   = self._reorder(vol_posteriors,   self._vol_label_map,   self.VOL_LABELS)
-        trend_probs = self._reorder(trend_posteriors, self._trend_label_map, self.TREND_LABELS)
+        vol_probs   = self._reorder(vol_posteriors,   self._vol_label_map,   self._vol_labels)
+        trend_probs = self._reorder(trend_posteriors, self._trend_label_map, self._trend_labels)
 
         # NaN fallback: if posteriors are degenerate (all NaN), use uniform
         if not np.all(np.isfinite(vol_probs)):
-            n = len(self.VOL_LABELS)
+            n = len(self._vol_labels)
             vol_probs = [1.0 / n] * n
         if not np.all(np.isfinite(trend_probs)):
-            n = len(self.TREND_LABELS)
+            n = len(self._trend_labels)
             trend_probs = [1.0 / n] * n
 
         # Re-normalise (floating point drift)
@@ -168,8 +198,8 @@ class RegimeHMM:
         if ts > 0:
             trend_probs = [p / ts for p in trend_probs]
 
-        vol_state   = self.VOL_LABELS[int(np.argmax(vol_probs))]
-        trend_state = self.TREND_LABELS[int(np.argmax(trend_probs))]
+        vol_state   = self._vol_labels[int(np.argmax(vol_probs))]
+        trend_state = self._trend_labels[int(np.argmax(trend_probs))]
 
         return RegimeSnapshot(
             vol_probs=vol_probs,
@@ -280,26 +310,18 @@ class RegimeHMM:
                 model._covars_ = np.where(bad, 1e-3, model._covars_)
 
     @staticmethod
-    def _label_vol_states(model: hmm.GaussianHMM) -> dict[int, str]:
+    def _label_states(model: hmm.GaussianHMM, labels: list[str]) -> dict[int, str]:
         """
-        Sort HMM component means on the first feature (20-bar realised vol).
-        Ascending order → low, med_low, med_high, high.
+        Sort HMM component means to auto-label states.
+        Uses feature 0 for vol (ascending → low to high),
+        feature 2 for trend (ascending → bear to bull).
+        Works for any n_components (2, 3, or 4).
         """
-        means  = model.means_[:, 0]
+        n = min(model.n_components, len(labels))
+        feature_idx = 2 if len(labels) > 2 and labels[0] in ("strong_bear", "bear", "neutral") else 0
+        means  = model.means_[:, feature_idx]
         order  = np.argsort(means)
-        labels = RegimeHMM.VOL_LABELS
-        return {int(order[i]): labels[i] for i in range(len(labels))}
-
-    @staticmethod
-    def _label_trend_states(model: hmm.GaussianHMM) -> dict[int, str]:
-        """
-        Sort HMM component means on the third feature (30-bar cumulative return).
-        Ascending order → strong_bear, bear, bull, strong_bull.
-        """
-        means  = model.means_[:, 2]   # 30-bar cum return = feature index 2
-        order  = np.argsort(means)
-        labels = RegimeHMM.TREND_LABELS
-        return {int(order[i]): labels[i] for i in range(len(labels))}
+        return {int(order[i]): labels[i] for i in range(n)}
 
     @staticmethod
     def _reorder(
