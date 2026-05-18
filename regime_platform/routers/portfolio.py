@@ -3,10 +3,11 @@
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ..auth.jwt_auth import TokenData, get_authed_user
+from ..core.exceptions import raise_http_exception
 from ..services.portfolio_service import SymbolSummary, portfolio_service
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
@@ -119,7 +120,7 @@ async def get_portfolio(
             active_alerts=result.active_alerts,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_http_exception(e, "portfolio aggregation")
 
 
 @router.get(

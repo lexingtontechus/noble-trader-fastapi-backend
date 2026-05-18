@@ -58,9 +58,10 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 try:
     from fastapi_mcp import FastApiMCP
@@ -229,6 +230,80 @@ Endpoints:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # ── Global Exception Handlers ────────────────────────────────────────────
+    # Proper HTTP status codes instead of default 422 for everything
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Return 422 for genuine validation errors with structured detail."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "body": exc.body},
+        )
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(request: Request, exc: ValueError):
+        """Return 400 for bad input values (invalid params, out-of-range, etc.)."""
+        log.warning(f"400 Bad Request: {request.method} {request.url.path} — {exc}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(KeyError)
+    async def key_error_handler(request: Request, exc: KeyError):
+        """Return 400 for missing required fields."""
+        log.warning(f"400 Bad Request: {request.method} {request.url.path} — missing key: {exc}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Missing required field: {exc}"},
+        )
+
+    @app.exception_handler(FileNotFoundError)
+    async def not_found_error_handler(request: Request, exc: FileNotFoundError):
+        """Return 404 for resource not found."""
+        log.warning(f"404 Not Found: {request.method} {request.url.path} — {exc}")
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(ConnectionError)
+    async def connection_error_handler(request: Request, exc: ConnectionError):
+        """Return 502 for upstream/downstream service failures."""
+        log.error(f"502 Bad Gateway: {request.method} {request.url.path} — {exc}")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Upstream service error: {str(exc)}"},
+        )
+
+    @app.exception_handler(TimeoutError)
+    async def timeout_error_handler(request: Request, exc: TimeoutError):
+        """Return 504 for upstream timeouts."""
+        log.error(f"504 Gateway Timeout: {request.method} {request.url.path} — {exc}")
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Upstream service timeout"},
+        )
+
+    @app.exception_handler(ImportError)
+    async def import_error_handler(request: Request, exc: ImportError):
+        """Return 503 when an optional dependency is missing."""
+        log.error(f"503 Service Unavailable: {request.method} {request.url.path} — {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Required dependency not available: {str(exc)}"},
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_error_handler(request: Request, exc: Exception):
+        """Catch-all: return 500 for unexpected errors (never leak tracebacks)."""
+        log.exception(f"500 Internal Server Error: {request.method} {request.url.path}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
 
     # CORS — locked to specific origins via env var
     # CORS_ORIGINS="https://your-app.vercel.app,http://localhost:3000"
