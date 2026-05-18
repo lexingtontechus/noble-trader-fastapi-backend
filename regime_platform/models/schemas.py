@@ -8,7 +8,7 @@ from typing import Optional, Literal
 # ─── Shared ───────────────────────────────────────────────────────────────────
 
 class PricePayload(BaseModel):
-    prices: list[float] = Field(..., min_length=81, description="Ordered price series (OHLCV close preferred). Min 81 bars.")
+    prices: list[float] = Field(..., min_length=81, max_length=5000, description="Ordered price series (OHLCV close preferred). Min 81, max 5000 bars.")
     symbol: str = Field(default="UNKNOWN", description="Ticker symbol for labelling.")
 
     @field_validator("prices")

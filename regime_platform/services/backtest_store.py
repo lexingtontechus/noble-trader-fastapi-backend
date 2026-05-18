@@ -46,15 +46,15 @@ async def save_backtest_result(
     result_dict: dict,
     config_used: dict,
     symbol: str,
-) -> Optional[str]:
+) -> tuple[Optional[str], Optional[str]]:
     """
     Persist a backtest result to Supabase.
 
-    Returns the database record ID on success, None on failure.
+    Returns (record_id, created_at) on success, (None, None) on failure.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         # Supabase not configured — skip persistence silently
-        return None
+        return None, None
 
     record_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -96,13 +96,24 @@ async def save_backtest_result(
                 json=row,
             )
             if resp.status_code in (200, 201):
-                return record_id
+                # Prefer: return=representation returns the inserted row
+                try:
+                    inserted = resp.json()
+                    if isinstance(inserted, list) and inserted:
+                        created_at = inserted[0].get("created_at", now)
+                    elif isinstance(inserted, dict):
+                        created_at = inserted.get("created_at", now)
+                    else:
+                        created_at = now
+                except Exception:
+                    created_at = now
+                return record_id, created_at
             # Log but don't crash
             print(f"[backtest_store] Supabase insert failed: {resp.status_code} {resp.text[:200]}")
-            return None
+            return None, None
     except Exception as exc:
         print(f"[backtest_store] Supabase save error: {exc}")
-        return None
+        return None, None
 
 
 async def get_backtest_history(

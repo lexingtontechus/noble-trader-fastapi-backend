@@ -184,7 +184,7 @@ class TestBacktestStore:
 
     @pytest.mark.asyncio
     async def test_save_returns_none_when_no_supabase(self):
-        """save_backtest_result should return None when Supabase is not configured."""
+        """save_backtest_result should return (None, None) when Supabase is not configured."""
         from regime_platform.services.backtest_store import save_backtest_result
         with patch("regime_platform.services.backtest_store.settings") as mock_settings:
             mock_settings.SUPABASE_URL = ""
@@ -195,7 +195,7 @@ class TestBacktestStore:
                 config_used={"window": 200},
                 symbol="TEST",
             )
-            assert result is None
+            assert result == (None, None)
 
     @pytest.mark.asyncio
     async def test_history_returns_empty_when_no_supabase(self):

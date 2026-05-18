@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+import asyncio
+import logging
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from typing import Optional
 
 from ..auth import get_authed_user, TokenData
@@ -22,8 +24,11 @@ from ..services.backtest_store import (
     get_backtest_detail,
     delete_backtest as db_delete_backtest,
 )
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtest", tags=["Backtesting"])
 backtester = Backtester()
@@ -77,7 +82,9 @@ def _result_to_response(result, record_id: Optional[str] = None, created_at: Opt
     response_model=BacktestResponse,
     summary="Run walk-forward backtest with regime-aware strategy (30+ metrics)",
 )
+@limiter.limit(RATE_LIMIT_COMPUTE)
 async def run_backtest(
+    request: Request,
     req: BacktestRequest,
     user: TokenData = Depends(get_authed_user),
 ):
@@ -108,11 +115,13 @@ async def run_backtest(
             risk_check=req.risk_check,
             regime_gate=req.regime_gate,
         )
-        result = backtester.run(
+        # Offload CPU-bound backtest to thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            backtester.run,
             prices,
-            symbol=req.symbol,
-            config=config,
-            dates=req.dates,
+            req.symbol,
+            config,
+            req.dates,
         )
 
         # Persist to database
@@ -154,14 +163,12 @@ async def run_backtest(
                 "drawdown_curve": result.drawdown_curve,
                 "trade_log": result.trade_log,
             }
-            record_id = await save_backtest_result(
+            record_id, created_at = await save_backtest_result(
                 user_id=user.sub,
                 result_dict=result_dict,
                 config_used=result.config_used,
                 symbol=req.symbol,
             )
-            if record_id:
-                created_at = result_dict.get("_created_at")
 
         return _result_to_response(result, record_id, created_at)
 

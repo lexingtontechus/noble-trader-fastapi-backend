@@ -14,6 +14,7 @@ Pipeline per bar:
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, List
@@ -22,6 +23,8 @@ from datetime import datetime
 from .regime_engine import RegimeHMM, RegimeSnapshot
 from .position_sizer import PositionSizer, PositionRequest
 from .risk_manager import RiskManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,14 +199,16 @@ class Backtester:
                     # Predict on the full window including current bar for signal
                     snap = hmm.predict(prices[bar_idx - cfg.window : bar_idx + 1])
                     last_fit_bar = bar_idx
-                except Exception:
+                except Exception as exc:
+                    logger.warning("HMM refit failed at bar %d: %s", bar_idx, exc)
                     snap = None
             
             # If no snap, try predict with existing model
             if snap is None and hmm.fitted:
                 try:
                     snap = hmm.predict(prices[bar_idx - cfg.window : bar_idx + 1])
-                except Exception:
+                except Exception as exc:
+                    logger.debug("HMM predict failed at bar %d: %s", bar_idx, exc)
                     snap = None
             
             # Track regime distribution
@@ -252,8 +257,9 @@ class Backtester:
                         should_exit = True
                         exit_reason = "regime_exit"
                 
-                # Risk check: stop loss if drawdown exceeds limit
-                if cfg.risk_check and dd < -0.10:
+                # Risk check: stop loss if drawdown exceeds 5× base_risk_limit
+                max_dd_threshold = -(cfg.base_risk_limit * 5)
+                if cfg.risk_check and dd < max_dd_threshold:
                     should_exit = True
                     exit_reason = "max_drawdown_stop"
                 
@@ -263,6 +269,7 @@ class Backtester:
                     slippage = abs(position * equity) * cfg.slippage_bps / 10000
                     equity -= commission + slippage
                     
+                    trade_pnl = 0.0  # default
                     if trades and trades[-1].exit_price is None:
                         trades[-1].exit_price = current_price
                         # PnL = exit equity contribution - entry equity contribution
