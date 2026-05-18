@@ -1,6 +1,7 @@
 """Regime detection endpoints."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import RegimeRequest, RegimeResponse, RegimeV2Request, RegimeV2Response
 from ..core.regime_engine import RegimeHMM
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
@@ -34,7 +35,7 @@ async def detect_regime(request: Request, req: RegimeRequest):
             n_bars_fitted=snap.n_bars_fitted,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "regime detection")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -144,4 +145,4 @@ async def detect_regime_v2(request: Request, req: RegimeV2Request):
             regime_stability=stability,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "regime detection v2")

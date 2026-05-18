@@ -1,6 +1,7 @@
 """Full pipeline: regime → sizing → risk in one call."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import FullAnalysisRequest, FullAnalysisResponse, RegimeResponse, SizeResponse, RiskResponse
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
@@ -98,4 +99,4 @@ async def full_analysis(req: FullAnalysisRequest):
             risk=risk_resp,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "full pipeline analysis")

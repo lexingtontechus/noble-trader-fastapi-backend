@@ -1,6 +1,7 @@
 """Observation builder endpoints — 24-feature and 24+-feature stateful observation vectors."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import ObservationRequest, ObservationResponse, ObservationV2Request, ObservationV2Response
 from ..core.obs_builder import InferenceObservationBuilder, F
 from ..core.tda_engine import TDAEngine
@@ -85,7 +86,7 @@ async def build_observation(req: ObservationRequest):
             n_bars_fitted=len(prices),
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "observation building")
 
 
 # TDA feature labels for the extended vector
@@ -182,4 +183,4 @@ async def build_observation_v2(req: ObservationV2Request):
             tda_regime_change_prob=tda_regime_change,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "observation building v2")

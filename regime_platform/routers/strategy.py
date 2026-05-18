@@ -1,6 +1,7 @@
 """Strategy signal endpoints — combines regime detection, Kelly sizing, and risk guidance."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import StrategySignalRequest, StrategySignalResponse
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
@@ -114,4 +115,4 @@ async def strategy_signal(req: StrategySignalRequest):
             notes=notes,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "strategy signal")

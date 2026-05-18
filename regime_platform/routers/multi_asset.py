@@ -10,7 +10,8 @@ Multi-asset correlation regime + drawdown-optimised portfolio endpoints.
 from __future__ import annotations
 
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, Depends, Request
+from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -180,7 +181,7 @@ async def detect_correlation_regime(
             asset_regimes=[_snap_to_dict(ar) for ar in snap.asset_regimes],
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "correlation detection")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -237,7 +238,7 @@ async def optimise_portfolio(
             solver_message=res.solver_message,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "portfolio optimisation")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -308,7 +309,7 @@ async def full_optimise(
             ),
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "full optimisation")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -414,4 +415,4 @@ async def optimise_with_masaniello(
             corr_confidence=result.corr_confidence,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "Masaniello optimisation")

@@ -17,6 +17,8 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
+from ..core.exceptions import raise_http_exception
+
 from ..adapters.feed_adapters import (
     FeedManager, AlpacaFeedAdapter, BinanceFeedAdapter, IBFeedAdapter
 )
@@ -108,7 +110,7 @@ async def start_feeds(
             _manager.add(adapter)
             log.info(f"Registered {cfg.source} adapter for {cfg.symbols}")
         except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Invalid feed config: {e}")
+            raise_http_exception(e, "feed configuration")
 
     # Launch as background asyncio task
     loop = asyncio.get_event_loop()

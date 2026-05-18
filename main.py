@@ -55,7 +55,6 @@
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -73,6 +72,7 @@ except ImportError:
 from regime_platform.auth.jwt_auth import get_authed_user
 from regime_platform.auth.jwt_auth import TokenData
 from regime_platform.core.gpu_engine import gpu_capabilities
+from regime_platform.core.settings import settings
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_COMPUTE, RATE_LIMIT_WRITE
 
 # v2.x routers
@@ -233,10 +233,8 @@ Endpoints:
     # CORS — locked to specific origins via env var
     # CORS_ORIGINS="https://your-app.vercel.app,http://localhost:3000"
     # Falls back to localhost-only in development when not set.
-    _cors_origins_str = os.getenv("CORS_ORIGINS", "")
-    if _cors_origins_str.strip():
-        _cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
-    else:
+    _cors_origins = settings.cors_origins_list
+    if not _cors_origins:
         # Dev fallback: only localhost
         _cors_origins = [
             "http://localhost:3000",
@@ -326,9 +324,9 @@ Endpoints:
 
         # Build AuthConfig: require JWT / API-key on the MCP endpoint itself
         # Only include issuer if MCP_ISSUER is set (avoids empty-string validation issues)
-        if os.getenv("MCP_AUTH_ENABLED", "true").lower() != "false":
+        if settings.MCP_AUTH_ENABLED:
             _mcp_auth_kwargs = dict(dependencies=[Depends(get_authed_user)])
-            _mcp_issuer = os.getenv("MCP_ISSUER", "")
+            _mcp_issuer = settings.MCP_ISSUER
             if _mcp_issuer:
                 _mcp_auth_kwargs["issuer"] = _mcp_issuer
             _mcp_auth = AuthConfig(**_mcp_auth_kwargs)
@@ -435,9 +433,9 @@ Excluded from MCP (use REST API directly):
             from notifications.discord import discord_notifier
             discord_status["configured"] = discord_notifier.is_configured
             discord_status["channels"] = {
-                "signals": bool(os.getenv("DISCORD_WEBHOOK_SIGNALS")),
-                "executions": bool(os.getenv("DISCORD_WEBHOOK_EXECUTIONS")),
-                "status": bool(os.getenv("DISCORD_WEBHOOK_STATUS")),
+                "signals": bool(settings.DISCORD_WEBHOOK_SIGNALS),
+                "executions": bool(settings.DISCORD_WEBHOOK_EXECUTIONS),
+                "status": bool(settings.DISCORD_WEBHOOK_STATUS),
             }
         except ImportError:
             pass
@@ -446,7 +444,7 @@ Excluded from MCP (use REST API directly):
         mcp_status = {"available": MCP_AVAILABLE}
         if MCP_AVAILABLE:
             mcp_status["endpoint"] = "/mcp"
-            mcp_status["auth"] = "enabled" if os.getenv("MCP_AUTH_ENABLED", "true").lower() != "false" else "disabled"
+            mcp_status["auth"] = "enabled" if settings.MCP_AUTH_ENABLED else "disabled"
             mcp_status["header_forwarding"] = ["authorization", "x-api-key"]
 
         return {
@@ -454,7 +452,7 @@ Excluded from MCP (use REST API directly):
             "version": "5.1.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
-            "cors_origins": os.getenv("CORS_ORIGINS", "http://localhost:3000"),
+            "cors_origins": settings.CORS_ORIGINS,
             "discord": discord_status,
             "mcp": mcp_status,
             "gpu_backend": caps["hmm_backend"],

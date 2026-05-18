@@ -3,7 +3,8 @@
 from typing import Optional
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 
 from ..auth.jwt_auth import TokenData, get_authed_user
@@ -113,4 +114,4 @@ async def simulate_symbol(
             step_dominant_regime=step_dominant,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "regime simulation")

@@ -1,6 +1,7 @@
 """TDA (Topological Data Analysis) endpoints — persistent homology feature extraction."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import TDARequest, TDAResponse
 from ..core.tda_engine import TDAEngine
 import numpy as np
@@ -68,4 +69,4 @@ async def extract_tda_features(req: TDARequest):
             betti_1=result.betti_1,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "TDA feature extraction")

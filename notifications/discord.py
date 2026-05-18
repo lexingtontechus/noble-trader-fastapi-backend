@@ -23,13 +23,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+from regime_platform.core.resilience import retry_with_backoff
+from regime_platform.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +143,11 @@ class DiscordNotifier:
     """
 
     def __init__(self):
-        # Load webhook URLs from environment
+        # Load webhook URLs from centralized settings
         self._webhooks: Dict[AlertChannel, Optional[str]] = {
-            AlertChannel.SIGNALS: os.getenv("DISCORD_WEBHOOK_SIGNALS"),
-            AlertChannel.EXECUTIONS: os.getenv("DISCORD_WEBHOOK_EXECUTIONS"),
-            AlertChannel.STATUS: os.getenv("DISCORD_WEBHOOK_STATUS"),
+            AlertChannel.SIGNALS: settings.DISCORD_WEBHOOK_SIGNALS or None,
+            AlertChannel.EXECUTIONS: settings.DISCORD_WEBHOOK_EXECUTIONS or None,
+            AlertChannel.STATUS: settings.DISCORD_WEBHOOK_STATUS or None,
         }
         self._rate_limiter = RateLimiter()
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -198,7 +200,26 @@ class DiscordNotifier:
 
         try:
             client = self._get_client()
-            response = await client.post(url, json=payload)
+
+            async def _do_post():
+                return await client.post(url, json=payload)
+
+            try:
+                response = await retry_with_backoff(
+                    _do_post,
+                    max_retries=2,
+                    base_delay=1.0,
+                    retryable_exceptions=(
+                        httpx.ConnectError,
+                        httpx.TimeoutException,
+                        ConnectionError,
+                        TimeoutError,
+                        OSError,
+                    ),
+                )
+            except (httpx.ConnectError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError) as e:
+                logger.error(f"Discord send error for {channel.value} after retries: {e}")
+                return False
 
             if response.status_code == 204 or response.status_code == 200:
                 self._rate_limiter.record_send(url)

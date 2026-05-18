@@ -1,6 +1,7 @@
 """Backtest endpoints — walk-forward backtesting with regime-aware strategy."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import BacktestRequest, BacktestResponse
 from ..core.backtester import Backtester, BacktestConfig
 import numpy as np
@@ -88,4 +89,4 @@ async def run_backtest(req: BacktestRequest):
             trade_log=result.trade_log,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "backtest")

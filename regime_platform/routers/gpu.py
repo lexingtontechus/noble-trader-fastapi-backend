@@ -1,6 +1,7 @@
 """GPU HMM capabilities and benchmark endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends
+from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 import numpy as np
 import time
@@ -99,4 +100,4 @@ async def benchmark(
             mps_available=caps["mps_available"],
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "GPU benchmark")

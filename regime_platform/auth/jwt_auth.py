@@ -35,7 +35,6 @@ Usage
 
 from __future__ import annotations
 
-import os
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -43,21 +42,17 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Query, WebSocket, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 
+from regime_platform.core.settings import settings
+
 log = logging.getLogger("regime.auth")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-JWT_SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "")
-JWT_ALGORITHM   = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_MINS = int(os.getenv("JWT_EXPIRE_MINS", "60"))
-API_KEYS        = set(filter(None, os.getenv("API_KEYS", "").split(",")))
-AUTH_ENABLED    = os.getenv("AUTH_ENABLED", "true").lower() != "false"
-
-if AUTH_ENABLED and not JWT_SECRET_KEY:
-    log.warning(
-        "JWT_SECRET_KEY is not set. Authentication will reject all JWT tokens. "
-        "Set JWT_SECRET_KEY env var or set AUTH_ENABLED=false for development."
-    )
+JWT_SECRET_KEY  = settings.JWT_SECRET_KEY
+JWT_ALGORITHM   = settings.JWT_ALGORITHM
+JWT_EXPIRE_MINS = settings.JWT_EXPIRE_MINS
+API_KEYS        = settings.api_keys_set
+AUTH_ENABLED    = settings.AUTH_ENABLED
 
 
 # ── Token data model ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 """Risk analysis endpoints."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import RiskRequest, RiskResponse, RiskAnalyzeRequest, RiskAnalyzeResponse, StressTestResult
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
@@ -64,7 +65,7 @@ async def risk_analyse(request: Request, req: RiskRequest):
             notes=size_result.notes,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "risk analysis")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -207,4 +208,4 @@ async def risk_analyze(request: Request, req: RiskAnalyzeRequest):
             notes=size_result.notes,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "risk analysis")

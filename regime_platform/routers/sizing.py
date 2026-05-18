@@ -1,6 +1,7 @@
 """Position sizing endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, Depends, Request
+from ..core.exceptions import raise_http_exception
 from ..models.schemas import (
     SizeRequest, SizeResponse,
     MasanielloSizeRequest, MasanielloSizeResponse,
@@ -59,7 +60,7 @@ async def kelly_size(req: SizeRequest):
             notes=result.notes,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "Kelly sizing")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -164,7 +165,7 @@ async def masaniello_size(
             direction=req.direction,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "Masaniello sizing")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -275,7 +276,7 @@ async def masaniello_batch(
             },
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "Masaniello batch")
 
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
@@ -436,4 +437,4 @@ async def masaniello_portfolio(
             corr_confidence=corr_confidence,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "Masaniello portfolio")

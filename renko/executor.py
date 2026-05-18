@@ -25,8 +25,17 @@ from typing import Any, Dict, List, Optional
 
 from renko.pattern_detector import SignalDirection
 from renko.signal_filter import FilteredSignal
+from regime_platform.core.resilience import CircuitBreaker, CircuitOpenError, retry_with_backoff
 
 logger = logging.getLogger(__name__)
+
+# ── Circuit breaker for Alpaca API calls ────────────────────────────────
+
+_alpaca_breaker = CircuitBreaker(
+    name="alpaca_trading",
+    failure_threshold=3,
+    recovery_timeout=60,
+)
 
 
 # ── Data types ─────────────────────────────────────────────────────
@@ -39,6 +48,7 @@ class OrderStatus(str, Enum):
     PARTIALLY_FILLED = "partially_filled"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+    SIMULATED = "simulated"
 
 
 @dataclass
@@ -87,7 +97,12 @@ class OrderResult:
 
     @property
     def is_success(self) -> bool:
-        return self.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+        return self.status in (
+            OrderStatus.FILLED,
+            OrderStatus.SUBMITTED,
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.SIMULATED,
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -136,6 +151,38 @@ class AlpacaExecutor:
 
         self._order_history: List[OrderResult] = []
         self._client: Any = None
+
+        # Warn when running in simulation mode
+        if self.is_simulation:
+            logger.warning(
+                "AlpacaExecutor running in SIMULATION mode — no real orders will be placed. "
+                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable live/paper trading."
+            )
+
+    # ── Execution Mode ────────────────────────────────────────────
+
+    @property
+    def execution_mode(self) -> str:
+        """
+        Return the current execution mode.
+
+        Returns
+        -------
+        str
+            "live"  — real money, base_url points to api.alpaca.markets
+            "paper" — paper trading, base_url points to paper-api
+            "simulation" — no API keys or alpaca-trade-api not installed
+        """
+        if self.api_key is None or self.api_secret is None:
+            return "simulation"
+        if "paper-api" in self.base_url:
+            return "paper"
+        return "live"
+
+    @property
+    def is_simulation(self) -> bool:
+        """Return True if running in simulation (no real order execution)."""
+        return self.execution_mode == "simulation"
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -227,15 +274,27 @@ class AlpacaExecutor:
         Submit an order to Alpaca. Uses the alpaca-trade-api or
         direct REST calls.
 
-        In production, this calls the real Alpaca API.
-        In backtest / dry-run mode, this simulates a fill.
+        In production, this calls the real Alpaca API with circuit
+        breaker and retry protection.
+        In backtest / dry-run mode, this simulates a fill
+        (circuit breaker does NOT apply to simulation).
         """
         if self.api_key is None or self.api_secret is None:
-            # Dry-run / simulation mode
+            # Simulation mode — no real order placed, no circuit breaker
+            sim_id = f"sim_{int(time.time()*1000)}"
+            logger.warning(
+                "SIMULATED order '%s': %s %s %s @ %s "
+                "(no Alpaca API keys configured)",
+                sim_id,
+                params.side,
+                params.qty,
+                params.symbol,
+                params.stop_price or params.limit_price or "market",
+            )
             return OrderResult(
-                order_id=f"sim_{int(time.time()*1000)}",
+                order_id=sim_id,
                 client_order_id=f"renko_sim_{int(time.time()*1000)}",
-                status=OrderStatus.FILLED,
+                status=OrderStatus.SIMULATED,
                 filled_price=params.stop_price or params.limit_price or 0.0,
                 filled_qty=params.qty,
                 submitted_at=time.time(),
@@ -252,27 +311,48 @@ class AlpacaExecutor:
                     base_url=self.base_url,
                 )
 
-            if params.use_bracket and params.sl_price and params.tp_price:
-                # Submit bracket order
-                order = self._client.submit_order(
-                    symbol=params.symbol,
-                    qty=int(params.qty),
-                    side=params.side,
-                    type="market",
-                    time_in_force=params.time_in_force,
-                    order_class="bracket",
-                    stop_loss={"stop_price": str(params.sl_price)},
-                    take_profit={"limit_price": str(params.tp_price)},
-                )
-            else:
-                # Simple market/limit order
-                order = self._client.submit_order(
-                    symbol=params.symbol,
-                    qty=int(params.qty),
-                    side=params.side,
-                    type=params.order_type,
-                    time_in_force=params.time_in_force,
-                    limit_price=str(params.limit_price) if params.limit_price else None,
+            # ── Circuit breaker + retry for real Alpaca API calls ────
+            try:
+                async with _alpaca_breaker:
+                    if params.use_bracket and params.sl_price and params.tp_price:
+                        # Submit bracket order
+                        order = await retry_with_backoff(
+                            lambda: self._client.submit_order(
+                                symbol=params.symbol,
+                                qty=int(params.qty),
+                                side=params.side,
+                                type="market",
+                                time_in_force=params.time_in_force,
+                                order_class="bracket",
+                                stop_loss={"stop_price": str(params.sl_price)},
+                                take_profit={"limit_price": str(params.tp_price)},
+                            ),
+                            max_retries=2,
+                            base_delay=1.0,
+                            retryable_exceptions=(ConnectionError, TimeoutError, OSError),
+                        )
+                    else:
+                        # Simple market/limit order
+                        order = await retry_with_backoff(
+                            lambda: self._client.submit_order(
+                                symbol=params.symbol,
+                                qty=int(params.qty),
+                                side=params.side,
+                                type=params.order_type,
+                                time_in_force=params.time_in_force,
+                                limit_price=str(params.limit_price) if params.limit_price else None,
+                            ),
+                            max_retries=2,
+                            base_delay=1.0,
+                            retryable_exceptions=(ConnectionError, TimeoutError, OSError),
+                        )
+
+            except CircuitOpenError:
+                logger.error("Alpaca circuit breaker OPEN — order rejected")
+                return OrderResult(
+                    status=OrderStatus.REJECTED,
+                    error="Alpaca service unavailable (circuit breaker open)",
+                    submitted_at=time.time(),
                 )
 
             return OrderResult(
@@ -285,10 +365,19 @@ class AlpacaExecutor:
             )
 
         except ImportError:
-            logger.warning("alpaca-trade-api not installed — using simulation")
+            sim_id = f"sim_{int(time.time()*1000)}"
+            logger.warning(
+                "SIMULATED order '%s': %s %s %s @ %s "
+                "(alpaca-trade-api not installed)",
+                sim_id,
+                params.side,
+                params.qty,
+                params.symbol,
+                params.limit_price or "market",
+            )
             return OrderResult(
-                order_id=f"sim_{int(time.time()*1000)}",
-                status=OrderStatus.FILLED,
+                order_id=sim_id,
+                status=OrderStatus.SIMULATED,
                 filled_price=params.limit_price or 0.0,
                 filled_qty=params.qty,
                 submitted_at=time.time(),
@@ -304,9 +393,15 @@ class AlpacaExecutor:
     async def _close_alpaca_position(self, symbol: str) -> OrderResult:
         """Close an Alpaca position."""
         if self.api_key is None or self.api_secret is None:
+            sim_id = f"sim_close_{int(time.time()*1000)}"
+            logger.warning(
+                "SIMULATED close '%s': %s (no Alpaca API keys configured)",
+                sim_id,
+                symbol,
+            )
             return OrderResult(
-                order_id=f"sim_close_{int(time.time()*1000)}",
-                status=OrderStatus.FILLED,
+                order_id=sim_id,
+                status=OrderStatus.SIMULATED,
                 submitted_at=time.time(),
             )
 
@@ -320,7 +415,23 @@ class AlpacaExecutor:
                     base_url=self.base_url,
                 )
 
-            self._client.close_position(symbol)
+            # ── Circuit breaker + retry ────────────────────────────
+            try:
+                async with _alpaca_breaker:
+                    await retry_with_backoff(
+                        lambda: self._client.close_position(symbol),
+                        max_retries=2,
+                        base_delay=1.0,
+                        retryable_exceptions=(ConnectionError, TimeoutError, OSError),
+                    )
+            except CircuitOpenError:
+                logger.error("Alpaca circuit breaker OPEN — position close rejected")
+                return OrderResult(
+                    status=OrderStatus.REJECTED,
+                    error="Alpaca service unavailable (circuit breaker open)",
+                    submitted_at=time.time(),
+                )
+
             return OrderResult(
                 status=OrderStatus.FILLED,
                 submitted_at=time.time(),
@@ -348,7 +459,19 @@ class AlpacaExecutor:
                     base_url=self.base_url,
                 )
 
-            account = self._client.get_account()
+            # ── Circuit breaker + retry ────────────────────────────
+            try:
+                async with _alpaca_breaker:
+                    account = await retry_with_backoff(
+                        lambda: self._client.get_account(),
+                        max_retries=2,
+                        base_delay=1.0,
+                        retryable_exceptions=(ConnectionError, TimeoutError, OSError),
+                    )
+            except CircuitOpenError:
+                logger.error("Alpaca circuit breaker OPEN — account info unavailable")
+                return None
+
             return {
                 "equity": float(account.equity),
                 "cash": float(account.cash),
@@ -358,6 +481,11 @@ class AlpacaExecutor:
         except Exception as e:
             logger.error(f"Account fetch failed: {e}")
             return None
+
+    @property
+    def circuit_breaker_status(self) -> dict:
+        """Return the Alpaca circuit breaker status for health/stats endpoints."""
+        return _alpaca_breaker.status()
 
     def reset(self) -> None:
         """Reset executor state."""
