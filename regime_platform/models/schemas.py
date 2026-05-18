@@ -368,6 +368,53 @@ class BacktestCompareResponse(BaseModel):
     diff: dict = Field(default_factory=dict, description="Key metric differences between first and best result.")
 
 
+class BacktestOptimizeRequest(PricePayload):
+    """Parameter sweep request: run backtests across a grid of parameter values."""
+    param_grid: dict[str, list] = Field(
+        ...,
+        description="Map of parameter name to list of values to sweep. "
+        "Supported keys: window, refit_every, n_hmm_states, kelly_fraction, "
+        "target_vol, base_risk_limit, commission_bps, slippage_bps, "
+        "max_position_pct, risk_check, regime_gate.",
+    )
+    # Fixed params (applied to every run)
+    window: int               = Field(default=200, ge=81)
+    refit_every: int          = Field(default=50, ge=10)
+    n_hmm_states: int         = Field(default=4, ge=2, le=4)
+    kelly_fraction: float     = Field(default=0.5, ge=0.1, le=1.0)
+    target_vol: float         = Field(default=0.15, gt=0, le=1.0)
+    base_risk_limit: float    = Field(default=0.02, gt=0, le=0.5)
+    initial_equity: float     = Field(default=100000.0, gt=0)
+    commission_bps: float     = Field(default=5.0, ge=0, le=50.0)
+    slippage_bps: float       = Field(default=2.0, ge=0, le=50.0)
+    max_position_pct: float   = Field(default=0.25, gt=0, le=1.0)
+    risk_check: bool          = Field(default=True)
+    regime_gate: bool         = Field(default=True)
+    save: bool                = Field(default=False, description="Save each result (default false for sweeps).")
+
+
+class BacktestOptimizeResponse(BaseModel):
+    """Grid search results: one summary per parameter combination."""
+    results: list[dict] = Field(
+        ...,
+        description="List of {params, total_return, sharpe_ratio, max_drawdown, "
+        "profit_factor, win_rate, n_trades} for each combination.",
+    )
+    best_by_sharpe: Optional[dict] = Field(default=None, description="Params with highest Sharpe ratio.")
+    best_by_return: Optional[dict] = Field(default=None, description="Params with highest total return.")
+    n_combinations: int = Field(..., description="Total parameter combinations tested.")
+
+
+class BacktestExportRequest(BaseModel):
+    """Request to export a saved backtest result as CSV or JSON."""
+    id: str = Field(..., description="Backtest result ID to export.")
+    format: Literal["csv", "json"] = Field(default="json", description="Export format.")
+    sections: list[Literal["summary", "equity_curve", "drawdown_curve", "trade_log", "all"]] = Field(
+        default=["all"],
+        description="Which sections to include in the export.",
+    )
+
+
 # ─── TDA Features ──────────────────────────────────────────────────────────────
 
 class TDARequest(PricePayload):

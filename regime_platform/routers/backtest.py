@@ -17,6 +17,9 @@ from ..models.schemas import (
     BacktestHistoryResponse,
     BacktestCompareRequest,
     BacktestCompareResponse,
+    BacktestOptimizeRequest,
+    BacktestOptimizeResponse,
+    BacktestExportRequest,
 )
 from ..services.backtest_store import (
     save_backtest_result,
@@ -26,7 +29,11 @@ from ..services.backtest_store import (
 )
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 
+import csv
+import io
+import itertools
 import numpy as np
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -391,3 +398,225 @@ async def delete_backtest_result(
         raise
     except Exception as e:
         raise_http_exception(e, "backtest_delete")
+
+
+@router.post(
+    "/optimize",
+    response_model=BacktestOptimizeResponse,
+    summary="Parameter sweep: run backtests across a grid of parameter values",
+)
+@limiter.limit(RATE_LIMIT_COMPUTE)
+async def optimize_backtest(
+    request: Request,
+    req: BacktestOptimizeRequest,
+    user: TokenData = Depends(get_authed_user),
+):
+    """
+    Grid-search parameter sweep for backtest optimization.
+
+    Accepts a param_grid dict mapping parameter names to lists of values.
+    For each combination, runs a full walk-forward backtest and returns
+    a summary row with key metrics. Useful for finding optimal strategy
+    parameters without manual trial-and-error.
+
+    **Warning**: The number of combinations is the product of all grid
+    values. Keep grids small (max ~20-30 combinations) to avoid timeouts.
+    """
+    try:
+        prices = np.array(req.prices, dtype=float)
+
+        # Build parameter combinations from the grid
+        grid_keys = list(req.param_grid.keys())
+        grid_values = [req.param_grid[k] for k in grid_keys]
+        combinations = list(itertools.product(*grid_values))
+
+        if len(combinations) > 50:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many combinations ({len(combinations)}). Max 50 to avoid timeout.",
+            )
+
+        # Fixed params from the request
+        fixed_params = {
+            "window": req.window,
+            "refit_every": req.refit_every,
+            "n_hmm_states": req.n_hmm_states,
+            "kelly_fraction": req.kelly_fraction,
+            "target_vol": req.target_vol,
+            "base_risk_limit": req.base_risk_limit,
+            "initial_equity": req.initial_equity,
+            "commission_bps": req.commission_bps,
+            "slippage_bps": req.slippage_bps,
+            "max_position_pct": req.max_position_pct,
+            "risk_check": req.risk_check,
+            "regime_gate": req.regime_gate,
+        }
+
+        results = []
+        for combo in combinations:
+            # Merge fixed params with grid overrides
+            run_params = {**fixed_params}
+            for i, key in enumerate(grid_keys):
+                run_params[key] = combo[i]
+
+            config = BacktestConfig(
+                window=int(run_params["window"]),
+                refit_every=int(run_params["refit_every"]),
+                n_hmm_states=int(run_params["n_hmm_states"]),
+                kelly_fraction=float(run_params["kelly_fraction"]),
+                target_vol=float(run_params["target_vol"]),
+                base_risk_limit=float(run_params["base_risk_limit"]),
+                initial_equity=float(run_params["initial_equity"]),
+                commission_bps=float(run_params["commission_bps"]),
+                slippage_bps=float(run_params["slippage_bps"]),
+                max_position_pct=float(run_params["max_position_pct"]),
+                risk_check=bool(run_params["risk_check"]),
+                regime_gate=bool(run_params["regime_gate"]),
+            )
+
+            result = await asyncio.to_thread(
+                backtester.run, prices, req.symbol, config, None
+            )
+
+            # Save if requested
+            if req.save:
+                result_dict = {
+                    "n_bars": result.n_bars, "n_trades": result.n_trades,
+                    "n_wins": result.n_wins, "n_losses": result.n_losses,
+                    "win_rate": result.win_rate, "total_return": result.total_return,
+                    "annual_return": result.annual_return, "sharpe_ratio": result.sharpe_ratio,
+                    "max_drawdown": result.max_drawdown, "profit_factor": result.profit_factor,
+                }
+                await save_backtest_result(
+                    user_id=user.sub, result_dict=result_dict,
+                    config_used=result.config_used, symbol=req.symbol,
+                )
+
+            results.append({
+                "params": dict(zip(grid_keys, combo)),
+                "total_return": result.total_return,
+                "annual_return": result.annual_return,
+                "sharpe_ratio": result.sharpe_ratio,
+                "sortino_ratio": result.sortino_ratio,
+                "max_drawdown": result.max_drawdown,
+                "profit_factor": result.profit_factor,
+                "win_rate": result.win_rate,
+                "n_trades": result.n_trades,
+            })
+
+        # Find best combinations
+        best_by_sharpe = max(results, key=lambda r: r["sharpe_ratio"]) if results else None
+        best_by_return = max(results, key=lambda r: r["total_return"]) if results else None
+
+        return BacktestOptimizeResponse(
+            results=results,
+            best_by_sharpe=best_by_sharpe,
+            best_by_return=best_by_return,
+            n_combinations=len(combinations),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_http_exception(e, "backtest_optimize")
+
+
+@router.post(
+    "/export",
+    summary="Export a saved backtest result as CSV or JSON",
+)
+async def export_backtest(
+    req: BacktestExportRequest,
+    user: TokenData = Depends(get_authed_user),
+):
+    """
+    Export a saved backtest result in CSV or JSON format for
+    external analysis. Supports selecting specific sections
+    (summary, equity_curve, drawdown_curve, trade_log) or
+    exporting all data at once.
+
+    Returns a file download with appropriate content-type header.
+    """
+    try:
+        row = await get_backtest_detail(backtest_id=req.id, user_id=user.sub)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Backtest result not found.")
+
+        sections = req.sections if "all" not in req.sections else [
+            "summary", "equity_curve", "drawdown_curve", "trade_log",
+        ]
+
+        if req.format == "json":
+            export_data = {}
+            if "summary" in sections:
+                export_data["summary"] = {
+                    k: v for k, v in row.items()
+                    if k not in ("equity_curve", "drawdown_curve", "trade_log")
+                }
+            if "equity_curve" in sections:
+                export_data["equity_curve"] = row.get("equity_curve", [])
+            if "drawdown_curve" in sections:
+                export_data["drawdown_curve"] = row.get("drawdown_curve", [])
+            if "trade_log" in sections:
+                export_data["trade_log"] = row.get("trade_log", [])
+
+            import json
+            content = json.dumps(export_data, indent=2, default=str)
+            return StreamingResponse(
+                iter([content]),
+                media_type="application/json",
+                headers={
+                    "Content-Disposition": f"attachment; filename=backtest_{req.id}.json",
+                },
+            )
+
+        # CSV export — multiple sections separated by blank lines
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        if "summary" in sections:
+            writer.writerow(["=== SUMMARY ==="])
+            for k, v in row.items():
+                if k not in ("equity_curve", "drawdown_curve", "trade_log"):
+                    writer.writerow([k, v])
+            writer.writerow([])
+
+        if "equity_curve" in sections:
+            writer.writerow(["=== EQUITY CURVE ==="])
+            writer.writerow(["bar", "equity"])
+            for i, val in enumerate(row.get("equity_curve", [])):
+                writer.writerow([i, val])
+            writer.writerow([])
+
+        if "drawdown_curve" in sections:
+            writer.writerow(["=== DRAWDOWN CURVE ==="])
+            writer.writerow(["bar", "drawdown"])
+            for i, val in enumerate(row.get("drawdown_curve", [])):
+                writer.writerow([i, val])
+            writer.writerow([])
+
+        if "trade_log" in sections:
+            writer.writerow(["=== TRADE LOG ==="])
+            trades = row.get("trade_log", [])
+            if trades:
+                headers = list(trades[0].keys()) if isinstance(trades[0], dict) else ["trade"]
+                writer.writerow(headers)
+                for trade in trades:
+                    if isinstance(trade, dict):
+                        writer.writerow([trade.get(h, "") for h in headers])
+                    else:
+                        writer.writerow([trade])
+
+        content = output.getvalue()
+        return StreamingResponse(
+            iter([content]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=backtest_{req.id}.csv",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_http_exception(e, "backtest_export")
