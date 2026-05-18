@@ -522,6 +522,10 @@ Excluded from MCP (use REST API directly):
             mcp_status["auth"] = "enabled" if settings.MCP_AUTH_ENABLED else "disabled"
             mcp_status["header_forwarding"] = ["authorization", "x-api-key"]
 
+        # Circuit breaker status
+        from regime_platform.core.circuit_breaker import all_circuit_stats
+        circuit_status = all_circuit_stats()
+
         return {
             "status": "ok",
             "version": "5.1.0",
@@ -530,6 +534,7 @@ Excluded from MCP (use REST API directly):
             "cors_origins": settings.CORS_ORIGINS,
             "discord": discord_status,
             "mcp": mcp_status,
+            "circuit_breakers": circuit_status,
             "gpu_backend": caps["hmm_backend"],
             "device": caps["active_device"],
             "rate_limits": {

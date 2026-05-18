@@ -43,6 +43,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from regime_platform.core.settings import settings
+from regime_platform.core.circuit_breaker import circuit, CircuitOpenError
 
 try:
     import jwt
@@ -225,9 +226,21 @@ def _get_clerk_jwks(issuer: Optional[str] = None) -> dict:
         return _jwks_cache[cache_key]
 
     try:
+        # Circuit breaker protects against repeated Clerk outages
+        cb = circuit("clerk_jwks", failure_threshold=3, reset_timeout=60.0)
+
+        if cb.is_open:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Clerk authentication temporarily unavailable (circuit open)",
+            )
+
         response = httpx.get(jwks_url, timeout=5.0)
         response.raise_for_status()
         jwks_data = response.json()
+
+        # Record success
+        cb._on_success()
 
         # Cache the result
         _jwks_cache[cache_key] = jwks_data
@@ -235,10 +248,14 @@ def _get_clerk_jwks(issuer: Optional[str] = None) -> dict:
 
         log.info(f"Fetched Clerk JWKS from {jwks_url} (issuer={issuer})")
         return jwks_data
+    except HTTPException:
+        raise
     except Exception as e:
+        # Record failure in circuit breaker
+        cb._on_failure(e)
         log.error(f"Failed to fetch Clerk JWKS from {jwks_url}: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to fetch Clerk JWKS from {jwks_url}",
         )
 
