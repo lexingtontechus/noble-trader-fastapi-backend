@@ -87,6 +87,13 @@ async def save_backtest_result(
         "price_adjustment": result_dict.get("price_adjustment", "raw"),
         "universe_mode": result_dict.get("universe_mode", "current_constituents"),
         "look_ahead_audit": json.dumps(result_dict.get("look_ahead_audit_result", {})),
+        # Phase 6: Statistical Rigor columns
+        "bootstrap_cis": json.dumps(result_dict.get("bootstrap_cis", {})),
+        "deflated_sharpe_result": json.dumps(result_dict.get("deflated_sharpe_result", {})),
+        "multiple_testing_results": json.dumps(result_dict.get("multiple_testing_results", {})),
+        "significance_test_results": json.dumps(result_dict.get("significance_test_results", {})),
+        # Phase 7: Execution Modeling columns
+        "execution_modeling": json.dumps(result_dict.get("execution_modeling", {})),
         # JSONB columns
         "config_used": json.dumps(config_used),
         "summary_metrics": json.dumps({
@@ -164,7 +171,7 @@ async def get_backtest_history(
                 headers=_supabase_headers(),
                 params={
                     "user_id": f"eq.{user_id}",
-                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,total_commission,total_slippage,total_cost,cost_drag_pct,avg_cost_per_trade,data_hash,price_adjustment,universe_mode,created_at",
+                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,total_commission,total_slippage,total_cost,cost_drag_pct,avg_cost_per_trade,data_hash,price_adjustment,universe_mode,deflated_sharpe_result,execution_modeling,created_at",
                     "order": "created_at.desc",
                     "offset": offset,
                     "limit": limit,
@@ -203,7 +210,9 @@ async def get_backtest_detail(backtest_id: str, user_id: str) -> Optional[dict]:
             row = rows[0]
             # Parse JSONB columns back
             for key in ("config_used", "summary_metrics", "regime_distribution",
-                        "trades_by_regime", "equity_curve", "drawdown_curve", "trade_log"):
+                        "trades_by_regime", "equity_curve", "drawdown_curve", "trade_log",
+                        "bootstrap_cis", "deflated_sharpe_result", "multiple_testing_results",
+                        "significance_test_results", "look_ahead_audit", "execution_modeling"):
                 if key in row and isinstance(row[key], str):
                     row[key] = json.loads(row[key])
             # Merge summary_metrics into the top level

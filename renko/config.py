@@ -84,6 +84,20 @@ class RenkoConfig:
     # ── Execution Realism ──────────────────────────────────────────
     oco_priority: OcoPriority = OcoPriority.SL_FIRST  # How to resolve OCO conflicts (SL+TP same brick)
 
+    # ── Advanced Execution Modeling (Phase 7) ──────────────────────────
+    enable_market_impact: bool = False       # Enable Almgren-Chriss market impact model
+    avg_daily_volume: float = 1e6           # Average daily volume (shares) for impact estimation
+    impact_gamma: float = 0.314             # Almgren-Chriss permanent impact coefficient
+    impact_eta: float = 0.142               # Almgren-Chriss temporary impact coefficient
+    enable_fill_probability: bool = False    # Enable fill probability modeling
+    enable_borrow_costs: bool = False        # Enable short borrow cost modeling
+    borrow_rate_annual: float = 0.005        # Annualized borrow rate (0.5% for ETB stocks)
+    hard_to_borrow: bool = False             # Mark as hard-to-borrow for higher borrow rates
+    htb_premium_rate: float = 0.10           # Additional annual rate for HTB stocks (10%)
+    enable_margin_costs: bool = False        # Enable margin financing cost modeling
+    margin_rate_annual: float = 0.065        # Annualized margin rate (SOFR + 200bps)
+    margin_requirement: float = 0.50         # Reg T initial margin requirement (50%)
+
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET
     use_bracket_orders: bool = True    # Alpaca native bracket orders

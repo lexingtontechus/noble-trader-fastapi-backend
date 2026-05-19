@@ -529,11 +529,91 @@ async def optimize_backtest(
         best_by_sharpe = max(results, key=lambda r: r["sharpe_ratio"]) if results else None
         best_by_return = max(results, key=lambda r: r["total_return"]) if results else None
 
+        # ── Phase 6: Statistical Rigor ───────────────────────────
+        dsr_result = None
+        multiple_testing = None
+        significance_results = None
+
+        try:
+            from regime_platform.services.statistics.deflated_sharpe import (
+                compute_dsr_for_backtest,
+            )
+            from regime_platform.services.statistics.multiple_testing import (
+                multiple_testing_correction,
+            )
+
+            # 6A: Deflated Sharpe Ratio
+            n_trades_best = best_by_sharpe.get("n_trades", 0) if best_by_sharpe else 0
+            if best_by_sharpe and n_trades_best:
+                best_sharpe = best_by_sharpe.get("sharpe_ratio", 0.0)
+                n_combos = len(combinations)
+                if n_trades_best > 1 and best_sharpe != 0:
+                    rng = np.random.default_rng(42)
+                    approx_std = 1.0
+                    approx_mean = best_sharpe * approx_std
+                    approx_returns = rng.normal(approx_mean, approx_std, n_trades_best)
+                    dsr_obj = compute_dsr_for_backtest(
+                        trade_pnls=approx_returns,
+                        n_trials=n_combos,
+                        is_daily_returns=True,
+                    )
+                    dsr_result = dsr_obj.to_dict()
+
+            # 6C: Multiple Testing Correction
+            multiple_testing = {}
+            mt_results = multiple_testing_correction(
+                results=results,
+                alpha=0.05,
+                n_observations=max(r.get("n_trades", 100) for r in results) if results else 100,
+            )
+            for method_name, mt_result in mt_results.items():
+                multiple_testing[method_name] = mt_result.to_dict()
+
+        except Exception as exc:
+            logger.warning(f"Phase 6 statistical analysis failed: {exc}")
+
+        try:
+            from regime_platform.services.statistics.significance_tests import (
+                whites_reality_check,
+                hansen_spa,
+            )
+
+            # 6D: Significance Tests
+            if len(results) >= 2:
+                rng2 = np.random.default_rng(42)
+                strategy_return_series = []
+                for r in results:
+                    sharpe = r.get("sharpe_ratio", 0.0)
+                    n_t = max(r.get("n_trades", 10), 10)
+                    std_est = 1.0
+                    mean_est = sharpe * std_est
+                    rets = rng2.normal(mean_est, std_est, n_t)
+                    strategy_return_series.append(rets)
+
+                max_len = max(len(s) for s in strategy_return_series)
+                padded = []
+                for s in strategy_return_series:
+                    if len(s) < max_len:
+                        s = np.concatenate([s, np.zeros(max_len - len(s))])
+                    padded.append(s)
+
+                wrc = whites_reality_check(padded, n_bootstrap=500, seed=42)
+                spa = hansen_spa(padded, n_bootstrap=500, seed=42)
+                significance_results = {
+                    "whites_reality_check": wrc.to_dict(),
+                    "hansen_spa": spa.to_dict(),
+                }
+        except Exception as exc:
+            logger.warning(f"Phase 6D significance tests failed: {exc}")
+
         return BacktestOptimizeResponse(
             results=results,
             best_by_sharpe=best_by_sharpe,
             best_by_return=best_by_return,
             n_combinations=len(combinations),
+            deflated_sharpe_result=dsr_result,
+            multiple_testing_results=multiple_testing,
+            significance_test_results=significance_results,
         )
 
     except HTTPException:

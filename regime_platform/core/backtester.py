@@ -128,6 +128,13 @@ class BacktestResult:
     cost_drag_pct: float = 0.0          # total_cost as % of gross P&L
     avg_cost_per_trade: float = 0.0     # Average total cost per trade
 
+    # Phase 6: Statistical Rigor fields
+    bootstrap_cis: dict = field(default_factory=dict)       # Bootstrap confidence intervals (Phase 6B)
+    deflated_sharpe_result: dict = field(default_factory=dict)  # DSR result (Phase 6A)
+
+    # Phase 7: Execution Modeling fields
+    execution_modeling: dict = field(default_factory=dict)
+
     # Config snapshot (for persistence / comparison)
     config_used: dict = field(default_factory=dict)
 
@@ -562,6 +569,29 @@ class Backtester:
         cost_drag_pct = (total_cost_agg / abs(gross_pnl_dollars) * 100) if gross_pnl_dollars != 0 else 0.0
         avg_cost_per_trade = total_cost_agg / n_trades if n_trades > 0 else 0.0
 
+        # ── Phase 6B: Bootstrap Confidence Intervals ────────────────
+        bootstrap_cis_dict = {}
+        if n_trades >= 5:
+            try:
+                from regime_platform.services.statistics.bootstrap_ci import (
+                    compute_all_bootstrap_cis,
+                )
+                trade_pnls = [t.pnl for t in trades if t.pnl != 0.0] or [t.pnl for t in trades]
+                ci_results = compute_all_bootstrap_cis(
+                    pnls=trade_pnls,
+                    n_resamples=1000,  # Fewer resamples for HMM (slower per run)
+                    confidence_level=0.95,
+                    use_block_bootstrap=True,
+                )
+                bootstrap_cis_dict = {
+                    name: result.to_dict() for name, result in ci_results.items()
+                }
+                bootstrap_cis_dict["_display"] = {
+                    name: result.format_display() for name, result in ci_results.items()
+                }
+            except Exception:
+                pass  # Best-effort: never crash metrics computation
+
         return BacktestResult(
             symbol=symbol,
             n_bars=len(prices),
@@ -598,6 +628,7 @@ class Backtester:
             gross_return=round(gross_return, 6),
             cost_drag_pct=round(cost_drag_pct, 2),
             avg_cost_per_trade=round(avg_cost_per_trade, 4),
+            bootstrap_cis=bootstrap_cis_dict,
             regime_distribution=regime_counts,
             trades_by_regime=trades_by_regime,
             equity_curve=[round(x, 2) for x in equity_curve],

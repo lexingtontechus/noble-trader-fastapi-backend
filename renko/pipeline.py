@@ -140,6 +140,19 @@ class RenkoPipeline:
                 commission_bps=self.config.commission_bps,
                 spread_bps=self.config.spread_bps,
                 oco_priority=self.config.oco_priority,
+                # Phase 7: Advanced execution modeling
+                enable_market_impact=self.config.enable_market_impact,
+                avg_daily_volume=self.config.avg_daily_volume,
+                impact_gamma=self.config.impact_gamma,
+                impact_eta=self.config.impact_eta,
+                enable_fill_probability=self.config.enable_fill_probability,
+                enable_borrow_costs=self.config.enable_borrow_costs,
+                borrow_rate_annual=self.config.borrow_rate_annual,
+                hard_to_borrow=self.config.hard_to_borrow,
+                htb_premium_rate=self.config.htb_premium_rate,
+                enable_margin_costs=self.config.enable_margin_costs,
+                margin_rate_annual=self.config.margin_rate_annual,
+                margin_requirement=self.config.margin_requirement,
             )
         )
         self.executor = AlpacaExecutor(

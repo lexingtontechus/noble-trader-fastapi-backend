@@ -56,6 +56,15 @@ class TradeRecord:
     entry_slippage: float = 0.0      # Slippage on entry fill
     exit_slippage: float = 0.0       # Slippage on exit fill
     gross_pnl_dollars: float = 0.0   # P&L before transaction costs
+    # Phase 7: Advanced execution modeling
+    market_impact_bps: float = 0.0          # Market impact in basis points (Phase 7A)
+    market_impact_cost: float = 0.0         # Market impact cost in dollars (Phase 7A)
+    fill_probability: float = 1.0           # Probability that this trade would fill (Phase 7B)
+    was_filled: bool = True                 # Whether the trade filled (True for backtest, can be False if fill prob model is on)
+    borrow_cost: float = 0.0               # Short borrow cost in dollars (Phase 7C)
+    margin_cost: float = 0.0               # Margin financing cost in dollars (Phase 7C)
+    dividend_cost: float = 0.0             # Dividend cost for short positions (Phase 7C)
+    financing_cost_total: float = 0.0      # Total financing cost (borrow + margin + dividend)
 
     @property
     def is_win(self) -> bool:
@@ -98,6 +107,15 @@ class TradeRecord:
             "entry_slippage": self.entry_slippage,
             "exit_slippage": self.exit_slippage,
             "net_pnl_dollars": self.net_pnl_dollars,
+            # Phase 7: Advanced execution modeling
+            "market_impact_bps": self.market_impact_bps,
+            "market_impact_cost": self.market_impact_cost,
+            "fill_probability": self.fill_probability,
+            "was_filled": self.was_filled,
+            "borrow_cost": self.borrow_cost,
+            "margin_cost": self.margin_cost,
+            "dividend_cost": self.dividend_cost,
+            "financing_cost_total": self.financing_cost_total,
         }
 
 
@@ -133,10 +151,57 @@ class TradeJournal:
         filtered: FilteredSignal,
         result: TradeResult,
         regime: Optional[str] = None,
+        execution_result: Optional[Dict] = None,
     ) -> TradeRecord:
-        """Factory method to create a TradeRecord from pipeline data."""
+        """Factory method to create a TradeRecord from pipeline data.
+
+        Parameters
+        ----------
+        symbol : str
+            Trading symbol.
+        filtered : FilteredSignal
+            The filtered signal that triggered this trade.
+        result : TradeResult
+            The trade result from the risk manager.
+        regime : Optional[str]
+            Current regime label.
+        execution_result : Optional[Dict]
+            Phase 7 execution modeling result dict. If provided,
+            extracts and populates Phase 7 fields (market impact,
+            fill probability, financing costs).
+        """
         self._trade_counter += 1
         signal = filtered.original_signal
+
+        # Phase 7: Extract execution modeling fields if provided
+        market_impact_bps = 0.0
+        market_impact_cost = 0.0
+        fill_probability = 1.0
+        was_filled = True
+        borrow_cost = 0.0
+        margin_cost = 0.0
+        dividend_cost = 0.0
+        financing_cost_total = 0.0
+
+        if execution_result is not None:
+            market_impact_bps = execution_result.get("market_impact_bps", 0.0)
+            market_impact_cost = execution_result.get("market_impact_cost", 0.0)
+            fill_probability = execution_result.get("fill_probability", 1.0)
+            was_filled = execution_result.get("was_filled", True)
+            borrow_cost = execution_result.get("borrow_cost", 0.0)
+            margin_cost = execution_result.get("margin_cost", 0.0)
+            dividend_cost = execution_result.get("dividend_cost", 0.0)
+            financing_cost_total = execution_result.get("financing_cost_total", 0.0)
+
+        # Also try to read Phase 7 fields directly from TradeResult
+        if hasattr(result, 'market_impact_bps') and execution_result is None:
+            market_impact_bps = getattr(result, 'market_impact_bps', 0.0)
+            market_impact_cost = getattr(result, 'market_impact_cost', 0.0)
+            fill_probability = getattr(result, 'fill_probability', 1.0)
+            borrow_cost = getattr(result, 'borrow_cost', 0.0)
+            margin_cost = getattr(result, 'margin_cost', 0.0)
+            dividend_cost = getattr(result, 'dividend_cost', 0.0)
+            financing_cost_total = getattr(result, 'financing_cost_total', 0.0)
 
         return TradeRecord(
             trade_id=f"R{self._trade_counter:06d}",
@@ -164,9 +229,25 @@ class TradeJournal:
             entry_slippage=result.entry_slippage,
             exit_slippage=result.exit_slippage,
             gross_pnl_dollars=result.gross_pnl_dollars,
+            # Phase 7: Advanced execution modeling
+            market_impact_bps=market_impact_bps,
+            market_impact_cost=market_impact_cost,
+            fill_probability=fill_probability,
+            was_filled=was_filled,
+            borrow_cost=borrow_cost,
+            margin_cost=margin_cost,
+            dividend_cost=dividend_cost,
+            financing_cost_total=financing_cost_total,
         )
 
-    def get_stats(self, last_n: Optional[int] = None, initial_capital: float = 100000.0) -> Dict:
+    def get_stats(
+        self,
+        last_n: Optional[int] = None,
+        initial_capital: float = 100000.0,
+        compute_bootstrap_cis: bool = False,
+        bootstrap_n_resamples: int = 2000,
+        bootstrap_seed: int | None = None,
+    ) -> Dict:
         """
         Compute comprehensive trading statistics.
 
@@ -176,13 +257,22 @@ class TradeJournal:
             Only use the last N trades. None = all.
         initial_capital : float
             Starting capital for dollar-denominated return calculations.
+        compute_bootstrap_cis : bool
+            If True, compute bootstrap confidence intervals for key metrics
+            (Phase 6B). Default False for backward compatibility.
+        bootstrap_n_resamples : int
+            Number of bootstrap resamples (default 2000). Only used if
+            compute_bootstrap_cis is True.
+        bootstrap_seed : int, optional
+            Random seed for reproducibility of bootstrap CIs.
 
         Returns
         -------
         dict with keys: total_trades, win_rate, profit_factor,
         avg_pnl_bricks, sharpe_estimate, max_drawdown_bricks,
         by_pattern, by_direction, by_regime, rolling_win_rate,
-        dollar_stats (dollar-denominated metrics), cost_summary
+        dollar_stats (dollar-denominated metrics), cost_summary,
+        bootstrap_cis (if compute_bootstrap_cis=True, Phase 6B)
         """
         trades = list(self.trades)
         if last_n is not None:
@@ -385,6 +475,33 @@ class TradeJournal:
             "avg_cost_per_trade": round(total_costs / len(trades), 4) if trades else 0.0,
             "by_exit_type": self._cost_breakdown_by_exit_type(trades),
         }
+
+        # ── Bootstrap Confidence Intervals (Phase 6B) ───────────────
+        if compute_bootstrap_cis and len(trades) >= 5:
+            try:
+                from regime_platform.services.statistics.bootstrap_ci import (
+                    compute_all_bootstrap_cis,
+                )
+                pnls_for_bootstrap = [t.pnl_dollars for t in trades]
+                ci_results = compute_all_bootstrap_cis(
+                    pnls=pnls_for_bootstrap,
+                    n_resamples=bootstrap_n_resamples,
+                    confidence_level=0.95,
+                    seed=bootstrap_seed,
+                    use_block_bootstrap=True,
+                )
+                stats["bootstrap_cis"] = {
+                    name: result.to_dict() for name, result in ci_results.items()
+                }
+                # Also add formatted display strings for easy frontend use
+                stats["bootstrap_cis"]["_display"] = {
+                    name: result.format_display() for name, result in ci_results.items()
+                }
+            except Exception as exc:
+                # Bootstrap is best-effort — never crash the main stats computation
+                import logging
+                logging.getLogger(__name__).warning(f"Bootstrap CI computation failed: {exc}")
+                stats["bootstrap_cis"] = {"error": str(exc)}
 
         return stats
 

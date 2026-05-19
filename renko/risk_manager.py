@@ -67,6 +67,19 @@ class RiskParams:
     spread_bps: float = 1.0         # Bid-ask spread in basis points (half-spread each side)
     # Execution realism parameters
     oco_priority: OcoPriority = OcoPriority.SL_FIRST  # How to resolve OCO conflicts
+    # Phase 7: Advanced execution modeling parameters
+    enable_market_impact: bool = False       # Enable Almgren-Chriss market impact model
+    avg_daily_volume: float = 1e6           # Average daily volume (shares) for impact estimation
+    impact_gamma: float = 0.314             # Almgren-Chriss permanent impact coefficient
+    impact_eta: float = 0.142               # Almgren-Chriss temporary impact coefficient
+    enable_fill_probability: bool = False    # Enable fill probability modeling
+    enable_borrow_costs: bool = False        # Enable short borrow cost modeling
+    borrow_rate_annual: float = 0.005        # Annualized borrow rate (0.5% for ETB stocks)
+    hard_to_borrow: bool = False             # Mark as hard-to-borrow for higher borrow rates
+    htb_premium_rate: float = 0.10           # Additional annual rate for HTB stocks (10%)
+    enable_margin_costs: bool = False        # Enable margin financing cost modeling
+    margin_rate_annual: float = 0.065        # Annualized margin rate (SOFR + 200bps)
+    margin_requirement: float = 0.50         # Reg T initial margin requirement (50%)
 
     @property
     def risk_reward_ratio(self) -> float:
@@ -137,6 +150,14 @@ class TradeResult:
     entry_slippage: float = 0.0      # Slippage on entry fill
     exit_slippage: float = 0.0       # Slippage on exit fill
     gross_pnl_dollars: float = 0.0   # P&L before transaction costs
+    # Phase 7: Advanced execution modeling
+    market_impact_bps: float = 0.0
+    market_impact_cost: float = 0.0
+    fill_probability: float = 1.0
+    borrow_cost: float = 0.0
+    margin_cost: float = 0.0
+    dividend_cost: float = 0.0
+    financing_cost_total: float = 0.0
 
     @property
     def is_win(self) -> bool:
@@ -171,6 +192,14 @@ class TradeResult:
             "entry_slippage": self.entry_slippage,
             "exit_slippage": self.exit_slippage,
             "net_pnl_dollars": self.net_pnl_dollars,
+            # Phase 7: Advanced execution modeling
+            "market_impact_bps": self.market_impact_bps,
+            "market_impact_cost": self.market_impact_cost,
+            "fill_probability": self.fill_probability,
+            "borrow_cost": self.borrow_cost,
+            "margin_cost": self.margin_cost,
+            "dividend_cost": self.dividend_cost,
+            "financing_cost_total": self.financing_cost_total,
         }
 
 
@@ -592,12 +621,91 @@ class RiskManager:
         total_slippage = entry_slip + (exit_slip * pos.remaining_qty)
         total_cost = commission + total_slippage
 
+        # ── Phase 7: Advanced Execution Modeling ────────────────────
+        market_impact_bps = 0.0
+        market_impact_cost = 0.0
+        fill_probability = 1.0
+        borrow_cost = 0.0
+        margin_cost = 0.0
+        dividend_cost = 0.0
+        financing_cost_total = 0.0
+
+        try:
+            # 7A: Market Impact
+            if getattr(self.params, 'enable_market_impact', False):
+                from regime_platform.services.execution.market_impact import compute_market_impact
+                adv = getattr(self.params, 'avg_daily_volume', 1e6)
+                # Estimate daily volatility from brick size (heuristic: brick_size/price ~ daily move)
+                daily_vol = pos.brick_size / pos.entry_price if pos.entry_price > 0 else 0.02
+                impact = compute_market_impact(
+                    shares=pos.remaining_qty,
+                    price=pos.entry_price,
+                    avg_daily_volume=adv,
+                    daily_volatility=daily_vol,
+                    execution_horizon_bars=1,
+                    gamma=getattr(self.params, 'impact_gamma', 0.314),
+                    eta=getattr(self.params, 'impact_eta', 0.142),
+                )
+                market_impact_bps = impact.total_impact_bps
+                market_impact_cost = impact.impact_cost_dollars
+
+            # 7B: Fill Probability
+            if getattr(self.params, 'enable_fill_probability', False):
+                from regime_platform.services.execution.fill_probability import compute_fill_probability_for_backtest
+                fill_result = compute_fill_probability_for_backtest(
+                    direction="LONG" if pos.direction.value == "LONG" or pos.direction.value == "long" else "SHORT",
+                    entry_price=pos.entry_price,
+                    market_price=pos.entry_price,
+                    order_size_usd=abs(pos.entry_price * pos.remaining_qty),
+                    avg_daily_volume=getattr(self.params, 'avg_daily_volume', 1e6),
+                    is_limit_order=False,  # Renko uses market orders by default
+                )
+                fill_probability = fill_result.fill_probability
+
+            # 7C: Borrow/Financing Costs
+            direction_str = "SHORT" if pos.direction.value in ("SHORT", "short") else "LONG"
+            if direction_str == "SHORT" and getattr(self.params, 'enable_borrow_costs', False):
+                from regime_platform.services.execution.borrow_financing import compute_financing_for_trade
+                short_value = abs(pos.entry_price * pos.remaining_qty)
+                # Estimate days_held from bricks_held (assume ~3.5 bars/day for intraday)
+                days_held = pos.bricks_open / 3.5 if pos.bricks_open > 0 else 1.0
+                financing = compute_financing_for_trade(
+                    direction=direction_str,
+                    position_value=short_value,
+                    days_held=days_held,
+                    borrow_rate_annual=getattr(self.params, 'borrow_rate_annual', 0.005),
+                    hard_to_borrow=getattr(self.params, 'hard_to_borrow', False),
+                    htb_premium_rate=getattr(self.params, 'htb_premium_rate', 0.10),
+                )
+                borrow_cost = financing.borrow_cost.borrow_cost_dollars if financing.borrow_cost else 0.0
+                dividend_cost = financing.dividend_cost_dollars
+                financing_cost_total = financing.total_financing_cost_dollars
+
+            if getattr(self.params, 'enable_margin_costs', False):
+                from regime_platform.services.execution.borrow_financing import compute_margin_cost
+                pos_value = abs(pos.entry_price * pos.remaining_qty)
+                days_held = pos.bricks_open / 3.5 if pos.bricks_open > 0 else 1.0
+                margin_result = compute_margin_cost(
+                    position_value=pos_value,
+                    margin_requirement=getattr(self.params, 'margin_requirement', 0.50),
+                    margin_rate_annual=getattr(self.params, 'margin_rate_annual', 0.065),
+                    days_held=days_held,
+                )
+                margin_cost = margin_result.margin_cost_dollars
+                financing_cost_total += margin_cost
+
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(f"Phase 7 execution modeling failed: {exc}")
+
+        total_cost_extended = total_cost + market_impact_cost + financing_cost_total
+
         return TradeResult(
             entry_price=pos.entry_price,
             exit_price=filled_exit,
             direction=pos.direction,
             pnl_bricks=round(pnl_bricks, 4),
-            pnl_dollars=round(pnl_dollars - total_cost, 4),
+            pnl_dollars=round(pnl_dollars - total_cost - market_impact_cost - financing_cost_total, 4),
             status=status,
             entry_ts=pos.entry_ts,
             exit_ts=brick.timestamp,
@@ -606,10 +714,18 @@ class RiskManager:
             qty=pos.remaining_qty,
             commission=round(commission, 4),
             slippage_cost=round(total_slippage, 4),
-            total_cost=round(total_cost, 4),
+            total_cost=round(total_cost_extended, 4),
             entry_slippage=round(entry_slip, 4),
             exit_slippage=round(exit_slip * pos.remaining_qty, 4),
             gross_pnl_dollars=round(gross_pnl_dollars, 4),
+            # Phase 7: Advanced execution modeling
+            market_impact_bps=round(market_impact_bps, 4),
+            market_impact_cost=round(market_impact_cost, 4),
+            fill_probability=round(fill_probability, 6),
+            borrow_cost=round(borrow_cost, 4),
+            margin_cost=round(margin_cost, 4),
+            dividend_cost=round(dividend_cost, 4),
+            financing_cost_total=round(financing_cost_total, 4),
         )
 
     def _close_position(self, result: TradeResult) -> None:

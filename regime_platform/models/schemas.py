@@ -404,6 +404,10 @@ class BacktestOptimizeResponse(BaseModel):
     best_by_sharpe: Optional[dict] = Field(default=None, description="Params with highest Sharpe ratio.")
     best_by_return: Optional[dict] = Field(default=None, description="Params with highest total return.")
     n_combinations: int = Field(..., description="Total parameter combinations tested.")
+    # Phase 6: Statistical Rigor fields
+    deflated_sharpe_result: Optional[dict] = Field(default=None, description="Deflated Sharpe Ratio result (Phase 6A).")
+    multiple_testing_results: Optional[dict] = Field(default=None, description="Multiple testing correction results (Phase 6C).")
+    significance_test_results: Optional[dict] = Field(default=None, description="Strategy significance test results (Phase 6D).")
 
 
 class BacktestExportRequest(BaseModel):
