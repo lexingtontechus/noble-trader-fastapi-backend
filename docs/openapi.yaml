@@ -2411,6 +2411,194 @@ paths:
           content:
             application/json:
               schema: {}
+  /renko/backtest/run:
+    post:
+      tags: [renko]
+      summary: Run full backtest with Phase 2-7 analytics
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prices]
+              properties:
+                prices:
+                  type: array
+                  items: {type: number}
+                  description: Historical price series
+                symbol: {type: string, default: "SPY"}
+                brick_size: {type: number, default: 0.50}
+                sl_bricks: {type: integer, default: 3}
+                tp_bricks: {type: integer, default: 5}
+                slippage_bps: {type: number, default: 2.0, description: "Slippage in basis points"}
+                commission_bps: {type: number, default: 5.0, description: "Commission in basis points"}
+                spread_bps: {type: number, default: 1.0, description: "Bid-ask spread in basis points"}
+                oco_priority: {type: string, default: "sl_first", enum: [sl_first, tp_first]}
+                market_impact_mode: {type: string, default: "none", enum: [none, almgren_chriss]}
+                adv_shares: {type: number, default: 10000000}
+                fill_probability_mode: {type: string, default: "always_fill", enum: [always_fill, realistic]}
+                borrow_rate_bps: {type: number, default: 50.0}
+                margin_rate_bps: {type: number, default: 150.0}
+                is_hard_to_borrow: {type: boolean, default: false}
+                dividend_yield_bps: {type: number, default: 200.0}
+                initial_capital: {type: number, default: 100000.0}
+                n_trials: {type: integer, default: 1, description: "Number of strategy trials (for DSR)"}
+                confidence_level: {type: number, default: 0.95}
+      responses:
+        '200':
+          description: Backtest results with analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats: {type: object}
+                  trades: {type: array}
+                  total_bricks: {type: integer}
+                  total_ticks: {type: integer}
+                  data_hash: {type: string}
+                  bootstrap_ci: {type: object}
+                  deflated_sharpe: {type: object}
+
+  /renko/backtest/run/stream:
+    post:
+      tags: [renko]
+      summary: SSE streaming backtest with chunked results
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prices]
+              properties:
+                prices:
+                  type: array
+                  items: {type: number}
+                chunk_size: {type: integer, default: 150}
+                symbol: {type: string, default: "SPY"}
+                brick_size: {type: number, default: 0.50}
+                sl_bricks: {type: integer, default: 3}
+                tp_bricks: {type: integer, default: 5}
+                slippage_bps: {type: number, default: 2.0}
+                commission_bps: {type: number, default: 5.0}
+      responses:
+        '200':
+          description: SSE stream of backtest progress
+          content:
+            text/event-stream:
+              schema:
+                type: object
+
+  /renko/backtest/optimize:
+    post:
+      tags: [renko]
+      summary: Parameter sweep optimization with statistical rigor
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prices]
+              properties:
+                prices:
+                  type: array
+                  items: {type: number}
+                brick_sizes: {type: array, items: {type: number}, default: [0.25, 0.50, 1.00]}
+                sl_bricks_range: {type: array, items: {type: integer}, default: [2, 3, 4]}
+                tp_bricks_range: {type: array, items: {type: integer}, default: [4, 5, 6]}
+                slippage_bps: {type: number, default: 2.0}
+                commission_bps: {type: number, default: 5.0}
+                market_impact_mode: {type: string, default: "none"}
+                confidence_level: {type: number, default: 0.95}
+                multiple_testing_alpha: {type: number, default: 0.05}
+      responses:
+        '200':
+          description: Optimization results with multiple testing corrections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  n_combinations: {type: integer}
+                  results: {type: array}
+                  multiple_testing: {type: object}
+                  deflated_sharpe: {type: object}
+                  best: {type: object}
+
+  /renko/statistics/rigor:
+    post:
+      tags: [renko]
+      summary: Statistical rigor tests (bootstrap CIs, DSR, significance tests)
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trade_pnls, observed_sharpe]
+              properties:
+                trade_pnls: {type: array, items: {type: number}}
+                observed_sharpe: {type: number}
+                n_trials: {type: integer, default: 1}
+                confidence_level: {type: number, default: 0.95}
+                strategy_returns: {type: array, items: {type: array}, description: "Returns matrix for significance tests"}
+                benchmark_returns: {type: array, items: {type: number}}
+      responses:
+        '200':
+          description: Statistical rigor test results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bootstrap_ci: {type: object}
+                  deflated_sharpe: {type: object}
+                  significance_tests: {type: object}
+
+  /renko/execution/model:
+    post:
+      tags: [renko]
+      summary: Execution modeling (market impact, fill probability, financing)
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_shares, avg_price]
+              properties:
+                order_shares: {type: number}
+                avg_price: {type: number}
+                adv_shares: {type: number, default: 10000000}
+                sigma_daily: {type: number, default: 0.02}
+                order_type: {type: string, default: "limit"}
+                distance_from_mid_pct: {type: number, default: 0.0}
+                position_notional: {type: number, default: 0}
+                holding_days: {type: number, default: 10.0}
+                direction: {type: string, default: "long"}
+                is_hard_to_borrow: {type: boolean, default: false}
+                borrow_rate_bps: {type: number, default: 50.0}
+                margin_rate_bps: {type: number, default: 150.0}
+                dividend_yield_bps: {type: number, default: 200.0}
+      responses:
+        '200':
+          description: Execution modeling results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  market_impact: {type: object}
+                  fill_probability: {type: object}
+                  financing_costs: {type: object}
 components:
   schemas:
     AssetMasanielloResult:
@@ -7111,3 +7299,6 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+    bearerAuth:
+      type: http
+      scheme: bearer
