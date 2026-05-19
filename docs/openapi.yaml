@@ -2415,6 +2415,7 @@ paths:
     post:
       tags: [renko]
       summary: Run full backtest with Phase 2-7 analytics
+      operationId: run_renko_backtest_v2_renko_backtest_run_post
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -2466,6 +2467,7 @@ paths:
     post:
       tags: [renko]
       summary: SSE streaming backtest with chunked results
+      operationId: run_renko_backtest_stream_v2_renko_backtest_run_stream_post
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -2497,6 +2499,7 @@ paths:
     post:
       tags: [renko]
       summary: Parameter sweep optimization with statistical rigor
+      operationId: optimize_renko_backtest_v2_renko_backtest_optimize_post
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -2535,6 +2538,7 @@ paths:
     post:
       tags: [renko]
       summary: Statistical rigor tests (bootstrap CIs, DSR, significance tests)
+      operationId: statistical_rigor_renko_statistics_rigor_post
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -2566,6 +2570,7 @@ paths:
     post:
       tags: [renko]
       summary: Execution modeling (market impact, fill probability, financing)
+      operationId: execution_model_renko_execution_model_post
       security: [{bearerAuth: []}]
       requestBody:
         required: true

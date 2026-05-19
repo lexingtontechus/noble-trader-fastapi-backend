@@ -28,6 +28,8 @@
 - [Feed Adapters](#feed-adapters)
 - [Renko HFT Pipeline](#renko-hft-pipeline)
 - [Renko Backtest Endpoints](#renko-backtest-endpoints)
+- [Statistical Rigor Endpoints (Phase 6)](#statistical-rigor-endpoints-phase-6)
+- [Execution Modeling Endpoints (Phase 7)](#execution-modeling-endpoints-phase-7)
 - [Health](#health)
 - [Recommended Workflows](#recommended-workflows)
 
@@ -2176,6 +2178,164 @@ Grid-search parameter sweep for Renko pipeline optimisation. Accepts a `param_gr
     "total_trades": 35
   },
   "n_combinations": 18
+}
+```
+
+---
+
+## Statistical Rigor Endpoints (Phase 6)
+
+Standalone statistical rigor endpoints for institutional-grade validation of backtest results.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/renko/statistics/rigor` | Bootstrap CIs, DSR, significance tests | Clerk/JWT |
+
+### POST /renko/statistics/rigor
+
+Run statistical rigor tests on trade P&L results. Computes Deflated Sharpe Ratio (DSR), bootstrap confidence intervals, and optional significance tests (White's Reality Check, Hansen's SPA).
+
+**Request (`StatisticalRigorRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `trade_pnls` | `list[float]` | *required* | Array of per-trade P&L values |
+| `observed_sharpe` | `float` | *required* | Annualized Sharpe ratio of the strategy |
+| `n_trials` | `int` | `1` | Number of independent strategy trials (for DSR multiple testing adjustment) |
+| `confidence_level` | `float` | `0.95` | Confidence level for bootstrap CIs (0.90, 0.95, 0.99) |
+| `strategy_returns` | `list[list[float]]` | `null` | Returns matrix for significance tests (each row = one strategy's returns) |
+| `benchmark_returns` | `list[float]` | `null` | Benchmark returns for Hansen's SPA test |
+
+**Response:**
+
+```json
+{
+  "bootstrap_ci": {
+    "sharpe_ratio": {
+      "point_estimate": 1.42,
+      "percentile_ci": {"lower": 0.89, "upper": 1.95, "se": 0.27},
+      "circular_block_ci": {"lower": 0.82, "upper": 1.88, "se": 0.29},
+      "confidence_level": 0.95
+    },
+    "win_rate": { "...": "..." },
+    "profit_factor": { "...": "..." },
+    "max_drawdown": { "...": "..." }
+  },
+  "deflated_sharpe": {
+    "dsr": 0.9732,
+    "observed_sharpe": 1.42,
+    "expected_max_sharpe": 0.85,
+    "p_value": 0.0268,
+    "is_significant": true,
+    "n_trials": 10,
+    "sample_length": 150,
+    "interpretation": "DSR = 0.9732: The observed Sharpe is statistically significant..."
+  },
+  "significance_tests": {
+    "whites_reality_check": {
+      "test": "whites_reality_check",
+      "p_value": 0.032,
+      "is_significant": true,
+      "n_strategies": 10,
+      "n_bootstrap": 1000,
+      "observed_statistic": 0.042,
+      "best_strategy_mean_excess": 0.0038,
+      "interpretation": "White's Reality Check rejects the null..."
+    },
+    "hansen_spa": {
+      "test": "hansen_spa",
+      "p_value": 0.018,
+      "is_significant": true,
+      "interpretation": "..."
+    },
+    "consensus": {
+      "both_significant": true,
+      "either_significant": true,
+      "recommendation": "Both tests agree the best strategy is genuinely significant."
+    }
+  }
+}
+```
+
+---
+
+## Execution Modeling Endpoints (Phase 7)
+
+Standalone execution modeling endpoints for Almgren-Chris market impact, fill probability, and financing cost analysis.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/renko/execution/model` | Market impact, fill probability, financing costs | Clerk/JWT |
+
+### POST /renko/execution/model
+
+Compute execution modeling costs for a trade using Almgren-Chriss market impact, logit-based fill probability, and borrow/margin/dividend financing costs.
+
+**Request (`ExecutionModelRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `order_shares` | `float` | *required* | Number of shares in the order |
+| `avg_price` | `float` | *required* | Average price per share |
+| `adv_shares` | `float` | `10000000` | Average daily volume (shares) |
+| `sigma_daily` | `float` | `0.02` | Daily volatility of the instrument |
+| `order_type` | `string` | `"limit"` | Order type: `"market"`, `"limit"`, or `"stop"` |
+| `distance_from_mid_pct` | `float` | `0.0` | Distance from mid price as percentage |
+| `position_notional` | `float` | `0` | Position notional value ($) |
+| `holding_days` | `float` | `10.0` | Expected holding period in days |
+| `direction` | `string` | `"long"` | Position direction: `"long"` or `"short"` |
+| `is_hard_to_borrow` | `bool` | `false` | Whether the stock is hard-to-borrow |
+| `borrow_rate_bps` | `float` | `50.0` | Annual borrow rate in basis points |
+| `margin_rate_bps` | `float` | `150.0` | Annual margin rate in basis points |
+| `dividend_yield_bps` | `float` | `200.0` | Annual dividend yield in basis points |
+
+**Response:**
+
+```json
+{
+  "market_impact": {
+    "participation_rate": 0.001,
+    "permanent_impact_bps": 1.0,
+    "temporary_impact_bps": 0.45,
+    "total_impact_bps": 1.45,
+    "impact_cost_dollars": 65.25,
+    "impact_cost_pct": 0.000145
+  },
+  "fill_probability": {
+    "fill_probability": 0.82,
+    "order_type": "limit",
+    "distance_from_mid_pct": 0.05,
+    "distance_in_sigmas": 0.62,
+    "expected_fill_price_offset_bps": 1.8,
+    "interpretation": "Limit order 0.05% from mid has ~82% fill probability..."
+  },
+  "financing_costs": {
+    "direction": "short",
+    "position_notional": 45000,
+    "holding_days": 10.0,
+    "total_financing_cost": 18.49,
+    "daily_financing_cost": 1.85,
+    "financing_cost_bps_daily": 0.41,
+    "components": {
+      "borrow": {
+        "daily_borrow_cost": 0.62,
+        "total_borrow_cost": 6.16,
+        "effective_annual_rate_bps": 50,
+        "is_hard_to_borrow": false
+      },
+      "margin": {
+        "daily_margin_cost": 1.85,
+        "total_margin_cost": 18.49,
+        "margin_rate_bps": 150
+      },
+      "dividend": {
+        "daily_dividend_cost": 0.25,
+        "total_dividend_cost": 2.47,
+        "dividend_yield_bps": 200,
+        "prob_ex_dividend_during_hold": 0.027
+      }
+    }
+  }
 }
 ```
 
