@@ -34,9 +34,19 @@ class PositionStatus(str, Enum):
     OPEN = "open"
     CLOSED_TP = "closed_tp"
     CLOSED_SL = "closed_sl"
+    CLOSED_SL_GAP = "closed_sl_gap"     # Gap-through stop (brick opened past SL)
     CLOSED_TRAIL = "closed_trail"
     CLOSED_TIME = "closed_time"
     CLOSED_MANUAL = "closed_manual"
+    CLOSED_OCO_SL = "closed_oco_sl"     # OCO: both SL+TP triggered, SL prioritised
+    CLOSED_OCO_TP = "closed_oco_tp"     # OCO: both SL+TP triggered, TP prioritised
+
+
+class OcoPriority(str, Enum):
+    """OCO (One-Cancels-Other) resolution priority when SL and TP both trigger in the same brick."""
+    SL_FIRST = "sl_first"     # Conservative: assume SL triggers first (worst case)
+    TP_FIRST = "tp_first"     # Optimistic: assume TP triggers first (best case)
+    WORST_CASE = "worst_case"  # Same as SL_FIRST (alias for clarity)
 
 
 @dataclass
@@ -55,6 +65,8 @@ class RiskParams:
     slippage_bps: float = 2.0       # Slippage in basis points (adverse fill)
     commission_bps: float = 5.0     # Commission in basis points of position value
     spread_bps: float = 1.0         # Bid-ask spread in basis points (half-spread each side)
+    # Execution realism parameters
+    oco_priority: OcoPriority = OcoPriority.SL_FIRST  # How to resolve OCO conflicts
 
     @property
     def risk_reward_ratio(self) -> float:
@@ -241,6 +253,12 @@ class RiskManager:
         Call this on EVERY new brick. Returns a TradeResult if the
         position should be closed, None otherwise.
 
+        Phase 3 enhancement: checks for gap-through stops (brick opens
+        past the stop level) and OCO conflicts (both SL and TP triggered
+        by the same brick). Gap-through fills use the brick's open price
+        (worse than the stop level), which is more realistic for
+        overnight gaps, earnings moves, and flash crashes.
+
         Parameters
         ----------
         brick : Brick
@@ -257,19 +275,33 @@ class RiskManager:
         pos.bricks_open += 1
         result = None
 
-        # Check SL
-        result = result or self._check_stop_loss(pos, brick)
+        # ── Phase 3: Gap-through + OCO detection ────────────────────
+        sl_triggered, sl_gap, sl_exit_price = self._is_sl_triggered(pos, brick)
+        tp_triggered, tp_exit_price = self._is_tp_triggered(pos, brick)
 
-        # Check TP
-        result = result or self._check_take_profit(pos, brick)
+        if sl_triggered and tp_triggered:
+            # OCO conflict: both SL and TP triggered by this brick
+            result = self._resolve_oco(pos, brick, sl_exit_price, tp_exit_price, sl_gap)
+        elif sl_triggered:
+            # SL only (possibly gap-through)
+            if sl_gap:
+                result = self._make_result(pos, sl_exit_price, PositionStatus.CLOSED_SL_GAP, brick)
+            else:
+                result = self._make_result(pos, sl_exit_price, PositionStatus.CLOSED_SL, brick)
+        elif tp_triggered:
+            # TP only
+            result = self._make_result(pos, tp_exit_price, PositionStatus.CLOSED_TP, brick)
 
-        # Check trailing stop (only if not already triggered)
+        # Check trailing stop (only if no SL/TP triggered)
         if result is None:
             self._update_trailing(pos, brick)
-            result = self._check_trailing_stop(pos, brick)
+            trail_result = self._check_trailing_stop(pos, brick)
+            if trail_result is not None:
+                result = trail_result
 
         # Check time stop
-        result = result or self._check_time_stop(pos, brick)
+        if result is None:
+            result = self._check_time_stop(pos, brick)
 
         # Check partial exit
         if result is None:
@@ -304,25 +336,103 @@ class RiskManager:
 
     # ── Internal checks ───────────────────────────────────────────
 
-    def _check_stop_loss(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
-        """Check if stop-loss has been hit."""
-        if pos.direction == SignalDirection.LONG:
-            if brick.close_price <= pos.current_sl_price:
-                return self._make_result(pos, pos.current_sl_price, PositionStatus.CLOSED_SL, brick)
-        else:
-            if brick.close_price >= pos.current_sl_price:
-                return self._make_result(pos, pos.current_sl_price, PositionStatus.CLOSED_SL, brick)
-        return None
+    # ── Phase 3: Gap-through + OCO detection helpers ────────────
 
-    def _check_take_profit(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
-        """Check if take-profit has been reached."""
+    def _is_sl_triggered(
+        self, pos: ActivePosition, brick: Brick
+    ) -> tuple[bool, bool, float]:
+        """Check if stop-loss is triggered, accounting for gap-through.
+
+        Returns (triggered, is_gap_through, exit_price).
+
+        Gap-through occurs when the brick's open price has already
+        passed the stop level — e.g. overnight gap, earnings move,
+        flash crash. In reality, you'd get filled at the open price
+        (worse than the stop), not at the stop price itself.
+        """
         if pos.direction == SignalDirection.LONG:
-            if brick.close_price >= pos.tp_price:
-                return self._make_result(pos, pos.tp_price, PositionStatus.CLOSED_TP, brick)
+            # Gap-through: brick opens at or below stop level
+            if brick.open_price <= pos.current_sl_price:
+                return True, True, brick.open_price
+            # Normal: brick closes at or below stop level
+            if brick.close_price <= pos.current_sl_price:
+                return True, False, pos.current_sl_price
         else:
+            # SHORT: gap-through: brick opens at or above stop level
+            if brick.open_price >= pos.current_sl_price:
+                return True, True, brick.open_price
+            # Normal: brick closes at or above stop level
+            if brick.close_price >= pos.current_sl_price:
+                return True, False, pos.current_sl_price
+        return False, False, 0.0
+
+    def _is_tp_triggered(
+        self, pos: ActivePosition, brick: Brick
+    ) -> tuple[bool, float]:
+        """Check if take-profit is triggered.
+
+        Returns (triggered, exit_price).
+
+        TP can also gap-through (brick opens past TP), but since TP
+        is a limit order, gap-through is actually favorable — you get
+        a better fill than the TP price. We use the open price for
+        gap-through TP as well, which is more realistic.
+        """
+        if pos.direction == SignalDirection.LONG:
+            # Gap-through TP: brick opens above TP (favorable)
+            if brick.open_price >= pos.tp_price:
+                return True, brick.open_price
+            # Normal TP: brick closes above TP
+            if brick.close_price >= pos.tp_price:
+                return True, pos.tp_price
+        else:
+            # SHORT: gap-through TP: brick opens below TP (favorable)
+            if brick.open_price <= pos.tp_price:
+                return True, brick.open_price
+            # Normal TP: brick closes below TP
             if brick.close_price <= pos.tp_price:
-                return self._make_result(pos, pos.tp_price, PositionStatus.CLOSED_TP, brick)
-        return None
+                return True, pos.tp_price
+        return False, 0.0
+
+    def _resolve_oco(
+        self,
+        pos: ActivePosition,
+        brick: Brick,
+        sl_exit_price: float,
+        tp_exit_price: float,
+        sl_gap: bool,
+    ) -> TradeResult:
+        """Resolve an OCO (One-Cancels-Other) conflict.
+
+        When both SL and TP are triggered by the same brick, we need
+        to decide which one "happened first." This is inherently
+        ambiguous — we don't know intrabar price action — so we use
+        a configurable priority:
+
+          - SL_FIRST (default): Conservative — assume the worst case.
+            The stop-loss triggered first. This is the standard
+            approach for realistic backtesting because stops are
+            market orders (immediate fill) while TPs are limit orders
+            (may not fill if price gaps through).
+          - TP_FIRST: Optimistic — assume TP triggered first. Only
+            appropriate if you have reason to believe the price
+            reached the TP level before the SL level intrabar.
+
+        Gap-through SL always takes priority over TP regardless of
+        oco_priority setting — if the bar opens past your stop, you're
+        out at the open, period.
+        """
+        # If SL is a gap-through, SL always wins (you're stopped out
+        # at the open before the bar even starts moving toward TP)
+        if sl_gap:
+            return self._make_result(pos, sl_exit_price, PositionStatus.CLOSED_SL_GAP, brick)
+
+        # Resolve based on OCO priority setting
+        if pos.params.oco_priority == OcoPriority.TP_FIRST:
+            return self._make_result(pos, tp_exit_price, PositionStatus.CLOSED_OCO_TP, brick)
+        else:
+            # SL_FIRST or WORST_CASE (default) — conservative
+            return self._make_result(pos, sl_exit_price, PositionStatus.CLOSED_OCO_SL, brick)
 
     def _update_trailing(self, pos: ActivePosition, brick: Brick) -> None:
         """Update trailing stop level if conditions are met."""
@@ -411,10 +521,12 @@ class RiskManager:
         spread_bps = self.params.spread_bps / 20000 if self.params.spread_bps > 0 else 0.0  # half-spread on exit
 
         # Determine slippage multiplier based on exit type
-        if status == PositionStatus.CLOSED_SL:
+        if status in (PositionStatus.CLOSED_SL, PositionStatus.CLOSED_SL_GAP, PositionStatus.CLOSED_OCO_SL):
             # Stop-loss: full adverse (market order, worst execution)
+            # Gap-through SL gets even worse fills but that's already
+            # captured by the exit_price being at the open (worse than stop)
             slip_mult = 1.0
-        elif status == PositionStatus.CLOSED_TP:
+        elif status in (PositionStatus.CLOSED_TP, PositionStatus.CLOSED_OCO_TP):
             # Take-profit: half adverse (limit order, usually fills at or near limit)
             slip_mult = 0.5
         else:

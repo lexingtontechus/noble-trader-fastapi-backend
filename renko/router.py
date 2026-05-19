@@ -146,6 +146,8 @@ class RenkoBacktestRequest(BaseModel):
     slippage_bps: float = Field(default=2.0, ge=0, description="Slippage in basis points (adverse fill).")
     commission_bps: float = Field(default=5.0, ge=0, description="Commission in basis points of position value.")
     spread_bps: float = Field(default=1.0, ge=0, description="Bid-ask spread in basis points (half-spread each side).")
+    # Execution Realism
+    oco_priority: str = Field(default="sl_first", description="OCO resolution: sl_first (conservative) | tp_first (optimistic) | worst_case.")
     # Optional overrides
     timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
     regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
@@ -181,6 +183,7 @@ class RenkoCompareConfig(BaseModel):
     slippage_bps: float = Field(default=2.0, ge=0)
     commission_bps: float = Field(default=5.0, ge=0)
     spread_bps: float = Field(default=1.0, ge=0)
+    oco_priority: str = Field(default="sl_first", description="OCO resolution: sl_first | tp_first | worst_case.")
 
 
 class RenkoBacktestCompareRequest(BaseModel):
@@ -230,6 +233,8 @@ class RenkoBacktestOptimizeRequest(BaseModel):
     slippage_bps: float = Field(default=2.0, ge=0)
     commission_bps: float = Field(default=5.0, ge=0)
     spread_bps: float = Field(default=1.0, ge=0)
+    # Execution Realism
+    oco_priority: str = Field(default="sl_first", description="OCO resolution: sl_first | tp_first | worst_case.")
 
 
 class RenkoBacktestOptimizeResponse(BaseModel):
@@ -403,6 +408,7 @@ if FASTAPI_AVAILABLE:
 
     def _build_renko_config(req: "RenkoBacktestRequest") -> "RenkoConfig":
         """Build a RenkoConfig from a backtest request body."""
+        from renko.config import OcoPriority as _OcoPriority
         return RenkoConfig(
             brick_size=req.brick_size,
             brick_size_mode=req.brick_size_mode,
@@ -422,6 +428,7 @@ if FASTAPI_AVAILABLE:
             slippage_bps=req.slippage_bps,
             commission_bps=req.commission_bps,
             spread_bps=req.spread_bps,
+            oco_priority=_OcoPriority(req.oco_priority),
             symbol=req.symbol,
         )
 
@@ -629,6 +636,7 @@ if FASTAPI_AVAILABLE:
 
             comparisons = []
             for cfg_input in body.configs:
+                from renko.config import OcoPriority as _OcoPriority2
                 config = RenkoConfig(
                     brick_size=cfg_input.brick_size,
                     sl_bricks=cfg_input.sl_bricks,
@@ -645,6 +653,7 @@ if FASTAPI_AVAILABLE:
                     slippage_bps=cfg_input.slippage_bps,
                     commission_bps=cfg_input.commission_bps,
                     spread_bps=cfg_input.spread_bps,
+                    oco_priority=_OcoPriority2(cfg_input.oco_priority),
                     symbol=body.symbol,
                 )
 
@@ -764,6 +773,7 @@ if FASTAPI_AVAILABLE:
                 "slippage_bps": body.slippage_bps,
                 "commission_bps": body.commission_bps,
                 "spread_bps": body.spread_bps,
+                "oco_priority": body.oco_priority,
                 "symbol": body.symbol,
             }
 

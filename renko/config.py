@@ -24,6 +24,13 @@ class OrderType(str, Enum):
     LIMIT = "limit"
 
 
+class OcoPriority(str, Enum):
+    """OCO (One-Cancels-Other) resolution priority when SL and TP both trigger in the same brick."""
+    SL_FIRST = "sl_first"     # Conservative: assume SL triggers first (worst case)
+    TP_FIRST = "tp_first"     # Optimistic: assume TP triggers first (best case)
+    WORST_CASE = "worst_case"  # Same as SL_FIRST (alias for clarity)
+
+
 @dataclass
 class RenkoConfig:
     """Master configuration for the Renko HFT pipeline."""
@@ -73,6 +80,9 @@ class RenkoConfig:
     slippage_bps: float = 2.0           # Slippage in basis points (adverse fill)
     commission_bps: float = 5.0         # Commission in basis points of position value
     spread_bps: float = 1.0             # Bid-ask spread in basis points (half-spread each side)
+
+    # ── Execution Realism ──────────────────────────────────────────
+    oco_priority: OcoPriority = OcoPriority.SL_FIRST  # How to resolve OCO conflicts (SL+TP same brick)
 
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET

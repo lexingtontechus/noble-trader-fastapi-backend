@@ -139,6 +139,7 @@ class RenkoPipeline:
                 slippage_bps=self.config.slippage_bps,
                 commission_bps=self.config.commission_bps,
                 spread_bps=self.config.spread_bps,
+                oco_priority=self.config.oco_priority,
             )
         )
         self.executor = AlpacaExecutor(

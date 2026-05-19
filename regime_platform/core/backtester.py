@@ -42,6 +42,9 @@ class BacktestConfig:
     max_position_pct: float = 0.25    # max position as fraction of equity
     risk_check: bool = True           # enable VaR/CVaR risk gates
     regime_gate: bool = True          # block trades in high-vol bear regimes
+    # Per-trade risk management (Phase 3 — Execution Realism)
+    stop_loss_pct: float = 0.0        # Per-trade stop-loss as fraction (0 = disabled, 0.05 = 5%)
+    take_profit_pct: float = 0.0      # Per-trade take-profit as fraction (0 = disabled, 0.10 = 10%)
 
 
 @dataclass
@@ -61,7 +64,7 @@ class BacktestTrade:
     slippage_cost: float = 0.0    # Slippage only (separate from commission)
     total_cost: float = 0.0       # commission + slippage_cost
     hold_bars: int = 0
-    exit_reason: str = ""
+    exit_reason: str = ""              # "signal_reversal", "regime_exit", "max_drawdown_stop", "stop_loss", "take_profit"
     entry_date: Optional[str] = None   # ISO date string if dates provided
     exit_date: Optional[str] = None    # ISO date string if dates provided
 
@@ -256,16 +259,37 @@ class Backtester:
                 should_exit = False
                 exit_reason = ""
                 
-                if signal == "flat" or (position_dir == 1 and signal == "short") or (position_dir == -1 and signal == "long"):
-                    should_exit = True
-                    exit_reason = "signal_reversal"
-                elif snap and cfg.regime_gate:
-                    if position_dir == 1 and snap.risk_multiplier < 0.3:
+                # ── Per-trade stop-loss / take-profit (Phase 3) ────────
+                if entry_price > 0 and (cfg.stop_loss_pct > 0 or cfg.take_profit_pct > 0):
+                    if position_dir == 1:  # LONG
+                        unrealized_pct = (current_price - entry_price) / entry_price
+                        if cfg.stop_loss_pct > 0 and unrealized_pct <= -cfg.stop_loss_pct:
+                            should_exit = True
+                            exit_reason = "stop_loss"
+                        elif cfg.take_profit_pct > 0 and unrealized_pct >= cfg.take_profit_pct:
+                            should_exit = True
+                            exit_reason = "take_profit"
+                    else:  # SHORT
+                        unrealized_pct = (entry_price - current_price) / entry_price
+                        if cfg.stop_loss_pct > 0 and unrealized_pct <= -cfg.stop_loss_pct:
+                            should_exit = True
+                            exit_reason = "stop_loss"
+                        elif cfg.take_profit_pct > 0 and unrealized_pct >= cfg.take_profit_pct:
+                            should_exit = True
+                            exit_reason = "take_profit"
+                
+                # Signal-based exits
+                if not should_exit:
+                    if signal == "flat" or (position_dir == 1 and signal == "short") or (position_dir == -1 and signal == "long"):
                         should_exit = True
-                        exit_reason = "regime_exit"
-                    elif position_dir == -1 and snap.vol_state in vol_labels[:len(vol_labels)//2] and snap.trend_state in trend_labels[len(trend_labels)//2:]:
-                        should_exit = True
-                        exit_reason = "regime_exit"
+                        exit_reason = "signal_reversal"
+                    elif snap and cfg.regime_gate:
+                        if position_dir == 1 and snap.risk_multiplier < 0.3:
+                            should_exit = True
+                            exit_reason = "regime_exit"
+                        elif position_dir == -1 and snap.vol_state in vol_labels[:len(vol_labels)//2] and snap.trend_state in trend_labels[len(trend_labels)//2:]:
+                            should_exit = True
+                            exit_reason = "regime_exit"
                 
                 # Risk check: stop loss if drawdown exceeds 5× base_risk_limit
                 max_dd_threshold = -(cfg.base_risk_limit * 5)
@@ -610,5 +634,7 @@ class Backtester:
                 "max_position_pct": cfg.max_position_pct,
                 "risk_check": cfg.risk_check,
                 "regime_gate": cfg.regime_gate,
+                "stop_loss_pct": cfg.stop_loss_pct,
+                "take_profit_pct": cfg.take_profit_pct,
             },
         )
