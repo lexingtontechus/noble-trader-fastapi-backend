@@ -166,7 +166,7 @@ class TradeJournal:
             gross_pnl_dollars=result.gross_pnl_dollars,
         )
 
-    def get_stats(self, last_n: Optional[int] = None) -> Dict:
+    def get_stats(self, last_n: Optional[int] = None, initial_capital: float = 100000.0) -> Dict:
         """
         Compute comprehensive trading statistics.
 
@@ -174,12 +174,15 @@ class TradeJournal:
         ----------
         last_n : int, optional
             Only use the last N trades. None = all.
+        initial_capital : float
+            Starting capital for dollar-denominated return calculations.
 
         Returns
         -------
         dict with keys: total_trades, win_rate, profit_factor,
         avg_pnl_bricks, sharpe_estimate, max_drawdown_bricks,
-        by_pattern, by_direction, by_regime, rolling_win_rate
+        by_pattern, by_direction, by_regime, rolling_win_rate,
+        dollar_stats (dollar-denominated metrics), cost_summary
         """
         trades = list(self.trades)
         if last_n is not None:
@@ -211,7 +214,7 @@ class TradeJournal:
             if dd > max_dd:
                 max_dd = dd
 
-        # Sharpe estimate (simplified)
+        # Sharpe estimate (simplified, brick-denominated)
         if len(trades) > 1:
             import numpy as np
             returns = np.array([t.pnl_bricks for t in trades])
@@ -237,7 +240,56 @@ class TradeJournal:
             "avg_duration_seconds": round(sum(t.duration_seconds for t in trades) / len(trades), 2),
         }
 
-        # Per-pattern breakdown
+        # ── Dollar-denominated metrics (Phase 4A) ─────────────────────
+        total_pnl_dollars = sum(t.pnl_dollars for t in trades)
+        total_gross_pnl_dollars = sum(t.gross_pnl_dollars for t in trades)
+        gross_profit_dollars = sum(t.pnl_dollars for t in wins)
+        gross_loss_dollars = abs(sum(t.pnl_dollars for t in losses))
+
+        # Dollar drawdown
+        cum_pnl_dollars = []
+        running_dollars = 0.0
+        for t in trades:
+            running_dollars += t.pnl_dollars
+            cum_pnl_dollars.append(running_dollars)
+
+        max_dd_dollars = 0.0
+        peak_dollars = 0.0
+        for val in cum_pnl_dollars:
+            if val > peak_dollars:
+                peak_dollars = val
+            dd = peak_dollars - val
+            if dd > max_dd_dollars:
+                max_dd_dollars = dd
+
+        # Return percentage
+        return_pct = (total_pnl_dollars / initial_capital * 100) if initial_capital > 0 else 0.0
+
+        # Dollar-denominated Sharpe
+        if len(trades) > 1:
+            import numpy as np
+            dollar_returns = np.array([t.pnl_dollars for t in trades])
+            mean_dr = dollar_returns.mean()
+            std_dr = dollar_returns.std()
+            sharpe_dollars = mean_dr / std_dr if std_dr > 0 else 0.0
+        else:
+            sharpe_dollars = 0.0
+
+        stats["dollar_stats"] = {
+            "initial_capital": round(initial_capital, 2),
+            "total_pnl_dollars": round(total_pnl_dollars, 2),
+            "total_gross_pnl_dollars": round(total_gross_pnl_dollars, 2),
+            "avg_pnl_dollars": round(total_pnl_dollars / len(trades), 2),
+            "avg_win_dollars": round(gross_profit_dollars / len(wins), 2) if wins else 0.0,
+            "avg_loss_dollars": round(gross_loss_dollars / len(losses), 2) if losses else 0.0,
+            "max_drawdown_dollars": round(max_dd_dollars, 2),
+            "return_pct": round(return_pct, 4),
+            "sharpe_dollars": round(sharpe_dollars, 4),
+            "profit_factor_dollars": round(gross_profit_dollars / gross_loss_dollars, 4) if gross_loss_dollars > 0 else float("inf"),
+            "equity_curve_dollars": [round(v, 2) for v in cum_pnl_dollars],
+        }
+
+        # Per-pattern breakdown (with dollar metrics)
         by_pattern: Dict[str, Dict] = {}
         for pt in PatternType:
             pt_trades = [t for t in trades if t.pattern_type == pt]
@@ -247,10 +299,12 @@ class TradeJournal:
                     "count": len(pt_trades),
                     "win_rate": len(pt_wins) / len(pt_trades),
                     "avg_pnl_bricks": round(sum(t.pnl_bricks for t in pt_trades) / len(pt_trades), 4),
+                    "total_pnl_dollars": round(sum(t.pnl_dollars for t in pt_trades), 2),
+                    "avg_pnl_dollars": round(sum(t.pnl_dollars for t in pt_trades) / len(pt_trades), 2),
                 }
         stats["by_pattern"] = by_pattern
 
-        # Per-direction breakdown
+        # Per-direction breakdown (with dollar metrics)
         longs = [t for t in trades if t.direction == SignalDirection.LONG]
         shorts = [t for t in trades if t.direction == SignalDirection.SHORT]
         stats["by_direction"] = {
@@ -258,28 +312,43 @@ class TradeJournal:
                 "count": len(longs),
                 "win_rate": len([t for t in longs if t.is_win]) / len(longs) if longs else 0.0,
                 "avg_pnl": round(sum(t.pnl_bricks for t in longs) / len(longs), 4) if longs else 0.0,
+                "total_pnl_dollars": round(sum(t.pnl_dollars for t in longs), 2) if longs else 0.0,
             },
             "short": {
                 "count": len(shorts),
                 "win_rate": len([t for t in shorts if t.is_win]) / len(shorts) if shorts else 0.0,
                 "avg_pnl": round(sum(t.pnl_bricks for t in shorts) / len(shorts), 4) if shorts else 0.0,
+                "total_pnl_dollars": round(sum(t.pnl_dollars for t in shorts), 2) if shorts else 0.0,
             },
         }
 
-        # Per-regime breakdown
+        # Per-regime breakdown (Phase 4D: enhanced with dollar metrics)
         by_regime: Dict[str, Dict] = {}
         for t in trades:
             r = t.regime or "unknown"
             if r not in by_regime:
-                by_regime[r] = {"count": 0, "wins": 0, "pnl": 0.0}
+                by_regime[r] = {"count": 0, "wins": 0, "pnl_bricks": 0.0, "pnl_dollars": 0.0,
+                                "commission": 0.0, "slippage": 0.0, "total_cost": 0.0}
             by_regime[r]["count"] += 1
             if t.is_win:
                 by_regime[r]["wins"] += 1
-            by_regime[r]["pnl"] += t.pnl_bricks
+            by_regime[r]["pnl_bricks"] += t.pnl_bricks
+            by_regime[r]["pnl_dollars"] += t.pnl_dollars
+            by_regime[r]["commission"] += t.commission
+            by_regime[r]["slippage"] += t.slippage_cost
+            by_regime[r]["total_cost"] += t.total_cost
         for r in by_regime:
             c = by_regime[r]["count"]
             by_regime[r]["win_rate"] = by_regime[r]["wins"] / c if c > 0 else 0.0
-            by_regime[r]["avg_pnl"] = round(by_regime[r]["pnl"] / c, 4) if c > 0 else 0.0
+            by_regime[r]["avg_pnl_bricks"] = round(by_regime[r]["pnl_bricks"] / c, 4) if c > 0 else 0.0
+            by_regime[r]["avg_pnl_dollars"] = round(by_regime[r]["pnl_dollars"] / c, 2) if c > 0 else 0.0
+            by_regime[r]["return_pct"] = round(by_regime[r]["pnl_dollars"] / initial_capital * 100, 4) if initial_capital > 0 else 0.0
+            # Round aggregate fields
+            by_regime[r]["pnl_bricks"] = round(by_regime[r]["pnl_bricks"], 4)
+            by_regime[r]["pnl_dollars"] = round(by_regime[r]["pnl_dollars"], 2)
+            by_regime[r]["commission"] = round(by_regime[r]["commission"], 2)
+            by_regime[r]["slippage"] = round(by_regime[r]["slippage"], 2)
+            by_regime[r]["total_cost"] = round(by_regime[r]["total_cost"], 2)
         stats["by_regime"] = by_regime
 
         # Rolling win rate (last 20 trades)
@@ -314,7 +383,6 @@ class TradeJournal:
             "total_net_pnl_dollars": round(total_net_pnl, 4),
             "cost_drag_pct": round(total_costs / abs(total_gross_pnl) * 100, 2) if total_gross_pnl != 0 else 0.0,
             "avg_cost_per_trade": round(total_costs / len(trades), 4) if trades else 0.0,
-            "commission_bps_avg": round(total_commission / len(trades) * 10000 / (sum(abs(t.entry_price * t.qty) for t in trades) / len(trades)), 2) if trades else 0.0,
             "by_exit_type": self._cost_breakdown_by_exit_type(trades),
         }
 

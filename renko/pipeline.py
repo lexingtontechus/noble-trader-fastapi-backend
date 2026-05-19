@@ -285,7 +285,7 @@ class RenkoPipeline:
             "config": self.config.to_dict(),
             "state": self.get_state().to_dict(),
             "session": self.signal_filter.session_stats,
-            "journal": self.journal.get_stats(),
+            "journal": self.journal.get_stats(initial_capital=self.config.initial_capital),
             "filter_rejections": len(self.signal_filter.rejected_signals),
         }
 
@@ -414,6 +414,271 @@ class RenkoPipeline:
             "total_bricks": self.brick_engine.brick_count,
             "total_ticks": len(prices),
             "trades": [t.to_dict() for t in self.journal.trades],
+        }
+
+    # ── Walk-Forward Out-of-Sample Validation (Phase 4B) ─────────────
+
+    def walk_forward(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        train_window: int = 500,
+        test_window: int = 250,
+        min_trades_for_stats: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Walk-forward out-of-sample validation.
+
+        Splits the price series into rolling train/test windows.
+        For each window, runs the backtest on the full window but reports
+        separate in-sample and out-of-sample statistics. This validates
+        whether the strategy parameters are robust or just overfitted
+        to the full dataset.
+
+        Parameters
+        ----------
+        prices : list[float]
+            Historical price series.
+        timestamps : list[float], optional
+            Matching timestamps.
+        regimes : list[str], optional
+            Pre-computed regime labels aligned with prices.
+        train_window : int
+            Number of ticks for the in-sample (training) window.
+        test_window : int
+            Number of ticks for the out-of-sample (test) window.
+        min_trades_for_stats : int
+            Minimum trades required for a window to be included in stats.
+
+        Returns
+        -------
+        dict with keys:
+          - windows: list of per-window results (in-sample + out-of-sample stats)
+          - aggregate: combined OOS stats across all windows
+          - is_oos_ratio: out-of-sample / in-sample return ratio
+        """
+        self.reset()
+        n = len(prices)
+        windows = []
+        all_oos_trades = []
+
+        step = test_window
+        start = 0
+
+        while start + train_window + test_window <= n:
+            # In-sample: [start, start+train_window)
+            is_start = start
+            is_end = start + train_window
+            # Out-of-sample: [is_end, is_end+test_window)
+            oos_start = is_end
+            oos_end = min(oos_start + test_window, n)
+
+            # Run in-sample
+            is_pipeline = RenkoPipeline(self.config)
+            is_result = is_pipeline.backtest(
+                prices[is_start:is_end],
+                timestamps[is_start:is_end] if timestamps else None,
+                regimes[is_start:is_end] if regimes else None,
+            )
+            is_stats = is_result.get("stats", {}).get("journal", {})
+
+            # Run out-of-sample
+            oos_pipeline = RenkoPipeline(self.config)
+            oos_result = oos_pipeline.backtest(
+                prices[oos_start:oos_end],
+                timestamps[oos_start:oos_end] if timestamps else None,
+                regimes[oos_start:oos_end] if regimes else None,
+            )
+            oos_stats = oos_result.get("stats", {}).get("journal", {})
+            oos_trades = oos_result.get("trades", [])
+
+            is_trades_count = is_stats.get("total_trades", 0)
+            oos_trades_count = oos_stats.get("total_trades", 0)
+
+            window_data = {
+                "window": len(windows) + 1,
+                "is_range": [is_start, is_end],
+                "oos_range": [oos_start, oos_end],
+                "is_stats": is_stats,
+                "oos_stats": oos_stats,
+                "is_total_pnl_bricks": is_stats.get("total_pnl_bricks", 0.0),
+                "oos_total_pnl_bricks": oos_stats.get("total_pnl_bricks", 0.0),
+                "is_sharpe": is_stats.get("sharpe_estimate", 0.0),
+                "oos_sharpe": oos_stats.get("sharpe_estimate", 0.0),
+                "is_trades": is_trades_count,
+                "oos_trades": oos_trades_count,
+            }
+
+            # Only include windows with enough trades for meaningful stats
+            if oos_trades_count >= min_trades_for_stats:
+                all_oos_trades.extend(oos_trades)
+                windows.append(window_data)
+            elif is_trades_count >= min_trades_for_stats:
+                windows.append(window_data)
+
+            start += step
+
+        # Aggregate OOS stats
+        aggregate = {
+            "total_windows": len(windows),
+            "total_oos_trades": len(all_oos_trades),
+            "avg_oos_pnl_bricks": 0.0,
+            "avg_oos_sharpe": 0.0,
+            "avg_oos_win_rate": 0.0,
+            "degradation_ratio": 0.0,
+        }
+
+        if windows:
+            avg_oos_pnl = sum(w["oos_total_pnl_bricks"] for w in windows) / len(windows)
+            avg_is_pnl = sum(w["is_total_pnl_bricks"] for w in windows) / len(windows)
+            avg_oos_sharpe = sum(w["oos_sharpe"] for w in windows) / len(windows)
+            avg_oos_wr = sum(w["oos_stats"].get("win_rate", 0.0) for w in windows) / len(windows)
+
+            aggregate["avg_oos_pnl_bricks"] = round(avg_oos_pnl, 4)
+            aggregate["avg_is_pnl_bricks"] = round(avg_is_pnl, 4)
+            aggregate["avg_oos_sharpe"] = round(avg_oos_sharpe, 4)
+            aggregate["avg_oos_win_rate"] = round(avg_oos_wr, 4)
+
+            # Degradation ratio: OOS/IS — below 0.5 means severe overfitting
+            if avg_is_pnl != 0:
+                aggregate["degradation_ratio"] = round(avg_oos_pnl / avg_is_pnl, 4)
+            elif avg_oos_pnl > 0:
+                aggregate["degradation_ratio"] = float("inf")
+
+        return {
+            "windows": windows,
+            "aggregate": aggregate,
+            "config_used": self.config.to_dict(),
+            "total_ticks": n,
+        }
+
+    # ── Monte Carlo Permutation (Phase 4C) ──────────────────────────
+
+    def monte_carlo_permute(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        n_simulations: int = 1000,
+        confidence_levels: tuple = (5, 25, 50, 75, 95),
+    ) -> Dict[str, Any]:
+        """
+        Monte Carlo simulation by permuting trade order.
+
+        Shuffles the trade P&L sequence N times and computes the equity
+        curve for each permutation. This answers: "Could I have gotten
+        these results by luck?" If the 5th-percentile equity curve is
+        still profitable, the strategy is robust regardless of trade timing.
+
+        Parameters
+        ----------
+        prices : list[float]
+            Historical price series.
+        timestamps : list[float], optional
+            Matching timestamps.
+        regimes : list[str], optional
+            Pre-computed regime labels aligned with prices.
+        n_simulations : int
+            Number of random trade-order permutations (default 1000).
+        confidence_levels : tuple
+            Percentile levels to compute (default 5th, 25th, 50th, 75th, 95th).
+
+        Returns
+        -------
+        dict with keys:
+          - original: original backtest stats
+          - confidence_bands: dict of percentile → equity curve
+          - p_profitable: probability that a random permutation is profitable
+          - p_beat_original: probability that a random permutation beats original
+          - simulation_count: number of simulations run
+        """
+        import numpy as np
+
+        # Run original backtest
+        self.reset()
+        original_result = self.backtest(prices, timestamps, regimes)
+        original_stats = original_result.get("stats", {}).get("journal", {})
+        trades = list(self.journal.trades)
+
+        if len(trades) < 3:
+            return {
+                "original": original_stats,
+                "confidence_bands": {},
+                "dollar_bands": {},
+                "original_total_pnl_bricks": round(sum(t.pnl_bricks for t in trades), 4),
+                "original_total_pnl_dollars": round(sum(t.pnl_dollars for t in trades), 2),
+                "p_profitable": 0.0,
+                "p_beat_original": 0.0,
+                "p5_final_pnl": 0.0,
+                "p95_final_pnl": 0.0,
+                "mean_final_pnl": 0.0,
+                "simulation_count": 0,
+                "n_trades": len(trades),
+                "error": "Need at least 3 trades for Monte Carlo simulation",
+                "config_used": self.config.to_dict(),
+            }
+
+        # Extract trade P&Ls in bricks and dollars
+        trade_pnls_bricks = [t.pnl_bricks for t in trades]
+        trade_pnls_dollars = [t.pnl_dollars for t in trades]
+        original_total_pnl = sum(trade_pnls_bricks)
+        original_total_pnl_dollars = sum(trade_pnls_dollars)
+
+        # Run N permutations
+        n_trades = len(trades)
+        final_pnls_bricks = np.zeros(n_simulations)
+        final_pnls_dollars = np.zeros(n_simulations)
+        equity_curves = np.zeros((n_simulations, n_trades))
+
+        rng = np.random.default_rng()
+
+        for i in range(n_simulations):
+            perm = rng.permutation(trade_pnls_bricks)
+            cumsum = np.cumsum(perm)
+            equity_curves[i] = cumsum
+            final_pnls_bricks[i] = cumsum[-1]
+
+            # Also track dollar P&L
+            perm_dollars = trade_pnls_dollars.copy()
+            rng.shuffle(perm_dollars)
+            final_pnls_dollars[i] = sum(perm_dollars)
+
+        # Compute confidence bands at each trade step
+        confidence_bands = {}
+        for level in confidence_levels:
+            band = np.percentile(equity_curves, level, axis=0)
+            confidence_bands[f"p{level}"] = [round(float(v), 4) for v in band]
+
+        # Also include the original equity curve
+        original_equity = list(np.cumsum(trade_pnls_bricks))
+        confidence_bands["original"] = [round(float(v), 4) for v in original_equity]
+
+        # Probability that a random permutation is profitable
+        p_profitable = float(np.mean(final_pnls_bricks > 0))
+
+        # Probability that a random permutation beats the original
+        p_beat_original = float(np.mean(final_pnls_bricks >= original_total_pnl))
+
+        # Dollar-denominated confidence stats
+        dollar_bands = {}
+        for level in confidence_levels:
+            dollar_bands[f"p{level}_dollars"] = round(float(np.percentile(final_pnls_dollars, level)), 2)
+
+        return {
+            "original": original_stats,
+            "confidence_bands": confidence_bands,
+            "dollar_bands": dollar_bands,
+            "original_total_pnl_bricks": round(original_total_pnl, 4),
+            "original_total_pnl_dollars": round(original_total_pnl_dollars, 2),
+            "p_profitable": round(p_profitable, 4),
+            "p_beat_original": round(p_beat_original, 4),
+            "p5_final_pnl": round(float(np.percentile(final_pnls_bricks, 5)), 4),
+            "p95_final_pnl": round(float(np.percentile(final_pnls_bricks, 95)), 4),
+            "mean_final_pnl": round(float(np.mean(final_pnls_bricks)), 4),
+            "simulation_count": n_simulations,
+            "n_trades": n_trades,
+            "config_used": self.config.to_dict(),
         }
 
     # ── Internal ──────────────────────────────────────────────────

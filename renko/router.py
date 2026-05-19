@@ -148,6 +148,8 @@ class RenkoBacktestRequest(BaseModel):
     spread_bps: float = Field(default=1.0, ge=0, description="Bid-ask spread in basis points (half-spread each side).")
     # Execution Realism
     oco_priority: str = Field(default="sl_first", description="OCO resolution: sl_first (conservative) | tp_first (optimistic) | worst_case.")
+    # Capital / Dollar P&L (Phase 4A)
+    initial_capital: float = Field(default=100000.0, gt=0, description="Starting capital for dollar P&L and return calculations.")
     # Optional overrides
     timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
     regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
@@ -247,6 +249,99 @@ class RenkoBacktestOptimizeResponse(BaseModel):
     best_by_sharpe: Optional[Dict[str, Any]] = Field(default=None, description="Params with highest Sharpe estimate.")
     best_by_return: Optional[Dict[str, Any]] = Field(default=None, description="Params with highest total PnL (bricks).")
     n_combinations: int = Field(..., description="Total parameter combinations tested.")
+
+
+# ── Walk-Forward Validation models (Phase 4B) ──────────────────────────
+
+
+class RenkoWalkForwardRequest(BaseModel):
+    """Walk-forward out-of-sample validation request."""
+    prices: List[float] = Field(..., min_length=200, description="Historical price series (min 200 for meaningful walk-forward).")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    train_window: int = Field(default=500, ge=100, description="In-sample (training) window size in ticks.")
+    test_window: int = Field(default=250, ge=50, description="Out-of-sample (test) window size in ticks.")
+    min_trades_for_stats: int = Field(default=5, ge=1, description="Minimum trades per window for meaningful stats.")
+    # All RenkoConfig params (same as RenkoBacktestRequest)
+    brick_size: float = Field(default=0.50, gt=0)
+    brick_size_mode: str = Field(default="fixed")
+    reversal_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    cooldown_seconds: float = Field(default=30.0, ge=0)
+    regime_gate: bool = Field(default=True)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
+    oco_priority: str = Field(default="sl_first")
+    initial_capital: float = Field(default=100000.0, gt=0)
+    timestamps: Optional[List[float]] = Field(default=None)
+    regimes: Optional[List[str]] = Field(default=None)
+
+
+class RenkoWalkForwardResponse(BaseModel):
+    """Walk-forward out-of-sample validation results."""
+    windows: List[Dict[str, Any]] = Field(..., description="Per-window IS/OOS results.")
+    aggregate: Dict[str, Any] = Field(..., description="Aggregated OOS statistics.")
+    config_used: Dict[str, Any] = Field(default_factory=dict)
+    total_ticks: int = Field(...)
+
+
+# ── Monte Carlo models (Phase 4C) ──────────────────────────────────────
+
+
+class RenkoMonteCarloRequest(BaseModel):
+    """Monte Carlo permutation test request."""
+    prices: List[float] = Field(..., min_length=50, description="Historical price series.")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    n_simulations: int = Field(default=1000, ge=100, le=10000, description="Number of random trade-order permutations.")
+    # All RenkoConfig params
+    brick_size: float = Field(default=0.50, gt=0)
+    brick_size_mode: str = Field(default="fixed")
+    reversal_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    cooldown_seconds: float = Field(default=30.0, ge=0)
+    regime_gate: bool = Field(default=True)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
+    oco_priority: str = Field(default="sl_first")
+    initial_capital: float = Field(default=100000.0, gt=0)
+    timestamps: Optional[List[float]] = Field(default=None)
+    regimes: Optional[List[str]] = Field(default=None)
+
+
+class RenkoMonteCarloResponse(BaseModel):
+    """Monte Carlo permutation test results."""
+    original: Dict[str, Any] = Field(..., description="Original backtest stats.")
+    confidence_bands: Dict[str, Any] = Field(default_factory=dict, description="Percentile equity curves (p5, p25, p50, p75, p95, original).")
+    dollar_bands: Dict[str, Any] = Field(default_factory=dict, description="Dollar P&L percentile bands.")
+    original_total_pnl_bricks: float = 0.0
+    original_total_pnl_dollars: float = 0.0
+    p_profitable: float = Field(..., description="P(random permutation is profitable).")
+    p_beat_original: float = Field(..., description="P(random permutation >= original P&L).")
+    p5_final_pnl: float = 0.0
+    p95_final_pnl: float = 0.0
+    mean_final_pnl: float = 0.0
+    simulation_count: int = 0
+    n_trades: int = 0
+    config_used: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ── Pipeline registry ─────────────────────────────────────────────
@@ -429,6 +524,7 @@ if FASTAPI_AVAILABLE:
             commission_bps=req.commission_bps,
             spread_bps=req.spread_bps,
             oco_priority=_OcoPriority(req.oco_priority),
+            initial_capital=getattr(req, 'initial_capital', 100000.0),
             symbol=req.symbol,
         )
 
@@ -826,6 +922,194 @@ if FASTAPI_AVAILABLE:
             raise
         except Exception as e:
             log.exception(f"Renko backtest optimize failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Walk-Forward Validation Endpoint (Phase 4B) ────────────────────────
+
+    def _build_wf_config(req: "RenkoWalkForwardRequest") -> "RenkoConfig":
+        """Build a RenkoConfig from a walk-forward request body."""
+        from renko.config import OcoPriority as _OcoPriority3
+        return RenkoConfig(
+            brick_size=req.brick_size,
+            brick_size_mode=req.brick_size_mode,
+            reversal_bricks=req.reversal_bricks,
+            bull_trigger_n=req.bull_trigger_n,
+            bear_trigger_n=req.bear_trigger_n,
+            sl_bricks=req.sl_bricks,
+            tp_bricks=req.tp_bricks,
+            trailing_stop=req.trailing_stop,
+            trail_after_bricks=req.trail_after_bricks,
+            trail_distance_bricks=req.trail_distance_bricks,
+            max_trades_per_session=req.max_trades_per_session,
+            max_daily_loss_bricks=req.max_daily_loss_bricks,
+            max_consecutive_losses=req.max_consecutive_losses,
+            cooldown_seconds=req.cooldown_seconds,
+            regime_gate=req.regime_gate,
+            slippage_bps=req.slippage_bps,
+            commission_bps=req.commission_bps,
+            spread_bps=req.spread_bps,
+            oco_priority=_OcoPriority3(req.oco_priority),
+            initial_capital=req.initial_capital,
+            symbol=req.symbol,
+        )
+
+    @renko_router.post(
+        "/backtest/walk-forward",
+        response_model=RenkoWalkForwardResponse,
+        summary="Walk-forward out-of-sample validation",
+    )
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def walk_forward_renko(
+        request: Request,
+        body: RenkoWalkForwardRequest,
+        user: TokenData = Depends(get_authed_user),
+    ):
+        """
+        Walk-forward out-of-sample validation.
+
+        Splits the price series into rolling in-sample (training) and
+        out-of-sample (test) windows. For each window, runs the backtest
+        on both segments and reports separate statistics. The degradation
+        ratio (OOS/IS return) is the key metric — below 0.5 suggests
+        severe overfitting.
+
+        Results are cached in Redis (1h TTL) for identical requests.
+        """
+        try:
+            # ── Check cache ────────────────────────────────────────────
+            cache_key_body = body.model_dump()
+            cached = await backtest_cache.get("renko:walk-forward", cache_key_body)
+            if cached is not None:
+                return RenkoWalkForwardResponse(**cached)
+
+            config = _build_wf_config(body)
+
+            def _sync_walk_forward():
+                pipeline = RenkoPipeline(config)
+                return pipeline.walk_forward(
+                    prices=body.prices,
+                    timestamps=body.timestamps,
+                    regimes=body.regimes,
+                    train_window=body.train_window,
+                    test_window=body.test_window,
+                    min_trades_for_stats=body.min_trades_for_stats,
+                )
+
+            result = await asyncio.to_thread(_sync_walk_forward)
+
+            response_data = {
+                "windows": result.get("windows", []),
+                "aggregate": result.get("aggregate", {}),
+                "config_used": result.get("config_used", config.to_dict()),
+                "total_ticks": result.get("total_ticks", len(body.prices)),
+            }
+
+            # ── Store in cache ──────────────────────────────────────────
+            await backtest_cache.set("renko:walk-forward", cache_key_body, response_data)
+
+            return RenkoWalkForwardResponse(**response_data)
+
+        except Exception as e:
+            log.exception(f"Renko walk-forward failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Monte Carlo Endpoint (Phase 4C) ────────────────────────────────────
+
+    def _build_mc_config(req: "RenkoMonteCarloRequest") -> "RenkoConfig":
+        """Build a RenkoConfig from a Monte Carlo request body."""
+        from renko.config import OcoPriority as _OcoPriority4
+        return RenkoConfig(
+            brick_size=req.brick_size,
+            brick_size_mode=req.brick_size_mode,
+            reversal_bricks=req.reversal_bricks,
+            bull_trigger_n=req.bull_trigger_n,
+            bear_trigger_n=req.bear_trigger_n,
+            sl_bricks=req.sl_bricks,
+            tp_bricks=req.tp_bricks,
+            trailing_stop=req.trailing_stop,
+            trail_after_bricks=req.trail_after_bricks,
+            trail_distance_bricks=req.trail_distance_bricks,
+            max_trades_per_session=req.max_trades_per_session,
+            max_daily_loss_bricks=req.max_daily_loss_bricks,
+            max_consecutive_losses=req.max_consecutive_losses,
+            cooldown_seconds=req.cooldown_seconds,
+            regime_gate=req.regime_gate,
+            slippage_bps=req.slippage_bps,
+            commission_bps=req.commission_bps,
+            spread_bps=req.spread_bps,
+            oco_priority=_OcoPriority4(req.oco_priority),
+            initial_capital=req.initial_capital,
+            symbol=req.symbol,
+        )
+
+    @renko_router.post(
+        "/backtest/monte-carlo",
+        response_model=RenkoMonteCarloResponse,
+        summary="Monte Carlo permutation test for strategy robustness",
+    )
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def monte_carlo_renko(
+        request: Request,
+        body: RenkoMonteCarloRequest,
+        user: TokenData = Depends(get_authed_user),
+    ):
+        """
+        Monte Carlo permutation test.
+
+        Shuffles the trade P&L order N times and computes equity curves
+        for each permutation. Returns confidence bands (5th-95th percentile)
+        and key probabilities:
+          - p_profitable: P(random permutation is profitable)
+          - p_beat_original: P(random permutation >= original P&L)
+
+        If the 5th-percentile equity curve is still profitable, the
+        strategy is robust regardless of trade timing.
+
+        Results are cached in Redis (1h TTL) for identical requests.
+        """
+        try:
+            # ── Check cache ────────────────────────────────────────────
+            cache_key_body = body.model_dump()
+            cached = await backtest_cache.get("renko:monte-carlo", cache_key_body)
+            if cached is not None:
+                return RenkoMonteCarloResponse(**cached)
+
+            config = _build_mc_config(body)
+
+            def _sync_monte_carlo():
+                pipeline = RenkoPipeline(config)
+                return pipeline.monte_carlo_permute(
+                    prices=body.prices,
+                    timestamps=body.timestamps,
+                    regimes=body.regimes,
+                    n_simulations=body.n_simulations,
+                )
+
+            result = await asyncio.to_thread(_sync_monte_carlo)
+
+            response_data = {
+                "original": result.get("original", {}),
+                "confidence_bands": result.get("confidence_bands", {}),
+                "dollar_bands": result.get("dollar_bands", {}),
+                "original_total_pnl_bricks": result.get("original_total_pnl_bricks", 0.0),
+                "original_total_pnl_dollars": result.get("original_total_pnl_dollars", 0.0),
+                "p_profitable": result.get("p_profitable", 0.0),
+                "p_beat_original": result.get("p_beat_original", 0.0),
+                "p5_final_pnl": result.get("p5_final_pnl", 0.0),
+                "p95_final_pnl": result.get("p95_final_pnl", 0.0),
+                "mean_final_pnl": result.get("mean_final_pnl", 0.0),
+                "simulation_count": result.get("simulation_count", 0),
+                "n_trades": result.get("n_trades", 0),
+                "config_used": result.get("config_used", config.to_dict()),
+            }
+
+            # ── Store in cache ──────────────────────────────────────────
+            await backtest_cache.set("renko:monte-carlo", cache_key_body, response_data)
+
+            return RenkoMonteCarloResponse(**response_data)
+
+        except Exception as e:
+            log.exception(f"Renko Monte Carlo failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
 else:

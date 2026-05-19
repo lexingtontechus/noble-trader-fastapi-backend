@@ -98,6 +98,9 @@ class RenkoConfig:
     min_position_usd: float = 50.0     # Minimum order value
     default_win_rate: float = 0.55     # Fallback WR for Kelly when no history
 
+    # ── Backtest / Capital ──────────────────────────────────────────
+    initial_capital: float = 100000.0  # Starting capital for dollar P&L calculations
+
     # ── Pipeline ──────────────────────────────────────────────────
     symbol: str = "SPY"
     timezone: str = "America/New_York"

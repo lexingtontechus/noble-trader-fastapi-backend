@@ -22,6 +22,10 @@ from renko.router import (
     RenkoBacktestCompareResponse,
     RenkoBacktestOptimizeRequest,
     RenkoBacktestOptimizeResponse,
+    RenkoWalkForwardRequest,
+    RenkoWalkForwardResponse,
+    RenkoMonteCarloRequest,
+    RenkoMonteCarloResponse,
     _build_renko_config,
     _run_isolated_backtest,
 )
@@ -395,3 +399,239 @@ class TestRenkoBacktestChunked:
 
         assert len(complete) == 1
         assert complete[0]["total_ticks"] == len(prices)
+
+
+# ─── Phase 4A: Dollar-Denominated P&L Tests ────────────────────────────────
+
+class TestDollarStats:
+    """Test dollar-denominated metrics in journal stats."""
+
+    def _run_with_trades(self, initial_capital=100000.0):
+        """Helper: run a backtest that produces trades, return journal stats."""
+        # Use a longer, more volatile series to ensure trades happen
+        np.random.seed(42)
+        prices = [100.0]
+        for i in range(999):
+            drift = 0.001
+            vol = 0.03  # Higher vol = more trades
+            prices.append(prices[-1] * (1 + drift + vol * np.random.randn()))
+        config = RenkoConfig(
+            symbol="DOLLAR_TEST",
+            brick_size=0.25,  # Smaller brick = more bricks = more signals
+            regime_gate=False,
+            sl_bricks=2,
+            tp_bricks=3,
+            initial_capital=initial_capital,
+        )
+        result = _run_isolated_backtest(prices, config)
+        return result["stats"].get("journal", result["stats"])
+
+    def test_dollar_stats_present(self):
+        """Backtest results should include dollar_stats when trades exist."""
+        stats = self._run_with_trades()
+        if stats["total_trades"] > 0:
+            assert "dollar_stats" in stats, f"dollar_stats not in stats keys: {list(stats.keys())}"
+        else:
+            # No trades = no dollar_stats (that's correct behavior)
+            assert stats["total_trades"] == 0
+
+    def test_dollar_stats_fields(self):
+        """dollar_stats should have all required fields when trades exist."""
+        stats = self._run_with_trades()
+        if stats["total_trades"] == 0:
+            pytest.skip("No trades produced — dollar_stats only computed with trades")
+
+        ds = stats.get("dollar_stats", {})
+        expected_fields = [
+            "initial_capital", "total_pnl_dollars", "total_gross_pnl_dollars",
+            "avg_pnl_dollars", "avg_win_dollars", "avg_loss_dollars",
+            "max_drawdown_dollars", "return_pct", "sharpe_dollars",
+            "profit_factor_dollars", "equity_curve_dollars",
+        ]
+        for field in expected_fields:
+            assert field in ds, f"Missing field: {field}"
+
+    def test_initial_capital_propagates(self):
+        """initial_capital should propagate to dollar_stats."""
+        stats = self._run_with_trades(initial_capital=25000.0)
+        if stats["total_trades"] == 0:
+            pytest.skip("No trades produced")
+
+        assert stats["dollar_stats"]["initial_capital"] == 25000.0
+
+    def test_return_pct_computed(self):
+        """return_pct should be computed from total_pnl_dollars / initial_capital."""
+        stats = self._run_with_trades()
+        if stats["total_trades"] == 0:
+            pytest.skip("No trades produced")
+
+        ds = stats.get("dollar_stats", {})
+        if ds.get("total_pnl_dollars", 0) != 0:
+            expected_pct = ds["total_pnl_dollars"] / ds["initial_capital"] * 100
+            assert abs(ds["return_pct"] - round(expected_pct, 4)) < 0.01
+
+    def test_regime_breakdown_has_dollar_metrics(self):
+        """by_regime should include dollar metrics (Phase 4D)."""
+        stats = self._run_with_trades()
+        if stats["total_trades"] == 0:
+            pytest.skip("No trades produced")
+
+        by_regime = stats.get("by_regime", {})
+        for regime_name, regime_data in by_regime.items():
+            assert "pnl_dollars" in regime_data, f"pnl_dollars missing from regime {regime_name}"
+            assert "avg_pnl_dollars" in regime_data, f"avg_pnl_dollars missing from regime {regime_name}"
+            assert "return_pct" in regime_data, f"return_pct missing from regime {regime_name}"
+            assert "total_cost" in regime_data, f"total_cost missing from regime {regime_name}"
+
+
+# ─── Phase 4B: Walk-Forward Validation Tests ────────────────────────────────
+
+class TestWalkForward:
+    """Test walk_forward() method for out-of-sample validation."""
+
+    def test_walk_forward_basic(self):
+        """walk_forward should return windows and aggregate stats."""
+        prices = _make_trending_prices(800)
+        config = RenkoConfig(symbol="WF_TEST", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        result = pipeline.walk_forward(
+            prices=prices,
+            train_window=300,
+            test_window=200,
+            min_trades_for_stats=1,
+        )
+
+        assert "windows" in result
+        assert "aggregate" in result
+        assert "config_used" in result
+        assert result["total_ticks"] == len(prices)
+
+    def test_walk_forward_window_structure(self):
+        """Each window should have IS and OOS stats."""
+        prices = _make_trending_prices(800)
+        config = RenkoConfig(symbol="WF_STRUCT", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        result = pipeline.walk_forward(prices, train_window=300, test_window=200, min_trades_for_stats=1)
+
+        for window in result["windows"]:
+            assert "window" in window
+            assert "is_range" in window
+            assert "oos_range" in window
+            assert "is_stats" in window
+            assert "oos_stats" in window
+            assert "is_total_pnl_bricks" in window
+            assert "oos_total_pnl_bricks" in window
+            assert "is_sharpe" in window
+            assert "oos_sharpe" in window
+
+    def test_walk_forward_aggregate(self):
+        """Aggregate should include degradation ratio."""
+        prices = _make_trending_prices(800)
+        config = RenkoConfig(symbol="WF_AGG", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        result = pipeline.walk_forward(prices, train_window=300, test_window=200, min_trades_for_stats=1)
+
+        agg = result["aggregate"]
+        assert "total_windows" in agg
+        assert "degradation_ratio" in agg
+        assert "avg_oos_sharpe" in agg
+        assert "avg_oos_win_rate" in agg
+
+    def test_walk_forward_request_model(self):
+        """RenkoWalkForwardRequest should validate properly."""
+        req = RenkoWalkForwardRequest(prices=_make_prices(200))
+        assert req.train_window == 500
+        assert req.test_window == 250
+        assert req.min_trades_for_stats == 5
+
+    def test_walk_forward_request_min_prices(self):
+        """Walk-forward should require min 200 prices."""
+        with pytest.raises(Exception):
+            RenkoWalkForwardRequest(prices=_make_prices(199))
+
+
+# ─── Phase 4C: Monte Carlo Tests ───────────────────────────────────────────
+
+class TestMonteCarlo:
+    """Test monte_carlo_permute() method for strategy robustness testing."""
+
+    def _make_mc_pipeline(self):
+        """Helper: create a pipeline config that reliably produces trades."""
+        np.random.seed(42)
+        prices = [100.0]
+        for i in range(999):
+            drift = 0.001
+            vol = 0.03
+            prices.append(prices[-1] * (1 + drift + vol * np.random.randn()))
+        config = RenkoConfig(
+            symbol="MC_TEST",
+            brick_size=0.25,
+            regime_gate=False,
+            sl_bricks=2,
+            tp_bricks=3,
+        )
+        return prices, config
+
+    def test_monte_carlo_basic(self):
+        """monte_carlo_permute should return confidence bands and probabilities."""
+        prices, config = self._make_mc_pipeline()
+        pipeline = RenkoPipeline(config)
+        result = pipeline.monte_carlo_permute(prices, n_simulations=100)
+
+        assert "original" in result
+        assert "confidence_bands" in result
+        assert "p_profitable" in result
+        assert "p_beat_original" in result
+        # simulation_count may be 0 if no trades produced
+        if result["n_trades"] >= 3:
+            assert result["simulation_count"] == 100
+
+    def test_monte_carlo_confidence_bands(self):
+        """Confidence bands should include p5, p25, p50, p75, p95, and original."""
+        prices, config = self._make_mc_pipeline()
+        pipeline = RenkoPipeline(config)
+        result = pipeline.monte_carlo_permute(prices, n_simulations=100)
+
+        if result["n_trades"] < 3:
+            pytest.skip("Not enough trades for Monte Carlo bands")
+
+        bands = result["confidence_bands"]
+        expected_keys = ["p5", "p25", "p50", "p75", "p95", "original"]
+        for key in expected_keys:
+            assert key in bands, f"Missing confidence band: {key}"
+
+    def test_monte_carlo_probabilities(self):
+        """p_profitable and p_beat_original should be between 0 and 1."""
+        prices, config = self._make_mc_pipeline()
+        pipeline = RenkoPipeline(config)
+        result = pipeline.monte_carlo_permute(prices, n_simulations=100)
+
+        if result["n_trades"] < 3:
+            pytest.skip("Not enough trades for Monte Carlo")
+
+        assert 0.0 <= result["p_profitable"] <= 1.0
+        assert 0.0 <= result["p_beat_original"] <= 1.0
+
+    def test_monte_carlo_too_few_trades(self):
+        """Monte Carlo should handle cases with very few trades gracefully."""
+        config = RenkoConfig(symbol="MC_FEW", regime_gate=True)
+        pipeline = RenkoPipeline(config)
+        result = pipeline.monte_carlo_permute([100.0] * 50, n_simulations=10)
+        assert "original" in result
+        # Should return gracefully with 0 simulations or error
+        assert result["simulation_count"] == 0 or result["n_trades"] < 3
+
+    def test_monte_carlo_request_model(self):
+        """RenkoMonteCarloRequest should validate properly."""
+        req = RenkoMonteCarloRequest(prices=_make_prices(100))
+        assert req.n_simulations == 1000
+
+    def test_monte_carlo_request_n_simulations_range(self):
+        """n_simulations should be between 100 and 10000."""
+        with pytest.raises(Exception):
+            RenkoMonteCarloRequest(prices=_make_prices(100), n_simulations=50)
+        with pytest.raises(Exception):
+            RenkoMonteCarloRequest(prices=_make_prices(100), n_simulations=20000)
