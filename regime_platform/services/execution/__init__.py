@@ -1,59 +1,41 @@
 """
-Execution Modeling module (Phase 7).
+Execution Modeling Services.
 
-Provides institutional-grade execution cost modeling for backtest results:
-  7A — Almgren-Chriss Market Impact Model — optimal execution trajectory & impact cost
-  7B — Fill Probability Model — order fill likelihood based on logit model
-  7C — Borrowing & Financing Cost Modeling — short borrow, margin interest, dividend costs
+Provides models for realistic execution simulation:
+  - Market impact estimation (Almgren-Chriss)
+  - Fill probability modeling (limit/stop orders)
+  - Borrowing & financing costs (short/leveraged positions)
 """
 
 from regime_platform.services.execution.market_impact import (
+    ImpactParams,
     compute_market_impact,
-    compute_impact_for_backtest,
-    estimate_adv_from_prices,
-    MarketImpactResult,
 )
 
 from regime_platform.services.execution.fill_probability import (
-    compute_fill_probability,
-    compute_fill_probability_for_backtest,
-    simulate_fill_outcome,
-    FillProbabilityResult,
     OrderType,
-    TimeOfDay,
+    compute_fill_probability,
 )
 
 from regime_platform.services.execution.borrow_financing import (
+    FinancingParams,
     compute_borrow_cost,
     compute_margin_cost,
-    compute_financing_for_trade,
-    get_default_borrow_rate,
-    compute_financing_summary,
-    BorrowCostResult,
-    MarginCostResult,
-    FinancingResult,
+    compute_dividend_cost_short,
+    compute_total_financing_costs,
 )
 
 __all__ = [
-    # 7A — Almgren-Chriss Market Impact
+    # Market impact
+    "ImpactParams",
     "compute_market_impact",
-    "compute_impact_for_backtest",
-    "estimate_adv_from_prices",
-    "MarketImpactResult",
-    # 7B — Fill Probability Model
-    "compute_fill_probability",
-    "compute_fill_probability_for_backtest",
-    "simulate_fill_outcome",
-    "FillProbabilityResult",
+    # Fill probability
     "OrderType",
-    "TimeOfDay",
-    # 7C — Borrowing & Financing Cost
+    "compute_fill_probability",
+    # Borrow & financing
+    "FinancingParams",
     "compute_borrow_cost",
     "compute_margin_cost",
-    "compute_financing_for_trade",
-    "get_default_borrow_rate",
-    "compute_financing_summary",
-    "BorrowCostResult",
-    "MarginCostResult",
-    "FinancingResult",
+    "compute_dividend_cost_short",
+    "compute_total_financing_costs",
 ]

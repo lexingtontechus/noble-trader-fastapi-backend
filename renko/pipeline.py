@@ -19,10 +19,9 @@ Integration with Noble Trader Agent:
 from __future__ import annotations
 
 import logging
-import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from renko.brick_engine import RenkoBrickEngine, Brick, BrickDirection
 from renko.swing_classifier import SwingClassifier, ClassifiedBrick, SwingLabel
@@ -32,6 +31,16 @@ from renko.risk_manager import RiskManager, RiskParams, ActivePosition, TradeRes
 from renko.executor import AlpacaExecutor, OrderResult
 from renko.trade_journal import TradeJournal, TradeRecord
 from renko.config import RenkoConfig
+
+import hashlib
+import numpy as np
+from regime_platform.services.execution.market_impact import compute_market_impact
+from regime_platform.services.execution.fill_probability import compute_fill_probability
+from regime_platform.services.execution.borrow_financing import compute_total_financing_costs
+from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio
+from regime_platform.services.statistics.bootstrap_ci import compute_all_bootstrap_cis
+from regime_platform.services.statistics.multiple_testing import apply_all_corrections
+from regime_platform.services.statistics.significance_tests import run_significance_tests
 
 logger = logging.getLogger(__name__)
 
@@ -137,23 +146,9 @@ class RenkoPipeline:
                 partial_exit_pct=self.config.partial_exit_pct,
                 partial_exit_bricks=self.config.partial_exit_bricks,
                 slippage_bps=self.config.slippage_bps,
-                commission_bps=self.config.commission_bps,
-                spread_bps=self.config.spread_bps,
                 oco_priority=self.config.oco_priority,
-                # Phase 7: Advanced execution modeling
-                enable_market_impact=self.config.enable_market_impact,
-                avg_daily_volume=self.config.avg_daily_volume,
-                impact_gamma=self.config.impact_gamma,
-                impact_eta=self.config.impact_eta,
-                enable_fill_probability=self.config.enable_fill_probability,
-                enable_borrow_costs=self.config.enable_borrow_costs,
-                borrow_rate_annual=self.config.borrow_rate_annual,
-                hard_to_borrow=self.config.hard_to_borrow,
-                htb_premium_rate=self.config.htb_premium_rate,
-                enable_margin_costs=self.config.enable_margin_costs,
-                margin_rate_annual=self.config.margin_rate_annual,
-                margin_requirement=self.config.margin_requirement,
-            )
+            ),
+            slippage_bps=self.config.slippage_bps,
         )
         self.executor = AlpacaExecutor(
             api_key=self.config.api_key,
@@ -298,7 +293,7 @@ class RenkoPipeline:
             "config": self.config.to_dict(),
             "state": self.get_state().to_dict(),
             "session": self.signal_filter.session_stats,
-            "journal": self.journal.get_stats(initial_capital=self.config.initial_capital),
+            "journal": self.journal.get_stats(),
             "filter_rejections": len(self.signal_filter.rejected_signals),
         }
 
@@ -363,7 +358,57 @@ class RenkoPipeline:
             "trades": [t.to_dict() for t in self.journal.trades],
         }
 
-    # ── Chunked Backtest (SSE streaming) ────────────────────────────
+    def backtest_with_analytics(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        n_trials: int = 1,
+        confidence_level: float = 0.95,
+    ) -> Dict:
+        """
+        Run a full backtest with statistical rigor and execution modeling analytics.
+        
+        Extends the basic backtest with:
+          - Data hash for reproducibility (Phase 5)
+          - Bootstrap confidence intervals (Phase 6)
+          - Deflated Sharpe Ratio (Phase 6)
+          - Full cost breakdown (Phase 2 + 7)
+        """
+        result = self.backtest(prices, timestamps, regimes)
+        
+        # Data hash (Phase 5 — data lineage)
+        price_bytes = ",".join(f"{p:.6f}" for p in prices).encode()
+        data_hash = hashlib.sha256(price_bytes).hexdigest()[:16]
+        result["data_hash"] = data_hash
+        
+        # Get journal stats (now includes cost summary, fill stats, dollar stats)
+        stats = self.journal.get_stats()
+        result["stats"]["journal"] = stats
+        
+        # Bootstrap confidence intervals (Phase 6)
+        if len(self.journal.trades) >= 5:
+            trade_pnls = np.array([t.pnl_bricks for t in self.journal.trades])
+            bootstrap = compute_all_bootstrap_cis(trade_pnls, confidence_level)
+            result["bootstrap_ci"] = bootstrap
+        else:
+            result["bootstrap_ci"] = {"error": "Insufficient trades for bootstrap CI"}
+        
+        # Deflated Sharpe Ratio (Phase 6)
+        sharpe = stats.get("sharpe_estimate", 0.0)
+        if n_trials > 1 and sharpe > 0:
+            trade_pnls = np.array([t.pnl_bricks for t in self.journal.trades])
+            dsr = deflated_sharpe_ratio(
+                observed_sharpe=sharpe,
+                n_trials=n_trials,
+                sample_length=len(self.journal.trades),
+                returns=trade_pnls,
+            )
+            result["deflated_sharpe"] = dsr
+        else:
+            result["deflated_sharpe"] = {"dsr": 1.0, "n_trials": 1, "interpretation": "Single trial — no multiple testing adjustment needed"}
+        
+        return result
 
     def backtest_chunked(
         self,
@@ -371,328 +416,35 @@ class RenkoPipeline:
         timestamps: Optional[List[float]] = None,
         regimes: Optional[List[str]] = None,
         chunk_size: int = 150,
-    ) -> Generator[Dict[str, Any], None, None]:
+    ):
         """
-        Run a backtest on historical prices, yielding intermediate results
-        after each chunk for SSE streaming.
-
-        This is the same as ``backtest()`` but yields progress events
-        after every ``chunk_size`` ticks so the frontend can render
-        partial equity curves and running statistics.
-
-        Yields
-        ------
-        dict
-            Progress events with keys:
-              - type: "progress" | "complete"
-              - chunk / total_chunks (progress events only)
-              - percent: 0-100 completion
-              - trades_so_far: list of closed trades so far
-              - stats_so_far: current journal stats
-              - bricks_so_far: bricks processed so far
-              - ticks_so_far: ticks processed so far
-
-        The final event has type "complete" and contains the full result
-        (identical to what ``backtest()`` returns).
+        Generator that yields intermediate results every chunk_size ticks.
+        Used for SSE streaming (Phase 1).
         """
         self.reset()
-        n_chunks = max(1, math.ceil(len(prices) / chunk_size))
-
-        for chunk_idx in range(n_chunks):
-            start = chunk_idx * chunk_size
-            end = min(start + chunk_size, len(prices))
-
-            for i in range(start, end):
-                ts = timestamps[i] if timestamps else float(i)
-                if regimes and i < len(regimes):
-                    self.set_regime(regimes[i])
-                self.process_tick(prices[i], ts)
-
-            # Yield intermediate progress
-            yield {
-                "type": "progress",
-                "chunk": chunk_idx + 1,
-                "total_chunks": n_chunks,
-                "percent": round(((chunk_idx + 1) / n_chunks) * 100),
-                "trades_so_far": [t.to_dict() for t in self.journal.trades],
-                "stats_so_far": self.journal.get_stats(),
-                "bricks_so_far": self.brick_engine.brick_count,
-                "ticks_so_far": end,
-            }
-
-        # Final event — identical shape to backtest() return value
-        yield {
-            "type": "complete",
-            "stats": self.get_stats(),
-            "total_bricks": self.brick_engine.brick_count,
-            "total_ticks": len(prices),
-            "trades": [t.to_dict() for t in self.journal.trades],
-        }
-
-    # ── Walk-Forward Out-of-Sample Validation (Phase 4B) ─────────────
-
-    def walk_forward(
-        self,
-        prices: List[float],
-        timestamps: Optional[List[float]] = None,
-        regimes: Optional[List[str]] = None,
-        train_window: int = 500,
-        test_window: int = 250,
-        min_trades_for_stats: int = 5,
-    ) -> Dict[str, Any]:
-        """
-        Walk-forward out-of-sample validation.
-
-        Splits the price series into rolling train/test windows.
-        For each window, runs the backtest on the full window but reports
-        separate in-sample and out-of-sample statistics. This validates
-        whether the strategy parameters are robust or just overfitted
-        to the full dataset.
-
-        Parameters
-        ----------
-        prices : list[float]
-            Historical price series.
-        timestamps : list[float], optional
-            Matching timestamps.
-        regimes : list[str], optional
-            Pre-computed regime labels aligned with prices.
-        train_window : int
-            Number of ticks for the in-sample (training) window.
-        test_window : int
-            Number of ticks for the out-of-sample (test) window.
-        min_trades_for_stats : int
-            Minimum trades required for a window to be included in stats.
-
-        Returns
-        -------
-        dict with keys:
-          - windows: list of per-window results (in-sample + out-of-sample stats)
-          - aggregate: combined OOS stats across all windows
-          - is_oos_ratio: out-of-sample / in-sample return ratio
-        """
-        self.reset()
-        n = len(prices)
-        windows = []
-        all_oos_trades = []
-
-        step = test_window
-        start = 0
-
-        while start + train_window + test_window <= n:
-            # In-sample: [start, start+train_window)
-            is_start = start
-            is_end = start + train_window
-            # Out-of-sample: [is_end, is_end+test_window)
-            oos_start = is_end
-            oos_end = min(oos_start + test_window, n)
-
-            # Run in-sample
-            is_pipeline = RenkoPipeline(self.config)
-            is_result = is_pipeline.backtest(
-                prices[is_start:is_end],
-                timestamps[is_start:is_end] if timestamps else None,
-                regimes[is_start:is_end] if regimes else None,
-            )
-            is_stats = is_result.get("stats", {}).get("journal", {})
-
-            # Run out-of-sample
-            oos_pipeline = RenkoPipeline(self.config)
-            oos_result = oos_pipeline.backtest(
-                prices[oos_start:oos_end],
-                timestamps[oos_start:oos_end] if timestamps else None,
-                regimes[oos_start:oos_end] if regimes else None,
-            )
-            oos_stats = oos_result.get("stats", {}).get("journal", {})
-            oos_trades = oos_result.get("trades", [])
-
-            is_trades_count = is_stats.get("total_trades", 0)
-            oos_trades_count = oos_stats.get("total_trades", 0)
-
-            window_data = {
-                "window": len(windows) + 1,
-                "is_range": [is_start, is_end],
-                "oos_range": [oos_start, oos_end],
-                "is_stats": is_stats,
-                "oos_stats": oos_stats,
-                "is_total_pnl_bricks": is_stats.get("total_pnl_bricks", 0.0),
-                "oos_total_pnl_bricks": oos_stats.get("total_pnl_bricks", 0.0),
-                "is_sharpe": is_stats.get("sharpe_estimate", 0.0),
-                "oos_sharpe": oos_stats.get("sharpe_estimate", 0.0),
-                "is_trades": is_trades_count,
-                "oos_trades": oos_trades_count,
-            }
-
-            # Only include windows with enough trades for meaningful stats
-            if oos_trades_count >= min_trades_for_stats:
-                all_oos_trades.extend(oos_trades)
-                windows.append(window_data)
-            elif is_trades_count >= min_trades_for_stats:
-                windows.append(window_data)
-
-            start += step
-
-        # Aggregate OOS stats
-        aggregate = {
-            "total_windows": len(windows),
-            "total_oos_trades": len(all_oos_trades),
-            "avg_oos_pnl_bricks": 0.0,
-            "avg_oos_sharpe": 0.0,
-            "avg_oos_win_rate": 0.0,
-            "degradation_ratio": 0.0,
-        }
-
-        if windows:
-            avg_oos_pnl = sum(w["oos_total_pnl_bricks"] for w in windows) / len(windows)
-            avg_is_pnl = sum(w["is_total_pnl_bricks"] for w in windows) / len(windows)
-            avg_oos_sharpe = sum(w["oos_sharpe"] for w in windows) / len(windows)
-            avg_oos_wr = sum(w["oos_stats"].get("win_rate", 0.0) for w in windows) / len(windows)
-
-            aggregate["avg_oos_pnl_bricks"] = round(avg_oos_pnl, 4)
-            aggregate["avg_is_pnl_bricks"] = round(avg_is_pnl, 4)
-            aggregate["avg_oos_sharpe"] = round(avg_oos_sharpe, 4)
-            aggregate["avg_oos_win_rate"] = round(avg_oos_wr, 4)
-
-            # Degradation ratio: OOS/IS — below 0.5 means severe overfitting
-            if avg_is_pnl != 0:
-                aggregate["degradation_ratio"] = round(avg_oos_pnl / avg_is_pnl, 4)
-            elif avg_oos_pnl > 0:
-                aggregate["degradation_ratio"] = float("inf")
-
-        return {
-            "windows": windows,
-            "aggregate": aggregate,
-            "config_used": self.config.to_dict(),
-            "total_ticks": n,
-        }
-
-    # ── Monte Carlo Permutation (Phase 4C) ──────────────────────────
-
-    def monte_carlo_permute(
-        self,
-        prices: List[float],
-        timestamps: Optional[List[float]] = None,
-        regimes: Optional[List[str]] = None,
-        n_simulations: int = 1000,
-        confidence_levels: tuple = (5, 25, 50, 75, 95),
-    ) -> Dict[str, Any]:
-        """
-        Monte Carlo simulation by permuting trade order.
-
-        Shuffles the trade P&L sequence N times and computes the equity
-        curve for each permutation. This answers: "Could I have gotten
-        these results by luck?" If the 5th-percentile equity curve is
-        still profitable, the strategy is robust regardless of trade timing.
-
-        Parameters
-        ----------
-        prices : list[float]
-            Historical price series.
-        timestamps : list[float], optional
-            Matching timestamps.
-        regimes : list[str], optional
-            Pre-computed regime labels aligned with prices.
-        n_simulations : int
-            Number of random trade-order permutations (default 1000).
-        confidence_levels : tuple
-            Percentile levels to compute (default 5th, 25th, 50th, 75th, 95th).
-
-        Returns
-        -------
-        dict with keys:
-          - original: original backtest stats
-          - confidence_bands: dict of percentile → equity curve
-          - p_profitable: probability that a random permutation is profitable
-          - p_beat_original: probability that a random permutation beats original
-          - simulation_count: number of simulations run
-        """
-        import numpy as np
-
-        # Run original backtest
-        self.reset()
-        original_result = self.backtest(prices, timestamps, regimes)
-        original_stats = original_result.get("stats", {}).get("journal", {})
-        trades = list(self.journal.trades)
-
-        if len(trades) < 3:
-            return {
-                "original": original_stats,
-                "confidence_bands": {},
-                "dollar_bands": {},
-                "original_total_pnl_bricks": round(sum(t.pnl_bricks for t in trades), 4),
-                "original_total_pnl_dollars": round(sum(t.pnl_dollars for t in trades), 2),
-                "p_profitable": 0.0,
-                "p_beat_original": 0.0,
-                "p5_final_pnl": 0.0,
-                "p95_final_pnl": 0.0,
-                "mean_final_pnl": 0.0,
-                "simulation_count": 0,
-                "n_trades": len(trades),
-                "error": "Need at least 3 trades for Monte Carlo simulation",
-                "config_used": self.config.to_dict(),
-            }
-
-        # Extract trade P&Ls in bricks and dollars
-        trade_pnls_bricks = [t.pnl_bricks for t in trades]
-        trade_pnls_dollars = [t.pnl_dollars for t in trades]
-        original_total_pnl = sum(trade_pnls_bricks)
-        original_total_pnl_dollars = sum(trade_pnls_dollars)
-
-        # Run N permutations
-        n_trades = len(trades)
-        final_pnls_bricks = np.zeros(n_simulations)
-        final_pnls_dollars = np.zeros(n_simulations)
-        equity_curves = np.zeros((n_simulations, n_trades))
-
-        rng = np.random.default_rng()
-
-        for i in range(n_simulations):
-            perm = rng.permutation(trade_pnls_bricks)
-            cumsum = np.cumsum(perm)
-            equity_curves[i] = cumsum
-            final_pnls_bricks[i] = cumsum[-1]
-
-            # Also track dollar P&L
-            perm_dollars = trade_pnls_dollars.copy()
-            rng.shuffle(perm_dollars)
-            final_pnls_dollars[i] = sum(perm_dollars)
-
-        # Compute confidence bands at each trade step
-        confidence_bands = {}
-        for level in confidence_levels:
-            band = np.percentile(equity_curves, level, axis=0)
-            confidence_bands[f"p{level}"] = [round(float(v), 4) for v in band]
-
-        # Also include the original equity curve
-        original_equity = list(np.cumsum(trade_pnls_bricks))
-        confidence_bands["original"] = [round(float(v), 4) for v in original_equity]
-
-        # Probability that a random permutation is profitable
-        p_profitable = float(np.mean(final_pnls_bricks > 0))
-
-        # Probability that a random permutation beats the original
-        p_beat_original = float(np.mean(final_pnls_bricks >= original_total_pnl))
-
-        # Dollar-denominated confidence stats
-        dollar_bands = {}
-        for level in confidence_levels:
-            dollar_bands[f"p{level}_dollars"] = round(float(np.percentile(final_pnls_dollars, level)), 2)
-
-        return {
-            "original": original_stats,
-            "confidence_bands": confidence_bands,
-            "dollar_bands": dollar_bands,
-            "original_total_pnl_bricks": round(original_total_pnl, 4),
-            "original_total_pnl_dollars": round(original_total_pnl_dollars, 2),
-            "p_profitable": round(p_profitable, 4),
-            "p_beat_original": round(p_beat_original, 4),
-            "p5_final_pnl": round(float(np.percentile(final_pnls_bricks, 5)), 4),
-            "p95_final_pnl": round(float(np.percentile(final_pnls_bricks, 95)), 4),
-            "mean_final_pnl": round(float(np.mean(final_pnls_bricks)), 4),
-            "simulation_count": n_simulations,
-            "n_trades": n_trades,
-            "config_used": self.config.to_dict(),
-        }
+        total_ticks = len(prices)
+        
+        for i, price in enumerate(prices):
+            ts = timestamps[i] if timestamps else float(i)
+            if regimes and i < len(regimes):
+                self.set_regime(regimes[i])
+            
+            self.process_tick(price, ts)
+            
+            # Yield intermediate results every chunk_size ticks
+            if (i + 1) % chunk_size == 0 or i == total_ticks - 1:
+                chunk_num = (i + 1) // chunk_size + (1 if (i + 1) % chunk_size > 0 else 0)
+                total_chunks = max((total_ticks + chunk_size - 1) // chunk_size, 1)
+                
+                yield {
+                    "type": "progress" if i < total_ticks - 1 else "complete",
+                    "chunk": chunk_num,
+                    "total_chunks": total_chunks,
+                    "ticks_processed": i + 1,
+                    "total_ticks": total_ticks,
+                    "trades_so_far": [t.to_dict() for t in list(self.journal.trades)[-10:]],
+                    "stats_so_far": self.journal.get_stats(),
+                }
 
     # ── Internal ──────────────────────────────────────────────────
 
@@ -717,7 +469,7 @@ class RenkoPipeline:
             logger.warning(f"Cannot open position: {e}")
 
     def _handle_trade_close(self, result: TradeResult) -> None:
-        """Handle a closed trade — update journal and filter stats."""
+        """Handle a closed trade — update journal with full cost modeling."""
         self.signal_filter.record_trade_result(result.pnl_bricks)
 
         # Create journal record if we have filtered signal context
@@ -728,6 +480,82 @@ class RenkoPipeline:
                 result=result,
                 regime=self._current_regime,
             )
+            
+            # ── Phase 2: Transaction cost modeling ──
+            entry_value = record.entry_price  # per share
+            exit_value = record.exit_price
+            
+            # Commission: commission_bps of notional
+            notional = entry_value * record.qty
+            record.commission = notional * self.config.commission_bps / 10000
+            
+            # Slippage cost: difference between ideal and actual fill
+            if record.direction.value == "LONG":
+                ideal_entry = entry_value / (1 + self.config.slippage_bps / 10000)
+                ideal_exit = exit_value / (1 - self.config.slippage_bps / 20000)  # TP limit
+                if "SL" in record.status.value:
+                    ideal_exit = exit_value / (1 + self.config.slippage_bps / 10000)  # SL market
+            else:
+                ideal_entry = entry_value / (1 - self.config.slippage_bps / 10000)
+                ideal_exit = exit_value / (1 + self.config.slippage_bps / 20000)
+                if "SL" in record.status.value:
+                    ideal_exit = exit_value / (1 - self.config.slippage_bps / 10000)
+            record.slippage_cost = abs(exit_value - ideal_exit) * record.qty + abs(entry_value - ideal_entry) * record.qty
+            
+            # Spread cost: half-spread on entry and exit
+            record.spread_cost = notional * self.config.spread_bps / 10000 / 2 + exit_value * record.qty * self.config.spread_bps / 10000 / 2
+            
+            # Total basic cost
+            record.total_cost = record.commission + record.slippage_cost + record.spread_cost
+            
+            # ── Phase 7: Market impact ──
+            if self.config.market_impact_mode == "almgren_chriss":
+                impact = compute_market_impact(
+                    order_shares=record.qty,
+                    adv_shares=self.config.adv_shares,
+                    sigma_daily=0.02,  # Default; should come from data
+                    avg_price=record.entry_price,
+                )
+                record.impact_cost = impact["impact_cost_dollars"]
+            
+            # ── Phase 7: Borrow & financing costs ──
+            if record.direction.value == "SHORT" or self.config.margin_rate_bps > 0:
+                holding_days = max(record.bricks_held / 252, 1/252)  # Approximate
+                position_notional = entry_value * record.qty
+                
+                financing = compute_total_financing_costs(
+                    position_notional=position_notional,
+                    holding_days=holding_days,
+                    direction="short" if record.direction.value == "SHORT" else "long",
+                    is_hard_to_borrow=self.config.is_hard_to_borrow,
+                    borrow_rate_bps=self.config.borrow_rate_bps,
+                    margin_rate_bps=self.config.margin_rate_bps,
+                    dividend_yield_bps=self.config.dividend_yield_bps,
+                )
+                record.borrow_cost = financing["components"].get("borrow", {}).get("total_borrow_cost", 0.0)
+                record.margin_cost = financing["components"].get("margin", {}).get("total_margin_cost", 0.0)
+                record.dividend_cost = financing["components"].get("dividend", {}).get("total_dividend_cost", 0.0)
+                record.total_financing_cost = financing["total_financing_cost"]
+            
+            # ── Phase 7: Fill probability ──
+            if self.config.fill_probability_mode == "realistic":
+                # Check if entry was a limit order (TP) or market order
+                fill_prob = compute_fill_probability(
+                    order_type="limit",
+                    distance_from_mid_pct=abs(record.entry_price - (record.entry_price)) * 0.01,
+                    volatility_daily=0.02,
+                )
+                record.fill_probability = fill_prob["fill_probability"]
+                
+                # Probabilistic missed fill (for TP limit orders)
+                import random
+                if random.random() > record.fill_probability:
+                    record.missed_fill = True
+            
+            # Adjust P&L for costs
+            total_costs = record.total_cost + record.impact_cost + record.total_financing_cost
+            record.pnl_dollars = record.pnl_dollars - total_costs
+            
             self.journal.record(record)
 
         if self._on_trade:

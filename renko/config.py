@@ -24,13 +24,6 @@ class OrderType(str, Enum):
     LIMIT = "limit"
 
 
-class OcoPriority(str, Enum):
-    """OCO (One-Cancels-Other) resolution priority when SL and TP both trigger in the same brick."""
-    SL_FIRST = "sl_first"     # Conservative: assume SL triggers first (worst case)
-    TP_FIRST = "tp_first"     # Optimistic: assume TP triggers first (best case)
-    WORST_CASE = "worst_case"  # Same as SL_FIRST (alias for clarity)
-
-
 @dataclass
 class RenkoConfig:
     """Master configuration for the Renko HFT pipeline."""
@@ -76,28 +69,6 @@ class RenkoConfig:
     partial_exit_pct: float = 0.0      # 0 = no partial exit; 0.5 = close half at TP/2
     partial_exit_bricks: int = 3       # Bricks of profit for partial exit
 
-    # ── Transaction Costs ──────────────────────────────────────────
-    slippage_bps: float = 2.0           # Slippage in basis points (adverse fill)
-    commission_bps: float = 5.0         # Commission in basis points of position value
-    spread_bps: float = 1.0             # Bid-ask spread in basis points (half-spread each side)
-
-    # ── Execution Realism ──────────────────────────────────────────
-    oco_priority: OcoPriority = OcoPriority.SL_FIRST  # How to resolve OCO conflicts (SL+TP same brick)
-
-    # ── Advanced Execution Modeling (Phase 7) ──────────────────────────
-    enable_market_impact: bool = False       # Enable Almgren-Chriss market impact model
-    avg_daily_volume: float = 1e6           # Average daily volume (shares) for impact estimation
-    impact_gamma: float = 0.314             # Almgren-Chriss permanent impact coefficient
-    impact_eta: float = 0.142               # Almgren-Chriss temporary impact coefficient
-    enable_fill_probability: bool = False    # Enable fill probability modeling
-    enable_borrow_costs: bool = False        # Enable short borrow cost modeling
-    borrow_rate_annual: float = 0.005        # Annualized borrow rate (0.5% for ETB stocks)
-    hard_to_borrow: bool = False             # Mark as hard-to-borrow for higher borrow rates
-    htb_premium_rate: float = 0.10           # Additional annual rate for HTB stocks (10%)
-    enable_margin_costs: bool = False        # Enable margin financing cost modeling
-    margin_rate_annual: float = 0.065        # Annualized margin rate (SOFR + 200bps)
-    margin_requirement: float = 0.50         # Reg T initial margin requirement (50%)
-
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET
     use_bracket_orders: bool = True    # Alpaca native bracket orders
@@ -112,8 +83,23 @@ class RenkoConfig:
     min_position_usd: float = 50.0     # Minimum order value
     default_win_rate: float = 0.55     # Fallback WR for Kelly when no history
 
-    # ── Backtest / Capital ──────────────────────────────────────────
-    initial_capital: float = 100000.0  # Starting capital for dollar P&L calculations
+    # ── Transaction Cost Modeling (Phase 2) ────────────────────────
+    slippage_bps: float = 2.0            # Slippage in basis points
+    commission_bps: float = 5.0          # Commission in basis points
+    spread_bps: float = 1.0             # Bid-ask spread in basis points (half-spread each side)
+
+    # ── Execution Realism (Phase 3) ────────────────────────────────
+    oco_priority: str = "sl_first"       # When SL+TP both trigger: "sl_first" (conservative) or "tp_first"
+
+    # ── Execution Modeling (Phase 7) ───────────────────────────────
+    market_impact_mode: str = "none"     # "none" (backward-compatible) or "almgren_chriss"
+    adv_shares: float = 10_000_000       # Average daily volume in shares
+    fill_probability_mode: str = "always_fill"  # "always_fill" or "realistic"
+    borrow_rate_bps: float = 50.0        # Annualized short borrow cost
+    margin_rate_bps: float = 150.0       # Annualized margin rate for leveraged longs
+    is_hard_to_borrow: bool = False      # Whether stock is hard-to-borrow
+    dividend_yield_bps: float = 200.0    # Annualized dividend yield
+    initial_capital: float = 100_000.0   # Starting capital for dollar P&L
 
     # ── Pipeline ──────────────────────────────────────────────────
     symbol: str = "SPY"

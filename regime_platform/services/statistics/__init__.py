@@ -1,55 +1,49 @@
 """
-Statistical Rigor module (Phase 6).
+Statistical Rigor Module for Noble Trader Backtesting Platform.
 
-Provides institutional-grade statistical validation for backtest results:
-  6A — Deflated Sharpe Ratio (DSR) — Lopez de Prado's multiple-testing-adjusted Sharpe
-  6B — Bootstrap Confidence Intervals — percentile & circular block bootstrap for key metrics
-  6C — Multiple Testing Correction — Bonferroni, Holm-Bonferroni, Benjamini-Hochberg FDR
-  6D — Strategy Significance Tests — White's Reality Check, Hansen's SPA
+Provides tools for validating backtest results with statistical rigor:
+  - Deflated Sharpe Ratio (DSR): Adjusts observed Sharpe for multiple testing
+  - Bootstrap Confidence Intervals: Percentile and circular block bootstrap CIs
+  - Multiple Testing Correction: Bonferroni, Holm-Bonferroni, Benjamini-Hochberg FDR
+  - Significance Tests: White's Reality Check and Hansen's SPA
 """
 
+from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio
 from regime_platform.services.statistics.bootstrap_ci import (
-    bootstrap_ci,
+    percentile_bootstrap_ci,
     circular_block_bootstrap_ci,
-    compute_metric_on_sample,
+    compute_all_bootstrap_cis,
     BootstrapResult,
-)
-from regime_platform.services.statistics.deflated_sharpe import (
-    deflated_sharpe_ratio,
-    compute_dsr_for_backtest,
-    DeflatedSharpeResult,
+    METRIC_FUNCTIONS,
 )
 from regime_platform.services.statistics.multiple_testing import (
-    multiple_testing_correction,
     bonferroni_correction,
     holm_bonferroni_correction,
     benjamini_hochberg_fdr,
-    MultipleTestingResult,
+    apply_all_corrections,
 )
 from regime_platform.services.statistics.significance_tests import (
     whites_reality_check,
     hansen_spa,
-    SignificanceTestResult,
+    run_significance_tests,
 )
 
 __all__ = [
-    # 6B — Bootstrap CIs
-    "bootstrap_ci",
-    "circular_block_bootstrap_ci",
-    "compute_metric_on_sample",
-    "BootstrapResult",
-    # 6A — Deflated Sharpe Ratio
+    # Deflated Sharpe
     "deflated_sharpe_ratio",
-    "compute_dsr_for_backtest",
-    "DeflatedSharpeResult",
-    # 6C — Multiple Testing Correction
-    "multiple_testing_correction",
+    # Bootstrap CI
+    "percentile_bootstrap_ci",
+    "circular_block_bootstrap_ci",
+    "compute_all_bootstrap_cis",
+    "BootstrapResult",
+    "METRIC_FUNCTIONS",
+    # Multiple Testing
     "bonferroni_correction",
     "holm_bonferroni_correction",
     "benjamini_hochberg_fdr",
-    "MultipleTestingResult",
-    # 6D — Significance Tests
+    "apply_all_corrections",
+    # Significance Tests
     "whites_reality_check",
     "hansen_spa",
-    "SignificanceTestResult",
+    "run_significance_tests",
 ]

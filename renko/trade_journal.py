@@ -49,22 +49,21 @@ class TradeRecord:
     velocity: float = 0.0
     label_sequence: List[str] = field(default_factory=list)
     filters_passed: List[str] = field(default_factory=list)
-    # Transaction cost tracking
-    commission: float = 0.0          # Total commission (entry + exit)
-    slippage_cost: float = 0.0       # Total slippage cost (entry + exit)
-    total_cost: float = 0.0          # commission + slippage_cost
-    entry_slippage: float = 0.0      # Slippage on entry fill
-    exit_slippage: float = 0.0       # Slippage on exit fill
-    gross_pnl_dollars: float = 0.0   # P&L before transaction costs
-    # Phase 7: Advanced execution modeling
-    market_impact_bps: float = 0.0          # Market impact in basis points (Phase 7A)
-    market_impact_cost: float = 0.0         # Market impact cost in dollars (Phase 7A)
-    fill_probability: float = 1.0           # Probability that this trade would fill (Phase 7B)
-    was_filled: bool = True                 # Whether the trade filled (True for backtest, can be False if fill prob model is on)
-    borrow_cost: float = 0.0               # Short borrow cost in dollars (Phase 7C)
-    margin_cost: float = 0.0               # Margin financing cost in dollars (Phase 7C)
-    dividend_cost: float = 0.0             # Dividend cost for short positions (Phase 7C)
-    financing_cost_total: float = 0.0      # Total financing cost (borrow + margin + dividend)
+
+    # Cost tracking (Phase 2)
+    commission: float = 0.0              # Commission cost in dollars
+    slippage_cost: float = 0.0           # Slippage cost in dollars
+    spread_cost: float = 0.0            # Spread cost in dollars
+    total_cost: float = 0.0             # commission + slippage_cost + spread_cost
+
+    # Execution modeling (Phase 7)
+    impact_cost: float = 0.0            # Market impact cost in dollars
+    borrow_cost: float = 0.0            # Short borrow cost in dollars
+    margin_cost: float = 0.0            # Margin financing cost in dollars
+    dividend_cost: float = 0.0          # Dividend cost for shorts in dollars
+    total_financing_cost: float = 0.0   # borrow + margin + dividend costs
+    fill_probability: float = 1.0       # Fill probability for this trade's entry
+    missed_fill: bool = False           # Whether this trade was a missed fill
 
     @property
     def is_win(self) -> bool:
@@ -73,11 +72,6 @@ class TradeRecord:
     @property
     def duration_seconds(self) -> float:
         return self.exit_ts - self.entry_ts
-
-    @property
-    def net_pnl_dollars(self) -> float:
-        """P&L after all transaction costs."""
-        return self.pnl_dollars
 
     def to_dict(self) -> dict:
         return {
@@ -91,7 +85,6 @@ class TradeRecord:
             "exit_ts": self.exit_ts,
             "pnl_bricks": self.pnl_bricks,
             "pnl_dollars": self.pnl_dollars,
-            "gross_pnl_dollars": self.gross_pnl_dollars,
             "status": self.status.value,
             "bricks_held": self.bricks_held,
             "signal_strength": self.signal_strength,
@@ -103,19 +96,15 @@ class TradeRecord:
             "filters_passed": self.filters_passed,
             "commission": self.commission,
             "slippage_cost": self.slippage_cost,
+            "spread_cost": self.spread_cost,
             "total_cost": self.total_cost,
-            "entry_slippage": self.entry_slippage,
-            "exit_slippage": self.exit_slippage,
-            "net_pnl_dollars": self.net_pnl_dollars,
-            # Phase 7: Advanced execution modeling
-            "market_impact_bps": self.market_impact_bps,
-            "market_impact_cost": self.market_impact_cost,
-            "fill_probability": self.fill_probability,
-            "was_filled": self.was_filled,
+            "impact_cost": self.impact_cost,
             "borrow_cost": self.borrow_cost,
             "margin_cost": self.margin_cost,
             "dividend_cost": self.dividend_cost,
-            "financing_cost_total": self.financing_cost_total,
+            "total_financing_cost": self.total_financing_cost,
+            "fill_probability": self.fill_probability,
+            "missed_fill": self.missed_fill,
         }
 
 
@@ -151,57 +140,10 @@ class TradeJournal:
         filtered: FilteredSignal,
         result: TradeResult,
         regime: Optional[str] = None,
-        execution_result: Optional[Dict] = None,
     ) -> TradeRecord:
-        """Factory method to create a TradeRecord from pipeline data.
-
-        Parameters
-        ----------
-        symbol : str
-            Trading symbol.
-        filtered : FilteredSignal
-            The filtered signal that triggered this trade.
-        result : TradeResult
-            The trade result from the risk manager.
-        regime : Optional[str]
-            Current regime label.
-        execution_result : Optional[Dict]
-            Phase 7 execution modeling result dict. If provided,
-            extracts and populates Phase 7 fields (market impact,
-            fill probability, financing costs).
-        """
+        """Factory method to create a TradeRecord from pipeline data."""
         self._trade_counter += 1
         signal = filtered.original_signal
-
-        # Phase 7: Extract execution modeling fields if provided
-        market_impact_bps = 0.0
-        market_impact_cost = 0.0
-        fill_probability = 1.0
-        was_filled = True
-        borrow_cost = 0.0
-        margin_cost = 0.0
-        dividend_cost = 0.0
-        financing_cost_total = 0.0
-
-        if execution_result is not None:
-            market_impact_bps = execution_result.get("market_impact_bps", 0.0)
-            market_impact_cost = execution_result.get("market_impact_cost", 0.0)
-            fill_probability = execution_result.get("fill_probability", 1.0)
-            was_filled = execution_result.get("was_filled", True)
-            borrow_cost = execution_result.get("borrow_cost", 0.0)
-            margin_cost = execution_result.get("margin_cost", 0.0)
-            dividend_cost = execution_result.get("dividend_cost", 0.0)
-            financing_cost_total = execution_result.get("financing_cost_total", 0.0)
-
-        # Also try to read Phase 7 fields directly from TradeResult
-        if hasattr(result, 'market_impact_bps') and execution_result is None:
-            market_impact_bps = getattr(result, 'market_impact_bps', 0.0)
-            market_impact_cost = getattr(result, 'market_impact_cost', 0.0)
-            fill_probability = getattr(result, 'fill_probability', 1.0)
-            borrow_cost = getattr(result, 'borrow_cost', 0.0)
-            margin_cost = getattr(result, 'margin_cost', 0.0)
-            dividend_cost = getattr(result, 'dividend_cost', 0.0)
-            financing_cost_total = getattr(result, 'financing_cost_total', 0.0)
 
         return TradeRecord(
             trade_id=f"R{self._trade_counter:06d}",
@@ -223,31 +165,9 @@ class TradeJournal:
             velocity=signal.velocity,
             label_sequence=signal.label_sequence,
             filters_passed=filtered.passed_filters,
-            commission=result.commission,
-            slippage_cost=result.slippage_cost,
-            total_cost=result.total_cost,
-            entry_slippage=result.entry_slippage,
-            exit_slippage=result.exit_slippage,
-            gross_pnl_dollars=result.gross_pnl_dollars,
-            # Phase 7: Advanced execution modeling
-            market_impact_bps=market_impact_bps,
-            market_impact_cost=market_impact_cost,
-            fill_probability=fill_probability,
-            was_filled=was_filled,
-            borrow_cost=borrow_cost,
-            margin_cost=margin_cost,
-            dividend_cost=dividend_cost,
-            financing_cost_total=financing_cost_total,
         )
 
-    def get_stats(
-        self,
-        last_n: Optional[int] = None,
-        initial_capital: float = 100000.0,
-        compute_bootstrap_cis: bool = False,
-        bootstrap_n_resamples: int = 2000,
-        bootstrap_seed: int | None = None,
-    ) -> Dict:
+    def get_stats(self, last_n: Optional[int] = None) -> Dict:
         """
         Compute comprehensive trading statistics.
 
@@ -255,24 +175,12 @@ class TradeJournal:
         ----------
         last_n : int, optional
             Only use the last N trades. None = all.
-        initial_capital : float
-            Starting capital for dollar-denominated return calculations.
-        compute_bootstrap_cis : bool
-            If True, compute bootstrap confidence intervals for key metrics
-            (Phase 6B). Default False for backward compatibility.
-        bootstrap_n_resamples : int
-            Number of bootstrap resamples (default 2000). Only used if
-            compute_bootstrap_cis is True.
-        bootstrap_seed : int, optional
-            Random seed for reproducibility of bootstrap CIs.
 
         Returns
         -------
         dict with keys: total_trades, win_rate, profit_factor,
         avg_pnl_bricks, sharpe_estimate, max_drawdown_bricks,
-        by_pattern, by_direction, by_regime, rolling_win_rate,
-        dollar_stats (dollar-denominated metrics), cost_summary,
-        bootstrap_cis (if compute_bootstrap_cis=True, Phase 6B)
+        by_pattern, by_direction, by_regime, rolling_win_rate
         """
         trades = list(self.trades)
         if last_n is not None:
@@ -304,7 +212,7 @@ class TradeJournal:
             if dd > max_dd:
                 max_dd = dd
 
-        # Sharpe estimate (simplified, brick-denominated)
+        # Sharpe estimate (simplified)
         if len(trades) > 1:
             import numpy as np
             returns = np.array([t.pnl_bricks for t in trades])
@@ -330,56 +238,7 @@ class TradeJournal:
             "avg_duration_seconds": round(sum(t.duration_seconds for t in trades) / len(trades), 2),
         }
 
-        # ── Dollar-denominated metrics (Phase 4A) ─────────────────────
-        total_pnl_dollars = sum(t.pnl_dollars for t in trades)
-        total_gross_pnl_dollars = sum(t.gross_pnl_dollars for t in trades)
-        gross_profit_dollars = sum(t.pnl_dollars for t in wins)
-        gross_loss_dollars = abs(sum(t.pnl_dollars for t in losses))
-
-        # Dollar drawdown
-        cum_pnl_dollars = []
-        running_dollars = 0.0
-        for t in trades:
-            running_dollars += t.pnl_dollars
-            cum_pnl_dollars.append(running_dollars)
-
-        max_dd_dollars = 0.0
-        peak_dollars = 0.0
-        for val in cum_pnl_dollars:
-            if val > peak_dollars:
-                peak_dollars = val
-            dd = peak_dollars - val
-            if dd > max_dd_dollars:
-                max_dd_dollars = dd
-
-        # Return percentage
-        return_pct = (total_pnl_dollars / initial_capital * 100) if initial_capital > 0 else 0.0
-
-        # Dollar-denominated Sharpe
-        if len(trades) > 1:
-            import numpy as np
-            dollar_returns = np.array([t.pnl_dollars for t in trades])
-            mean_dr = dollar_returns.mean()
-            std_dr = dollar_returns.std()
-            sharpe_dollars = mean_dr / std_dr if std_dr > 0 else 0.0
-        else:
-            sharpe_dollars = 0.0
-
-        stats["dollar_stats"] = {
-            "initial_capital": round(initial_capital, 2),
-            "total_pnl_dollars": round(total_pnl_dollars, 2),
-            "total_gross_pnl_dollars": round(total_gross_pnl_dollars, 2),
-            "avg_pnl_dollars": round(total_pnl_dollars / len(trades), 2),
-            "avg_win_dollars": round(gross_profit_dollars / len(wins), 2) if wins else 0.0,
-            "avg_loss_dollars": round(gross_loss_dollars / len(losses), 2) if losses else 0.0,
-            "max_drawdown_dollars": round(max_dd_dollars, 2),
-            "return_pct": round(return_pct, 4),
-            "sharpe_dollars": round(sharpe_dollars, 4),
-            "profit_factor_dollars": round(gross_profit_dollars / gross_loss_dollars, 4) if gross_loss_dollars > 0 else float("inf"),
-            "equity_curve_dollars": [round(v, 2) for v in cum_pnl_dollars],
-        }
-
-        # Per-pattern breakdown (with dollar metrics)
+        # Per-pattern breakdown
         by_pattern: Dict[str, Dict] = {}
         for pt in PatternType:
             pt_trades = [t for t in trades if t.pattern_type == pt]
@@ -389,12 +248,10 @@ class TradeJournal:
                     "count": len(pt_trades),
                     "win_rate": len(pt_wins) / len(pt_trades),
                     "avg_pnl_bricks": round(sum(t.pnl_bricks for t in pt_trades) / len(pt_trades), 4),
-                    "total_pnl_dollars": round(sum(t.pnl_dollars for t in pt_trades), 2),
-                    "avg_pnl_dollars": round(sum(t.pnl_dollars for t in pt_trades) / len(pt_trades), 2),
                 }
         stats["by_pattern"] = by_pattern
 
-        # Per-direction breakdown (with dollar metrics)
+        # Per-direction breakdown
         longs = [t for t in trades if t.direction == SignalDirection.LONG]
         shorts = [t for t in trades if t.direction == SignalDirection.SHORT]
         stats["by_direction"] = {
@@ -402,43 +259,28 @@ class TradeJournal:
                 "count": len(longs),
                 "win_rate": len([t for t in longs if t.is_win]) / len(longs) if longs else 0.0,
                 "avg_pnl": round(sum(t.pnl_bricks for t in longs) / len(longs), 4) if longs else 0.0,
-                "total_pnl_dollars": round(sum(t.pnl_dollars for t in longs), 2) if longs else 0.0,
             },
             "short": {
                 "count": len(shorts),
                 "win_rate": len([t for t in shorts if t.is_win]) / len(shorts) if shorts else 0.0,
                 "avg_pnl": round(sum(t.pnl_bricks for t in shorts) / len(shorts), 4) if shorts else 0.0,
-                "total_pnl_dollars": round(sum(t.pnl_dollars for t in shorts), 2) if shorts else 0.0,
             },
         }
 
-        # Per-regime breakdown (Phase 4D: enhanced with dollar metrics)
+        # Per-regime breakdown
         by_regime: Dict[str, Dict] = {}
         for t in trades:
             r = t.regime or "unknown"
             if r not in by_regime:
-                by_regime[r] = {"count": 0, "wins": 0, "pnl_bricks": 0.0, "pnl_dollars": 0.0,
-                                "commission": 0.0, "slippage": 0.0, "total_cost": 0.0}
+                by_regime[r] = {"count": 0, "wins": 0, "pnl": 0.0}
             by_regime[r]["count"] += 1
             if t.is_win:
                 by_regime[r]["wins"] += 1
-            by_regime[r]["pnl_bricks"] += t.pnl_bricks
-            by_regime[r]["pnl_dollars"] += t.pnl_dollars
-            by_regime[r]["commission"] += t.commission
-            by_regime[r]["slippage"] += t.slippage_cost
-            by_regime[r]["total_cost"] += t.total_cost
+            by_regime[r]["pnl"] += t.pnl_bricks
         for r in by_regime:
             c = by_regime[r]["count"]
             by_regime[r]["win_rate"] = by_regime[r]["wins"] / c if c > 0 else 0.0
-            by_regime[r]["avg_pnl_bricks"] = round(by_regime[r]["pnl_bricks"] / c, 4) if c > 0 else 0.0
-            by_regime[r]["avg_pnl_dollars"] = round(by_regime[r]["pnl_dollars"] / c, 2) if c > 0 else 0.0
-            by_regime[r]["return_pct"] = round(by_regime[r]["pnl_dollars"] / initial_capital * 100, 4) if initial_capital > 0 else 0.0
-            # Round aggregate fields
-            by_regime[r]["pnl_bricks"] = round(by_regime[r]["pnl_bricks"], 4)
-            by_regime[r]["pnl_dollars"] = round(by_regime[r]["pnl_dollars"], 2)
-            by_regime[r]["commission"] = round(by_regime[r]["commission"], 2)
-            by_regime[r]["slippage"] = round(by_regime[r]["slippage"], 2)
-            by_regime[r]["total_cost"] = round(by_regime[r]["total_cost"], 2)
+            by_regime[r]["avg_pnl"] = round(by_regime[r]["pnl"] / c, 4) if c > 0 else 0.0
         stats["by_regime"] = by_regime
 
         # Rolling win rate (last 20 trades)
@@ -458,70 +300,53 @@ class TradeJournal:
             ),
         }
 
-        # ── Transaction cost summary ────────────────────────────────
+        # Cost summary (Phase 2 + 7)
         total_commission = sum(t.commission for t in trades)
         total_slippage = sum(t.slippage_cost for t in trades)
-        total_costs = sum(t.total_cost for t in trades)
-        total_gross_pnl = sum(t.gross_pnl_dollars for t in trades)
-        total_net_pnl = sum(t.pnl_dollars for t in trades)
+        total_spread = sum(t.spread_cost for t in trades)
+        total_impact = sum(t.impact_cost for t in trades)
+        total_borrow = sum(t.borrow_cost for t in trades)
+        total_margin = sum(t.margin_cost for t in trades)
+        total_dividend = sum(t.dividend_cost for t in trades)
+        total_financing = sum(t.total_financing_cost for t in trades)
+        total_all_costs = sum(t.total_cost + t.impact_cost + t.total_financing_cost for t in trades)
 
         stats["cost_summary"] = {
-            "total_commission": round(total_commission, 4),
-            "total_slippage_cost": round(total_slippage, 4),
-            "total_transaction_costs": round(total_costs, 4),
-            "total_gross_pnl_dollars": round(total_gross_pnl, 4),
-            "total_net_pnl_dollars": round(total_net_pnl, 4),
-            "cost_drag_pct": round(total_costs / abs(total_gross_pnl) * 100, 2) if total_gross_pnl != 0 else 0.0,
-            "avg_cost_per_trade": round(total_costs / len(trades), 4) if trades else 0.0,
-            "by_exit_type": self._cost_breakdown_by_exit_type(trades),
+            "commission": round(total_commission, 2),
+            "slippage": round(total_slippage, 2),
+            "spread": round(total_spread, 2),
+            "market_impact": round(total_impact, 2),
+            "borrow": round(total_borrow, 2),
+            "margin": round(total_margin, 2),
+            "dividend": round(total_dividend, 2),
+            "total_financing": round(total_financing, 2),
+            "total_all_costs": round(total_all_costs, 2),
+            "cost_per_trade": round(total_all_costs / len(trades), 2) if trades else 0.0,
+            "total_cost_pct_of_pnl": round(total_all_costs / abs(total_pnl) * 100, 2) if abs(total_pnl) > 0 else 0.0,
         }
 
-        # ── Bootstrap Confidence Intervals (Phase 6B) ───────────────
-        if compute_bootstrap_cis and len(trades) >= 5:
-            try:
-                from regime_platform.services.statistics.bootstrap_ci import (
-                    compute_all_bootstrap_cis,
-                )
-                pnls_for_bootstrap = [t.pnl_dollars for t in trades]
-                ci_results = compute_all_bootstrap_cis(
-                    pnls=pnls_for_bootstrap,
-                    n_resamples=bootstrap_n_resamples,
-                    confidence_level=0.95,
-                    seed=bootstrap_seed,
-                    use_block_bootstrap=True,
-                )
-                stats["bootstrap_cis"] = {
-                    name: result.to_dict() for name, result in ci_results.items()
-                }
-                # Also add formatted display strings for easy frontend use
-                stats["bootstrap_cis"]["_display"] = {
-                    name: result.format_display() for name, result in ci_results.items()
-                }
-            except Exception as exc:
-                # Bootstrap is best-effort — never crash the main stats computation
-                import logging
-                logging.getLogger(__name__).warning(f"Bootstrap CI computation failed: {exc}")
-                stats["bootstrap_cis"] = {"error": str(exc)}
+        # Fill statistics (Phase 7)
+        fill_probs = [t.fill_probability for t in trades]
+        missed_fills = sum(1 for t in trades if t.missed_fill)
+        stats["fill_stats"] = {
+            "avg_fill_probability": round(sum(fill_probs) / len(fill_probs), 4) if fill_probs else 1.0,
+            "missed_fills": missed_fills,
+            "missed_fill_rate": round(missed_fills / len(trades), 4) if trades else 0.0,
+        }
+
+        # Dollar-denominated metrics (Phase 4A)
+        initial_capital = 100_000.0  # Default; can be overridden
+        total_pnl_dollars = sum(t.pnl_dollars for t in trades)
+        net_pnl_dollars = total_pnl_dollars - total_all_costs
+        stats["dollar_stats"] = {
+            "initial_capital": initial_capital,
+            "gross_pnl_dollars": round(total_pnl_dollars, 2),
+            "total_costs_dollars": round(total_all_costs, 2),
+            "net_pnl_dollars": round(net_pnl_dollars, 2),
+            "net_return_pct": round(net_pnl_dollars / initial_capital * 100, 4),
+        }
 
         return stats
-
-    @staticmethod
-    def _cost_breakdown_by_exit_type(trades: list) -> dict:
-        """Break down costs by exit type (SL vs TP vs Trail etc.)."""
-        breakdown = {}
-        for t in trades:
-            exit_type = t.status.value if hasattr(t.status, 'value') else str(t.status)
-            if exit_type not in breakdown:
-                breakdown[exit_type] = {"count": 0, "commission": 0.0, "slippage": 0.0, "total_cost": 0.0}
-            breakdown[exit_type]["count"] += 1
-            breakdown[exit_type]["commission"] += t.commission
-            breakdown[exit_type]["slippage"] += t.slippage_cost
-            breakdown[exit_type]["total_cost"] += t.total_cost
-        # Round values
-        for key in breakdown:
-            for field in ("commission", "slippage", "total_cost"):
-                breakdown[key][field] = round(breakdown[key][field], 4)
-        return breakdown
 
     def get_kelly_estimate(self, last_n: int = 50) -> float:
         """
