@@ -299,3 +299,99 @@ class TestRenkoBacktestOptimize:
 
         assert best_by_sharpe["params"]["sl_bricks"] == 3
         assert best_by_return["params"]["sl_bricks"] == 3
+
+
+# ─── Chunked Backtest (SSE Streaming) Tests ──────────────────────────────────
+
+class TestRenkoBacktestChunked:
+    """Test the backtest_chunked() method for progressive/chunked loading."""
+
+    def test_chunked_yields_progress_events(self):
+        """backtest_chunked should yield progress events with correct structure."""
+        prices = _make_trending_prices(500)
+        config = RenkoConfig(symbol="CHUNK_TEST", brick_size=0.50, regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        events = list(pipeline.backtest_chunked(prices, chunk_size=150))
+
+        # Should have at least 2 progress events + 1 complete
+        progress_events = [e for e in events if e["type"] == "progress"]
+        complete_events = [e for e in events if e["type"] == "complete"]
+
+        assert len(progress_events) >= 2, f"Expected >= 2 progress events, got {len(progress_events)}"
+        assert len(complete_events) == 1, f"Expected 1 complete event, got {len(complete_events)}"
+
+    def test_chunked_progress_structure(self):
+        """Each progress event should have required keys."""
+        prices = _make_trending_prices(300)
+        config = RenkoConfig(symbol="CHUNK_STRUCT", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        events = list(pipeline.backtest_chunked(prices, chunk_size=100))
+        progress = [e for e in events if e["type"] == "progress"]
+
+        for event in progress:
+            assert "chunk" in event
+            assert "total_chunks" in event
+            assert "percent" in event
+            assert "trades_so_far" in event
+            assert "stats_so_far" in event
+            assert "bricks_so_far" in event
+            assert "ticks_so_far" in event
+
+    def test_chunked_percent_increases(self):
+        """Progress percent should increase monotonically."""
+        prices = _make_trending_prices(500)
+        config = RenkoConfig(symbol="CHUNK_PCT", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        events = list(pipeline.backtest_chunked(prices, chunk_size=100))
+        progress = [e for e in events if e["type"] == "progress"]
+
+        percents = [e["percent"] for e in progress]
+        # Should be monotonically increasing
+        for i in range(1, len(percents)):
+            assert percents[i] >= percents[i - 1], f"Percent not increasing: {percents}"
+
+    def test_chunked_complete_matches_backtest(self):
+        """The complete event should match the regular backtest() result."""
+        prices = _make_trending_prices(300)
+        config = RenkoConfig(symbol="CHUNK_MATCH", brick_size=0.50, regime_gate=False)
+
+        # Run regular backtest
+        pipeline_regular = RenkoPipeline(config)
+        regular_result = pipeline_regular.backtest(prices)
+
+        # Run chunked backtest
+        pipeline_chunked = RenkoPipeline(config)
+        events = list(pipeline_chunked.backtest_chunked(prices, chunk_size=150))
+        complete = [e for e in events if e["type"] == "complete"][0]
+
+        # Total ticks and bricks should match
+        assert complete["total_ticks"] == regular_result["total_ticks"]
+        assert complete["total_bricks"] == regular_result["total_bricks"]
+        assert len(complete["trades"]) == len(regular_result["trades"])
+
+    def test_chunked_final_percent_is_100(self):
+        """Last progress event should have percent = 100."""
+        prices = _make_trending_prices(300)
+        config = RenkoConfig(symbol="CHUNK_100", regime_gate=False)
+        pipeline = RenkoPipeline(config)
+
+        events = list(pipeline.backtest_chunked(prices, chunk_size=100))
+        progress = [e for e in events if e["type"] == "progress"]
+
+        assert progress[-1]["percent"] == 100
+
+    def test_chunked_with_regimes(self):
+        """Chunked backtest should accept regime labels."""
+        prices = _make_trending_prices(200)
+        regimes = ["low_vol_bull"] * len(prices)
+        config = RenkoConfig(symbol="CHUNK_REGIME", regime_gate=True)
+        pipeline = RenkoPipeline(config)
+
+        events = list(pipeline.backtest_chunked(prices, regimes=regimes, chunk_size=100))
+        complete = [e for e in events if e["type"] == "complete"]
+
+        assert len(complete) == 1
+        assert complete[0]["total_ticks"] == len(prices)

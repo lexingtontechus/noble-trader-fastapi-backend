@@ -51,6 +51,13 @@ from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
 
+# StreamingResponse for SSE
+try:
+    from fastapi.responses import StreamingResponse
+    STREAMING_AVAILABLE = True
+except ImportError:
+    STREAMING_AVAILABLE = False
+
 # Discord notifications (graceful import — not required for pipeline to work)
 try:
     from notifications.discord import discord_notifier, AlertLevel
@@ -485,6 +492,98 @@ if FASTAPI_AVAILABLE:
         except Exception as e:
             log.exception(f"Renko backtest run failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ── SSE Streaming Backtest Endpoint ─────────────────────────────────────
+
+    if STREAMING_AVAILABLE:
+
+        @renko_router.post(
+            "/backtest/run/stream",
+            summary="Stream a Renko backtest with progressive chunked results (SSE)",
+        )
+        @limiter.limit(RATE_LIMIT_WRITE)
+        async def run_renko_backtest_stream(
+            request: Request,
+            body: RenkoBacktestRequest,
+            user: TokenData = Depends(get_authed_user),
+        ):
+            """
+            Run a Renko backtest and stream results progressively via Server-Sent Events.
+
+            The pipeline processes prices in chunks of 150 ticks. After each chunk,
+            an SSE event is emitted with partial results (trades so far, running stats,
+            bricks/ticks processed). The frontend can render a growing equity curve
+            and live-updating statistics.
+
+            Event types:
+              - ``progress``: Intermediate chunk result (partial trades, stats, percent)
+              - ``complete``: Final result (identical to /backtest/run response)
+              - ``error``: Pipeline error (if any)
+
+            The final complete result is also cached in Redis (1h TTL), so a subsequent
+            non-streaming request for the same config returns instantly from cache.
+            """
+            import json as _json
+
+            async def event_generator():
+                try:
+                    # ── Check cache first — if HIT, emit complete immediately ──
+                    cache_key_body = body.model_dump()
+                    cached = await backtest_cache.get("renko", cache_key_body)
+                    if cached is not None:
+                        cached["cached"] = True
+                        event_data = _json.dumps({"type": "complete", **cached})
+                        yield f"data: {event_data}\n\n"
+                        return
+
+                    # ── Cache MISS — run chunked backtest ──────────────────
+                    config = _build_renko_config(body)
+
+                    def _sync_chunked():
+                        """Run chunked backtest in a sync context (for to_thread)."""
+                        pipeline = RenkoPipeline(config)
+                        results = list(pipeline.backtest_chunked(
+                            prices=body.prices,
+                            timestamps=body.timestamps,
+                            regimes=body.regimes,
+                            chunk_size=150,
+                        ))
+                        return results
+
+                    # Run the full chunked pipeline in a thread (CPU-bound)
+                    all_events = await asyncio.to_thread(_sync_chunked)
+
+                    # Emit each event as SSE
+                    for event in all_events:
+                        yield f"data: {_json.dumps(event, default=str)}\n\n"
+
+                    # ── Cache the final complete result ─────────────────────
+                    complete_event = all_events[-1] if all_events else None
+                    if complete_event and complete_event.get("type") == "complete":
+                        cache_payload = {
+                            "symbol": body.symbol,
+                            "total_ticks": complete_event.get("total_ticks", len(body.prices)),
+                            "total_bricks": complete_event.get("total_bricks", 0),
+                            "config_used": config.to_dict(),
+                            "stats": complete_event.get("stats", {}).get("journal", {}),
+                            "trades": complete_event.get("trades", []),
+                        }
+                        await backtest_cache.set("renko", cache_key_body, cache_payload)
+
+                except Exception as e:
+                    log.exception(f"Renko backtest stream failed: {e}")
+                    error_data = _json.dumps({"type": "error", "message": str(e)})
+                    yield f"data: {error_data}\n\n"
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # Disable nginx buffering
+                },
+            )
 
     @renko_router.post(
         "/backtest/compare",

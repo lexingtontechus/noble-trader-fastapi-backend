@@ -19,9 +19,10 @@ Integration with Noble Trader Agent:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 
 from renko.brick_engine import RenkoBrickEngine, Brick, BrickDirection
 from renko.swing_classifier import SwingClassifier, ClassifiedBrick, SwingLabel
@@ -341,6 +342,72 @@ class RenkoPipeline:
         return {
             "stats": stats,
             "total_bricks": total_bricks,
+            "total_ticks": len(prices),
+            "trades": [t.to_dict() for t in self.journal.trades],
+        }
+
+    # ── Chunked Backtest (SSE streaming) ────────────────────────────
+
+    def backtest_chunked(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        chunk_size: int = 150,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Run a backtest on historical prices, yielding intermediate results
+        after each chunk for SSE streaming.
+
+        This is the same as ``backtest()`` but yields progress events
+        after every ``chunk_size`` ticks so the frontend can render
+        partial equity curves and running statistics.
+
+        Yields
+        ------
+        dict
+            Progress events with keys:
+              - type: "progress" | "complete"
+              - chunk / total_chunks (progress events only)
+              - percent: 0-100 completion
+              - trades_so_far: list of closed trades so far
+              - stats_so_far: current journal stats
+              - bricks_so_far: bricks processed so far
+              - ticks_so_far: ticks processed so far
+
+        The final event has type "complete" and contains the full result
+        (identical to what ``backtest()`` returns).
+        """
+        self.reset()
+        n_chunks = max(1, math.ceil(len(prices) / chunk_size))
+
+        for chunk_idx in range(n_chunks):
+            start = chunk_idx * chunk_size
+            end = min(start + chunk_size, len(prices))
+
+            for i in range(start, end):
+                ts = timestamps[i] if timestamps else float(i)
+                if regimes and i < len(regimes):
+                    self.set_regime(regimes[i])
+                self.process_tick(prices[i], ts)
+
+            # Yield intermediate progress
+            yield {
+                "type": "progress",
+                "chunk": chunk_idx + 1,
+                "total_chunks": n_chunks,
+                "percent": round(((chunk_idx + 1) / n_chunks) * 100),
+                "trades_so_far": [t.to_dict() for t in self.journal.trades],
+                "stats_so_far": self.journal.get_stats(),
+                "bricks_so_far": self.brick_engine.brick_count,
+                "ticks_so_far": end,
+            }
+
+        # Final event — identical shape to backtest() return value
+        yield {
+            "type": "complete",
+            "stats": self.get_stats(),
+            "total_bricks": self.brick_engine.brick_count,
             "total_ticks": len(prices),
             "trades": [t.to_dict() for t in self.journal.trades],
         }
