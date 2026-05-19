@@ -10,7 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v5.1.0** — Renko HFT Pipeline · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers
+**v5.2.0** — Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers
 
 ---
 
@@ -601,6 +601,14 @@ The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 end
 | `GET` | `/renko/trades/{symbol}` | List trades for a symbol |
 | `GET` | `/renko/cache` | Cache statistics |
 | `DELETE` | `/renko/cache` | Clear cache |
+
+### Renko Backtesting (Isolated — Never Affects Live Pipeline)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices |
+| `POST` | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side (2–10) |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline (max 50 combos) |
 
 ---
 

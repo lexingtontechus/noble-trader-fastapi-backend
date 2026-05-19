@@ -1,3 +1,37 @@
+## [5.2.0] — 2026-03-04
+
+### Added — Renko Backtest Endpoints (Isolated Pipeline)
+
+#### `renko/router.py` — 3 New Endpoints
+
+Three isolated backtest endpoints that run on standalone `RenkoPipeline` instances, never affecting the live pipeline:
+
+- `POST /renko/backtest/run` — Run a full Renko pipeline backtest on historical prices with configurable parameters. Returns comprehensive stats including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
+- `POST /renko/backtest/compare` — Compare 2–10 Renko pipeline configurations side-by-side on the same price data. Returns per-config results plus a diff summary highlighting key metric differences between the first config and the best (by Sharpe estimate).
+- `POST /renko/backtest/optimize` — Grid-search parameter sweep for Renko pipeline optimisation. Accepts a `param_grid` dict mapping parameter names to lists of values. Returns summary rows with key metrics for each combination, plus `best_by_sharpe` and `best_by_return` highlights. Max 50 combinations per request.
+
+#### Pydantic Models
+
+- `RenkoBacktestRequest` — Full pipeline config + historical prices (min 50 ticks) with optional timestamps, regimes, and signal_confidence_min
+- `RenkoBacktestResponse` — symbol, total_ticks, total_bricks, config_used, stats, trades
+- `RenkoCompareConfig` — Labelled config subset for comparison (brick_size, sl_bricks, tp_bricks, trailing_stop, trail_after_bricks, trail_distance_bricks, bull_trigger_n, bear_trigger_n, regime_gate, max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses)
+- `RenkoBacktestCompareRequest` — prices + symbol + 2–10 configs + optional timestamps/regimes
+- `RenkoBacktestCompareResponse` — comparisons list + diff dict (first vs best by Sharpe)
+- `RenkoBacktestOptimizeRequest` — prices + symbol + param_grid + fixed default params + optional timestamps/regimes
+- `RenkoBacktestOptimizeResponse` — results list (params + metrics per combo) + best_by_sharpe + best_by_return + n_combinations
+
+#### Internal Helpers
+
+- `_build_renko_config(req)` — Build a `RenkoConfig` from a backtest request body
+- `_run_isolated_backtest(prices, config, ...)` — Run a backtest in an isolated pipeline (never touches live state)
+
+### Changed
+- `main.py` version bumped to 5.2.0
+- All three backtest endpoints require authentication (`get_authed_user`) and are rate-limited under `RATE_LIMIT_WRITE`
+- Backtest runs are executed in thread pools via `asyncio.to_thread` to avoid blocking the event loop
+
+---
+
 ## [5.1.0] — 2026-05-19
 
 ### Added — MCP Server + Circuit Breakers + Renko Pipeline v2 + Discord

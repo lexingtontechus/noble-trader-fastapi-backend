@@ -16,6 +16,11 @@ Authentication:
     - require_write: State mutations — /regime, /equity (admin/trader)
     - require_admin: Destructive — /config, /reset (admin only)
 
+Backtest endpoints (isolated — never affect live pipeline):
+  POST /renko/backtest/run      — Run a full Renko backtest on historical prices
+  POST /renko/backtest/compare  — Compare multiple Renko configs side-by-side
+  POST /renko/backtest/optimize — Grid-search parameter sweep for Renko pipeline
+
 Discord notifications:
   When a signal is detected or a trade is closed, the router
   automatically sends a rich embed to the configured Discord
@@ -101,6 +106,122 @@ class RegimeInput(BaseModel):
 class EquityInput(BaseModel):
     """Account equity update."""
     equity: float = Field(..., description="Current account equity")
+
+
+# ── Renko Backtest models ──────────────────────────────────────────
+
+
+class RenkoBacktestRequest(BaseModel):
+    """Run a full Renko pipeline backtest with configurable parameters."""
+    prices: List[float] = Field(..., min_length=50, description="Historical price series (min 50 ticks).")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    # Brick Engine
+    brick_size: float = Field(default=0.50, gt=0, description="Fixed brick size in dollars.")
+    brick_size_mode: str = Field(default="fixed", description="fixed | atr | dynamic")
+    reversal_bricks: int = Field(default=2, ge=1, description="Bricks needed for reversal.")
+    # Pattern Detector
+    bull_trigger_n: int = Field(default=3, ge=1, description="N consecutive HH/HL for bull trigger.")
+    bear_trigger_n: int = Field(default=3, ge=1, description="N consecutive LL/LH for bear trigger.")
+    # Risk Manager
+    sl_bricks: int = Field(default=3, ge=1, description="Stop-loss in brick units.")
+    tp_bricks: int = Field(default=5, ge=1, description="Take-profit in brick units.")
+    trailing_stop: bool = Field(default=True, description="Enable trailing stop.")
+    trail_after_bricks: int = Field(default=3, ge=1, description="Activate trail after N bricks profit.")
+    trail_distance_bricks: int = Field(default=2, ge=1, description="Trail distance in bricks.")
+    # Signal Filter
+    max_trades_per_session: int = Field(default=15, ge=1, description="Max trades per session.")
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0, description="Max daily loss in bricks.")
+    max_consecutive_losses: int = Field(default=3, ge=1, description="Pause after N consecutive losses.")
+    cooldown_seconds: float = Field(default=30.0, ge=0, description="Min seconds between trades.")
+    regime_gate: bool = Field(default=True, description="Only trade with HMM regime alignment.")
+    # Optional overrides
+    timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
+    regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
+    signal_confidence_min: Optional[float] = Field(default=None, ge=0, le=1, description="Min signal confidence to trade.")
+
+
+class RenkoBacktestResponse(BaseModel):
+    """Response from a Renko pipeline backtest."""
+    symbol: str
+    total_ticks: int
+    total_bricks: int
+    config_used: Dict[str, Any] = Field(default_factory=dict, description="Config snapshot used for this backtest.")
+    stats: Dict[str, Any] = Field(default_factory=dict, description="Comprehensive trading statistics.")
+    trades: List[Dict[str, Any]] = Field(default_factory=list, description="List of all trade records.")
+
+
+class RenkoCompareConfig(BaseModel):
+    """A single Renko config to compare."""
+    label: str = Field(..., description="Label for this config (e.g. 'aggressive', 'conservative').")
+    brick_size: float = Field(default=0.50, gt=0)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    regime_gate: bool = Field(default=True)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+
+
+class RenkoBacktestCompareRequest(BaseModel):
+    """Compare multiple Renko pipeline configurations side-by-side."""
+    prices: List[float] = Field(..., min_length=50, description="Historical price series.")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    configs: List[RenkoCompareConfig] = Field(..., min_length=2, max_length=10, description="Configs to compare (2-10).")
+    timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps.")
+    regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels.")
+
+
+class RenkoBacktestCompareResponse(BaseModel):
+    """Side-by-side comparison of Renko backtest results."""
+    comparisons: List[RenkoBacktestResponse]
+    diff: Dict[str, Any] = Field(default_factory=dict, description="Key metric differences between first and best result.")
+
+
+class RenkoBacktestOptimizeRequest(BaseModel):
+    """Grid-search parameter sweep for Renko pipeline optimisation."""
+    prices: List[float] = Field(..., min_length=50, description="Historical price series.")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    param_grid: Dict[str, List] = Field(
+        ...,
+        description="Map of RenkoConfig parameter name to list of values to sweep. "
+        "Supported keys: brick_size, sl_bricks, tp_bricks, bull_trigger_n, bear_trigger_n, "
+        "trailing_stop, trail_after_bricks, trail_distance_bricks, regime_gate, "
+        "max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses.",
+    )
+    # Fixed params (applied to every run)
+    brick_size: float = Field(default=0.50, gt=0)
+    brick_size_mode: str = Field(default="fixed")
+    reversal_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    regime_gate: bool = Field(default=True)
+    timestamps: Optional[List[float]] = Field(default=None)
+    regimes: Optional[List[str]] = Field(default=None)
+
+
+class RenkoBacktestOptimizeResponse(BaseModel):
+    """Grid search results: one summary per parameter combination."""
+    results: List[Dict[str, Any]] = Field(
+        ...,
+        description="List of {params, total_pnl_bricks, win_rate, sharpe_estimate, "
+        "profit_factor, max_drawdown_bricks, total_trades} for each combination.",
+    )
+    best_by_sharpe: Optional[Dict[str, Any]] = Field(default=None, description="Params with highest Sharpe estimate.")
+    best_by_return: Optional[Dict[str, Any]] = Field(default=None, description="Params with highest total PnL (bricks).")
+    n_combinations: int = Field(..., description="Total parameter combinations tested.")
 
 
 # ── Pipeline registry ─────────────────────────────────────────────
@@ -257,6 +378,279 @@ if FASTAPI_AVAILABLE:
         """Get backtest/trading statistics from the journal."""
         pipeline = _get_pipeline(symbol)
         return pipeline.journal.get_stats()
+
+    # ── Renko Backtest Endpoints (isolated — do not affect live pipeline) ──
+
+    def _build_renko_config(req: "RenkoBacktestRequest") -> "RenkoConfig":
+        """Build a RenkoConfig from a backtest request body."""
+        return RenkoConfig(
+            brick_size=req.brick_size,
+            brick_size_mode=req.brick_size_mode,
+            reversal_bricks=req.reversal_bricks,
+            bull_trigger_n=req.bull_trigger_n,
+            bear_trigger_n=req.bear_trigger_n,
+            sl_bricks=req.sl_bricks,
+            tp_bricks=req.tp_bricks,
+            trailing_stop=req.trailing_stop,
+            trail_after_bricks=req.trail_after_bricks,
+            trail_distance_bricks=req.trail_distance_bricks,
+            max_trades_per_session=req.max_trades_per_session,
+            max_daily_loss_bricks=req.max_daily_loss_bricks,
+            max_consecutive_losses=req.max_consecutive_losses,
+            cooldown_seconds=req.cooldown_seconds,
+            regime_gate=req.regime_gate,
+            symbol=req.symbol,
+        )
+
+    def _run_isolated_backtest(
+        prices: List[float],
+        config: "RenkoConfig",
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Run a backtest in an isolated pipeline (never touches live state)."""
+        pipeline = RenkoPipeline(config)
+        result = pipeline.backtest(
+            prices=prices,
+            timestamps=timestamps,
+            regimes=regimes,
+        )
+        return result
+
+    @renko_router.post(
+        "/backtest/run",
+        response_model=RenkoBacktestResponse,
+        summary="Run a full Renko pipeline backtest (isolated from live pipeline)",
+    )
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def run_renko_backtest(
+        request: Request,
+        body: RenkoBacktestRequest,
+        user: TokenData = Depends(get_authed_user),
+    ):
+        """
+        Run a complete backtest on historical prices using an isolated RenkoPipeline
+        instance (never affects the live pipeline).
+
+        Pipeline flow: Tick → Brick Engine → Swing Classifier → Pattern Detector →
+        Signal Filter → Risk Manager → Executor → Trade Journal
+
+        Returns comprehensive stats including win rate, profit factor, Sharpe estimate,
+        max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
+        """
+        try:
+            config = _build_renko_config(body)
+            result = await asyncio.to_thread(
+                _run_isolated_backtest,
+                body.prices,
+                config,
+                body.timestamps,
+                body.regimes,
+            )
+
+            stats = result.get("stats", {})
+            journal_stats = stats.get("journal", {})
+            trades = result.get("trades", [])
+
+            return RenkoBacktestResponse(
+                symbol=body.symbol,
+                total_ticks=result.get("total_ticks", len(body.prices)),
+                total_bricks=result.get("total_bricks", 0),
+                config_used=config.to_dict(),
+                stats=journal_stats,
+                trades=trades,
+            )
+
+        except Exception as e:
+            log.exception(f"Renko backtest run failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @renko_router.post(
+        "/backtest/compare",
+        response_model=RenkoBacktestCompareResponse,
+        summary="Compare multiple Renko pipeline configs side-by-side",
+    )
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def compare_renko_backtests(
+        request: Request,
+        body: RenkoBacktestCompareRequest,
+        user: TokenData = Depends(get_authed_user),
+    ):
+        """
+        Run multiple Renko pipeline configurations on the same price data
+        and return side-by-side results with a diff summary.
+
+        Each config gets its own isolated pipeline instance. The diff
+        highlights key metric differences between the first config and
+        the best (by Sharpe estimate).
+        """
+        try:
+            comparisons = []
+            for cfg_input in body.configs:
+                config = RenkoConfig(
+                    brick_size=cfg_input.brick_size,
+                    sl_bricks=cfg_input.sl_bricks,
+                    tp_bricks=cfg_input.tp_bricks,
+                    trailing_stop=cfg_input.trailing_stop,
+                    trail_after_bricks=cfg_input.trail_after_bricks,
+                    trail_distance_bricks=cfg_input.trail_distance_bricks,
+                    bull_trigger_n=cfg_input.bull_trigger_n,
+                    bear_trigger_n=cfg_input.bear_trigger_n,
+                    regime_gate=cfg_input.regime_gate,
+                    max_trades_per_session=cfg_input.max_trades_per_session,
+                    max_daily_loss_bricks=cfg_input.max_daily_loss_bricks,
+                    max_consecutive_losses=cfg_input.max_consecutive_losses,
+                    symbol=body.symbol,
+                )
+
+                result = await asyncio.to_thread(
+                    _run_isolated_backtest,
+                    body.prices,
+                    config,
+                    body.timestamps,
+                    body.regimes,
+                )
+
+                stats = result.get("stats", {})
+                journal_stats = stats.get("journal", {})
+
+                comparisons.append(RenkoBacktestResponse(
+                    symbol=body.symbol,
+                    total_ticks=result.get("total_ticks", len(body.prices)),
+                    total_bricks=result.get("total_bricks", 0),
+                    config_used={**config.to_dict(), "label": cfg_input.label},
+                    stats=journal_stats,
+                    trades=result.get("trades", []),
+                ))
+
+            # Compute diff: first vs best (by Sharpe estimate)
+            diff = {}
+            if len(comparisons) >= 2:
+                first = comparisons[0]
+                best = max(
+                    comparisons,
+                    key=lambda c: c.stats.get("sharpe_estimate", 0.0),
+                )
+                diff_keys = [
+                    "total_trades", "win_rate", "profit_factor",
+                    "total_pnl_bricks", "avg_pnl_bricks",
+                    "max_drawdown_bricks", "sharpe_estimate",
+                ]
+                for key in diff_keys:
+                    f_val = first.stats.get(key, 0)
+                    b_val = best.stats.get(key, 0)
+                    diff[key] = {
+                        "first": f_val,
+                        "best": b_val,
+                        "delta": round(b_val - f_val, 6) if isinstance(f_val, (int, float)) else None,
+                    }
+
+            return RenkoBacktestCompareResponse(comparisons=comparisons, diff=diff)
+
+        except Exception as e:
+            log.exception(f"Renko backtest compare failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @renko_router.post(
+        "/backtest/optimize",
+        response_model=RenkoBacktestOptimizeResponse,
+        summary="Parameter sweep: run Renko backtests across a grid of parameter values",
+    )
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def optimize_renko_backtest(
+        request: Request,
+        body: RenkoBacktestOptimizeRequest,
+        user: TokenData = Depends(get_authed_user),
+    ):
+        """
+        Grid-search parameter sweep for Renko pipeline optimization.
+
+        Accepts a param_grid dict mapping parameter names to lists of values.
+        For each combination, runs a full isolated Renko backtest and returns
+        a summary row with key metrics. Useful for finding optimal Renko
+        strategy parameters without manual trial-and-error.
+
+        **Warning**: The number of combinations is the product of all grid
+        values. Keep grids small (max 50 combinations) to avoid timeouts.
+        """
+        import itertools as _it
+
+        try:
+            # Build parameter combinations from the grid
+            grid_keys = list(body.param_grid.keys())
+            grid_values = [body.param_grid[k] for k in grid_keys]
+            combinations = list(_it.product(*grid_values))
+
+            if len(combinations) > 50:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Too many combinations ({len(combinations)}). Max 50 to avoid timeout.",
+                )
+
+            # Fixed params from the request
+            fixed_params = {
+                "brick_size": body.brick_size,
+                "brick_size_mode": body.brick_size_mode,
+                "reversal_bricks": body.reversal_bricks,
+                "bull_trigger_n": body.bull_trigger_n,
+                "bear_trigger_n": body.bear_trigger_n,
+                "sl_bricks": body.sl_bricks,
+                "tp_bricks": body.tp_bricks,
+                "trailing_stop": body.trailing_stop,
+                "trail_after_bricks": body.trail_after_bricks,
+                "trail_distance_bricks": body.trail_distance_bricks,
+                "max_trades_per_session": body.max_trades_per_session,
+                "max_daily_loss_bricks": body.max_daily_loss_bricks,
+                "max_consecutive_losses": body.max_consecutive_losses,
+                "regime_gate": body.regime_gate,
+                "symbol": body.symbol,
+            }
+
+            results = []
+            for combo in combinations:
+                # Merge fixed params with grid overrides
+                run_params = {**fixed_params}
+                for i, key in enumerate(grid_keys):
+                    run_params[key] = combo[i]
+
+                config = RenkoConfig(**run_params)
+
+                result = await asyncio.to_thread(
+                    _run_isolated_backtest,
+                    body.prices,
+                    config,
+                    body.timestamps,
+                    body.regimes,
+                )
+
+                journal_stats = result.get("stats", {}).get("journal", {})
+
+                results.append({
+                    "params": dict(zip(grid_keys, combo)),
+                    "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
+                    "win_rate": journal_stats.get("win_rate", 0.0),
+                    "sharpe_estimate": journal_stats.get("sharpe_estimate", 0.0),
+                    "profit_factor": journal_stats.get("profit_factor", 0.0),
+                    "max_drawdown_bricks": journal_stats.get("max_drawdown_bricks", 0.0),
+                    "total_trades": journal_stats.get("total_trades", 0),
+                })
+
+            # Find best combinations
+            best_by_sharpe = max(results, key=lambda r: r["sharpe_estimate"]) if results else None
+            best_by_return = max(results, key=lambda r: r["total_pnl_bricks"]) if results else None
+
+            return RenkoBacktestOptimizeResponse(
+                results=results,
+                best_by_sharpe=best_by_sharpe,
+                best_by_return=best_by_return,
+                n_combinations=len(combinations),
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.exception(f"Renko backtest optimize failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 else:
     # Stub router for environments without FastAPI

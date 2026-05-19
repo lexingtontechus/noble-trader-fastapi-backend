@@ -27,6 +27,7 @@
 - [GPU](#gpu)
 - [Feed Adapters](#feed-adapters)
 - [Renko HFT Pipeline](#renko-hft-pipeline)
+- [Renko Backtest Endpoints](#renko-backtest-endpoints)
 - [Health](#health)
 - [Recommended Workflows](#recommended-workflows)
 
@@ -1908,6 +1909,275 @@ Reset the pipeline for a symbol (clears all bricks, signals, trades).
 ### GET /renko/backtest/stats
 
 Returns trading statistics from the journal: win rate, profit factor, Sharpe, max drawdown, Kelly estimates, etc.
+
+---
+
+## Renko Backtest Endpoints
+
+Isolated Renko pipeline backtest endpoints that run on **standalone `RenkoPipeline` instances** — they never affect the live pipeline state.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/renko/backtest/run` | Run a full Renko pipeline backtest (isolated) | Clerk/JWT |
+| POST | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side | Clerk/JWT |
+| POST | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline | Clerk/JWT |
+
+All three endpoints are rate-limited under `RATE_LIMIT_WRITE`.
+
+### POST /renko/backtest/run
+
+Run a complete backtest on historical prices using an **isolated** `RenkoPipeline` instance. The pipeline flow runs the full 6-layer stack:
+
+```
+Tick → Brick Engine → Swing Classifier → Pattern Detector
+     → Signal Filter → Risk Manager → Executor → Trade Journal
+```
+
+Returns comprehensive stats including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
+
+**Request (`RenkoBacktestRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `brick_size` | `float` | `0.50` | Fixed brick size in dollars (>0) |
+| `brick_size_mode` | `string` | `"fixed"` | `"fixed"`, `"atr"`, or `"dynamic"` |
+| `reversal_bricks` | `int` | `2` | Bricks needed for reversal (≥1) |
+| `bull_trigger_n` | `int` | `3` | N consecutive HH/HL for bull trigger (≥1) |
+| `bear_trigger_n` | `int` | `3` | N consecutive LL/LH for bear trigger (≥1) |
+| `sl_bricks` | `int` | `3` | Stop-loss in brick units (≥1) |
+| `tp_bricks` | `int` | `5` | Take-profit in brick units (≥1) |
+| `trailing_stop` | `bool` | `true` | Enable trailing stop |
+| `trail_after_bricks` | `int` | `3` | Activate trail after N bricks profit (≥1) |
+| `trail_distance_bricks` | `int` | `2` | Trail distance in bricks (≥1) |
+| `max_trades_per_session` | `int` | `15` | Max trades per session (≥1) |
+| `max_daily_loss_bricks` | `float` | `10.0` | Max daily loss in bricks (>0) |
+| `max_consecutive_losses` | `int` | `3` | Pause after N consecutive losses (≥1) |
+| `cooldown_seconds` | `float` | `30.0` | Min seconds between trades (≥0) |
+| `regime_gate` | `bool` | `true` | Only trade with HMM regime alignment |
+| `timestamps` | `list[float]` | `null` | Matching timestamps for prices |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels aligned with prices |
+| `signal_confidence_min` | `float` | `null` | Min signal confidence to trade (0–1) |
+
+**Response (`RenkoBacktestResponse`):**
+
+```json
+{
+  "symbol": "SPY",
+  "total_ticks": 5000,
+  "total_bricks": 342,
+  "config_used": {
+    "brick_size": 0.50,
+    "sl_bricks": 3,
+    "tp_bricks": 5,
+    "...": "..."
+  },
+  "stats": {
+    "total_trades": 28,
+    "win_rate": 0.607,
+    "profit_factor": 2.35,
+    "total_pnl_bricks": 12.5,
+    "sharpe_estimate": 1.42,
+    "max_drawdown_bricks": 5.0,
+    "avg_pnl_bricks": 0.45,
+    "...": "..."
+  },
+  "trades": [
+    {
+      "direction": "LONG",
+      "entry_price": 450.50,
+      "exit_price": 453.00,
+      "pnl_bricks": 2.0,
+      "status": "closed",
+      "...": "..."
+    }
+  ]
+}
+```
+
+### POST /renko/backtest/compare
+
+Run **multiple** Renko pipeline configurations on the same price data and return side-by-side results with a diff summary. Each config gets its own isolated pipeline instance.
+
+The diff highlights key metric differences between the first config and the best result (by Sharpe estimate).
+
+**Request (`RenkoBacktestCompareRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `configs` | `list[RenkoCompareConfig]` | *required* | Configs to compare (2–10) |
+| `timestamps` | `list[float]` | `null` | Matching timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+
+Each `RenkoCompareConfig` entry:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `label` | `string` | *required* | Label for this config (e.g. `"aggressive"`, `"conservative"`) |
+| `brick_size` | `float` | `0.50` | Brick size (>0) |
+| `sl_bricks` | `int` | `3` | Stop-loss in bricks (≥1) |
+| `tp_bricks` | `int` | `5` | Take-profit in bricks (≥1) |
+| `trailing_stop` | `bool` | `true` | Enable trailing stop |
+| `trail_after_bricks` | `int` | `3` | Activate trail after N bricks profit |
+| `trail_distance_bricks` | `int` | `2` | Trail distance in bricks |
+| `bull_trigger_n` | `int` | `3` | Bull trigger threshold |
+| `bear_trigger_n` | `int` | `3` | Bear trigger threshold |
+| `regime_gate` | `bool` | `true` | HMM regime alignment gate |
+| `max_trades_per_session` | `int` | `15` | Max trades per session |
+| `max_daily_loss_bricks` | `float` | `10.0` | Max daily loss in bricks |
+| `max_consecutive_losses` | `int` | `3` | Pause after N consecutive losses |
+
+**Example Request:**
+
+```json
+{
+  "prices": [450.10, 451.20, 449.80, ...],
+  "symbol": "SPY",
+  "configs": [
+    {
+      "label": "conservative",
+      "brick_size": 0.50,
+      "sl_bricks": 4,
+      "tp_bricks": 6,
+      "regime_gate": true
+    },
+    {
+      "label": "aggressive",
+      "brick_size": 0.25,
+      "sl_bricks": 2,
+      "tp_bricks": 4,
+      "regime_gate": false
+    }
+  ]
+}
+```
+
+**Response (`RenkoBacktestCompareResponse`):**
+
+```json
+{
+  "comparisons": [
+    {
+      "symbol": "SPY",
+      "total_ticks": 5000,
+      "total_bricks": 342,
+      "config_used": { "label": "conservative", "...": "..." },
+      "stats": { "win_rate": 0.65, "sharpe_estimate": 1.52, "...": "..." },
+      "trades": ["..."]
+    },
+    {
+      "symbol": "SPY",
+      "total_ticks": 5000,
+      "total_bricks": 680,
+      "config_used": { "label": "aggressive", "...": "..." },
+      "stats": { "win_rate": 0.55, "sharpe_estimate": 1.18, "...": "..." },
+      "trades": ["..."]
+    }
+  ],
+  "diff": {
+    "total_trades": { "first": 28, "best": 28, "delta": 0 },
+    "win_rate": { "first": 0.65, "best": 0.65, "delta": 0.0 },
+    "profit_factor": { "first": 2.85, "best": 2.85, "delta": 0.0 },
+    "total_pnl_bricks": { "first": 14.5, "best": 14.5, "delta": 0.0 },
+    "avg_pnl_bricks": { "first": 0.52, "best": 0.52, "delta": 0.0 },
+    "max_drawdown_bricks": { "first": 4.0, "best": 4.0, "delta": 0.0 },
+    "sharpe_estimate": { "first": 1.52, "best": 1.52, "delta": 0.0 }
+  }
+}
+```
+
+### POST /renko/backtest/optimize
+
+Grid-search parameter sweep for Renko pipeline optimisation. Accepts a `param_grid` dict mapping parameter names to lists of values. For each combination, runs a full isolated Renko backtest and returns a summary row with key metrics.
+
+**Warning:** The number of combinations is the product of all grid values. Maximum 50 combinations per request to avoid timeout.
+
+**Request (`RenkoBacktestOptimizeRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `param_grid` | `dict[str, list]` | *required* | Map of parameter name to list of values to sweep. Supported keys: `brick_size`, `sl_bricks`, `tp_bricks`, `bull_trigger_n`, `bear_trigger_n`, `trailing_stop`, `trail_after_bricks`, `trail_distance_bricks`, `regime_gate`, `max_trades_per_session`, `max_daily_loss_bricks`, `max_consecutive_losses` |
+| `brick_size` | `float` | `0.50` | Fixed: brick size (>0) |
+| `brick_size_mode` | `string` | `"fixed"` | Fixed: brick size mode |
+| `reversal_bricks` | `int` | `2` | Fixed: reversal bricks (≥1) |
+| `bull_trigger_n` | `int` | `3` | Fixed: bull trigger (≥1) |
+| `bear_trigger_n` | `int` | `3` | Fixed: bear trigger (≥1) |
+| `sl_bricks` | `int` | `3` | Fixed: stop-loss bricks (≥1) |
+| `tp_bricks` | `int` | `5` | Fixed: take-profit bricks (≥1) |
+| `trailing_stop` | `bool` | `true` | Fixed: trailing stop enabled |
+| `trail_after_bricks` | `int` | `3` | Fixed: trail after N bricks (≥1) |
+| `trail_distance_bricks` | `int` | `2` | Fixed: trail distance (≥1) |
+| `max_trades_per_session` | `int` | `15` | Fixed: max trades (≥1) |
+| `max_daily_loss_bricks` | `float` | `10.0` | Fixed: max daily loss (>0) |
+| `max_consecutive_losses` | `int` | `3` | Fixed: max consecutive losses (≥1) |
+| `regime_gate` | `bool` | `true` | Fixed: regime gate |
+| `timestamps` | `list[float]` | `null` | Matching timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+
+**Example Request:**
+
+```json
+{
+  "prices": [450.10, 451.20, 449.80, ...],
+  "symbol": "SPY",
+  "param_grid": {
+    "brick_size": [0.25, 0.50, 1.00],
+    "sl_bricks": [2, 3],
+    "tp_bricks": [4, 5, 6]
+  }
+}
+```
+
+**Response (`RenkoBacktestOptimizeResponse`):**
+
+```json
+{
+  "results": [
+    {
+      "params": { "brick_size": 0.25, "sl_bricks": 2, "tp_bricks": 4 },
+      "total_pnl_bricks": 8.5,
+      "win_rate": 0.55,
+      "sharpe_estimate": 1.15,
+      "profit_factor": 1.85,
+      "max_drawdown_bricks": 6.0,
+      "total_trades": 42
+    },
+    {
+      "params": { "brick_size": 0.25, "sl_bricks": 2, "tp_bricks": 5 },
+      "total_pnl_bricks": 10.2,
+      "win_rate": 0.58,
+      "sharpe_estimate": 1.32,
+      "profit_factor": 2.10,
+      "max_drawdown_bricks": 5.0,
+      "total_trades": 38
+    }
+  ],
+  "best_by_sharpe": {
+    "params": { "brick_size": 0.50, "sl_bricks": 3, "tp_bricks": 5 },
+    "total_pnl_bricks": 14.5,
+    "win_rate": 0.65,
+    "sharpe_estimate": 1.52,
+    "profit_factor": 2.85,
+    "max_drawdown_bricks": 4.0,
+    "total_trades": 28
+  },
+  "best_by_return": {
+    "params": { "brick_size": 0.25, "sl_bricks": 3, "tp_bricks": 6 },
+    "total_pnl_bricks": 18.2,
+    "win_rate": 0.60,
+    "sharpe_estimate": 1.38,
+    "profit_factor": 2.45,
+    "max_drawdown_bricks": 7.0,
+    "total_trades": 35
+  },
+  "n_combinations": 18
+}
+```
 
 ---
 

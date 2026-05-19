@@ -2104,6 +2104,107 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /renko/backtest/run:
+    post:
+      tags:
+      - renko
+      summary: Run a full Renko pipeline backtest (isolated from live pipeline)
+      description: "Run a complete backtest on historical prices using an isolated\
+        \ RenkoPipeline instance (never affects the live pipeline).\n\nPipeline flow:\
+        \ Tick → Brick Engine → Swing Classifier → Pattern Detector → Signal Filter\
+        \ → Risk Manager → Executor → Trade Journal\n\nReturns comprehensive stats\
+        \ including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern\
+        \ breakdowns, per-regime breakdowns, and Kelly inputs."
+      operationId: run_renko_backtest_renko_backtest_run_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoBacktestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenkoBacktestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+  /renko/backtest/compare:
+    post:
+      tags:
+      - renko
+      summary: Compare multiple Renko pipeline configs side-by-side
+      description: "Run multiple Renko pipeline configurations on the same price\
+        \ data and return side-by-side results with a diff summary.\n\nEach config\
+        \ gets its own isolated pipeline instance. The diff highlights key metric\
+        \ differences between the first config and the best (by Sharpe estimate)."
+      operationId: compare_renko_backtests_renko_backtest_compare_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoBacktestCompareRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenkoBacktestCompareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+  /renko/backtest/optimize:
+    post:
+      tags:
+      - renko
+      summary: 'Parameter sweep: run Renko backtests across a grid of parameter values'
+      description: "Grid-search parameter sweep for Renko pipeline optimization.\n\
+        \nAccepts a param_grid dict mapping parameter names to lists of values.\n\
+        For each combination, runs a full isolated Renko backtest and returns\na\
+        \ summary row with key metrics. Useful for finding optimal Renko\nstrategy\
+        \ parameters without manual trial-and-error.\n\n**Warning**: The number of\
+        \ combinations is the product of all grid values. Keep grids small (max 50\
+        \ combinations) to avoid timeouts."
+      operationId: optimize_renko_backtest_renko_backtest_optimize_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoBacktestOptimizeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenkoBacktestOptimizeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /health:
     get:
       tags:
@@ -5714,3 +5815,311 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+    RenkoBacktestRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          minItems: 50
+          type: array
+          title: Prices
+          description: Historical price series (min 50 ticks).
+        symbol:
+          type: string
+          default: SPY
+          title: Symbol
+          description: Trading symbol.
+        brick_size:
+          type: number
+          default: 0.5
+          exclusiveMinimum: 0
+          title: Brick Size
+          description: Fixed brick size in dollars.
+        brick_size_mode:
+          type: string
+          default: fixed
+          title: Brick Size Mode
+          description: fixed | atr | dynamic
+        reversal_bricks:
+          type: integer
+          minimum: 1
+          default: 2
+          title: Reversal Bricks
+        bull_trigger_n:
+          type: integer
+          minimum: 1
+          default: 3
+          title: Bull Trigger N
+        bear_trigger_n:
+          type: integer
+          minimum: 1
+          default: 3
+          title: Bear Trigger N
+        sl_bricks:
+          type: integer
+          minimum: 1
+          default: 3
+          title: Sl Bricks
+          description: Stop-loss in brick units.
+        tp_bricks:
+          type: integer
+          minimum: 1
+          default: 5
+          title: Tp Bricks
+          description: Take-profit in brick units.
+        trailing_stop:
+          type: boolean
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1
+          default: 2
+        max_trades_per_session:
+          type: integer
+          minimum: 1
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1
+          default: 3
+        cooldown_seconds:
+          type: number
+          minimum: 0
+          default: 30.0
+        regime_gate:
+          type: boolean
+          default: true
+        timestamps:
+          items:
+            type: number
+          type: array
+          nullable: true
+        regimes:
+          items:
+            type: string
+          type: array
+          nullable: true
+        signal_confidence_min:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+      required:
+      - prices
+      title: RenkoBacktestRequest
+      type: object
+    RenkoBacktestResponse:
+      properties:
+        symbol:
+          type: string
+          title: Symbol
+        total_ticks:
+          type: integer
+          title: Total Ticks
+        total_bricks:
+          type: integer
+          title: Total Bricks
+        config_used:
+          type: object
+          title: Config Used
+          description: Config snapshot used for this backtest.
+        stats:
+          type: object
+          title: Stats
+          description: Comprehensive trading statistics.
+        trades:
+          items:
+            type: object
+          type: array
+          title: Trades
+          description: List of all trade records.
+      required:
+      - symbol
+      - total_ticks
+      - total_bricks
+      title: RenkoBacktestResponse
+      type: object
+    RenkoCompareConfig:
+      properties:
+        label:
+          type: string
+          title: Label
+          description: Label for this config.
+        brick_size:
+          type: number
+          default: 0.5
+          exclusiveMinimum: 0
+        sl_bricks:
+          type: integer
+          default: 3
+          minimum: 1
+        tp_bricks:
+          type: integer
+          default: 5
+          minimum: 1
+        trailing_stop:
+          type: boolean
+          default: true
+        trail_after_bricks:
+          type: integer
+          default: 3
+          minimum: 1
+        trail_distance_bricks:
+          type: integer
+          default: 2
+          minimum: 1
+        bull_trigger_n:
+          type: integer
+          default: 3
+          minimum: 1
+        bear_trigger_n:
+          type: integer
+          default: 3
+          minimum: 1
+        regime_gate:
+          type: boolean
+          default: true
+        max_trades_per_session:
+          type: integer
+          default: 15
+          minimum: 1
+        max_daily_loss_bricks:
+          type: number
+          default: 10.0
+          exclusiveMinimum: 0
+        max_consecutive_losses:
+          type: integer
+          default: 3
+          minimum: 1
+      required:
+      - label
+      title: RenkoCompareConfig
+      type: object
+    RenkoBacktestCompareRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          minItems: 50
+          type: array
+          title: Prices
+        symbol:
+          type: string
+          default: SPY
+        configs:
+          items:
+            $ref: '#/components/schemas/RenkoCompareConfig'
+          minItems: 2
+          maxItems: 10
+          type: array
+          title: Configs
+        timestamps:
+          items:
+            type: number
+          type: array
+          nullable: true
+        regimes:
+          items:
+            type: string
+          type: array
+          nullable: true
+      required:
+      - prices
+      - configs
+      title: RenkoBacktestCompareRequest
+      type: object
+    RenkoBacktestCompareResponse:
+      properties:
+        comparisons:
+          items:
+            $ref: '#/components/schemas/RenkoBacktestResponse'
+          type: array
+          title: Comparisons
+        diff:
+          type: object
+          title: Diff
+          description: Key metric differences between first and best result.
+      required:
+      - comparisons
+      title: RenkoBacktestCompareResponse
+      type: object
+    RenkoBacktestOptimizeRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          minItems: 50
+          type: array
+          title: Prices
+        symbol:
+          type: string
+          default: SPY
+        param_grid:
+          type: object
+          title: Param Grid
+          description: Map of RenkoConfig parameter name to list of values to sweep.
+        brick_size:
+          type: number
+          default: 0.5
+          exclusiveMinimum: 0
+        sl_bricks:
+          type: integer
+          default: 3
+          minimum: 1
+        tp_bricks:
+          type: integer
+          default: 5
+          minimum: 1
+        regime_gate:
+          type: boolean
+          default: true
+        timestamps:
+          items:
+            type: number
+          type: array
+          nullable: true
+        regimes:
+          items:
+            type: string
+          type: array
+          nullable: true
+      required:
+      - prices
+      - param_grid
+      title: RenkoBacktestOptimizeRequest
+      type: object
+    RenkoBacktestOptimizeResponse:
+      properties:
+        results:
+          items:
+            type: object
+          type: array
+          title: Results
+          description: List of results for each parameter combination.
+        best_by_sharpe:
+          type: object
+          nullable: true
+          title: Best By Sharpe
+          description: Params with highest Sharpe estimate.
+        best_by_return:
+          type: object
+          nullable: true
+          title: Best By Return
+          description: Params with highest total PnL (bricks).
+        n_combinations:
+          type: integer
+          title: N Combinations
+          description: Total parameter combinations tested.
+      required:
+      - results
+      - n_combinations
+      title: RenkoBacktestOptimizeResponse
+      type: object

@@ -43,6 +43,9 @@
 ║    POST /renko/config       — Update pipeline configuration                 ║
 ║    POST /renko/reset        — Reset pipeline for a symbol                   ║
 ║    GET  /renko/backtest/stats — Backtest/trading statistics                 ║
+║    POST /renko/backtest/run   — Run isolated Renko backtest                 ║
+║    POST /renko/backtest/compare — Compare multiple Renko configs            ║
+║    POST /renko/backtest/optimize — Renko parameter sweep (grid search)     ║
 ║                                                                              ║
 ║  v5.1 Dynamic Masaniello Pipeline:                                            ║
 ║    POST /size/masaniello        — Single-trade Masaniello sizing              ║
@@ -490,6 +493,9 @@ Excluded from MCP (use REST API directly):
                     "renko_signals": "GET /renko/signals",
                     "renko_trades": "GET /renko/trades",
                     "renko_config": "POST /renko/config",
+                    "renko_backtest_run": "POST /renko/backtest/run",
+                    "renko_backtest_compare": "POST /renko/backtest/compare",
+                    "renko_backtest_optimize": "POST /renko/backtest/optimize",
                     # v5.1 Dynamic Masaniello
                     "masaniello_sizing": "POST /size/masaniello",
                     "masaniello_batch": "POST /size/masaniello/batch",
