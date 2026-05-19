@@ -57,7 +57,9 @@ class BacktestTrade:
     exit_price: Optional[float] = None
     pnl: float = 0.0
     pnl_pct: float = 0.0
-    commission: float = 0.0
+    commission: float = 0.0       # Commission only (separate from slippage)
+    slippage_cost: float = 0.0    # Slippage only (separate from commission)
+    total_cost: float = 0.0       # commission + slippage_cost
     hold_bars: int = 0
     exit_reason: str = ""
     entry_date: Optional[str] = None   # ISO date string if dates provided
@@ -267,7 +269,8 @@ class Backtester:
                     # Close position
                     commission = abs(position * equity) * cfg.commission_bps / 10000
                     slippage = abs(position * equity) * cfg.slippage_bps / 10000
-                    equity -= commission + slippage
+                    total_cost = commission + slippage
+                    equity -= total_cost
                     
                     trade_pnl = 0.0  # default
                     if trades and trades[-1].exit_price is None:
@@ -275,9 +278,11 @@ class Backtester:
                         # PnL = exit equity contribution - entry equity contribution
                         if entry_price > 0:
                             price_change_pct = (current_price - entry_price) / entry_price * position_dir
-                            trades[-1].pnl = entry_equity * position * price_change_pct - (commission + slippage)
+                            trades[-1].pnl = entry_equity * position * price_change_pct - total_cost
                             trades[-1].pnl_pct = price_change_pct * position  # percentage return on position
-                        trades[-1].commission = commission + slippage
+                        trades[-1].commission = commission
+                        trades[-1].slippage_cost = slippage
+                        trades[-1].total_cost = total_cost
                         trades[-1].hold_bars = bar_idx - entry_bar
                         trades[-1].exit_reason = exit_reason
                         if dates is not None:
@@ -346,7 +351,8 @@ class Backtester:
                     
                     commission = position * equity * cfg.commission_bps / 10000
                     slippage = position * equity * cfg.slippage_bps / 10000
-                    equity -= commission + slippage
+                    total_cost = commission + slippage
+                    equity -= total_cost
                     
                     trade = BacktestTrade(
                         bar=bar_idx,
@@ -356,6 +362,9 @@ class Backtester:
                         regime_multiplier=snap.risk_multiplier if snap else 1.0,
                         position_size=position,
                         entry_price=entry_price,
+                        commission=commission,
+                        slippage_cost=slippage,
+                        total_cost=total_cost,
                         entry_date=dates[bar_idx] if dates is not None and bar_idx < len(dates) else None,
                     )
                     trades.append(trade)
@@ -556,6 +565,8 @@ class Backtester:
                 "pnl": round(t.pnl, 4),
                 "pnl_pct": round(t.pnl_pct, 6),
                 "commission": round(t.commission, 4),
+                "slippage_cost": round(t.slippage_cost, 4),
+                "total_cost": round(t.total_cost, 4),
                 "hold_bars": t.hold_bars,
                 "exit_reason": t.exit_reason,
             } for t in trades],

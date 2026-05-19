@@ -136,6 +136,9 @@ class RenkoPipeline:
                 time_stop_bricks=self.config.time_stop_bricks,
                 partial_exit_pct=self.config.partial_exit_pct,
                 partial_exit_bricks=self.config.partial_exit_bricks,
+                slippage_bps=self.config.slippage_bps,
+                commission_bps=self.config.commission_bps,
+                spread_bps=self.config.spread_bps,
             )
         )
         self.executor = AlpacaExecutor(

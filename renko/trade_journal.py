@@ -49,6 +49,13 @@ class TradeRecord:
     velocity: float = 0.0
     label_sequence: List[str] = field(default_factory=list)
     filters_passed: List[str] = field(default_factory=list)
+    # Transaction cost tracking
+    commission: float = 0.0          # Total commission (entry + exit)
+    slippage_cost: float = 0.0       # Total slippage cost (entry + exit)
+    total_cost: float = 0.0          # commission + slippage_cost
+    entry_slippage: float = 0.0      # Slippage on entry fill
+    exit_slippage: float = 0.0       # Slippage on exit fill
+    gross_pnl_dollars: float = 0.0   # P&L before transaction costs
 
     @property
     def is_win(self) -> bool:
@@ -57,6 +64,11 @@ class TradeRecord:
     @property
     def duration_seconds(self) -> float:
         return self.exit_ts - self.entry_ts
+
+    @property
+    def net_pnl_dollars(self) -> float:
+        """P&L after all transaction costs."""
+        return self.pnl_dollars
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +82,7 @@ class TradeRecord:
             "exit_ts": self.exit_ts,
             "pnl_bricks": self.pnl_bricks,
             "pnl_dollars": self.pnl_dollars,
+            "gross_pnl_dollars": self.gross_pnl_dollars,
             "status": self.status.value,
             "bricks_held": self.bricks_held,
             "signal_strength": self.signal_strength,
@@ -79,6 +92,12 @@ class TradeRecord:
             "velocity": self.velocity,
             "label_sequence": self.label_sequence,
             "filters_passed": self.filters_passed,
+            "commission": self.commission,
+            "slippage_cost": self.slippage_cost,
+            "total_cost": self.total_cost,
+            "entry_slippage": self.entry_slippage,
+            "exit_slippage": self.exit_slippage,
+            "net_pnl_dollars": self.net_pnl_dollars,
         }
 
 
@@ -139,6 +158,12 @@ class TradeJournal:
             velocity=signal.velocity,
             label_sequence=signal.label_sequence,
             filters_passed=filtered.passed_filters,
+            commission=result.commission,
+            slippage_cost=result.slippage_cost,
+            total_cost=result.total_cost,
+            entry_slippage=result.entry_slippage,
+            exit_slippage=result.exit_slippage,
+            gross_pnl_dollars=result.gross_pnl_dollars,
         )
 
     def get_stats(self, last_n: Optional[int] = None) -> Dict:
@@ -274,7 +299,44 @@ class TradeJournal:
             ),
         }
 
+        # ── Transaction cost summary ────────────────────────────────
+        total_commission = sum(t.commission for t in trades)
+        total_slippage = sum(t.slippage_cost for t in trades)
+        total_costs = sum(t.total_cost for t in trades)
+        total_gross_pnl = sum(t.gross_pnl_dollars for t in trades)
+        total_net_pnl = sum(t.pnl_dollars for t in trades)
+
+        stats["cost_summary"] = {
+            "total_commission": round(total_commission, 4),
+            "total_slippage_cost": round(total_slippage, 4),
+            "total_transaction_costs": round(total_costs, 4),
+            "total_gross_pnl_dollars": round(total_gross_pnl, 4),
+            "total_net_pnl_dollars": round(total_net_pnl, 4),
+            "cost_drag_pct": round(total_costs / abs(total_gross_pnl) * 100, 2) if total_gross_pnl != 0 else 0.0,
+            "avg_cost_per_trade": round(total_costs / len(trades), 4) if trades else 0.0,
+            "commission_bps_avg": round(total_commission / len(trades) * 10000 / (sum(abs(t.entry_price * t.qty) for t in trades) / len(trades)), 2) if trades else 0.0,
+            "by_exit_type": self._cost_breakdown_by_exit_type(trades),
+        }
+
         return stats
+
+    @staticmethod
+    def _cost_breakdown_by_exit_type(trades: list) -> dict:
+        """Break down costs by exit type (SL vs TP vs Trail etc.)."""
+        breakdown = {}
+        for t in trades:
+            exit_type = t.status.value if hasattr(t.status, 'value') else str(t.status)
+            if exit_type not in breakdown:
+                breakdown[exit_type] = {"count": 0, "commission": 0.0, "slippage": 0.0, "total_cost": 0.0}
+            breakdown[exit_type]["count"] += 1
+            breakdown[exit_type]["commission"] += t.commission
+            breakdown[exit_type]["slippage"] += t.slippage_cost
+            breakdown[exit_type]["total_cost"] += t.total_cost
+        # Round values
+        for key in breakdown:
+            for field in ("commission", "slippage", "total_cost"):
+                breakdown[key][field] = round(breakdown[key][field], 4)
+        return breakdown
 
     def get_kelly_estimate(self, last_n: int = 50) -> float:
         """

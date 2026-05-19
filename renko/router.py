@@ -142,6 +142,10 @@ class RenkoBacktestRequest(BaseModel):
     max_consecutive_losses: int = Field(default=3, ge=1, description="Pause after N consecutive losses.")
     cooldown_seconds: float = Field(default=30.0, ge=0, description="Min seconds between trades.")
     regime_gate: bool = Field(default=True, description="Only trade with HMM regime alignment.")
+    # Transaction Costs
+    slippage_bps: float = Field(default=2.0, ge=0, description="Slippage in basis points (adverse fill).")
+    commission_bps: float = Field(default=5.0, ge=0, description="Commission in basis points of position value.")
+    spread_bps: float = Field(default=1.0, ge=0, description="Bid-ask spread in basis points (half-spread each side).")
     # Optional overrides
     timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
     regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
@@ -174,6 +178,9 @@ class RenkoCompareConfig(BaseModel):
     max_trades_per_session: int = Field(default=15, ge=1)
     max_daily_loss_bricks: float = Field(default=10.0, gt=0)
     max_consecutive_losses: int = Field(default=3, ge=1)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
 
 
 class RenkoBacktestCompareRequest(BaseModel):
@@ -219,6 +226,10 @@ class RenkoBacktestOptimizeRequest(BaseModel):
     regime_gate: bool = Field(default=True)
     timestamps: Optional[List[float]] = Field(default=None)
     regimes: Optional[List[str]] = Field(default=None)
+    # Transaction Costs
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
 
 
 class RenkoBacktestOptimizeResponse(BaseModel):
@@ -408,6 +419,9 @@ if FASTAPI_AVAILABLE:
             max_consecutive_losses=req.max_consecutive_losses,
             cooldown_seconds=req.cooldown_seconds,
             regime_gate=req.regime_gate,
+            slippage_bps=req.slippage_bps,
+            commission_bps=req.commission_bps,
+            spread_bps=req.spread_bps,
             symbol=req.symbol,
         )
 
@@ -628,6 +642,9 @@ if FASTAPI_AVAILABLE:
                     max_trades_per_session=cfg_input.max_trades_per_session,
                     max_daily_loss_bricks=cfg_input.max_daily_loss_bricks,
                     max_consecutive_losses=cfg_input.max_consecutive_losses,
+                    slippage_bps=cfg_input.slippage_bps,
+                    commission_bps=cfg_input.commission_bps,
+                    spread_bps=cfg_input.spread_bps,
                     symbol=body.symbol,
                 )
 
@@ -744,6 +761,9 @@ if FASTAPI_AVAILABLE:
                 "max_daily_loss_bricks": body.max_daily_loss_bricks,
                 "max_consecutive_losses": body.max_consecutive_losses,
                 "regime_gate": body.regime_gate,
+                "slippage_bps": body.slippage_bps,
+                "commission_bps": body.commission_bps,
+                "spread_bps": body.spread_bps,
                 "symbol": body.symbol,
             }
 

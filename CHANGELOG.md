@@ -1,3 +1,37 @@
+## [3.3.0] — 2026-05-19
+
+### Added — SSE Streaming for Progressive/Chunked Backtest Loading
+
+#### `renko/pipeline.py` — Updated
+- `backtest_chunked()` — new generator method that yields intermediate results after every N ticks
+- Yields `progress` events with: chunk number, total chunks, percent complete, trades so far, running stats, bricks/ticks processed
+- Final `complete` event matches the shape of `backtest()` return value for seamless compatibility
+- Configurable `chunk_size` parameter (default 150 ticks)
+- Supports `timestamps` and `regimes` parameters like the regular `backtest()`
+
+#### `renko/router.py` — Updated
+- `POST /renko/backtest/run/stream` — new SSE endpoint with `StreamingResponse`
+- Streams `progress` → `progress` → ... → `complete` events as `data: {...}\n\n` SSE format
+- `error` event type for pipeline failures
+- Redis cache check on entry — if cache HIT, emits single `complete` event immediately
+- Final complete result is cached in Redis (1h TTL) for subsequent non-streaming requests
+- Rate-limited under `RATE_LIMIT_WRITE`
+- Requires authentication via `get_authed_user`
+
+#### `tests/test_renko_backtest.py` — Updated
+- `TestRenkoBacktestChunked` — 6-test suite covering:
+  - Progress events are yielded with correct count (>= 2 progress + 1 complete)
+  - Each progress event has required keys (chunk, total_chunks, percent, trades_so_far, stats_so_far, etc.)
+  - Percent increases monotonically across progress events
+  - Complete event matches regular `backtest()` result (same total_ticks, total_bricks, trades count)
+  - Last progress event has percent = 100
+  - Chunked backtest accepts regime labels
+
+### Changed
+- Total backend test count: 25 Renko backtest tests (19 existing + 6 new chunked)
+
+---
+
 ## [3.2.0] — 2026-05-19
 
 ### Added — Walk-Forward Backtest Engine + Persistence + Optimization

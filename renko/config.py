@@ -69,6 +69,11 @@ class RenkoConfig:
     partial_exit_pct: float = 0.0      # 0 = no partial exit; 0.5 = close half at TP/2
     partial_exit_bricks: int = 3       # Bricks of profit for partial exit
 
+    # ── Transaction Costs ──────────────────────────────────────────
+    slippage_bps: float = 2.0           # Slippage in basis points (adverse fill)
+    commission_bps: float = 5.0         # Commission in basis points of position value
+    spread_bps: float = 1.0             # Bid-ask spread in basis points (half-spread each side)
+
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET
     use_bracket_orders: bool = True    # Alpaca native bracket orders
