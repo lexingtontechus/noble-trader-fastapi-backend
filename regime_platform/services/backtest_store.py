@@ -81,6 +81,12 @@ async def save_backtest_result(
         "gross_return": result_dict.get("gross_return", 0.0),
         "cost_drag_pct": result_dict.get("cost_drag_pct", 0.0),
         "avg_cost_per_trade": result_dict.get("avg_cost_per_trade", 0.0),
+        # Phase 5: Data Quality columns
+        "data_hash": result_dict.get("data_hash"),
+        "data_source": json.dumps(result_dict.get("data_source", {})),
+        "price_adjustment": result_dict.get("price_adjustment", "raw"),
+        "universe_mode": result_dict.get("universe_mode", "current_constituents"),
+        "look_ahead_audit": json.dumps(result_dict.get("look_ahead_audit_result", {})),
         # JSONB columns
         "config_used": json.dumps(config_used),
         "summary_metrics": json.dumps({
@@ -158,7 +164,7 @@ async def get_backtest_history(
                 headers=_supabase_headers(),
                 params={
                     "user_id": f"eq.{user_id}",
-                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,total_commission,total_slippage,total_cost,cost_drag_pct,avg_cost_per_trade,created_at",
+                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,total_commission,total_slippage,total_cost,cost_drag_pct,avg_cost_per_trade,data_hash,price_adjustment,universe_mode,created_at",
                     "order": "created_at.desc",
                     "offset": offset,
                     "limit": limit,

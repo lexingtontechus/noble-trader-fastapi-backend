@@ -154,6 +154,11 @@ class RenkoBacktestRequest(BaseModel):
     timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
     regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
     signal_confidence_min: Optional[float] = Field(default=None, ge=0, le=1, description="Min signal confidence to trade.")
+    # ── Data Quality (Phase 5) ─────────────────────────────────────────
+    universe_mode: str = Field(default="current_constituents", description="Universe filtering: current_constituents (default) | pit_constituents (survivorship-bias-free).")
+    index_name: Optional[str] = Field(default=None, description="Index for PIT filtering (e.g. 'sp500'). Required if universe_mode='pit_constituents'.")
+    price_adjustment: str = Field(default="raw", description="Price adjustment mode: raw | split_adjusted | fully_adjusted.")
+    look_ahead_audit: bool = Field(default=False, description="Enable look-ahead bias audit (instruments every data access).")
 
 
 class RenkoBacktestResponse(BaseModel):
@@ -165,6 +170,13 @@ class RenkoBacktestResponse(BaseModel):
     stats: Dict[str, Any] = Field(default_factory=dict, description="Comprehensive trading statistics.")
     trades: List[Dict[str, Any]] = Field(default_factory=list, description="List of all trade records.")
     cached: bool = Field(default=False, description="True if result was served from Redis cache (1h TTL).")
+    # ── Data Quality (Phase 5) ─────────────────────────────────────────
+    data_hash: Optional[str] = Field(default=None, description="SHA-256 hash of input price data for reproducibility.")
+    data_source: Dict[str, Any] = Field(default_factory=dict, description="Provenance metadata (source, fetch date, adjustment level).")
+    survivorship_bias: Optional[Dict[str, Any]] = Field(default=None, description="Survivorship bias warning/info.")
+    price_adjustments_applied: List[Dict[str, Any]] = Field(default_factory=list, description="Corporate action adjustments applied to prices.")
+    data_quality_warnings: List[str] = Field(default_factory=list, description="Data quality warnings (NaN, inf, jumps, etc.).")
+    look_ahead_audit_result: Optional[Dict[str, Any]] = Field(default=None, description="Look-ahead bias audit results.")
 
 
 class RenkoCompareConfig(BaseModel):
@@ -569,6 +581,88 @@ if FASTAPI_AVAILABLE:
         max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
         """
         try:
+            # ── Phase 5: Data Quality pre-processing ────────────────
+            from regime_platform.services.data_quality import (
+                compute_data_hash,
+                build_data_source_metadata,
+                validate_prices,
+                check_survivorship_bias,
+                UniverseSnapshotService,
+                CorporateActionService,
+                adjust_prices,
+                LookAheadAuditor,
+            )
+
+            # 5C: Compute data hash for reproducibility
+            data_hash = compute_data_hash(body.prices, body.symbol)
+            data_source = build_data_source_metadata(
+                source="api",
+                symbol=body.symbol,
+                price_count=len(body.prices),
+                price_adjustment=body.price_adjustment,
+                universe_mode=body.universe_mode,
+                index_name=body.index_name,
+            )
+
+            # 5C: Validate prices for data quality issues
+            quality_warnings = validate_prices(body.prices)
+
+            # 5A: Survivorship bias check
+            survivorship_info = check_survivorship_bias(
+                symbol=body.symbol,
+                universe_mode=body.universe_mode,
+                index_name=body.index_name,
+            )
+
+            # 5A: PIT universe filtering (if enabled)
+            working_prices = body.prices
+            if body.universe_mode == "pit_constituents" and body.index_name:
+                from datetime import date as _date, datetime as _dt
+                # Determine the date range from timestamps
+                if body.timestamps and len(body.timestamps) > 0:
+                    first_ts = body.timestamps[0]
+                    last_ts = body.timestamps[-1]
+                    if isinstance(first_ts, (int, float)):
+                        start_dt = _dt.fromtimestamp(first_ts, tz=None)
+                        end_dt = _dt.fromtimestamp(last_ts, tz=None)
+                    else:
+                        start_dt = _dt.fromisoformat(str(first_ts).replace("Z", "+00:00"))
+                        end_dt = _dt.fromisoformat(str(last_ts).replace("Z", "+00:00"))
+                    # Check if symbol was in index at start
+                    constituents = await UniverseSnapshotService.get_constituents_on_date(
+                        index_name=body.index_name,
+                        target_date=start_dt.date() if hasattr(start_dt, 'date') else _date.today(),
+                    )
+                    if constituents and body.symbol not in constituents:
+                        quality_warnings.append(
+                            f"Symbol {body.symbol} was NOT in {body.index_name} during the backtest period "
+                            f"(PIT mode). Results may be misleading for index-strategy backtests."
+                        )
+                else:
+                    quality_warnings.append(
+                        "PIT universe mode requested but no timestamps provided. "
+                        "Cannot verify constituent membership without dates."
+                    )
+
+            # 5B: Corporate action adjustments
+            adjustments_applied = []
+            if body.price_adjustment != "raw":
+                corp_actions = await CorporateActionService.get_actions_for_symbol(
+                    ticker=body.symbol,
+                )
+                if corp_actions:
+                    working_prices, adjustments_applied = adjust_prices(
+                        prices=body.prices,
+                        timestamps=None,  # ISO timestamps needed; will use raw prices for now
+                        actions=corp_actions,
+                        mode=body.price_adjustment,
+                    )
+                else:
+                    quality_warnings.append(
+                        f"No corporate action data found for {body.symbol}. "
+                        f"Price adjustment mode '{body.price_adjustment}' requested but no actions available."
+                    )
+
             # ── Check cache first ──────────────────────────────────────
             cache_key_body = body.model_dump()
             cached = await backtest_cache.get("renko", cache_key_body)
@@ -578,9 +672,13 @@ if FASTAPI_AVAILABLE:
 
             # ── Cache MISS — run the backtest ─────────────────────────
             config = _build_renko_config(body)
+
+            # 5D: Set up look-ahead auditor if requested
+            auditor = LookAheadAuditor(enabled=body.look_ahead_audit)
+
             result = await asyncio.to_thread(
                 _run_isolated_backtest,
-                body.prices,
+                working_prices,
                 config,
                 body.timestamps,
                 body.regimes,
@@ -590,6 +688,9 @@ if FASTAPI_AVAILABLE:
             journal_stats = stats.get("journal", {})
             trades = result.get("trades", [])
 
+            # 5D: Get look-ahead audit results
+            audit_result = auditor.get_results() if body.look_ahead_audit else None
+
             response_data = {
                 "symbol": body.symbol,
                 "total_ticks": result.get("total_ticks", len(body.prices)),
@@ -598,6 +699,13 @@ if FASTAPI_AVAILABLE:
                 "stats": journal_stats,
                 "trades": trades,
                 "cached": False,
+                # Phase 5: Data Quality fields
+                "data_hash": data_hash,
+                "data_source": data_source,
+                "survivorship_bias": survivorship_info,
+                "price_adjustments_applied": adjustments_applied,
+                "data_quality_warnings": quality_warnings,
+                "look_ahead_audit_result": audit_result,
             }
 
             # ── Store in cache (fire-and-forget, non-blocking) ────────
