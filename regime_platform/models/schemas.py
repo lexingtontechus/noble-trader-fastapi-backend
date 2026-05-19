@@ -332,6 +332,7 @@ class BacktestResponse(BaseModel):
     trade_log: list[dict]
     config_used: dict = Field(default_factory=dict, description="Config snapshot used for this backtest.")
     created_at: Optional[str] = Field(default=None, description="ISO timestamp when result was saved.")
+    cached: bool = Field(default=False, description="True if result was served from Redis cache (1h TTL).")
 
 
 class BacktestSummary(BaseModel):

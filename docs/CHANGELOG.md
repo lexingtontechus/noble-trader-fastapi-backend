@@ -1,3 +1,46 @@
+## [5.3.0] — 2026-05-19
+
+### Added — Redis Backtest Result Caching (1h TTL)
+
+#### `services/backtest_cache.py` — NEW FILE
+- `BacktestCache` — async Redis-backed cache for backtest results with 1h TTL
+- Deterministic cache keys via SHA-256 of canonical JSON (sorted keys, price arrays replaced with length)
+- Key format: `bt:{prefix}:{sha256_hash}` where prefix is `renko`, `renko:compare`, `renko:optimize`, or `hmm`
+- Graceful fallback: if `REDIS_URL` is not configured or Redis is unavailable, all operations are no-ops
+- Redis failures NEVER propagate to the caller — cache miss is returned instead
+- `get(prefix, body)` → cached result dict or None (cache miss)
+- `set(prefix, body, result)` → True/False (stores with 1h TTL)
+- `invalidate(prefix, body)` → removes specific cached result
+- `clear_prefix(prefix)` → removes all cached results for a prefix (admin/debug)
+- `get_stats()` → key counts, memory usage, TTL info
+- `close()` → graceful Redis connection cleanup
+- Singleton `backtest_cache` shared across all endpoints
+
+#### Cache Integration — Renko Endpoints
+- `POST /renko/backtest/run` — checks cache before running; stores result after; `cached` field in response
+- `POST /renko/backtest/compare` — checks cache before running; stores result after
+- `POST /renko/backtest/optimize` — checks cache before running; stores result after
+
+#### Cache Integration — HMM Endpoints
+- `POST /backtest/run` — checks cache before running; stores result after; `cached` field in response
+
+#### Response Model Updates
+- `RenkoBacktestResponse.cached: bool` — True if served from Redis cache (default False)
+- `BacktestResponse.cached: bool` — True if served from Redis cache (default False)
+
+#### Tests — `tests/test_backtest_cache.py` (28 new tests)
+- Cache key generation: deterministic hashing, param sensitivity, prefix isolation, price array length substitution, key order independence, input immutability
+- Cache disabled: all operations return None/False when REDIS_URL not set
+- Cache enabled (mocked Redis): GET hit/miss, SET with TTL, INVALIDATE, CLEAR_PREFIX, STATS
+- Graceful fallback: Redis errors never propagate (GET returns None, SET returns False)
+- Response model `cached` field: default False, accepts True
+
+### Changed
+- `main.py` version bumped to 5.3.0
+- Total backend tests: 72 (25 general + 19 Renko + 28 cache)
+
+---
+
 ## [5.2.0] — 2026-03-04
 
 ### Added — Renko Backtest Endpoints (Isolated Pipeline)

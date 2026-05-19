@@ -1,6 +1,6 @@
 # Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-**Version:** 5.2.0  
+**Version:** 5.3.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  

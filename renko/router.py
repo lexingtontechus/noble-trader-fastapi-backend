@@ -46,6 +46,7 @@ except ImportError:
 
 from regime_platform.auth import get_authed_user, require_write, require_admin, TokenData
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_WRITE
+from regime_platform.services.backtest_cache import backtest_cache
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
@@ -148,6 +149,7 @@ class RenkoBacktestResponse(BaseModel):
     config_used: Dict[str, Any] = Field(default_factory=dict, description="Config snapshot used for this backtest.")
     stats: Dict[str, Any] = Field(default_factory=dict, description="Comprehensive trading statistics.")
     trades: List[Dict[str, Any]] = Field(default_factory=list, description="List of all trade records.")
+    cached: bool = Field(default=False, description="True if result was served from Redis cache (1h TTL).")
 
 
 class RenkoCompareConfig(BaseModel):
@@ -435,10 +437,22 @@ if FASTAPI_AVAILABLE:
         Pipeline flow: Tick → Brick Engine → Swing Classifier → Pattern Detector →
         Signal Filter → Risk Manager → Executor → Trade Journal
 
+        Results are cached in Redis (1h TTL) for identical configs — repeated
+        requests with the same parameters return instantly from cache.
+        The response includes a `cached` field indicating cache HIT/MISS.
+
         Returns comprehensive stats including win rate, profit factor, Sharpe estimate,
         max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
         """
         try:
+            # ── Check cache first ──────────────────────────────────────
+            cache_key_body = body.model_dump()
+            cached = await backtest_cache.get("renko", cache_key_body)
+            if cached is not None:
+                cached["cached"] = True
+                return RenkoBacktestResponse(**cached)
+
+            # ── Cache MISS — run the backtest ─────────────────────────
             config = _build_renko_config(body)
             result = await asyncio.to_thread(
                 _run_isolated_backtest,
@@ -452,14 +466,21 @@ if FASTAPI_AVAILABLE:
             journal_stats = stats.get("journal", {})
             trades = result.get("trades", [])
 
-            return RenkoBacktestResponse(
-                symbol=body.symbol,
-                total_ticks=result.get("total_ticks", len(body.prices)),
-                total_bricks=result.get("total_bricks", 0),
-                config_used=config.to_dict(),
-                stats=journal_stats,
-                trades=trades,
-            )
+            response_data = {
+                "symbol": body.symbol,
+                "total_ticks": result.get("total_ticks", len(body.prices)),
+                "total_bricks": result.get("total_bricks", 0),
+                "config_used": config.to_dict(),
+                "stats": journal_stats,
+                "trades": trades,
+                "cached": False,
+            }
+
+            # ── Store in cache (fire-and-forget, non-blocking) ────────
+            cache_payload = {k: v for k, v in response_data.items() if k != "cached"}
+            await backtest_cache.set("renko", cache_key_body, cache_payload)
+
+            return RenkoBacktestResponse(**response_data)
 
         except Exception as e:
             log.exception(f"Renko backtest run failed: {e}")
@@ -483,8 +504,16 @@ if FASTAPI_AVAILABLE:
         Each config gets its own isolated pipeline instance. The diff
         highlights key metric differences between the first config and
         the best (by Sharpe estimate).
+
+        Results are cached in Redis (1h TTL) for identical compare requests.
         """
         try:
+            # ── Check cache ────────────────────────────────────────────
+            cache_key_body = body.model_dump()
+            cached = await backtest_cache.get("renko:compare", cache_key_body)
+            if cached is not None:
+                return RenkoBacktestCompareResponse(**cached)
+
             comparisons = []
             for cfg_input in body.configs:
                 config = RenkoConfig(
@@ -545,6 +574,11 @@ if FASTAPI_AVAILABLE:
                         "delta": round(b_val - f_val, 6) if isinstance(f_val, (int, float)) else None,
                     }
 
+            response_data = {"comparisons": [c.model_dump() for c in comparisons], "diff": diff}
+
+            # ── Store in cache ──────────────────────────────────────────
+            await backtest_cache.set("renko:compare", cache_key_body, response_data)
+
             return RenkoBacktestCompareResponse(comparisons=comparisons, diff=diff)
 
         except Exception as e:
@@ -570,12 +604,20 @@ if FASTAPI_AVAILABLE:
         a summary row with key metrics. Useful for finding optimal Renko
         strategy parameters without manual trial-and-error.
 
+        Results are cached in Redis (1h TTL) for identical optimize requests.
+
         **Warning**: The number of combinations is the product of all grid
         values. Keep grids small (max 50 combinations) to avoid timeouts.
         """
         import itertools as _it
 
         try:
+            # ── Check cache ────────────────────────────────────────────
+            cache_key_body = body.model_dump()
+            cached = await backtest_cache.get("renko:optimize", cache_key_body)
+            if cached is not None:
+                return RenkoBacktestOptimizeResponse(**cached)
+
             # Build parameter combinations from the grid
             grid_keys = list(body.param_grid.keys())
             grid_values = [body.param_grid[k] for k in grid_keys]
@@ -639,12 +681,17 @@ if FASTAPI_AVAILABLE:
             best_by_sharpe = max(results, key=lambda r: r["sharpe_estimate"]) if results else None
             best_by_return = max(results, key=lambda r: r["total_pnl_bricks"]) if results else None
 
-            return RenkoBacktestOptimizeResponse(
-                results=results,
-                best_by_sharpe=best_by_sharpe,
-                best_by_return=best_by_return,
-                n_combinations=len(combinations),
-            )
+            response_data = {
+                "results": results,
+                "best_by_sharpe": best_by_sharpe,
+                "best_by_return": best_by_return,
+                "n_combinations": len(combinations),
+            }
+
+            # ── Store in cache ──────────────────────────────────────────
+            await backtest_cache.set("renko:optimize", cache_key_body, response_data)
+
+            return RenkoBacktestOptimizeResponse(**response_data)
 
         except HTTPException:
             raise
