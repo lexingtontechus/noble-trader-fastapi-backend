@@ -1,3 +1,29 @@
+## [5.1.0] — 2026-05-20
+
+### Phase 6+7: Frontend UI
+
+- **StatisticalRigorPanel.jsx** — New component with 4 sub-cards:
+  - DSR Detail Card (observed_sharpe, expected_max_sharpe, p_value, n_trials, sample_length, threshold)
+  - Bootstrap CI Table (4 metrics × 2 methods: percentile + circular block)
+  - Multiple Testing Corrections (Bonferroni, Holm-Bonferroni, BH-FDR with summary counts)
+  - Significance Tests (White's Reality Check + Hansen's SPA with consensus alert)
+- **ExecutionModelingPanel.jsx** — New component with 5 sub-cards:
+  - Almgren-Chriss Market Impact (participation rate, permanent/temporary/total impact, composition bar)
+  - Fill Probability (order type, distance metrics, adverse selection, gauge visualization)
+  - Financing Costs (borrow/margin/dividend breakdown with HTB badge)
+  - Enhanced Cost Breakdown (bar chart per cost type)
+  - Execution Modeling Summary (market impact + fill probability + financing overview)
+- **BacktestResults.jsx** — Tabbed navigation (Overview / Statistics / Execution),
+  integrates both new panels with proper data extraction from both runtime field names
+  (`bootstrap_ci` and `bootstrap_cis`, `deflated_sharpe` and `deflated_sharpe_result`)
+- **BacktestPanel.jsx** — "Deep Analysis" button calling /renko/statistics/rigor and
+  /renko/execution/model via bffFetch; new onSignificanceTests and onExecutionModelDetail callbacks
+- **RenkoPage.jsx** — New state (significanceTests, executionModelDetail) wired to both panels
+- **types/backtest.ts** — Fixed type/runtime mismatches, added 15 new interfaces
+  (BootstrapCIMetric, SignificanceTestResults, MarketImpactResult, FillProbabilityResult,
+  BorrowCostResult, MarginCostResult, DividendCostResult, FinancingCostsResult,
+  ExecutionModelDetail, MultipleTestingSummary, BootstrapCIMethod, etc.)
+
 ## [5.0.0] — 2026-05-20
 
 ### Phase 6: Statistical Rigor
