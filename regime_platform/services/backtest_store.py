@@ -74,6 +74,14 @@ async def save_backtest_result(
         "max_drawdown": result_dict.get("max_drawdown", 0.0),
         "profit_factor": result_dict.get("profit_factor", 0.0),
         "n_hmm_states": config_used.get("n_hmm_states", 4),
+        # Aggregate transaction cost columns (Phase 2)
+        "total_commission": result_dict.get("total_commission", 0.0),
+        "total_slippage": result_dict.get("total_slippage", 0.0),
+        "total_cost": result_dict.get("total_cost", 0.0),
+        "gross_return": result_dict.get("gross_return", 0.0),
+        "cost_drag_pct": result_dict.get("cost_drag_pct", 0.0),
+        "avg_cost_per_trade": result_dict.get("avg_cost_per_trade", 0.0),
+        # JSONB columns
         "config_used": json.dumps(config_used),
         "summary_metrics": json.dumps({
             k: v for k, v in result_dict.items()
@@ -150,7 +158,7 @@ async def get_backtest_history(
                 headers=_supabase_headers(),
                 params={
                     "user_id": f"eq.{user_id}",
-                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,created_at",
+                    "select": "id,symbol,n_trades,win_rate,total_return,annual_return,sharpe_ratio,max_drawdown,profit_factor,n_hmm_states,total_commission,total_slippage,total_cost,cost_drag_pct,avg_cost_per_trade,created_at",
                     "order": "created_at.desc",
                     "offset": offset,
                     "limit": limit,

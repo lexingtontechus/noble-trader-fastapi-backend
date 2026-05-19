@@ -107,16 +107,24 @@ class BacktestResult:
     max_consecutive_losses: int
     avg_hold_bars: float
     profit_factor: float
-    
+
     # Regime stats
     regime_distribution: dict       # {label: count}
     trades_by_regime: dict          # {label: {wins, losses, avg_pnl}}
-    
+
     # Equity curve
     equity_curve: list              # [equity at each bar]
     drawdown_curve: list            # [drawdown at each bar]
     trade_log: list                 # [BacktestTrade dicts]
-    
+
+    # Aggregate transaction costs (after non-default fields)
+    total_commission: float = 0.0       # Total commission across all trades
+    total_slippage: float = 0.0         # Total slippage cost across all trades
+    total_cost: float = 0.0             # total_commission + total_slippage
+    gross_return: float = 0.0           # Return before transaction costs
+    cost_drag_pct: float = 0.0          # total_cost as % of gross P&L
+    avg_cost_per_trade: float = 0.0     # Average total cost per trade
+
     # Config snapshot (for persistence / comparison)
     config_used: dict = field(default_factory=dict)
 
@@ -514,9 +522,22 @@ class Backtester:
         
         # Compute avg pnl by regime
         for label, data in trades_by_regime.items():
-            total_trades = data["wins"] + data["losses"]
-            data["avg_pnl"] = data["total_pnl"] / total_trades if total_trades > 0 else 0.0
-        
+            total_trades_r = data["wins"] + data["losses"]
+            data["avg_pnl"] = data["total_pnl"] / total_trades_r if total_trades_r > 0 else 0.0
+
+        # ── Aggregate transaction costs ──────────────────────────────
+        total_commission = sum(t.commission for t in trades) if trades else 0.0
+        total_slippage = sum(t.slippage_cost for t in trades) if trades else 0.0
+        total_cost_agg = sum(t.total_cost for t in trades) if trades else 0.0
+        # Gross return = net return + cost drag (approximation)
+        # gross_return represents the return the strategy would have achieved
+        # without any transaction costs, expressed as a fraction of initial equity.
+        initial_equity = cfg.initial_equity
+        gross_pnl_dollars = sum(t.pnl for t in trades) + total_cost_agg if trades else 0.0
+        gross_return = total_return + (total_cost_agg / initial_equity)
+        cost_drag_pct = (total_cost_agg / abs(gross_pnl_dollars) * 100) if gross_pnl_dollars != 0 else 0.0
+        avg_cost_per_trade = total_cost_agg / n_trades if n_trades > 0 else 0.0
+
         return BacktestResult(
             symbol=symbol,
             n_bars=len(prices),
@@ -547,6 +568,12 @@ class Backtester:
             max_consecutive_losses=max_cl,
             avg_hold_bars=round(avg_hold, 1),
             profit_factor=round(profit_factor, 4),
+            total_commission=round(total_commission, 4),
+            total_slippage=round(total_slippage, 4),
+            total_cost=round(total_cost_agg, 4),
+            gross_return=round(gross_return, 6),
+            cost_drag_pct=round(cost_drag_pct, 2),
+            avg_cost_per_trade=round(avg_cost_per_trade, 4),
             regime_distribution=regime_counts,
             trades_by_regime=trades_by_regime,
             equity_curve=[round(x, 2) for x in equity_curve],
