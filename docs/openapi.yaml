@@ -36,7 +36,7 @@ info:
     email: nobletrader@0xdweb.com
   license:
     name: MIT
-  version: 5.1.0
+  version: 5.0.0
 paths:
   /auth/token:
     post:
@@ -1251,9 +1251,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
-      - APIKeyHeader: []
   /strategy/signal:
     post:
       tags:
@@ -1310,21 +1307,14 @@ paths:
         6. Comprehensive performance metrics (30+)
 
 
-        Returns:
+        Results are cached in Redis (1h TTL) for identical configs — repeated
 
-        - Full equity curve and drawdown curve
+        requests with the same parameters return instantly from cache.
 
-        - Return metrics (total, annual, excess over buy-and-hold)
+        The response includes a `cached` field indicating cache HIT/MISS.
 
-        - Risk metrics (VaR, CVaR, max drawdown, vol)
 
-        - Ratio metrics (Sharpe, Sortino, Calmar, information)
-
-        - Trade statistics (win rate, profit factor, consecutive wins/losses)
-
-        - Regime distribution and per-regime trade breakdown
-
-        - Full trade log'
+        Results are persisted to the database by default (set save=false to skip).'
       operationId: run_backtest_backtest_run_post
       requestBody:
         content:
@@ -1352,12 +1342,12 @@ paths:
     get:
       tags:
       - Backtesting
-      summary: List saved backtest results for the authenticated user (paginated)
-      description: 'Returns a paginated list of saved backtest results belonging to
-        the authenticated user.
+      summary: List saved backtest results for the authenticated user
+      description: 'Returns a paginated list of the user''s saved backtest results,
 
-        Each result includes a summary of key metrics (win rate, total return, Sharpe,
-        max drawdown, etc.).'
+        ordered by most recent first. Only summary metrics are included
+
+        (equity curves and trade logs are omitted for performance).'
       operationId: list_backtest_history_backtest_history_get
       security:
       - HTTPBearer: []
@@ -1369,17 +1359,21 @@ paths:
         schema:
           type: integer
           minimum: 0
+          description: Pagination offset.
           default: 0
           title: Offset
+        description: Pagination offset.
       - name: limit
         in: query
         required: false
         schema:
           type: integer
-          minimum: 1
           maximum: 100
+          minimum: 1
+          description: Page size.
           default: 20
           title: Limit
+        description: Page size.
       responses:
         '200':
           description: Successful Response
@@ -1398,10 +1392,13 @@ paths:
       tags:
       - Backtesting
       summary: Get a saved backtest result by ID
-      description: 'Retrieves the full backtest result associated with the given ID,
+      description: 'Retrieve the full backtest result (including equity curve, trade
+        log,
 
-        including all metrics, equity curve, drawdown curve, and trade log.'
-      operationId: get_backtest_backtest__backtest_id__get
+        and all metrics) for a previously saved backtest.
+
+        Scoped to the authenticated user.'
+      operationId: get_backtest_by_id_backtest__backtest_id__get
       security:
       - HTTPBearer: []
       - APIKeyHeader: []
@@ -1429,10 +1426,10 @@ paths:
       tags:
       - Backtesting
       summary: Delete a saved backtest result
-      description: 'Deletes the saved backtest result with the given ID.
+      description: 'Delete a saved backtest result by ID.
 
-        Returns 204 No Content on success.'
-      operationId: delete_backtest_backtest__backtest_id__delete
+        Scoped to the authenticated user.'
+      operationId: delete_backtest_result_backtest__backtest_id__delete
       security:
       - HTTPBearer: []
       - APIKeyHeader: []
@@ -1445,7 +1442,7 @@ paths:
           title: Backtest Id
       responses:
         '204':
-          description: Backtest result deleted successfully
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -1457,14 +1454,12 @@ paths:
       tags:
       - Backtesting
       summary: Compare two or more saved backtest results
-      description: 'Retrieves the specified backtest results and returns them alongside
-        a diff
+      description: 'Side-by-side comparison of saved backtest results.
 
-        object highlighting differences in key metrics across the results.'
+        Returns full results for each ID plus a diff summary highlighting
+
+        the key metric differences between the first and best result.'
       operationId: compare_backtests_backtest_compare_post
-      security:
-      - HTTPBearer: []
-      - APIKeyHeader: []
       requestBody:
         content:
           application/json:
@@ -1484,22 +1479,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /backtest/optimize:
     post:
       tags:
       - Backtesting
       summary: 'Parameter sweep: run backtests across a grid of parameter values'
-      description: 'Runs backtests across a grid of parameter combinations specified
-        in param_grid.
+      description: 'Grid-search parameter sweep for backtest optimization.
 
-        Maximum 50 combinations per request. Rate-limited.
 
-        Returns results for each combination plus the best result by Sharpe ratio and
-        by total return.'
+        Accepts a param_grid dict mapping parameter names to lists of values.
+
+        For each combination, runs a full walk-forward backtest and returns
+
+        a summary row with key metrics. Useful for finding optimal strategy
+
+        parameters without manual trial-and-error.
+
+
+        **Warning**: The number of combinations is the product of all grid
+
+        values. Keep grids small (max ~20-30 combinations) to avoid timeouts.'
       operationId: optimize_backtest_backtest_optimize_post
-      security:
-      - HTTPBearer: []
-      - APIKeyHeader: []
       requestBody:
         content:
           application/json:
@@ -1519,21 +1522,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /backtest/export:
     post:
       tags:
       - Backtesting
       summary: Export a saved backtest result as CSV or JSON
-      description: 'Exports a saved backtest result in the specified format (csv or
-        json).
+      description: 'Export a saved backtest result in CSV or JSON format for
 
-        Returns a StreamingResponse with the exported data.
+        external analysis. Supports selecting specific sections
 
-        The sections parameter controls which parts of the result to include.'
+        (summary, equity_curve, drawdown_curve, trade_log) or
+
+        exporting all data at once.
+
+
+        Returns a file download with appropriate content-type header.'
       operationId: export_backtest_backtest_export_post
-      security:
-      - HTTPBearer: []
-      - APIKeyHeader: []
       requestBody:
         content:
           application/json:
@@ -1542,21 +1549,19 @@ paths:
         required: true
       responses:
         '200':
-          description: StreamingResponse with exported data
+          description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-            text/csv:
-              schema:
-                type: string
+              schema: {}
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /tda/features:
     post:
       tags:
@@ -1614,9 +1619,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
-      - APIKeyHeader: []
   /renko/tick:
     post:
       tags:
@@ -1645,6 +1647,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /renko/tick/batch:
     post:
       tags:
@@ -1652,6 +1657,9 @@ paths:
       summary: Process Batch
       description: Process a batch of ticks (backtest / warm-up).
       operationId: process_batch_renko_tick_batch_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1688,6 +1696,9 @@ paths:
       summary: Get State
       description: Get current pipeline state.
       operationId: get_state_renko_state_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1718,6 +1729,9 @@ paths:
       summary: Get Stats
       description: Get comprehensive pipeline statistics.
       operationId: get_stats_renko_stats_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1748,6 +1762,9 @@ paths:
       summary: Get Bricks
       description: Get recent bricks.
       operationId: get_bricks_renko_bricks_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1787,6 +1804,9 @@ paths:
       summary: Get Classified
       description: Get recent classified bricks.
       operationId: get_classified_renko_classified_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1826,6 +1846,9 @@ paths:
       summary: Get Signals
       description: Get recent pattern signals.
       operationId: get_signals_renko_signals_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1865,6 +1888,9 @@ paths:
       summary: Get Trades
       description: Get recent trade records.
       operationId: get_trades_renko_trades_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1904,6 +1930,9 @@ paths:
       summary: Get Swing Points
       description: Get detected swing points.
       operationId: get_swing_points_renko_swing_points_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1943,6 +1972,9 @@ paths:
       summary: Set Regime
       description: Update the current HMM regime.
       operationId: set_regime_renko_regime_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -1979,6 +2011,9 @@ paths:
       summary: Set Equity
       description: Update the current account equity.
       operationId: set_equity_renko_equity_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -2015,6 +2050,9 @@ paths:
       summary: Update Config
       description: Update pipeline configuration (resets the pipeline).
       operationId: update_config_renko_config_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -2051,6 +2089,9 @@ paths:
       summary: Reset Pipeline
       description: Reset the pipeline for a symbol.
       operationId: reset_pipeline_renko_reset_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -2081,6 +2122,9 @@ paths:
       summary: Backtest Stats
       description: Get backtest/trading statistics from the journal.
       operationId: backtest_stats_renko_backtest_stats_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: query
@@ -2109,12 +2153,27 @@ paths:
       tags:
       - renko
       summary: Run a full Renko pipeline backtest (isolated from live pipeline)
-      description: "Run a complete backtest on historical prices using an isolated\
-        \ RenkoPipeline instance (never affects the live pipeline).\n\nPipeline flow:\
-        \ Tick → Brick Engine → Swing Classifier → Pattern Detector → Signal Filter\
-        \ → Risk Manager → Executor → Trade Journal\n\nReturns comprehensive stats\
-        \ including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern\
-        \ breakdowns, per-regime breakdowns, and Kelly inputs."
+      description: 'Run a complete backtest on historical prices using an isolated
+        RenkoPipeline
+
+        instance (never affects the live pipeline).
+
+
+        Pipeline flow: Tick → Brick Engine → Swing Classifier → Pattern Detector →
+
+        Signal Filter → Risk Manager → Executor → Trade Journal
+
+
+        Results are cached in Redis (1h TTL) for identical configs — repeated
+
+        requests with the same parameters return instantly from cache.
+
+        The response includes a `cached` field indicating cache HIT/MISS.
+
+
+        Returns comprehensive stats including win rate, profit factor, Sharpe estimate,
+
+        max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.'
       operationId: run_renko_backtest_renko_backtest_run_post
       requestBody:
         content:
@@ -2138,15 +2197,61 @@ paths:
       security:
       - HTTPBearer: []
       - APIKeyHeader: []
+  /renko/backtest/run/stream:
+    post:
+      tags:
+      - renko
+      summary: Stream a Renko backtest with progressive chunked results (SSE)
+      description: "Run a Renko backtest and stream results progressively via Server-Sent\
+        \ Events.\n\nThe pipeline processes prices in chunks of 150 ticks. After each\
+        \ chunk,\nan SSE event is emitted with partial results (trades so far, running\
+        \ stats,\nbricks/ticks processed). The frontend can render a growing equity\
+        \ curve\nand live-updating statistics.\n\nEvent types:\n  - ``progress``:\
+        \ Intermediate chunk result (partial trades, stats, percent)\n  - ``complete``:\
+        \ Final result (identical to /backtest/run response)\n  - ``error``: Pipeline\
+        \ error (if any)\n\nThe final complete result is also cached in Redis (1h\
+        \ TTL), so a subsequent\nnon-streaming request for the same config returns\
+        \ instantly from cache."
+      operationId: run_renko_backtest_stream_renko_backtest_run_stream_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoBacktestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /renko/backtest/compare:
     post:
       tags:
       - renko
       summary: Compare multiple Renko pipeline configs side-by-side
-      description: "Run multiple Renko pipeline configurations on the same price\
-        \ data and return side-by-side results with a diff summary.\n\nEach config\
-        \ gets its own isolated pipeline instance. The diff highlights key metric\
-        \ differences between the first config and the best (by Sharpe estimate)."
+      description: 'Run multiple Renko pipeline configurations on the same price data
+
+        and return side-by-side results with a diff summary.
+
+
+        Each config gets its own isolated pipeline instance. The diff
+
+        highlights key metric differences between the first config and
+
+        the best (by Sharpe estimate).
+
+
+        Results are cached in Redis (1h TTL) for identical compare requests.'
       operationId: compare_renko_backtests_renko_backtest_compare_post
       requestBody:
         content:
@@ -2175,13 +2280,24 @@ paths:
       tags:
       - renko
       summary: 'Parameter sweep: run Renko backtests across a grid of parameter values'
-      description: "Grid-search parameter sweep for Renko pipeline optimization.\n\
-        \nAccepts a param_grid dict mapping parameter names to lists of values.\n\
-        For each combination, runs a full isolated Renko backtest and returns\na\
-        \ summary row with key metrics. Useful for finding optimal Renko\nstrategy\
-        \ parameters without manual trial-and-error.\n\n**Warning**: The number of\
-        \ combinations is the product of all grid values. Keep grids small (max 50\
-        \ combinations) to avoid timeouts."
+      description: 'Grid-search parameter sweep for Renko pipeline optimization.
+
+
+        Accepts a param_grid dict mapping parameter names to lists of values.
+
+        For each combination, runs a full isolated Renko backtest and returns
+
+        a summary row with key metrics. Useful for finding optimal Renko
+
+        strategy parameters without manual trial-and-error.
+
+
+        Results are cached in Redis (1h TTL) for identical optimize requests.
+
+
+        **Warning**: The number of combinations is the product of all grid
+
+        values. Keep grids small (max 50 combinations) to avoid timeouts.'
       operationId: optimize_renko_backtest_renko_backtest_optimize_post
       requestBody:
         content:
@@ -2196,6 +2312,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RenkoBacktestOptimizeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+  /renko/backtest/walk-forward:
+    post:
+      tags:
+      - renko
+      summary: Walk-forward out-of-sample validation
+      description: 'Walk-forward out-of-sample validation.
+
+
+        Splits the price series into rolling in-sample (training) and
+
+        out-of-sample (test) windows. For each window, runs the backtest
+
+        on both segments and reports separate statistics. The degradation
+
+        ratio (OOS/IS return) is the key metric — below 0.5 suggests
+
+        severe overfitting.
+
+
+        Results are cached in Redis (1h TTL) for identical requests.'
+      operationId: walk_forward_renko_renko_backtest_walk_forward_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoWalkForwardRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenkoWalkForwardResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+  /renko/backtest/monte-carlo:
+    post:
+      tags:
+      - renko
+      summary: Monte Carlo permutation test for strategy robustness
+      description: "Monte Carlo permutation test.\n\nShuffles the trade P&L order\
+        \ N times and computes equity curves\nfor each permutation. Returns confidence\
+        \ bands (5th-95th percentile)\nand key probabilities:\n  - p_profitable: P(random\
+        \ permutation is profitable)\n  - p_beat_original: P(random permutation >=\
+        \ original P&L)\n\nIf the 5th-percentile equity curve is still profitable,\
+        \ the\nstrategy is robust regardless of trade timing.\n\nResults are cached\
+        \ in Redis (1h TTL) for identical requests."
+      operationId: monte_carlo_renko_renko_backtest_monte_carlo_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenkoMonteCarloRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenkoMonteCarloResponse'
         '422':
           description: Validation Error
           content:
@@ -2282,15 +2476,263 @@ components:
       - reason
       title: AssetMasanielloResult
       description: Masaniello sizing result for a single asset within a portfolio.
+    BacktestCompareRequest:
+      properties:
+        ids:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          minItems: 2
+          title: Ids
+          description: Backtest IDs to compare.
+      type: object
+      required:
+      - ids
+      title: BacktestCompareRequest
+      description: Request to compare two or more saved backtests.
+    BacktestCompareResponse:
+      properties:
+        comparisons:
+          items:
+            $ref: '#/components/schemas/BacktestResponse'
+          type: array
+          title: Comparisons
+        diff:
+          additionalProperties: true
+          type: object
+          title: Diff
+          description: Key metric differences between first and best result.
+      type: object
+      required:
+      - comparisons
+      title: BacktestCompareResponse
+      description: Side-by-side comparison of backtest results.
+    BacktestExportRequest:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Backtest result ID to export.
+        format:
+          type: string
+          enum:
+          - csv
+          - json
+          title: Format
+          description: Export format.
+          default: json
+        sections:
+          items:
+            type: string
+            enum:
+            - summary
+            - equity_curve
+            - drawdown_curve
+            - trade_log
+            - all
+          type: array
+          title: Sections
+          description: Which sections to include in the export.
+          default:
+          - all
+      type: object
+      required:
+      - id
+      title: BacktestExportRequest
+      description: Request to export a saved backtest result as CSV or JSON.
+    BacktestHistoryResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/BacktestSummary'
+          type: array
+          title: Results
+        total:
+          type: integer
+          title: Total
+        offset:
+          type: integer
+          title: Offset
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - results
+      - total
+      - offset
+      - limit
+      title: BacktestHistoryResponse
+      description: Paginated list of saved backtest summaries.
+    BacktestOptimizeRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          maxItems: 5000
+          minItems: 81
+          title: Prices
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
+        symbol:
+          type: string
+          title: Symbol
+          description: Ticker symbol for labelling.
+          default: UNKNOWN
+        param_grid:
+          additionalProperties:
+            items: {}
+            type: array
+          type: object
+          title: Param Grid
+          description: 'Map of parameter name to list of values to sweep. Supported
+            keys: window, refit_every, n_hmm_states, kelly_fraction, target_vol, base_risk_limit,
+            commission_bps, slippage_bps, max_position_pct, risk_check, regime_gate.'
+        window:
+          type: integer
+          minimum: 81.0
+          title: Window
+          default: 200
+        refit_every:
+          type: integer
+          minimum: 10.0
+          title: Refit Every
+          default: 50
+        n_hmm_states:
+          type: integer
+          maximum: 4.0
+          minimum: 2.0
+          title: N Hmm States
+          default: 4
+        kelly_fraction:
+          type: number
+          maximum: 1.0
+          minimum: 0.1
+          title: Kelly Fraction
+          default: 0.5
+        target_vol:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Target Vol
+          default: 0.15
+        base_risk_limit:
+          type: number
+          maximum: 0.5
+          exclusiveMinimum: 0.0
+          title: Base Risk Limit
+          default: 0.02
+        initial_equity:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Initial Equity
+          default: 100000.0
+        commission_bps:
+          type: number
+          maximum: 50.0
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        slippage_bps:
+          type: number
+          maximum: 50.0
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        max_position_pct:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Max Position Pct
+          default: 0.25
+        risk_check:
+          type: boolean
+          title: Risk Check
+          default: true
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        save:
+          type: boolean
+          title: Save
+          description: Save each result (default false for sweeps).
+          default: false
+      type: object
+      required:
+      - prices
+      - param_grid
+      title: BacktestOptimizeRequest
+      description: 'Parameter sweep request: run backtests across a grid of parameter
+        values.'
+    BacktestOptimizeResponse:
+      properties:
+        results:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Results
+          description: List of {params, total_return, sharpe_ratio, max_drawdown,
+            profit_factor, win_rate, n_trades} for each combination.
+        best_by_sharpe:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Sharpe
+          description: Params with highest Sharpe ratio.
+        best_by_return:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Return
+          description: Params with highest total return.
+        n_combinations:
+          type: integer
+          title: N Combinations
+          description: Total parameter combinations tested.
+        deflated_sharpe_result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Deflated Sharpe Result
+          description: Deflated Sharpe Ratio result (Phase 6A).
+        multiple_testing_results:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Multiple Testing Results
+          description: Multiple testing correction results (Phase 6C).
+        significance_test_results:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Significance Test Results
+          description: Strategy significance test results (Phase 6D).
+      type: object
+      required:
+      - results
+      - n_combinations
+      title: BacktestOptimizeResponse
+      description: 'Grid search results: one summary per parameter combination.'
     BacktestRequest:
       properties:
         prices:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -2370,12 +2812,12 @@ components:
             type: array
           - type: 'null'
           title: Dates
-          description: Optional list of date strings corresponding to the price series.
-          default: null
+          description: ISO date strings matching prices length. Enables date labels
+            in trade log.
         save:
           type: boolean
           title: Save
-          description: Whether to persist the backtest result.
+          description: Persist result to database for later retrieval.
           default: true
       type: object
       required:
@@ -2389,7 +2831,7 @@ components:
           - type: string
           - type: 'null'
           title: Id
-          description: Unique identifier for the saved backtest result.
+          description: Database ID if result was saved.
         symbol:
           type: string
           title: Symbol
@@ -2505,13 +2947,18 @@ components:
           additionalProperties: true
           type: object
           title: Config Used
-          description: Configuration parameters used for this backtest run.
+          description: Config snapshot used for this backtest.
         created_at:
           anyOf:
           - type: string
           - type: 'null'
           title: Created At
-          description: Timestamp when the backtest result was saved.
+          description: ISO timestamp when result was saved.
+        cached:
+          type: boolean
+          title: Cached
+          description: True if result was served from Redis cache (1h TTL).
+          default: false
       type: object
       required:
       - symbol
@@ -2550,241 +2997,11 @@ components:
       - trade_log
       title: BacktestResponse
       description: Walk-forward backtest result with 30+ metrics.
-    BacktestCompareRequest:
-      properties:
-        ids:
-          items:
-            type: string
-          type: array
-          minItems: 2
-          maxItems: 10
-          title: Ids
-          description: List of backtest result IDs to compare (2-10).
-      type: object
-      required:
-      - ids
-      title: BacktestCompareRequest
-      description: Request to compare two or more saved backtest results.
-    BacktestCompareResponse:
-      properties:
-        comparisons:
-          items:
-            $ref: '#/components/schemas/BacktestResponse'
-          type: array
-          title: Comparisons
-          description: List of full backtest results for each compared ID.
-        diff:
-          additionalProperties: true
-          type: object
-          title: Diff
-          description: Differences in key metrics across the compared results.
-      type: object
-      required:
-      - comparisons
-      - diff
-      title: BacktestCompareResponse
-      description: Response containing compared backtest results and metric differences.
-    BacktestExportRequest:
-      properties:
-        id:
-          type: string
-          title: Id
-          description: ID of the saved backtest result to export.
-        format:
-          type: string
-          enum:
-          - csv
-          - json
-          title: Format
-          description: Export format.
-          default: json
-        sections:
-          items:
-            type: string
-            enum:
-            - summary
-            - equity_curve
-            - drawdown_curve
-            - trade_log
-            - all
-          type: array
-          title: Sections
-          description: Which sections of the result to include in the export.
-          default:
-          - all
-      type: object
-      required:
-      - id
-      title: BacktestExportRequest
-      description: Request to export a saved backtest result as CSV or JSON.
-    BacktestHistoryResponse:
-      properties:
-        results:
-          items:
-            $ref: '#/components/schemas/BacktestSummary'
-          type: array
-          title: Results
-          description: List of backtest result summaries.
-        total:
-          type: integer
-          title: Total
-          description: Total number of saved results for the user.
-        offset:
-          type: integer
-          title: Offset
-          description: Current pagination offset.
-        limit:
-          type: integer
-          title: Limit
-          description: Maximum number of results per page.
-      type: object
-      required:
-      - results
-      - total
-      - offset
-      - limit
-      title: BacktestHistoryResponse
-      description: Paginated list of saved backtest result summaries.
-    BacktestOptimizeRequest:
-      properties:
-        prices:
-          items:
-            type: number
-          type: array
-          minItems: 81
-          title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
-        symbol:
-          type: string
-          title: Symbol
-          description: Ticker symbol for labelling.
-          default: UNKNOWN
-        param_grid:
-          additionalProperties:
-            items: {}
-            type: array
-          type: object
-          title: Param Grid
-          description: Dictionary mapping parameter names to lists of values to sweep.
-        window:
-          type: integer
-          minimum: 81.0
-          title: Window
-          description: Trailing window for HMM fit.
-          default: 200
-        refit_every:
-          type: integer
-          minimum: 10.0
-          title: Refit Every
-          description: Refit HMM every N bars.
-          default: 50
-        n_hmm_states:
-          type: integer
-          maximum: 4.0
-          minimum: 2.0
-          title: N Hmm States
-          default: 4
-        kelly_fraction:
-          type: number
-          maximum: 1.0
-          minimum: 0.1
-          title: Kelly Fraction
-          default: 0.5
-        target_vol:
-          type: number
-          maximum: 1.0
-          exclusiveMinimum: 0.0
-          title: Target Vol
-          default: 0.15
-        base_risk_limit:
-          type: number
-          maximum: 0.5
-          exclusiveMinimum: 0.0
-          title: Base Risk Limit
-          default: 0.02
-        initial_equity:
-          type: number
-          exclusiveMinimum: 0.0
-          title: Initial Equity
-          default: 100000.0
-        commission_bps:
-          type: number
-          maximum: 50.0
-          minimum: 0.0
-          title: Commission Bps
-          default: 5.0
-        slippage_bps:
-          type: number
-          maximum: 50.0
-          minimum: 0.0
-          title: Slippage Bps
-          default: 2.0
-        max_position_pct:
-          type: number
-          maximum: 1.0
-          exclusiveMinimum: 0.0
-          title: Max Position Pct
-          default: 0.25
-        risk_check:
-          type: boolean
-          title: Risk Check
-          default: true
-        regime_gate:
-          type: boolean
-          title: Regime Gate
-          default: true
-        save:
-          type: boolean
-          title: Save
-          description: Whether to persist the optimization results.
-          default: false
-      type: object
-      required:
-      - prices
-      - param_grid
-      title: BacktestOptimizeRequest
-      description: Request to run backtests across a grid of parameter values.
-    BacktestOptimizeResponse:
-      properties:
-        results:
-          items:
-            additionalProperties: true
-            type: object
-          type: array
-          title: Results
-          description: List of backtest result objects for each parameter combination.
-        best_by_sharpe:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Best By Sharpe
-          description: Best result ranked by Sharpe ratio, or null if no valid results.
-        best_by_return:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Best By Return
-          description: Best result ranked by total return, or null if no valid results.
-        n_combinations:
-          type: integer
-          title: N Combinations
-          description: Total number of parameter combinations tested.
-      type: object
-      required:
-      - results
-      - best_by_sharpe
-      - best_by_return
-      - n_combinations
-      title: BacktestOptimizeResponse
-      description: Response from the parameter sweep optimization.
     BacktestSummary:
       properties:
         id:
           type: string
           title: Id
-          description: Unique identifier for the saved backtest result.
         symbol:
           type: string
           title: Symbol
@@ -2815,7 +3032,6 @@ components:
         created_at:
           type: string
           title: Created At
-          description: Timestamp when the backtest result was saved.
       type: object
       required:
       - id
@@ -2830,7 +3046,7 @@ components:
       - n_hmm_states
       - created_at
       title: BacktestSummary
-      description: Summary of a saved backtest result for list views.
+      description: Lightweight backtest summary for list views.
     BatchTickInput:
       properties:
         prices:
@@ -3306,9 +3522,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -3840,9 +4058,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -3968,9 +4188,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -4507,9 +4729,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -4570,9 +4794,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -4658,15 +4884,1077 @@ components:
       - regime_stability
       title: RegimeV2Response
       description: Enhanced regime detection with auto-labeled states.
+    RenkoBacktestCompareRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 50
+          title: Prices
+          description: Historical price series.
+        symbol:
+          type: string
+          title: Symbol
+          description: Trading symbol.
+          default: SPY
+        configs:
+          items:
+            $ref: '#/components/schemas/RenkoCompareConfig'
+          type: array
+          maxItems: 10
+          minItems: 2
+          title: Configs
+          description: Configs to compare (2-10).
+        timestamps:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Timestamps
+          description: Matching timestamps.
+        regimes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Regimes
+          description: Pre-computed regime labels.
+      type: object
+      required:
+      - prices
+      - configs
+      title: RenkoBacktestCompareRequest
+      description: Compare multiple Renko pipeline configurations side-by-side.
+    RenkoBacktestCompareResponse:
+      properties:
+        comparisons:
+          items:
+            $ref: '#/components/schemas/RenkoBacktestResponse'
+          type: array
+          title: Comparisons
+        diff:
+          additionalProperties: true
+          type: object
+          title: Diff
+          description: Key metric differences between first and best result.
+      type: object
+      required:
+      - comparisons
+      title: RenkoBacktestCompareResponse
+      description: Side-by-side comparison of Renko backtest results.
+    RenkoBacktestOptimizeRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 50
+          title: Prices
+          description: Historical price series.
+        symbol:
+          type: string
+          title: Symbol
+          description: Trading symbol.
+          default: SPY
+        param_grid:
+          additionalProperties:
+            items: {}
+            type: array
+          type: object
+          title: Param Grid
+          description: 'Map of RenkoConfig parameter name to list of values to sweep.
+            Supported keys: brick_size, sl_bricks, tp_bricks, bull_trigger_n, bear_trigger_n,
+            trailing_stop, trail_after_bricks, trail_distance_bricks, regime_gate,
+            max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses.'
+        brick_size:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Brick Size
+          default: 0.5
+        brick_size_mode:
+          type: string
+          title: Brick Size Mode
+          default: fixed
+        reversal_bricks:
+          type: integer
+          minimum: 1.0
+          title: Reversal Bricks
+          default: 2
+        bull_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bull Trigger N
+          default: 3
+        bear_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bear Trigger N
+          default: 3
+        sl_bricks:
+          type: integer
+          minimum: 1.0
+          title: Sl Bricks
+          default: 3
+        tp_bricks:
+          type: integer
+          minimum: 1.0
+          title: Tp Bricks
+          default: 5
+        trailing_stop:
+          type: boolean
+          title: Trailing Stop
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail After Bricks
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail Distance Bricks
+          default: 2
+        max_trades_per_session:
+          type: integer
+          minimum: 1.0
+          title: Max Trades Per Session
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Max Daily Loss Bricks
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1.0
+          title: Max Consecutive Losses
+          default: 3
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        timestamps:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Timestamps
+        regimes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Regimes
+        slippage_bps:
+          type: number
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        commission_bps:
+          type: number
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        spread_bps:
+          type: number
+          minimum: 0.0
+          title: Spread Bps
+          default: 1.0
+        oco_priority:
+          type: string
+          title: Oco Priority
+          description: 'OCO resolution: sl_first | tp_first | worst_case.'
+          default: sl_first
+      type: object
+      required:
+      - prices
+      - param_grid
+      title: RenkoBacktestOptimizeRequest
+      description: Grid-search parameter sweep for Renko pipeline optimisation.
+    RenkoBacktestOptimizeResponse:
+      properties:
+        results:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Results
+          description: List of {params, total_pnl_bricks, win_rate, sharpe_estimate,
+            profit_factor, max_drawdown_bricks, total_trades} for each combination.
+        best_by_sharpe:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Sharpe
+          description: Params with highest Sharpe estimate.
+        best_by_return:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Return
+          description: Params with highest total PnL (bricks).
+        n_combinations:
+          type: integer
+          title: N Combinations
+          description: Total parameter combinations tested.
+        deflated_sharpe_result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Deflated Sharpe Result
+          description: Deflated Sharpe Ratio result (Phase 6A).
+        multiple_testing_results:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Multiple Testing Results
+          description: Multiple testing correction results (Phase 6C).
+        significance_test_results:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Significance Test Results
+          description: Strategy significance test results (Phase 6D).
+      type: object
+      required:
+      - results
+      - n_combinations
+      title: RenkoBacktestOptimizeResponse
+      description: 'Grid search results: one summary per parameter combination.'
+    RenkoBacktestRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 50
+          title: Prices
+          description: Historical price series (min 50 ticks).
+        symbol:
+          type: string
+          title: Symbol
+          description: Trading symbol.
+          default: SPY
+        brick_size:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Brick Size
+          description: Fixed brick size in dollars.
+          default: 0.5
+        brick_size_mode:
+          type: string
+          title: Brick Size Mode
+          description: fixed | atr | dynamic
+          default: fixed
+        reversal_bricks:
+          type: integer
+          minimum: 1.0
+          title: Reversal Bricks
+          description: Bricks needed for reversal.
+          default: 2
+        bull_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bull Trigger N
+          description: N consecutive HH/HL for bull trigger.
+          default: 3
+        bear_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bear Trigger N
+          description: N consecutive LL/LH for bear trigger.
+          default: 3
+        sl_bricks:
+          type: integer
+          minimum: 1.0
+          title: Sl Bricks
+          description: Stop-loss in brick units.
+          default: 3
+        tp_bricks:
+          type: integer
+          minimum: 1.0
+          title: Tp Bricks
+          description: Take-profit in brick units.
+          default: 5
+        trailing_stop:
+          type: boolean
+          title: Trailing Stop
+          description: Enable trailing stop.
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail After Bricks
+          description: Activate trail after N bricks profit.
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail Distance Bricks
+          description: Trail distance in bricks.
+          default: 2
+        max_trades_per_session:
+          type: integer
+          minimum: 1.0
+          title: Max Trades Per Session
+          description: Max trades per session.
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Max Daily Loss Bricks
+          description: Max daily loss in bricks.
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1.0
+          title: Max Consecutive Losses
+          description: Pause after N consecutive losses.
+          default: 3
+        cooldown_seconds:
+          type: number
+          minimum: 0.0
+          title: Cooldown Seconds
+          description: Min seconds between trades.
+          default: 30.0
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          description: Only trade with HMM regime alignment.
+          default: true
+        slippage_bps:
+          type: number
+          minimum: 0.0
+          title: Slippage Bps
+          description: Slippage in basis points (adverse fill).
+          default: 2.0
+        commission_bps:
+          type: number
+          minimum: 0.0
+          title: Commission Bps
+          description: Commission in basis points of position value.
+          default: 5.0
+        spread_bps:
+          type: number
+          minimum: 0.0
+          title: Spread Bps
+          description: Bid-ask spread in basis points (half-spread each side).
+          default: 1.0
+        oco_priority:
+          type: string
+          title: Oco Priority
+          description: 'OCO resolution: sl_first (conservative) | tp_first (optimistic)
+            | worst_case.'
+          default: sl_first
+        initial_capital:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Initial Capital
+          description: Starting capital for dollar P&L and return calculations.
+          default: 100000.0
+        timestamps:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Timestamps
+          description: Matching timestamps for prices.
+        regimes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Regimes
+          description: Pre-computed regime labels aligned with prices.
+        signal_confidence_min:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Signal Confidence Min
+          description: Min signal confidence to trade.
+        universe_mode:
+          type: string
+          title: Universe Mode
+          description: 'Universe filtering: current_constituents (default) | pit_constituents
+            (survivorship-bias-free).'
+          default: current_constituents
+        index_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Index Name
+          description: Index for PIT filtering (e.g. 'sp500'). Required if universe_mode='pit_constituents'.
+        price_adjustment:
+          type: string
+          title: Price Adjustment
+          description: 'Price adjustment mode: raw | split_adjusted | fully_adjusted.'
+          default: raw
+        look_ahead_audit:
+          type: boolean
+          title: Look Ahead Audit
+          description: Enable look-ahead bias audit (instruments every data access).
+          default: false
+        enable_market_impact:
+          type: boolean
+          title: Enable Market Impact
+          description: Enable Almgren-Chriss market impact model.
+          default: false
+        avg_daily_volume:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Avg Daily Volume
+          description: Average daily volume (shares) for impact estimation.
+          default: 1000000.0
+        impact_gamma:
+          type: number
+          minimum: 0.0
+          title: Impact Gamma
+          description: Permanent impact coefficient.
+          default: 0.314
+        impact_eta:
+          type: number
+          minimum: 0.0
+          title: Impact Eta
+          description: Temporary impact coefficient.
+          default: 0.142
+        enable_fill_probability:
+          type: boolean
+          title: Enable Fill Probability
+          description: Enable fill probability modeling.
+          default: false
+        enable_borrow_costs:
+          type: boolean
+          title: Enable Borrow Costs
+          description: Enable short borrow cost modeling.
+          default: false
+        borrow_rate_annual:
+          type: number
+          minimum: 0.0
+          title: Borrow Rate Annual
+          description: Annualized borrow rate (0.5% for ETB).
+          default: 0.005
+        hard_to_borrow:
+          type: boolean
+          title: Hard To Borrow
+          description: Mark as hard-to-borrow.
+          default: false
+        htb_premium_rate:
+          type: number
+          minimum: 0.0
+          title: Htb Premium Rate
+          description: Additional annual rate for HTB stocks.
+          default: 0.1
+        enable_margin_costs:
+          type: boolean
+          title: Enable Margin Costs
+          description: Enable margin financing cost modeling.
+          default: false
+        margin_rate_annual:
+          type: number
+          minimum: 0.0
+          title: Margin Rate Annual
+          description: Annualized margin rate.
+          default: 0.065
+        margin_requirement:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Margin Requirement
+          description: Reg T initial margin requirement.
+          default: 0.5
+      type: object
+      required:
+      - prices
+      title: RenkoBacktestRequest
+      description: Run a full Renko pipeline backtest with configurable parameters.
+    RenkoBacktestResponse:
+      properties:
+        symbol:
+          type: string
+          title: Symbol
+        total_ticks:
+          type: integer
+          title: Total Ticks
+        total_bricks:
+          type: integer
+          title: Total Bricks
+        config_used:
+          additionalProperties: true
+          type: object
+          title: Config Used
+          description: Config snapshot used for this backtest.
+        stats:
+          additionalProperties: true
+          type: object
+          title: Stats
+          description: Comprehensive trading statistics.
+        trades:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Trades
+          description: List of all trade records.
+        cached:
+          type: boolean
+          title: Cached
+          description: True if result was served from Redis cache (1h TTL).
+          default: false
+        data_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Data Hash
+          description: SHA-256 hash of input price data for reproducibility.
+        data_source:
+          additionalProperties: true
+          type: object
+          title: Data Source
+          description: Provenance metadata (source, fetch date, adjustment level).
+        survivorship_bias:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Survivorship Bias
+          description: Survivorship bias warning/info.
+        price_adjustments_applied:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Price Adjustments Applied
+          description: Corporate action adjustments applied to prices.
+        data_quality_warnings:
+          items:
+            type: string
+          type: array
+          title: Data Quality Warnings
+          description: Data quality warnings (NaN, inf, jumps, etc.).
+        look_ahead_audit_result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Look Ahead Audit Result
+          description: Look-ahead bias audit results.
+        bootstrap_cis:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Bootstrap Cis
+          description: Bootstrap confidence intervals for key metrics (Phase 6B).
+        deflated_sharpe_result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Deflated Sharpe Result
+          description: Deflated Sharpe Ratio result (Phase 6A).
+        execution_modeling:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Execution Modeling
+          description: Execution modeling summary (impact, fill probability, financing).
+      type: object
+      required:
+      - symbol
+      - total_ticks
+      - total_bricks
+      title: RenkoBacktestResponse
+      description: Response from a Renko pipeline backtest.
+    RenkoCompareConfig:
+      properties:
+        label:
+          type: string
+          title: Label
+          description: Label for this config (e.g. 'aggressive', 'conservative').
+        brick_size:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Brick Size
+          default: 0.5
+        sl_bricks:
+          type: integer
+          minimum: 1.0
+          title: Sl Bricks
+          default: 3
+        tp_bricks:
+          type: integer
+          minimum: 1.0
+          title: Tp Bricks
+          default: 5
+        trailing_stop:
+          type: boolean
+          title: Trailing Stop
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail After Bricks
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail Distance Bricks
+          default: 2
+        bull_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bull Trigger N
+          default: 3
+        bear_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bear Trigger N
+          default: 3
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        max_trades_per_session:
+          type: integer
+          minimum: 1.0
+          title: Max Trades Per Session
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Max Daily Loss Bricks
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1.0
+          title: Max Consecutive Losses
+          default: 3
+        slippage_bps:
+          type: number
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        commission_bps:
+          type: number
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        spread_bps:
+          type: number
+          minimum: 0.0
+          title: Spread Bps
+          default: 1.0
+        oco_priority:
+          type: string
+          title: Oco Priority
+          description: 'OCO resolution: sl_first | tp_first | worst_case.'
+          default: sl_first
+      type: object
+      required:
+      - label
+      title: RenkoCompareConfig
+      description: A single Renko config to compare.
+    RenkoMonteCarloRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 50
+          title: Prices
+          description: Historical price series.
+        symbol:
+          type: string
+          title: Symbol
+          description: Trading symbol.
+          default: SPY
+        n_simulations:
+          type: integer
+          maximum: 10000.0
+          minimum: 100.0
+          title: N Simulations
+          description: Number of random trade-order permutations.
+          default: 1000
+        brick_size:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Brick Size
+          default: 0.5
+        brick_size_mode:
+          type: string
+          title: Brick Size Mode
+          default: fixed
+        reversal_bricks:
+          type: integer
+          minimum: 1.0
+          title: Reversal Bricks
+          default: 2
+        bull_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bull Trigger N
+          default: 3
+        bear_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bear Trigger N
+          default: 3
+        sl_bricks:
+          type: integer
+          minimum: 1.0
+          title: Sl Bricks
+          default: 3
+        tp_bricks:
+          type: integer
+          minimum: 1.0
+          title: Tp Bricks
+          default: 5
+        trailing_stop:
+          type: boolean
+          title: Trailing Stop
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail After Bricks
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail Distance Bricks
+          default: 2
+        max_trades_per_session:
+          type: integer
+          minimum: 1.0
+          title: Max Trades Per Session
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Max Daily Loss Bricks
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1.0
+          title: Max Consecutive Losses
+          default: 3
+        cooldown_seconds:
+          type: number
+          minimum: 0.0
+          title: Cooldown Seconds
+          default: 30.0
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        slippage_bps:
+          type: number
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        commission_bps:
+          type: number
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        spread_bps:
+          type: number
+          minimum: 0.0
+          title: Spread Bps
+          default: 1.0
+        oco_priority:
+          type: string
+          title: Oco Priority
+          default: sl_first
+        initial_capital:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Initial Capital
+          default: 100000.0
+        timestamps:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Timestamps
+        regimes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Regimes
+      type: object
+      required:
+      - prices
+      title: RenkoMonteCarloRequest
+      description: Monte Carlo permutation test request.
+    RenkoMonteCarloResponse:
+      properties:
+        original:
+          additionalProperties: true
+          type: object
+          title: Original
+          description: Original backtest stats.
+        confidence_bands:
+          additionalProperties: true
+          type: object
+          title: Confidence Bands
+          description: Percentile equity curves (p5, p25, p50, p75, p95, original).
+        dollar_bands:
+          additionalProperties: true
+          type: object
+          title: Dollar Bands
+          description: Dollar P&L percentile bands.
+        original_total_pnl_bricks:
+          type: number
+          title: Original Total Pnl Bricks
+          default: 0.0
+        original_total_pnl_dollars:
+          type: number
+          title: Original Total Pnl Dollars
+          default: 0.0
+        p_profitable:
+          type: number
+          title: P Profitable
+          description: P(random permutation is profitable).
+        p_beat_original:
+          type: number
+          title: P Beat Original
+          description: P(random permutation >= original P&L).
+        p5_final_pnl:
+          type: number
+          title: P5 Final Pnl
+          default: 0.0
+        p95_final_pnl:
+          type: number
+          title: P95 Final Pnl
+          default: 0.0
+        mean_final_pnl:
+          type: number
+          title: Mean Final Pnl
+          default: 0.0
+        simulation_count:
+          type: integer
+          title: Simulation Count
+          default: 0
+        n_trades:
+          type: integer
+          title: N Trades
+          default: 0
+        config_used:
+          additionalProperties: true
+          type: object
+          title: Config Used
+      type: object
+      required:
+      - original
+      - p_profitable
+      - p_beat_original
+      title: RenkoMonteCarloResponse
+      description: Monte Carlo permutation test results.
+    RenkoWalkForwardRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 200
+          title: Prices
+          description: Historical price series (min 200 for meaningful walk-forward).
+        symbol:
+          type: string
+          title: Symbol
+          description: Trading symbol.
+          default: SPY
+        train_window:
+          type: integer
+          minimum: 100.0
+          title: Train Window
+          description: In-sample (training) window size in ticks.
+          default: 500
+        test_window:
+          type: integer
+          minimum: 50.0
+          title: Test Window
+          description: Out-of-sample (test) window size in ticks.
+          default: 250
+        min_trades_for_stats:
+          type: integer
+          minimum: 1.0
+          title: Min Trades For Stats
+          description: Minimum trades per window for meaningful stats.
+          default: 5
+        brick_size:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Brick Size
+          default: 0.5
+        brick_size_mode:
+          type: string
+          title: Brick Size Mode
+          default: fixed
+        reversal_bricks:
+          type: integer
+          minimum: 1.0
+          title: Reversal Bricks
+          default: 2
+        bull_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bull Trigger N
+          default: 3
+        bear_trigger_n:
+          type: integer
+          minimum: 1.0
+          title: Bear Trigger N
+          default: 3
+        sl_bricks:
+          type: integer
+          minimum: 1.0
+          title: Sl Bricks
+          default: 3
+        tp_bricks:
+          type: integer
+          minimum: 1.0
+          title: Tp Bricks
+          default: 5
+        trailing_stop:
+          type: boolean
+          title: Trailing Stop
+          default: true
+        trail_after_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail After Bricks
+          default: 3
+        trail_distance_bricks:
+          type: integer
+          minimum: 1.0
+          title: Trail Distance Bricks
+          default: 2
+        max_trades_per_session:
+          type: integer
+          minimum: 1.0
+          title: Max Trades Per Session
+          default: 15
+        max_daily_loss_bricks:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Max Daily Loss Bricks
+          default: 10.0
+        max_consecutive_losses:
+          type: integer
+          minimum: 1.0
+          title: Max Consecutive Losses
+          default: 3
+        cooldown_seconds:
+          type: number
+          minimum: 0.0
+          title: Cooldown Seconds
+          default: 30.0
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        slippage_bps:
+          type: number
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        commission_bps:
+          type: number
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        spread_bps:
+          type: number
+          minimum: 0.0
+          title: Spread Bps
+          default: 1.0
+        oco_priority:
+          type: string
+          title: Oco Priority
+          default: sl_first
+        initial_capital:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Initial Capital
+          default: 100000.0
+        timestamps:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Timestamps
+        regimes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Regimes
+      type: object
+      required:
+      - prices
+      title: RenkoWalkForwardRequest
+      description: Walk-forward out-of-sample validation request.
+    RenkoWalkForwardResponse:
+      properties:
+        windows:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Windows
+          description: Per-window IS/OOS results.
+        aggregate:
+          additionalProperties: true
+          type: object
+          title: Aggregate
+          description: Aggregated OOS statistics.
+        config_used:
+          additionalProperties: true
+          type: object
+          title: Config Used
+        total_ticks:
+          type: integer
+          title: Total Ticks
+      type: object
+      required:
+      - windows
+      - aggregate
+      - total_ticks
+      title: RenkoWalkForwardResponse
+      description: Walk-forward out-of-sample validation results.
     RiskAnalyzeRequest:
       properties:
         prices:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -4811,9 +6099,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -5151,9 +6441,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -5249,9 +6541,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -5468,9 +6762,11 @@ components:
           items:
             type: number
           type: array
+          maxItems: 5000
           minItems: 81
           title: Prices
-          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+          description: Ordered price series (OHLCV close preferred). Min 81, max 5000
+            bars.
         symbol:
           type: string
           title: Symbol
@@ -5815,311 +7111,3 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-    RenkoBacktestRequest:
-      properties:
-        prices:
-          items:
-            type: number
-          minItems: 50
-          type: array
-          title: Prices
-          description: Historical price series (min 50 ticks).
-        symbol:
-          type: string
-          default: SPY
-          title: Symbol
-          description: Trading symbol.
-        brick_size:
-          type: number
-          default: 0.5
-          exclusiveMinimum: 0
-          title: Brick Size
-          description: Fixed brick size in dollars.
-        brick_size_mode:
-          type: string
-          default: fixed
-          title: Brick Size Mode
-          description: fixed | atr | dynamic
-        reversal_bricks:
-          type: integer
-          minimum: 1
-          default: 2
-          title: Reversal Bricks
-        bull_trigger_n:
-          type: integer
-          minimum: 1
-          default: 3
-          title: Bull Trigger N
-        bear_trigger_n:
-          type: integer
-          minimum: 1
-          default: 3
-          title: Bear Trigger N
-        sl_bricks:
-          type: integer
-          minimum: 1
-          default: 3
-          title: Sl Bricks
-          description: Stop-loss in brick units.
-        tp_bricks:
-          type: integer
-          minimum: 1
-          default: 5
-          title: Tp Bricks
-          description: Take-profit in brick units.
-        trailing_stop:
-          type: boolean
-          default: true
-        trail_after_bricks:
-          type: integer
-          minimum: 1
-          default: 3
-        trail_distance_bricks:
-          type: integer
-          minimum: 1
-          default: 2
-        max_trades_per_session:
-          type: integer
-          minimum: 1
-          default: 15
-        max_daily_loss_bricks:
-          type: number
-          exclusiveMinimum: 0
-          default: 10.0
-        max_consecutive_losses:
-          type: integer
-          minimum: 1
-          default: 3
-        cooldown_seconds:
-          type: number
-          minimum: 0
-          default: 30.0
-        regime_gate:
-          type: boolean
-          default: true
-        timestamps:
-          items:
-            type: number
-          type: array
-          nullable: true
-        regimes:
-          items:
-            type: string
-          type: array
-          nullable: true
-        signal_confidence_min:
-          type: number
-          minimum: 0
-          maximum: 1
-          nullable: true
-      required:
-      - prices
-      title: RenkoBacktestRequest
-      type: object
-    RenkoBacktestResponse:
-      properties:
-        symbol:
-          type: string
-          title: Symbol
-        total_ticks:
-          type: integer
-          title: Total Ticks
-        total_bricks:
-          type: integer
-          title: Total Bricks
-        config_used:
-          type: object
-          title: Config Used
-          description: Config snapshot used for this backtest.
-        stats:
-          type: object
-          title: Stats
-          description: Comprehensive trading statistics.
-        trades:
-          items:
-            type: object
-          type: array
-          title: Trades
-          description: List of all trade records.
-      required:
-      - symbol
-      - total_ticks
-      - total_bricks
-      title: RenkoBacktestResponse
-      type: object
-    RenkoCompareConfig:
-      properties:
-        label:
-          type: string
-          title: Label
-          description: Label for this config.
-        brick_size:
-          type: number
-          default: 0.5
-          exclusiveMinimum: 0
-        sl_bricks:
-          type: integer
-          default: 3
-          minimum: 1
-        tp_bricks:
-          type: integer
-          default: 5
-          minimum: 1
-        trailing_stop:
-          type: boolean
-          default: true
-        trail_after_bricks:
-          type: integer
-          default: 3
-          minimum: 1
-        trail_distance_bricks:
-          type: integer
-          default: 2
-          minimum: 1
-        bull_trigger_n:
-          type: integer
-          default: 3
-          minimum: 1
-        bear_trigger_n:
-          type: integer
-          default: 3
-          minimum: 1
-        regime_gate:
-          type: boolean
-          default: true
-        max_trades_per_session:
-          type: integer
-          default: 15
-          minimum: 1
-        max_daily_loss_bricks:
-          type: number
-          default: 10.0
-          exclusiveMinimum: 0
-        max_consecutive_losses:
-          type: integer
-          default: 3
-          minimum: 1
-      required:
-      - label
-      title: RenkoCompareConfig
-      type: object
-    RenkoBacktestCompareRequest:
-      properties:
-        prices:
-          items:
-            type: number
-          minItems: 50
-          type: array
-          title: Prices
-        symbol:
-          type: string
-          default: SPY
-        configs:
-          items:
-            $ref: '#/components/schemas/RenkoCompareConfig'
-          minItems: 2
-          maxItems: 10
-          type: array
-          title: Configs
-        timestamps:
-          items:
-            type: number
-          type: array
-          nullable: true
-        regimes:
-          items:
-            type: string
-          type: array
-          nullable: true
-      required:
-      - prices
-      - configs
-      title: RenkoBacktestCompareRequest
-      type: object
-    RenkoBacktestCompareResponse:
-      properties:
-        comparisons:
-          items:
-            $ref: '#/components/schemas/RenkoBacktestResponse'
-          type: array
-          title: Comparisons
-        diff:
-          type: object
-          title: Diff
-          description: Key metric differences between first and best result.
-      required:
-      - comparisons
-      title: RenkoBacktestCompareResponse
-      type: object
-    RenkoBacktestOptimizeRequest:
-      properties:
-        prices:
-          items:
-            type: number
-          minItems: 50
-          type: array
-          title: Prices
-        symbol:
-          type: string
-          default: SPY
-        param_grid:
-          type: object
-          title: Param Grid
-          description: Map of RenkoConfig parameter name to list of values to sweep.
-        brick_size:
-          type: number
-          default: 0.5
-          exclusiveMinimum: 0
-        sl_bricks:
-          type: integer
-          default: 3
-          minimum: 1
-        tp_bricks:
-          type: integer
-          default: 5
-          minimum: 1
-        regime_gate:
-          type: boolean
-          default: true
-        timestamps:
-          items:
-            type: number
-          type: array
-          nullable: true
-        regimes:
-          items:
-            type: string
-          type: array
-          nullable: true
-      required:
-      - prices
-      - param_grid
-      title: RenkoBacktestOptimizeRequest
-      type: object
-    RenkoBacktestOptimizeResponse:
-      properties:
-        results:
-          items:
-            type: object
-          type: array
-          title: Results
-          description: List of results for each parameter combination.
-        best_by_sharpe:
-          type: object
-          nullable: true
-          title: Best By Sharpe
-          description: Params with highest Sharpe estimate.
-        best_by_return:
-          type: object
-          nullable: true
-          title: Best By Return
-          description: Params with highest total PnL (bricks).
-        n_combinations:
-          type: integer
-          title: N Combinations
-          description: Total parameter combinations tested.
-      required:
-      - results
-      - n_combinations
-      title: RenkoBacktestOptimizeResponse
-      type: object
