@@ -554,34 +554,40 @@ class ReconciliationService:
 
 Estimated total: **5-8 days**
 
-### 3A. Multi-Tenant Isolation
+### 3A. Multi-Tenant Isolation (Clerk Organizations)
 
 **Problem:** All database queries use `userId: "default"` hardcoded. Every user sees the same data, the same backtests, the same trade recommendations. In production, each user must only see their own data.
 
-**Solution:** Replace all `userId: "default"` with the actual Clerk user ID from the JWT token.
+**Solution:** Leverage Clerk Organizations for surface-level multi-tenant isolation. This gives us org-scoped auth, role management, and metadata storage almost for free — reducing the implementation from 5+ days to 1-2 days.
 
-**Files to modify:**
-- All BFF route handlers that pass `userId` to the backend
-- Backend services that accept `user_id` parameter
-- Supabase RLS policies must enforce `user_id = auth.uid()`
+#### What Clerk Orgs Handle Out of the Box
 
-**Implementation:**
+| Concern | Clerk Does It? |
+|---------|---------------|
+| Separate login/org switching | ✅ Built-in |
+| Org-scoped memberships & roles | ✅ Built-in |
+| Org metadata (e.g. Alpaca keys per org) | ✅ `organizationMetadata` |
+| Frontend org context (which org am I in?) | ✅ `useOrganization()` |
 
-1. Create a `useAuth()` hook that extracts `userId` from Clerk session:
-   ```jsx
-   // src/hooks/useAuth.js
-   import { useAuth as useClerkAuth } from '@clerk/nextjs';
-   export function useAuth() {
-     const { userId, isSignedIn, getToken } = useClerkAuth();
-     return { userId: isSignedIn ? userId : null, isSignedIn, getToken };
-   }
-   ```
+#### What We Still Need to Add (But It's Light)
 
-2. All BFF fetch calls include `userId` in the request body or as a query parameter
-3. Backend middleware validates `user_id` matches the JWT `sub` claim (prevents spoofing)
-4. Supabase queries add `WHERE user_id = $1` everywhere
+| Concern | Work Required |
+|---------|--------------|
+| Backend: filter queries by `org_id` | Add `WHERE org_id = X` to SQL queries — straightforward |
+| Redis: namespace keys by org | `org:{org_id}:kill_switch` instead of just `kill_switch` |
+| Audit log: tag events with org | One column addition |
+| Alpaca keys per org | Store in Clerk org metadata or DB |
 
-**Estimated effort:** 2-3 days (mostly find-and-replace + testing)
+#### Implementation Steps
+
+1. **Enable Clerk Organizations** (config change in Clerk dashboard)
+2. **Pass `org_id` from JWT** to backend on every request (Clerk includes org_id in the session token)
+3. **Scope queries** by `org_id` in all Supabase/PostgREST calls
+4. **Namespace Redis keys** by `org_id` (e.g., `org:{org_id}:halt:global`)
+5. **Add `org_id` column** to `trade_audit_log` and `tradeRecommendation` tables
+6. **Store Alpaca API keys** per org in Clerk `organizationMetadata` or a secure DB table
+
+**Estimated effort:** 1-2 days (down from 5+ with full RLS)
 
 ---
 
@@ -827,7 +833,7 @@ Week 1-2: P0 — Live Trading Blockers
 └── Day 14:    Integration testing + end-to-end walkthrough
 
 Week 3-4: P1 — Production Hardening
-├── Day 15-17: Multi-Tenant Isolation (replace userId: "default" everywhere)
+├── Day 15-16: Multi-Tenant via Clerk Orgs (org_id scoping + Redis namespacing)
 ├── Day 18:    Alpaca Rate Throttle
 ├── Day 19-20: Server-Side Auth Middleware
 ├── Day 21-23: Real-Time P&L Dashboard

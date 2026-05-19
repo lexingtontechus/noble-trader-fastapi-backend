@@ -198,6 +198,9 @@ class AlpacaExecutor:
         """
         Execute a filtered signal as an Alpaca order.
 
+        Defense in depth: checks kill switch BEFORE submitting.
+        Even if middleware fails, the executor itself will refuse to trade.
+
         Parameters
         ----------
         filtered : FilteredSignal
@@ -217,6 +220,26 @@ class AlpacaExecutor:
         -------
         OrderResult
         """
+        # ── Defense in depth: Kill switch check ──
+        # Even if middleware fails, the executor itself refuses to trade
+        try:
+            from regime_platform.services.operational.kill_switch import kill_switch
+            if await kill_switch.is_halted(symbol=symbol):
+                active_halt = await kill_switch.get_active_halt(symbol=symbol)
+                halt_info = active_halt.level.value if active_halt else "unknown"
+                logger.error(
+                    f"AlpacaExecutor: BLOCKED by kill switch — "
+                    f"symbol={symbol} halt_level={halt_info}"
+                )
+                return OrderResult(
+                    status=OrderStatus.REJECTED,
+                    error=f"Trading halted ({halt_info}). Use kill switch panel to review.",
+                    submitted_at=time.time(),
+                )
+        except Exception as e:
+            # If kill switch check fails, log but continue (fail-open for availability)
+            logger.warning(f"AlpacaExecutor: Kill switch check failed: {e}")
+
         signal = filtered.original_signal
         entry_price = signal.price
 
@@ -251,6 +274,10 @@ class AlpacaExecutor:
         # Submit order
         result = await self._submit_order(order_params)
         self._order_history.append(result)
+
+        # ── Audit log the order ──
+        await self._audit_order(result, order_params, symbol)
+
         return result
 
     async def close_position(self, symbol: str) -> OrderResult:
@@ -491,3 +518,61 @@ class AlpacaExecutor:
         """Reset executor state."""
         self._order_history.clear()
         self._client = None
+
+    # ── Audit Logging ────────────────────────────────────────────────
+
+    async def _audit_order(
+        self,
+        result: OrderResult,
+        params: OrderParams,
+        symbol: str,
+    ) -> None:
+        """
+        Log order result to audit trail.
+
+        Maps OrderResult.status to AuditEventType:
+        - SIMULATED/SUBMITTED/PARTIALLY_FILLED → ORDER_SUBMITTED
+        - FILLED → ORDER_FILLED
+        - REJECTED → ORDER_REJECTED
+        - CANCELLED → ORDER_CANCELLED
+        """
+        try:
+            from regime_platform.services.operational.audit_logger import (
+                audit_logger, AuditEventType
+            )
+
+            # Map order status to audit event type
+            status_to_event = {
+                OrderStatus.SIMULATED: AuditEventType.ORDER_SUBMITTED,
+                OrderStatus.SUBMITTED: AuditEventType.ORDER_SUBMITTED,
+                OrderStatus.PARTIALLY_FILLED: AuditEventType.ORDER_PARTIAL_FILL,
+                OrderStatus.FILLED: AuditEventType.ORDER_FILLED,
+                OrderStatus.REJECTED: AuditEventType.ORDER_REJECTED,
+                OrderStatus.CANCELLED: AuditEventType.ORDER_CANCELLED,
+            }
+            event_type = status_to_event.get(
+                result.status, AuditEventType.ORDER_SUBMITTED
+            )
+
+            await audit_logger.log_event(
+                event_type=event_type,
+                user_id="system",  # Executor doesn't have user context
+                symbol=symbol,
+                order_id=result.order_id,
+                direction=params.side,
+                quantity=params.qty,
+                price=result.filled_price or params.limit_price,
+                order_type=params.order_type,
+                metadata={
+                    "execution_mode": self.execution_mode,
+                    "client_order_id": result.client_order_id,
+                    "error": result.error,
+                    "bracket": {
+                        "sl": params.sl_price,
+                        "tp": params.tp_price,
+                    } if params.use_bracket else None,
+                },
+            )
+        except Exception as e:
+            # Audit logging failure must NEVER block order execution
+            logger.error(f"AlpacaExecutor: Audit log failed: {e}")

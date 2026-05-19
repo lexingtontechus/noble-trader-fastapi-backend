@@ -17,6 +17,10 @@ Mode Manager:
   GET  /operational/mode                     — Get current trading mode
   POST /operational/mode/request             — Request mode change (returns token)
   POST /operational/mode/confirm             — Confirm mode change with token
+  GET  /operational/mode/health              — Health check current Alpaca environment
+
+Executor:
+  GET  /operational/executor/status          — Executor mode + health check
 
 Reconciliation:
   GET  /operational/reconcile/status         — Last reconciliation status
@@ -490,3 +494,47 @@ async def reconcile_positions(
         return result.model_dump(mode="json")
     except Exception as e:
         raise_http_exception(e, "reconcile_positions")
+
+
+# ── Executor Status Endpoints ─────────────────────────────────────────────
+
+@router.get(
+    "/mode/health",
+    summary="Health check the current Alpaca trading environment",
+)
+async def check_mode_health(
+    user: TokenData = Depends(get_authed_user),
+):
+    """
+    Runs a health check against the current Alpaca API environment.
+    Verifies that API keys are valid and the account is accessible.
+    """
+    try:
+        from ..services.operational.executor_factory import executor_factory
+        health = await executor_factory.health_check()
+        return health
+    except Exception as e:
+        raise_http_exception(e, "mode_health")
+
+
+@router.get(
+    "/executor/status",
+    summary="Get executor mode and health status",
+)
+async def get_executor_status(
+    user: TokenData = Depends(get_authed_user),
+):
+    """Returns the current executor mode, simulation status, and Alpaca connectivity."""
+    try:
+        from ..services.operational.executor_factory import executor_factory
+        executor = executor_factory.get_executor()
+        return {
+            "execution_mode": executor.execution_mode,
+            "is_simulation": executor.is_simulation,
+            "base_url": executor.base_url,
+            "has_api_keys": bool(executor.api_key and executor.api_secret),
+            "order_history_count": len(executor.order_history),
+            "circuit_breaker": executor.circuit_breaker_status,
+        }
+    except Exception as e:
+        raise_http_exception(e, "executor_status")

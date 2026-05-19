@@ -109,6 +109,15 @@ class ReconciliationService:
                 pass
             self._redis = None
 
+    @property
+    def is_simulation(self) -> bool:
+        """Check if we're in simulation mode (no real Alpaca API)."""
+        try:
+            from regime_platform.services.operational.executor_factory import executor_factory
+            return executor_factory.is_simulation
+        except Exception:
+            return True
+
     def _calculate_slippage_bps(self, expected: float, actual: float) -> float:
         """Calculate slippage in basis points."""
         if expected == 0:
@@ -137,20 +146,20 @@ class ReconciliationService:
         )
 
         try:
-            from renko.executor import AlpacaExecutor
-            executor = AlpacaExecutor()
+            from regime_platform.services.operational.executor_factory import executor_factory
+            api = executor_factory.get_alpaca_rest()
 
-            if not executor.api:
+            if not api:
                 result.status = ReconciliationStatus.ERROR
                 result.discrepancy_notes = "Alpaca API not available (simulation mode)"
                 return result
 
             # Get order from Alpaca
             try:
-                order = executor.api.get_order_by_client_id(order_id)
+                order = api.get_order_by_client_id(order_id)
             except Exception:
                 try:
-                    order = executor.api.get_order(order_id)
+                    order = api.get_order(order_id)
                 except Exception as e:
                     result.status = ReconciliationStatus.ERROR
                     result.discrepancy_notes = f"Order not found: {str(e)[:100]}"
@@ -235,16 +244,16 @@ class ReconciliationService:
         """
         results = []
         try:
-            from renko.executor import AlpacaExecutor
-            executor = AlpacaExecutor()
+            from regime_platform.services.operational.executor_factory import executor_factory
+            api = executor_factory.get_alpaca_rest()
 
-            if not executor.api:
+            if not api:
                 logger.warning("Reconciler: Alpaca API not available")
                 return results
 
             # Get recent orders
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            orders = executor.api.list_orders(
+            orders = api.list_orders(
                 status="all",
                 after=since,
                 limit=500,
@@ -292,12 +301,12 @@ class ReconciliationService:
 
         try:
             # Get Alpaca positions
-            from renko.executor import AlpacaExecutor
-            executor = AlpacaExecutor()
+            from regime_platform.services.operational.executor_factory import executor_factory
+            api = executor_factory.get_alpaca_rest()
 
             alpaca_symbols = set()
-            if executor.api:
-                positions = executor.api.list_positions()
+            if api:
+                positions = api.list_positions()
                 for pos in positions:
                     alpaca_symbols.add(pos.symbol)
                     result.alpaca_positions += 1

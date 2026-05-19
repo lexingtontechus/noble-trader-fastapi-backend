@@ -225,6 +225,8 @@ class ModeManager:
         
         For LIVE mode: acknowledgment_text must match LIVE_ACKNOWLEDGMENT exactly.
         For PAPER mode: any acknowledgment text is accepted.
+        
+        Before switching to LIVE, runs a health check on the target environment.
         """
         # Validate token exists in Redis
         client = await self._get_client()
@@ -249,6 +251,13 @@ class ModeManager:
             if acknowledgment_text.strip().upper() != self.LIVE_ACKNOWLEDGMENT:
                 raise ValueError(
                     f"Acknowledgment text must be exactly: '{self.LIVE_ACKNOWLEDGMENT}'"
+                )
+
+            # Pre-switch health check on target environment
+            health = await self._check_target_health(TradingMode.LIVE)
+            if not health.get("ok"):
+                raise RuntimeError(
+                    f"Target environment health check failed: {health.get('error', 'unknown')}"
                 )
 
         # Execute mode change
@@ -284,31 +293,72 @@ class ModeManager:
 
         return new_state
 
+    async def _check_target_health(self, target_mode: TradingMode) -> dict:
+        """
+        Health check the target Alpaca environment before switching.
+        
+        Temporarily creates a REST client pointing to the target URL
+        and attempts to fetch account info. Does NOT modify global settings.
+        """
+        try:
+            from regime_platform.core.settings import settings
+            import alpaca_trade_api as tradeapi
+
+            if not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY:
+                return {"ok": False, "error": "No Alpaca API keys configured"}
+
+            target_url = (
+                settings.ALPACA_LIVE_BASE_URL
+                if target_mode == TradingMode.LIVE
+                else settings.ALPACA_PAPER_BASE_URL
+            )
+
+            # Temporary client for health check (does not affect factory)
+            temp_client = tradeapi.REST(
+                key_id=settings.ALPACA_API_KEY,
+                secret_key=settings.ALPACA_SECRET_KEY,
+                base_url=target_url,
+            )
+
+            account = temp_client.get_account()
+            return {
+                "ok": True,
+                "account_status": account.status,
+                "equity": float(account.equity),
+                "buying_power": float(account.buying_power),
+            }
+        except ImportError:
+            return {"ok": False, "error": "alpaca-trade-api not installed"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
     async def _switch_executor_mode(self, target_mode: TradingMode):
         """
         Switch the AlpacaExecutor to the target mode by updating base_url.
         
         PAPER: https://paper-api.alpaca.markets
         LIVE:  https://api.alpaca.markets
+        
+        Uses ExecutorFactory to ensure all services get the updated executor.
         """
         try:
             from regime_platform.core.settings import settings
+            from regime_platform.services.operational.executor_factory import executor_factory
             
             if target_mode == TradingMode.LIVE:
-                # Use live endpoint
                 live_url = getattr(settings, 'ALPACA_LIVE_BASE_URL', None) or 'https://api.alpaca.markets'
                 settings.ALPACA_BASE_URL = live_url
             elif target_mode == TradingMode.PAPER:
                 paper_url = getattr(settings, 'ALPACA_PAPER_BASE_URL', None) or 'https://paper-api.alpaca.markets'
                 settings.ALPACA_BASE_URL = paper_url
 
-            # Re-initialize AlpacaExecutor to pick up new URL
-            try:
-                from renko.executor import AlpacaExecutor
-                # The executor lazy-inits its API client, so next call will use new URL
-                AlpacaExecutor._instance = None  # Force re-creation
-            except Exception:
-                pass
+            # Invalidate the executor factory cache so next access creates
+            # a fresh executor with the new base URL
+            executor_factory.invalidate()
+            logger.info(
+                f"ModeManager: Executor mode switched to {target_mode.value} "
+                f"(base_url={settings.ALPACA_BASE_URL})"
+            )
 
         except Exception as e:
             logger.error(f"ModeManager: Failed to switch executor mode: {e}")

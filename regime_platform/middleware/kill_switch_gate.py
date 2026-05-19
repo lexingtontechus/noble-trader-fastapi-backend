@@ -38,6 +38,7 @@ class KillSwitchGateMiddleware(BaseHTTPMiddleware):
     BLOCKED_PATHS = [
         # Renko signal generation (may trigger automatic order execution)
         "/renko/tick",
+        "/renko/tick/batch",
         # Note: /operational/kill-switch/* endpoints are always allowed
         # so admins can deactivate halts
     ]

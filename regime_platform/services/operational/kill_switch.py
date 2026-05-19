@@ -282,22 +282,24 @@ class KillSwitchService:
 
     async def cancel_all_orders(self, user_id: str) -> dict:
         """
-        Cancel all open orders for a user via AlpacaExecutor.
+        Cancel all open orders for a user via ExecutorFactory.
         Returns dict with count of cancelled orders.
         """
         cancelled = []
         try:
-            from renko.executor import AlpacaExecutor
-            executor = AlpacaExecutor()
-            # Get open orders from Alpaca
-            if executor.api:
-                orders = executor.api.list_orders(status="open")
+            from regime_platform.services.operational.executor_factory import executor_factory
+            api = executor_factory.get_alpaca_rest()
+            if api:
+                orders = api.list_orders(status="open")
                 for order in orders:
                     try:
-                        executor.api.cancel_order(order.id)
+                        api.cancel_order(order.id)
                         cancelled.append(order.id)
+                        logger.info(f"KillSwitch: Cancelled order {order.id}")
                     except Exception as e:
                         logger.error(f"KillSwitch: Failed to cancel order {order.id}: {e}")
+            else:
+                logger.warning("KillSwitch: No Alpaca API client — cancel_all_orders is no-op (simulation mode)")
         except Exception as e:
             logger.error(f"KillSwitch: cancel_all_orders failed: {e}")
 
@@ -305,21 +307,24 @@ class KillSwitchService:
 
     async def close_all_positions(self, user_id: str) -> dict:
         """
-        Close all open positions for a user via AlpacaExecutor.
+        Close all open positions for a user via ExecutorFactory.
         Returns dict with count of closed positions.
         """
         closed = []
         try:
-            from renko.executor import AlpacaExecutor
-            executor = AlpacaExecutor()
-            if executor.api:
-                positions = executor.api.list_positions()
+            from regime_platform.services.operational.executor_factory import executor_factory
+            api = executor_factory.get_alpaca_rest()
+            if api:
+                positions = api.list_positions()
                 for pos in positions:
                     try:
-                        executor.api.close_position(pos.symbol)
+                        api.close_position(pos.symbol)
                         closed.append(pos.symbol)
+                        logger.info(f"KillSwitch: Closed position {pos.symbol}")
                     except Exception as e:
                         logger.error(f"KillSwitch: Failed to close position {pos.symbol}: {e}")
+            else:
+                logger.warning("KillSwitch: No Alpaca API client — close_all_positions is no-op (simulation mode)")
         except Exception as e:
             logger.error(f"KillSwitch: close_all_positions failed: {e}")
 

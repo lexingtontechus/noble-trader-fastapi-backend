@@ -139,6 +139,29 @@ async def lifespan(app: FastAPI):
         from regime_platform.services.operational import kill_switch, audit_logger, reconciler
         await kill_switch.start_refresh()
         log.info("Kill switch service started")
+
+        # Start periodic reconciliation (every 15 minutes)
+        import asyncio
+        from regime_platform.services.operational.reconciler import reconciler as _reconciler
+
+        async def _periodic_reconciliation():
+            """Run reconciliation every 15 minutes."""
+            while True:
+                try:
+                    await asyncio.sleep(900)  # 15 minutes
+                    if not _reconciler.is_simulation:
+                        results = await _reconciler.reconcile_all_recent()
+                        if results:
+                            matched = sum(1 for r in results if r.status.value == "MATCHED")
+                            critical = sum(1 for r in results if r.status.value in ("MISSED_FILL", "ERROR"))
+                            log.info(f"Periodic reconciliation: {len(results)} orders, {matched} matched, {critical} critical")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    log.error(f"Periodic reconciliation error: {e}")
+
+        app.state._recon_task = asyncio.create_task(_periodic_reconciliation())
+        log.info("Periodic reconciliation scheduler started (15-min interval)")
     except Exception as e:
         log.warning(f"Kill switch service start failed: {e}")
 
@@ -146,6 +169,16 @@ async def lifespan(app: FastAPI):
 
     # Phase 8: Stop operational services
     try:
+        # Cancel periodic reconciliation task
+        recon_task = getattr(app.state, '_recon_task', None)
+        if recon_task:
+            recon_task.cancel()
+            try:
+                await recon_task
+            except asyncio.CancelledError:
+                pass
+            log.info("Periodic reconciliation task cancelled")
+
         from regime_platform.services.operational import kill_switch, audit_logger, reconciler, mode_manager
         await kill_switch.stop_refresh()
         await audit_logger.close()
