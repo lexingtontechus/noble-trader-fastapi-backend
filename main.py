@@ -104,6 +104,9 @@ from regime_platform.routers import (
     strategy,
     tda,
 )
+# Phase 8: Operational Hardening
+from regime_platform.routers import operational
+from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
 from regime_platform.services.redis_persistence import persistence
@@ -131,7 +134,26 @@ async def lifespan(app: FastAPI):
                 await asyncio.get_event_loop().run_in_executor(None, session._refit)
                 log.info(f"  ✓ {symbol}: restored {n} bars")
 
+    # Phase 8: Start operational services
+    try:
+        from regime_platform.services.operational import kill_switch, audit_logger, reconciler
+        await kill_switch.start_refresh()
+        log.info("Kill switch service started")
+    except Exception as e:
+        log.warning(f"Kill switch service start failed: {e}")
+
     yield
+
+    # Phase 8: Stop operational services
+    try:
+        from regime_platform.services.operational import kill_switch, audit_logger, reconciler, mode_manager
+        await kill_switch.stop_refresh()
+        await audit_logger.close()
+        await reconciler.close()
+        await mode_manager.close()
+        log.info("Operational services stopped")
+    except Exception as e:
+        log.warning(f"Operational services shutdown error: {e}")
 
     # Close Discord notifier HTTP client
     try:
@@ -356,6 +378,12 @@ Endpoints:
     if renko_router is not None:
         app.include_router(renko_router)
 
+    # Phase 8: Operational Hardening (13 endpoints under /operational/*)
+    app.include_router(operational.router)
+
+    # Kill Switch Gate Middleware (blocks order execution when halted)
+    app.add_middleware(KillSwitchGateMiddleware)
+
     # ─── MCP (Model Context Protocol) ──────────────────────────────────────────
     # Expose READ-ONLY / analysis FastAPI endpoints as MCP tools so AI agents
     # can discover and call them via the MCP protocol at /mcp.
@@ -511,6 +539,19 @@ Excluded from MCP (use REST API directly):
         symbols = await registry.list_symbols()
         caps = gpu_capabilities()
 
+        # Phase 8: Operational status
+        operational_status = {"kill_switch": "unknown", "trading_mode": "unknown"}
+        try:
+            from regime_platform.services.operational import kill_switch, mode_manager
+            is_halted = await kill_switch.is_halted()
+            current_mode = await mode_manager.get_current_mode()
+            operational_status = {
+                "kill_switch": "HALTED" if is_halted else "clear",
+                "trading_mode": current_mode.value,
+            }
+        except Exception:
+            pass
+
         # Discord notification status
         discord_status = {"configured": False, "channels": {}}
         try:
@@ -537,9 +578,10 @@ Excluded from MCP (use REST API directly):
 
         return {
             "status": "ok",
-            "version": "5.3.0",
+            "version": "5.4.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
+            "operational": operational_status,
             "cors_origins": settings.CORS_ORIGINS,
             "discord": discord_status,
             "mcp": mcp_status,

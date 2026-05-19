@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     ALPACA_API_KEY: str = ""
     ALPACA_SECRET_KEY: str = ""
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
+    ALPACA_LIVE_BASE_URL: str = "https://api.alpaca.markets"
+    ALPACA_PAPER_BASE_URL: str = "https://paper-api.alpaca.markets"
 
     # ── Binance ─────────────────────────────────────────────────────────────
     BINANCE_TESTNET: bool = False

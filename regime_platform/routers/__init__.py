@@ -7,6 +7,7 @@ from . import (
     gpu,
     multi_asset,
     observation,
+    operational,
     pipeline,
     portfolio,
     regime,
