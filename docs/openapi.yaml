@@ -1251,6 +1251,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /strategy/signal:
     post:
       tags:
@@ -1342,6 +1345,218 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+  /backtest/history:
+    get:
+      tags:
+      - Backtesting
+      summary: List saved backtest results for the authenticated user (paginated)
+      description: 'Returns a paginated list of saved backtest results belonging to
+        the authenticated user.
+
+        Each result includes a summary of key metrics (win rate, total return, Sharpe,
+        max drawdown, etc.).'
+      operationId: list_backtest_history_backtest_history_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestHistoryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /backtest/{backtest_id}:
+    get:
+      tags:
+      - Backtesting
+      summary: Get a saved backtest result by ID
+      description: 'Retrieves the full backtest result associated with the given ID,
+
+        including all metrics, equity curve, drawdown curve, and trade log.'
+      operationId: get_backtest_backtest__backtest_id__get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      parameters:
+      - name: backtest_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Backtest Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Backtesting
+      summary: Delete a saved backtest result
+      description: 'Deletes the saved backtest result with the given ID.
+
+        Returns 204 No Content on success.'
+      operationId: delete_backtest_backtest__backtest_id__delete
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      parameters:
+      - name: backtest_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Backtest Id
+      responses:
+        '204':
+          description: Backtest result deleted successfully
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /backtest/compare:
+    post:
+      tags:
+      - Backtesting
+      summary: Compare two or more saved backtest results
+      description: 'Retrieves the specified backtest results and returns them alongside
+        a diff
+
+        object highlighting differences in key metrics across the results.'
+      operationId: compare_backtests_backtest_compare_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BacktestCompareRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestCompareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /backtest/optimize:
+    post:
+      tags:
+      - Backtesting
+      summary: 'Parameter sweep: run backtests across a grid of parameter values'
+      description: 'Runs backtests across a grid of parameter combinations specified
+        in param_grid.
+
+        Maximum 50 combinations per request. Rate-limited.
+
+        Returns results for each combination plus the best result by Sharpe ratio and
+        by total return.'
+      operationId: optimize_backtest_backtest_optimize_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BacktestOptimizeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestOptimizeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /backtest/export:
+    post:
+      tags:
+      - Backtesting
+      summary: Export a saved backtest result as CSV or JSON
+      description: 'Exports a saved backtest result in the specified format (csv or
+        json).
+
+        Returns a StreamingResponse with the exported data.
+
+        The sections parameter controls which parts of the result to include.'
+      operationId: export_backtest_backtest_export_post
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BacktestExportRequest'
+        required: true
+      responses:
+        '200':
+          description: StreamingResponse with exported data
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/csv:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /tda/features:
     post:
       tags:
@@ -1399,6 +1614,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
   /renko/tick:
     post:
       tags:
@@ -2044,6 +2262,20 @@ components:
           type: boolean
           title: Regime Gate
           default: true
+        dates:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Dates
+          description: Optional list of date strings corresponding to the price series.
+          default: null
+        save:
+          type: boolean
+          title: Save
+          description: Whether to persist the backtest result.
+          default: true
       type: object
       required:
       - prices
@@ -2051,6 +2283,12 @@ components:
       description: Walk-forward backtest request.
     BacktestResponse:
       properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+          description: Unique identifier for the saved backtest result.
         symbol:
           type: string
           title: Symbol
@@ -2162,6 +2400,17 @@ components:
             type: object
           type: array
           title: Trade Log
+        config_used:
+          additionalProperties: true
+          type: object
+          title: Config Used
+          description: Configuration parameters used for this backtest run.
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+          description: Timestamp when the backtest result was saved.
       type: object
       required:
       - symbol
@@ -2200,6 +2449,287 @@ components:
       - trade_log
       title: BacktestResponse
       description: Walk-forward backtest result with 30+ metrics.
+    BacktestCompareRequest:
+      properties:
+        ids:
+          items:
+            type: string
+          type: array
+          minItems: 2
+          maxItems: 10
+          title: Ids
+          description: List of backtest result IDs to compare (2-10).
+      type: object
+      required:
+      - ids
+      title: BacktestCompareRequest
+      description: Request to compare two or more saved backtest results.
+    BacktestCompareResponse:
+      properties:
+        comparisons:
+          items:
+            $ref: '#/components/schemas/BacktestResponse'
+          type: array
+          title: Comparisons
+          description: List of full backtest results for each compared ID.
+        diff:
+          additionalProperties: true
+          type: object
+          title: Diff
+          description: Differences in key metrics across the compared results.
+      type: object
+      required:
+      - comparisons
+      - diff
+      title: BacktestCompareResponse
+      description: Response containing compared backtest results and metric differences.
+    BacktestExportRequest:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: ID of the saved backtest result to export.
+        format:
+          type: string
+          enum:
+          - csv
+          - json
+          title: Format
+          description: Export format.
+          default: json
+        sections:
+          items:
+            type: string
+            enum:
+            - summary
+            - equity_curve
+            - drawdown_curve
+            - trade_log
+            - all
+          type: array
+          title: Sections
+          description: Which sections of the result to include in the export.
+          default:
+          - all
+      type: object
+      required:
+      - id
+      title: BacktestExportRequest
+      description: Request to export a saved backtest result as CSV or JSON.
+    BacktestHistoryResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/BacktestSummary'
+          type: array
+          title: Results
+          description: List of backtest result summaries.
+        total:
+          type: integer
+          title: Total
+          description: Total number of saved results for the user.
+        offset:
+          type: integer
+          title: Offset
+          description: Current pagination offset.
+        limit:
+          type: integer
+          title: Limit
+          description: Maximum number of results per page.
+      type: object
+      required:
+      - results
+      - total
+      - offset
+      - limit
+      title: BacktestHistoryResponse
+      description: Paginated list of saved backtest result summaries.
+    BacktestOptimizeRequest:
+      properties:
+        prices:
+          items:
+            type: number
+          type: array
+          minItems: 81
+          title: Prices
+          description: Ordered price series (OHLCV close preferred). Min 81 bars.
+        symbol:
+          type: string
+          title: Symbol
+          description: Ticker symbol for labelling.
+          default: UNKNOWN
+        param_grid:
+          additionalProperties:
+            items: {}
+            type: array
+          type: object
+          title: Param Grid
+          description: Dictionary mapping parameter names to lists of values to sweep.
+        window:
+          type: integer
+          minimum: 81.0
+          title: Window
+          description: Trailing window for HMM fit.
+          default: 200
+        refit_every:
+          type: integer
+          minimum: 10.0
+          title: Refit Every
+          description: Refit HMM every N bars.
+          default: 50
+        n_hmm_states:
+          type: integer
+          maximum: 4.0
+          minimum: 2.0
+          title: N Hmm States
+          default: 4
+        kelly_fraction:
+          type: number
+          maximum: 1.0
+          minimum: 0.1
+          title: Kelly Fraction
+          default: 0.5
+        target_vol:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Target Vol
+          default: 0.15
+        base_risk_limit:
+          type: number
+          maximum: 0.5
+          exclusiveMinimum: 0.0
+          title: Base Risk Limit
+          default: 0.02
+        initial_equity:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Initial Equity
+          default: 100000.0
+        commission_bps:
+          type: number
+          maximum: 50.0
+          minimum: 0.0
+          title: Commission Bps
+          default: 5.0
+        slippage_bps:
+          type: number
+          maximum: 50.0
+          minimum: 0.0
+          title: Slippage Bps
+          default: 2.0
+        max_position_pct:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Max Position Pct
+          default: 0.25
+        risk_check:
+          type: boolean
+          title: Risk Check
+          default: true
+        regime_gate:
+          type: boolean
+          title: Regime Gate
+          default: true
+        save:
+          type: boolean
+          title: Save
+          description: Whether to persist the optimization results.
+          default: false
+      type: object
+      required:
+      - prices
+      - param_grid
+      title: BacktestOptimizeRequest
+      description: Request to run backtests across a grid of parameter values.
+    BacktestOptimizeResponse:
+      properties:
+        results:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Results
+          description: List of backtest result objects for each parameter combination.
+        best_by_sharpe:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Sharpe
+          description: Best result ranked by Sharpe ratio, or null if no valid results.
+        best_by_return:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Best By Return
+          description: Best result ranked by total return, or null if no valid results.
+        n_combinations:
+          type: integer
+          title: N Combinations
+          description: Total number of parameter combinations tested.
+      type: object
+      required:
+      - results
+      - best_by_sharpe
+      - best_by_return
+      - n_combinations
+      title: BacktestOptimizeResponse
+      description: Response from the parameter sweep optimization.
+    BacktestSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Unique identifier for the saved backtest result.
+        symbol:
+          type: string
+          title: Symbol
+        n_trades:
+          type: integer
+          title: N Trades
+        win_rate:
+          type: number
+          title: Win Rate
+        total_return:
+          type: number
+          title: Total Return
+        annual_return:
+          type: number
+          title: Annual Return
+        sharpe_ratio:
+          type: number
+          title: Sharpe Ratio
+        max_drawdown:
+          type: number
+          title: Max Drawdown
+        profit_factor:
+          type: number
+          title: Profit Factor
+        n_hmm_states:
+          type: integer
+          title: N Hmm States
+        created_at:
+          type: string
+          title: Created At
+          description: Timestamp when the backtest result was saved.
+      type: object
+      required:
+      - id
+      - symbol
+      - n_trades
+      - win_rate
+      - total_return
+      - annual_return
+      - sharpe_ratio
+      - max_drawdown
+      - profit_factor
+      - n_hmm_states
+      - created_at
+      title: BacktestSummary
+      description: Summary of a saved backtest result for list views.
     BatchTickInput:
       properties:
         prices:

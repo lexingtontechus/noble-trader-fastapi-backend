@@ -1,3 +1,115 @@
+## [5.1.0] — 2026-05-19
+
+### Added — MCP Server + Circuit Breakers + Renko Pipeline v2 + Discord
+
+#### MCP Server (Model Context Protocol)
+- `fastapi-mcp` integration mounted at `/mcp`
+- 17 operations excluded for security (auth, feed start/stop, renko writes, stream injection, backtest delete)
+- Configurable auth via `MCP_AUTH_ENABLED` and `MCP_ISSUER` settings
+- Header forwarding for `authorization` and `x-api-key`
+
+#### Circuit Breakers
+- Three-tier circuit breaker: error rate (>50%), latency (>5s), concurrent (>100)
+- 30-second cooldown with automatic recovery
+- Stats exposed in `/health` endpoint
+- Per-breaker state tracking (closed, open, half-open)
+
+#### Renko HFT Pipeline v2
+- 14 endpoints under `/renko/` prefix
+- 6-layer pipeline: brick → swing → pattern → signal → risk → execution
+- Supabase caching with 4-hour TTL
+- Yahoo Finance warm-up integration
+- Pattern confidence scoring
+- Signal-to-trade paper execution
+
+#### Discord Notifications
+- `notifications/discord_notifier.py` — webhook-based alert system
+- Regime change alerts with severity coloring
+- Circuit breaker trip notifications
+- Trade execution confirmations
+- Graceful no-op when `DISCORD_WEBHOOK_URL` not configured
+- Async batched sending with retry
+
+### Changed
+- `main.py` version bumped to 5.1.0
+- `/health` endpoint now includes MCP status, circuit breaker stats, and Discord status
+- Lifespan: startup logs GPU capabilities, restores Redis sessions with HMM re-fitting
+
+---
+
+## [5.0.0] — 2026-05-15
+
+### Added — Renko HFT Pipeline (Initial)
+
+#### `renko/` — NEW MODULE
+- Self-contained Renko HFT pipeline with 6 processing layers
+- Brick construction from tick data (fixed and ATR-based)
+- Swing classification (impulse/correction labelling)
+- Pattern detection (double-top/bottom, head-shoulders, flags)
+- Signal filtering with volume and trend confirmation
+- Risk management with position sizing and stop/TP
+- Paper trade execution with P&L tracking
+- Supabase caching layer (4h TTL)
+
+#### Endpoints
+- `POST /renko/brick` — build Renko bricks
+- `POST /renko/swing` — classify swings
+- `POST /renko/pattern` — detect patterns
+- `POST /renko/signal` — generate filtered signals
+- `POST /renko/risk` — compute risk for signal
+- `POST /renko/execute` — paper-trade execution
+- `GET /renko/status` — pipeline status (all symbols)
+- `GET /renko/status/{symbol}` — single symbol status
+- `DELETE /renko/status/{symbol}` — clear state
+- `POST /renko/warmup` — Yahoo Finance warm-up
+- `GET /renko/trades` — list trades
+- `GET /renko/trades/{symbol}` — symbol trades
+- `GET /renko/cache` — cache statistics
+- `DELETE /renko/cache` — clear cache
+
+---
+
+## [4.0.0] — 2026-05-10
+
+### Added — Strategy Signals + TDA Features + Observation V2
+
+#### Strategy Signal Pipeline
+- `routers/strategy.py` — `POST /strategy/signal`
+- Generates trading signal (long/short/flat) based on regime
+- Combines regime detection, Kelly sizing, and risk guidance
+- Signal strength scoring (0-1)
+- Long: low/med-low vol + bull/strong_bull
+- Short: high/med-high vol + bear/strong_bear (strength × 0.5)
+- Flat: all other regimes
+
+#### Topological Data Analysis (TDA)
+- `routers/tda.py` — `POST /tda/features`
+- Persistent homology feature extraction via gtda
+- Takens embedding with configurable dimension and delay
+- Persistence diagrams (0D and 1D)
+- Betti numbers at each filtration step
+- Persistence entropy for regime change detection
+- Anomaly score (std deviations from baseline)
+- 10-dimensional feature vector for ML pipeline
+- Optional baseline comparison
+
+#### Observation V2
+- `POST /observation/build-v2` — enhanced observation vector with optional TDA
+- Extends 24-feature vector to 34 features when `include_tda=true`
+- TDA anomaly score and regime change probability fields
+- Same Markov feature guarantees as v1
+
+#### `models/schemas.py` — Updated
+- `StrategySignalRequest` / `StrategySignalResponse`
+- `TDARequest` / `TDAResponse`
+- `ObservationV2Request` / `ObservationV2Response`
+
+### Changed
+- `main.py` version bumped to 4.0.0
+- Backtest router registered in app factory
+
+---
+
 ## [3.2.0] — 2026-05-19
 
 ### Added — Walk-Forward Backtest Engine + Persistence + Optimization

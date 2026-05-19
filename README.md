@@ -10,8 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v3.2.0** — GPU HMM · Live feeds · Correlation regimes · Portfolio optimisation ·
-Dynamic Masaniello+Kelly sizer · Streaming test tools · Walk-forward backtest · Parameter sweep · Export
+**v5.1.0** — Renko HFT Pipeline · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers
 
 ---
 
@@ -45,25 +44,27 @@ regime_risk_platform/
 │   │   ├── risk.py                   POST /risk/analyse
 │   │   ├── pipeline.py               POST /analyse/full
 │   │   ├── stream_rest.py            POST /stream/seed | /tick | /ticks
-│   │   ├── stream_.py              WS /ws/{symbol} | GET /sse/{symbol|alerts}
+│   │   ├── stream_ws.py            WS /ws/{symbol} | GET /sse/{symbol|alerts}
 │   │   ├── simulate.py               POST /simulate/{symbol}
 │   │   ├── portfolio.py              GET /portfolio
 │   │   ├── auth_router.py            POST /auth/token | GET /auth/me | Clerk endpoints
 │   │   ├── gpu.py                    GET /gpu/capabilities | POST /gpu/benchmark
 │   │   ├── feeds.py                  POST /feeds/start | /stop | GET /feeds/status
 │   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
-│   │   └── backtest.py            POST /backtest/run | /history | /compare | /optimize | /export
+│   │   ├── backtest.py            POST /backtest/run | /history | /{id} | /compare | /optimize | /export
+│   │   ├── strategy.py            POST /strategy/signal
+│   │   ├── tda.py                 POST /tda/features
+│   │   └── observation_v2.py      POST /observation/build-v2
 │   ├── services/
 │   │   ├── stream_session.py         Per-symbol stateful streaming engine
 │   │   ├── registry.py               Singleton session store
 │   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
 │   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
 │   │   └── backtest_store.py      Supabase persistence for backtest results
+│   ├── renko/                        6-layer Renko HFT pipeline (14 endpoints)
+│   ├── notifications/               Discord notifier
 │
-├── main.py                           v1 — batch API only
-├── main_v2.py                        v2 — batch + streaming
-├── main_v3.py                        v2.1 — + simulation, portfolio, auth, Redis
-├── main_v4.py                        v3.1 — all features (recommended entry point)
+├── main.py                           v5.1 — all features (recommended entry point)
 ├── requirements.txt
 │
 ├── docs/
@@ -80,7 +81,8 @@ regime_risk_platform/
 │   ├── test_obs_builder.py           24-feature observation builder (7 tests)
 │   ├── test_streaming.py             StreamSession: asyncio ticks + alerts
 │   ├── test_v21.py                   Simulation, portfolio, Redis, JWT
-│   └── test_v30.py                   GPU, feeds, correlation, optimiser
+│   ├── test_v30.py                   GPU, feeds, correlation, optimiser
+│   └── test_backtest.py             25-test backtest suite (unit + integration)
 │
 └── tools/
     ├── curl_test.sh                  bash: health + full-pipeline + edge cases
@@ -559,6 +561,115 @@ Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) f
 ### Export
 
 `POST /backtest/export` streams a saved result as CSV or JSON with section selection (`summary`, `equity_curve`, `drawdown_curve`, `trade_log`).
+
+---
+
+## Renko HFT Pipeline
+
+The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 endpoints:
+
+1. **Brick Construction** — Convert ticks to fixed/ATR Renko bricks
+2. **Swing Classification** — Label brick sequences as impulse/correction
+3. **Pattern Detection** — Identify double-top, head-shoulders, etc.
+4. **Signal Filter** — Confirm patterns with volume and trend alignment
+5. **Risk Manager** — Position sizing, stop-loss, take-profit
+6. **Execution** — Paper-trade signal execution with P&L tracking
+
+### Features
+- Supabase caching with 4-hour TTL
+- Yahoo Finance warm-up integration
+- Per-symbol brick state persistence
+- Real-time tick ingestion and brick updates
+- Pattern confidence scoring
+- Signal-to-trade pipeline
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/renko/brick` | Build Renko bricks from tick data |
+| `POST` | `/renko/swing` | Classify brick swings |
+| `POST` | `/renko/pattern` | Detect chart patterns |
+| `POST` | `/renko/signal` | Generate filtered signals |
+| `POST` | `/renko/risk` | Compute risk metrics for a signal |
+| `POST` | `/renko/execute` | Execute a signal as a paper trade |
+| `GET` | `/renko/status` | Pipeline status for all symbols |
+| `GET` | `/renko/status/{symbol}` | Pipeline status for a single symbol |
+| `DELETE` | `/renko/status/{symbol}` | Clear pipeline state for a symbol |
+| `POST` | `/renko/warmup` | Warm up pipeline with Yahoo Finance data |
+| `GET` | `/renko/trades` | List recent paper trades |
+| `GET` | `/renko/trades/{symbol}` | List trades for a symbol |
+| `GET` | `/renko/cache` | Cache statistics |
+| `DELETE` | `/renko/cache` | Clear cache |
+
+---
+
+## MCP Server (Model Context Protocol)
+
+The platform exposes an MCP server at `/mcp` via `fastapi-mcp`, enabling AI agents to invoke read-only and analysis endpoints as tools.
+
+### Configuration
+- `MCP_AUTH_ENABLED` — Enable/disable MCP authentication (default: false)
+- `MCP_ISSUER` — JWT issuer for MCP tokens
+
+### Excluded Operations (17)
+Auth endpoints, feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
+
+### Available Tools
+All read-only and analysis endpoints are automatically exposed as MCP tools with proper request/response schemas.
+
+---
+
+## Strategy Signals
+
+`POST /strategy/signal` generates a full trading signal based on the current regime:
+
+| Signal | Condition |
+|--------|-----------|
+| `long` | Low/med-low vol + bull/strong_bull trend |
+| `short` | High/med-high vol + bear/strong_bear trend (strength × 0.5) |
+| `flat` | All other regimes |
+
+Returns combined regime context, Kelly position sizing, and risk guidance in one response.
+
+## Topological Data Analysis (TDA)
+
+`POST /tda/features` extracts persistent homology features from price series:
+
+- Takens embedding with configurable dimension and delay
+- Persistence diagrams (0D and 1D features)
+- Betti numbers at each filtration step
+- Persistence entropy for regime change detection
+- Anomaly score based on deviation from baseline topology
+
+The 10-dimensional TDA feature vector can be appended to the observation vector via `POST /observation/build-v2` with `include_tda=true`.
+
+---
+
+## Discord Notifications
+
+The platform sends real-time alerts to a Discord channel via webhook:
+
+- Regime change alerts (with severity coloring)
+- Circuit breaker triggers
+- Trade execution confirmations
+- Error notifications
+
+Configure via `DISCORD_WEBHOOK_URL` environment variable. Graceful no-op when not configured.
+
+---
+
+## Circuit Breakers
+
+Three-tier circuit breaker system protects against cascading failures:
+
+| Breaker | Threshold | Recovery |
+|---------|-----------|----------|
+| **Error rate** | >50% errors in 60s | 30s cooldown |
+| **Latency** | >5s average in 60s | 30s cooldown |
+| **Concurrent** | >100 concurrent requests | 30s cooldown |
+
+Circuit breaker stats are reported in the `/health` endpoint.
 
 ---
 
