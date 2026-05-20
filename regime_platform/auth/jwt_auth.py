@@ -188,28 +188,6 @@ async def get_current_user(
     )
 
 
-async def require_write(user: TokenData = Depends(get_authed_user)) -> TokenData:
-    """Dependency that additionally requires trader or admin role.
-    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
-    if not user.can_write:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Role '{user.role}' does not have write access.",
-        )
-    return user
-
-
-async def require_admin(user: TokenData = Depends(get_authed_user)) -> TokenData:
-    """Dependency that requires admin role.
-    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required.",
-        )
-    return user
-
-
 # ── Unified auth (Clerk JWT → old JWT → API key) ─────────────────────────────
 
 def _try_clerk_verification(token: str) -> Optional[TokenData]:
@@ -330,6 +308,31 @@ async def get_authed_user(
         detail="Not authenticated. Provide a valid Bearer JWT or X-API-Key header.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+# ── Role-based dependencies (MUST come after get_authed_user) ──────────────────
+
+
+async def require_write(user: TokenData = Depends(get_authed_user)) -> TokenData:
+    """Dependency that additionally requires trader or admin role.
+    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
+    if not user.can_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{user.role}' does not have write access.",
+        )
+    return user
+
+
+async def require_admin(user: TokenData = Depends(get_authed_user)) -> TokenData:
+    """Dependency that requires admin role.
+    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required.",
+        )
+    return user
 
 
 # ── WebSocket authentication ──────────────────────────────────────────────────
