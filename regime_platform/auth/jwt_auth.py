@@ -236,9 +236,12 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
             # Only try Clerk verification if the issuer looks like a Clerk domain
             if "clerk" in iss.lower() or ".accounts.dev" in iss.lower():
                 clerk_user = verify_clerk_token(token)
+                # verify_clerk_token now does privateMetadata role lookup,
+                # so clerk_user.role should be correct (admin/trader/viewer).
+                # Fallback to "viewer" only if something unexpected happens.
                 return TokenData(
                     sub=clerk_user.sub,
-                    role=clerk_user.role if clerk_user.role else "authenticated",
+                    role=clerk_user.role if clerk_user.role in ("admin", "trader", "viewer") else "viewer",
                     org_id=clerk_user.org_id,
                 )
         except Exception:

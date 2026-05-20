@@ -75,6 +75,73 @@ if not CLERK_AUTH_ENABLED:
         "Set CLERK_SECRET_KEY in .env.local to enable Clerk auth."
     )
 
+# ── Role Cache (privateMetadata lookup) ───────────────────────────────────────
+# Clerk JWTs don't include the user's role by default — it's stored in
+# privateMetadata. We look it up via the Clerk REST API and cache it.
+
+_role_cache: dict[str, tuple[str, float]] = {}   # user_id → (role, expiry)
+ROLE_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_role_from_clerk_api(user_id: str) -> str:
+    """
+    Look up a user's role from Clerk privateMetadata via the REST API.
+
+    The role is stored at ``privateMetadata.role`` in the Clerk user object.
+    Falls back to ``"viewer"`` if the API call fails or no role is found.
+
+    Results are cached for ROLE_CACHE_TTL seconds to avoid hammering Clerk.
+    """
+    import httpx
+
+    now = datetime.now(timezone.utc).timestamp()
+
+    # Check cache first
+    if user_id in _role_cache:
+        cached_role, expiry = _role_cache[user_id]
+        if now < expiry:
+            return cached_role
+
+    if not CLERK_SECRET_KEY:
+        log.debug("No CLERK_SECRET_KEY — cannot look up role, defaulting to viewer")
+        return "viewer"
+
+    try:
+        resp = httpx.get(
+            f"https://api.clerk.com/v1/users/{user_id}",
+            headers={
+                "Authorization": f"Bearer {CLERK_SECRET_KEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Extract role from privateMetadata
+        private_meta = data.get("private_metadata", {}) or {}
+        role = private_meta.get("role", "viewer")
+
+        # Validate against known roles
+        valid_roles = {"admin", "trader", "viewer"}
+        if role not in valid_roles:
+            log.warning(
+                f"User {user_id} has invalid role '{role}' in privateMetadata, defaulting to viewer"
+            )
+            role = "viewer"
+
+        # Cache it
+        _role_cache[user_id] = (role, now + ROLE_CACHE_TTL)
+        log.debug(f"Looked up role for {user_id}: {role}")
+        return role
+
+    except Exception as e:
+        log.warning(f"Failed to look up role for {user_id}: {e}")
+        # If we had a cached value, use it even if expired
+        if user_id in _role_cache:
+            return _role_cache[user_id][0]
+        return "viewer"
+
 # ── JWKS Cache ────────────────────────────────────────────────────────────────
 
 _jwks_cache: dict[str, dict] = {}  # issuer → JWKS
@@ -391,8 +458,16 @@ def verify_clerk_token(token: str) -> ClerkTokenData:
             )
 
         # Extract Clerk-specific claims
-        role = payload.get("role", "viewer")
+        # NOTE: Clerk JWTs do NOT include a 'role' claim by default.
+        # The role is stored in the user's privateMetadata on the Clerk side.
+        # We first check the JWT claims (in case a JWT template adds it),
+        # then fall back to a Clerk API lookup of privateMetadata.role.
+        role = payload.get("role")
         org_id = payload.get("org_id")
+
+        if not role or role not in ("admin", "trader", "viewer"):
+            # Role not in JWT — look it up from Clerk privateMetadata
+            role = _get_role_from_clerk_api(sub)
 
         # Extract user metadata if available in token
         email = payload.get("email") or payload.get("email_addresses", [{}])[0].get(
@@ -554,6 +629,56 @@ async def require_clerk_write(
 # ── Token Creation (Server-side) ─────────────────────────────────────────────
 
 
+def create_local_token(
+    sub: str,
+    role: str = "viewer",
+    org_id: Optional[str] = None,
+    email: Optional[str] = None,
+    expires_in_minutes: int = 60,
+) -> str:
+    """
+    Create a locally-signed JWT token (HS256) for the FastAPI backend.
+
+    This does NOT create a Clerk-compatible token — Clerk uses RS256 with
+    asymmetric keys that we don't have. Instead, this creates a token that
+    the backend's local JWT auth (jwt_auth.decode_token) can verify.
+
+    Use this for server-to-server calls or when Clerk is unavailable.
+    For user-facing auth, always use Clerk-issued tokens.
+    """
+    if not JWT_AVAILABLE:
+        raise RuntimeError("PyJWT is not installed")
+
+    from regime_platform.core.settings import settings as _settings
+
+    if not _settings.JWT_SECRET_KEY:
+        raise RuntimeError("JWT_SECRET_KEY is not configured")
+
+    from datetime import timedelta
+    from jose import jwt as jose_jwt
+
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=expires_in_minutes)
+
+    payload = {
+        "sub": sub,
+        "role": role,
+        "exp": exp,
+        "iat": now,
+    }
+
+    if org_id:
+        payload["org_id"] = org_id
+    if email:
+        payload["email"] = email
+
+    return jose_jwt.encode(
+        payload,
+        _settings.JWT_SECRET_KEY,
+        algorithm=_settings.JWT_ALGORITHM,
+    )
+
+
 def create_clerk_compatible_token(
     sub: str,
     role: str = "viewer",
@@ -564,55 +689,24 @@ def create_clerk_compatible_token(
     expires_in_minutes: int = 60,
 ) -> str:
     """
-    Create a JWT token compatible with Clerk verification.
+    DEPRECATED: Use create_local_token() instead.
 
-    Note: This uses the CLERK_SECRET_KEY for signing, which allows
-    the token to be verified by Clerk's systems. However, typically
-    you would use Clerk's API to create tokens, not create them locally.
+    This function previously tried to sign tokens with CLERK_SECRET_KEY
+    using RS256, which is incorrect — CLERK_SECRET_KEY is an API secret
+    string, not an RSA private key. The function now delegates to
+    create_local_token() which uses HS256 with JWT_SECRET_KEY.
 
-    This function is provided for cases where you need to issue
-    server-side tokens that can be verified by the same Clerk setup.
+    For user-facing auth, always use Clerk-issued tokens via the frontend.
     """
-    if not CLERK_AUTH_ENABLED:
-        raise RuntimeError("Clerk authentication is not enabled")
-
-    if not CLERK_SECRET_KEY:
-        raise RuntimeError("CLERK_SECRET_KEY is not configured")
-
-    if not JWT_AVAILABLE:
-        raise RuntimeError("PyJWT is not installed")
-
-    from datetime import datetime, timedelta, timezone
-
-    import jwt
-
-    now = datetime.now(timezone.utc)
-    exp = now + timedelta(minutes=expires_in_minutes)
-
-    payload = {
-        "sub": sub,
-        "role": role,
-        "exp": int(exp.timestamp()),
-        "iat": int(now.timestamp()),
-    }
-
-    if email:
-        payload["email"] = email
-    if first_name:
-        payload["first_name"] = first_name
-    if last_name:
-        payload["last_name"] = last_name
-    if username:
-        payload["username"] = username
-
-    # Sign with Clerk secret key
-    token = jwt.encode(
-        payload,
-        CLERK_SECRET_KEY,
-        algorithm=CLERK_JWT_ALGORITHM,
+    log.warning(
+        "create_clerk_compatible_token() is deprecated — use create_local_token()"
     )
-
-    return token
+    return create_local_token(
+        sub=sub,
+        role=role,
+        email=email,
+        expires_in_minutes=expires_in_minutes,
+    )
 
 
 # ── Webhook Verification ────────────────────────────────────────────────────
