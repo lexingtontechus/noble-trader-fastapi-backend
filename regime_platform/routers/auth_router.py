@@ -44,6 +44,7 @@ from ..auth.jwt_auth import (
     JWT_EXPIRE_MINS,
     TokenData,
     create_access_token,
+    get_authed_user,
     get_current_user,
     make_login_response,
 )
@@ -126,7 +127,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     response_model=UserInfo,
     summary="Return current user info decoded from token",
 )
-async def me(user: TokenData = Depends(get_current_user)):
+async def me(user: TokenData = Depends(get_authed_user)):
     """
     Returns the identity and role extracted from the Bearer JWT.
     Useful for verifying a token is valid and checking its role.
@@ -139,7 +140,7 @@ async def me(user: TokenData = Depends(get_current_user)):
     response_model=TokenResponse,
     summary="Refresh a (non-expired) token",
 )
-async def refresh(user: TokenData = Depends(get_current_user)):
+async def refresh(user: TokenData = Depends(get_authed_user)):
     """
     Issues a fresh token with a new expiry, keeping the same subject and role.
     Only works if the current token is still valid (not yet expired).
