@@ -12,8 +12,8 @@ Mount with::
 Authentication:
   All endpoints require authentication via the unified auth dependency
   (Clerk JWT → local JWT → API key → dev bypass). Auth levels:
-    - get_authed_user: Read endpoints + tick ingestion (any role)
-    - require_write: State mutations — /regime, /equity (admin/trader)
+    - get_authed_user: Read-only endpoints — state, stats, bricks, etc. (any role)
+    - require_write: Mutations — tick ingestion, backtests, regime, equity (admin/trader)
     - require_admin: Destructive — /config, /reset (admin only)
 
 Discord notifications:
@@ -230,7 +230,7 @@ if FASTAPI_AVAILABLE:
 
     @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick")
-    async def process_tick(request: Request, body: TickInput, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def process_tick(request: Request, body: TickInput, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
         pipeline = _get_pipeline(symbol)
@@ -243,7 +243,7 @@ if FASTAPI_AVAILABLE:
 
     @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick/batch")
-    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up)."""
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
@@ -364,7 +364,7 @@ if FASTAPI_AVAILABLE:
         return pipeline.journal.get_stats()
 
     @renko_router.post("/backtest/run")
-    async def run_backtest(request: Request, body: BacktestRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def run_backtest(request: Request, body: BacktestRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
         """Run a full backtest with Phase 2-7 analytics."""
         symbol = body.symbol or "SPY"
         config = RenkoConfig(
@@ -396,7 +396,7 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.post("/backtest/run/stream")
-    async def run_backtest_stream(request: Request, body: BacktestStreamRequest, user: TokenData = Depends(get_authed_user)):
+    async def run_backtest_stream(request: Request, body: BacktestStreamRequest, user: TokenData = Depends(require_write)):
         """Run a backtest with SSE streaming (Phase 1)."""
         from fastapi.responses import StreamingResponse
         import json
@@ -431,7 +431,7 @@ if FASTAPI_AVAILABLE:
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     @renko_router.post("/backtest/optimize")
-    async def optimize_backtest(request: Request, body: OptimizationRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def optimize_backtest(request: Request, body: OptimizationRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
         """Run parameter sweep optimization with Phase 6 statistical rigor."""
         import numpy as np
         from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio

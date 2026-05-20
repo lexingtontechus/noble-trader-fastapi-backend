@@ -25,7 +25,7 @@ import json
 import time
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
 from fastapi.responses import StreamingResponse
 from typing import Optional
 
@@ -33,7 +33,7 @@ from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM
 from ..services.stream_session import RegimeAlert
 from ..models.stream_schemas import WsMessage
-from ..auth.jwt_auth import ws_auth, WebSocketAuthError
+from ..auth.jwt_auth import ws_auth, WebSocketAuthError, get_authed_user, TokenData
 
 import logging
 _log = logging.getLogger("regime.stream")
@@ -185,7 +185,7 @@ async def websocket_stream(
     summary="Server-Sent Events stream for a symbol",
     response_class=StreamingResponse,
 )
-async def sse_symbol(symbol: str):
+async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
     """
     SSE stream that pushes a JSON regime snapshot on every tick received
     by the server for `symbol`. Subscribe from any browser with EventSource.
@@ -225,7 +225,7 @@ async def sse_symbol(symbol: str):
     summary="Global SSE stream for all regime-change alerts across all symbols",
     response_class=StreamingResponse,
 )
-async def sse_alerts():
+async def sse_alerts(user: TokenData = Depends(get_authed_user)):
     """
     Broadcasts regime-change alerts for all symbols to connected listeners.
     Only fires on regime state transitions (not every tick).
