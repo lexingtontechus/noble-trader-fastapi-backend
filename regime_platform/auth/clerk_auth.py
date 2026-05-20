@@ -112,6 +112,7 @@ class ClerkTokenData:
         exp: Optional[datetime] = None,
         iat: Optional[datetime] = None,
         claims: Optional[dict] = None,
+        org_id: Optional[str] = None,
     ):
         self.sub = sub
         self.role = role
@@ -122,6 +123,7 @@ class ClerkTokenData:
         self.exp = exp
         self.iat = iat
         self.claims = claims or {}
+        self.org_id = org_id
 
     @property
     def is_admin(self) -> bool:
@@ -142,6 +144,7 @@ class ClerkTokenData:
             "first_name": self.first_name,
             "last_name": self.last_name,
             "username": self.username,
+            "org_id": self.org_id,
         }
 
 
@@ -389,6 +392,7 @@ def verify_clerk_token(token: str) -> ClerkTokenData:
 
         # Extract Clerk-specific claims
         role = payload.get("role", "viewer")
+        org_id = payload.get("org_id")
 
         # Extract user metadata if available in token
         email = payload.get("email") or payload.get("email_addresses", [{}])[0].get(
@@ -417,6 +421,7 @@ def verify_clerk_token(token: str) -> ClerkTokenData:
             exp=exp,
             iat=iat,
             claims=payload,
+            org_id=str(org_id) if org_id else None,
         )
 
     except HTTPException:

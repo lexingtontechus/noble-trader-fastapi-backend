@@ -34,6 +34,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel
 
+from regime_platform.core.tenant import tenant_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,8 +63,8 @@ class ModeState(BaseModel):
 class ModeManager:
     """Redis-backed trading mode manager with confirmation gates."""
 
-    MODE_KEY = "noble:trading:mode"
-    TOKEN_PREFIX = "noble:trading:mode_token:"
+    MODE_BASE_KEY = "noble:trading:mode"
+    TOKEN_BASE_KEY = "noble:trading:mode_token"
     TOKEN_TTL = 300  # 5 minutes
 
     # Required acknowledgment text for live mode activation
@@ -101,7 +103,7 @@ class ModeManager:
                 pass
             self._redis = None
 
-    async def get_current_mode(self) -> TradingMode:
+    async def get_current_mode(self, org_id: Optional[str] = None) -> TradingMode:
         """Get current trading mode. Defaults to PAPER if not set."""
         # Check cache first
         if self._cached_state:
@@ -109,9 +111,10 @@ class ModeManager:
 
         # Try Redis
         client = await self._get_client()
+        mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         if client:
             try:
-                data = await client.get(self.MODE_KEY)
+                data = await client.get(mode_key)
                 if data:
                     state = ModeState.model_validate_json(data)
                     self._cached_state = state
@@ -133,15 +136,16 @@ class ModeManager:
         # Default to paper for safety
         return TradingMode.PAPER
 
-    async def get_mode_state(self) -> ModeState:
+    async def get_mode_state(self, org_id: Optional[str] = None) -> ModeState:
         """Get full mode state including change history."""
         if self._cached_state:
             return self._cached_state
 
         client = await self._get_client()
+        mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         if client:
             try:
-                data = await client.get(self.MODE_KEY)
+                data = await client.get(mode_key)
                 if data:
                     state = ModeState.model_validate_json(data)
                     self._cached_state = state
@@ -160,6 +164,7 @@ class ModeManager:
         self,
         target_mode: TradingMode,
         requested_by: str,
+        org_id: Optional[str] = None,
     ) -> ModeChangeRequest:
         """
         Request a mode change. Generates a confirmation token that must be
@@ -167,7 +172,7 @@ class ModeManager:
         
         Returns ModeChangeRequest with confirmation_token.
         """
-        current = await self.get_current_mode()
+        current = await self.get_current_mode(org_id=org_id)
 
         # Validate transition
         if current == target_mode:
@@ -193,8 +198,9 @@ class ModeManager:
                     requested_at=datetime.now(timezone.utc),
                     confirmation_token=token,
                 )
+                token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{token}", org_id=org_id)
                 await client.set(
-                    f"{self.TOKEN_PREFIX}{token}",
+                    token_key,
                     token_data.model_dump_json(),
                     ex=self.TOKEN_TTL,
                 )
@@ -219,6 +225,7 @@ class ModeManager:
         confirmation_token: str,
         acknowledged_by: str,
         acknowledgment_text: str,
+        org_id: Optional[str] = None,
     ) -> ModeState:
         """
         Confirm a mode change using the token from request_mode_change().
@@ -234,7 +241,7 @@ class ModeManager:
             raise RuntimeError("Redis unavailable — cannot confirm mode change")
 
         try:
-            token_key = f"{self.TOKEN_PREFIX}{confirmation_token}"
+            token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{confirmation_token}", org_id=org_id)
             token_data = await client.get(token_key)
             if not token_data:
                 raise ValueError("Invalid or expired confirmation token")
@@ -261,7 +268,7 @@ class ModeManager:
                 )
 
         # Execute mode change
-        current = await self.get_current_mode()
+        current = await self.get_current_mode(org_id=org_id)
         new_state = ModeState(
             current_mode=request.target_mode,
             last_changed_at=datetime.now(timezone.utc),
@@ -273,8 +280,9 @@ class ModeManager:
         await self._switch_executor_mode(request.target_mode)
 
         # Save new state to Redis (no TTL — persistent)
+        mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         try:
-            await client.set(self.MODE_KEY, new_state.model_dump_json())
+            await client.set(mode_key, new_state.model_dump_json())
             # Delete used token
             await client.delete(token_key)
         except Exception as e:
@@ -284,7 +292,7 @@ class ModeManager:
         self._cached_state = new_state
 
         # Audit log the mode change
-        await self._audit_mode_change(current, request.target_mode, acknowledged_by)
+        await self._audit_mode_change(current, request.target_mode, acknowledged_by, org_id=org_id)
 
         logger.warning(
             f"ModeManager: MODE CHANGED {current.value} → {request.target_mode.value} "
@@ -368,6 +376,7 @@ class ModeManager:
         from_mode: TradingMode,
         to_mode: TradingMode,
         changed_by: str,
+        org_id: Optional[str] = None,
     ):
         """Log mode change to audit trail."""
         try:
@@ -377,6 +386,7 @@ class ModeManager:
             await audit_logger.log_event(
                 event_type=AuditEventType.MODE_CHANGED,
                 user_id=changed_by,
+                org_id=org_id,
                 metadata={
                     "from_mode": from_mode.value,
                     "to_mode": to_mode.value,

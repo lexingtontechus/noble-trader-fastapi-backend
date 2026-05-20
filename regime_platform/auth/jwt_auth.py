@@ -58,10 +58,11 @@ AUTH_ENABLED    = settings.AUTH_ENABLED
 # ── Token data model ──────────────────────────────────────────────────────────
 
 class TokenData:
-    def __init__(self, sub: str, role: str = "viewer", exp: Optional[datetime] = None):
-        self.sub  = sub    # subject / user ID
-        self.role = role   # "admin" | "trader" | "viewer"
-        self.exp  = exp
+    def __init__(self, sub: str, role: str = "viewer", exp: Optional[datetime] = None, org_id: Optional[str] = None):
+        self.sub    = sub      # subject / user ID
+        self.role   = role     # "admin" | "trader" | "viewer"
+        self.exp    = exp
+        self.org_id = org_id   # Clerk Org ID (None when not using Orgs)
 
     @property
     def is_admin(self) -> bool:
@@ -130,12 +131,13 @@ def decode_token(token: str) -> TokenData:
 
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        sub  = payload.get("sub")
-        role = payload.get("role", "viewer")
-        exp  = payload.get("exp")
+        sub    = payload.get("sub")
+        role   = payload.get("role", "viewer")
+        exp    = payload.get("exp")
+        org_id = payload.get("org_id")
         if sub is None:
             raise HTTPException(status_code=401, detail="Token missing 'sub' claim")
-        return TokenData(sub=str(sub), role=str(role))
+        return TokenData(sub=str(sub), role=str(role), org_id=org_id)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -237,6 +239,7 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
                 return TokenData(
                     sub=clerk_user.sub,
                     role=clerk_user.role if clerk_user.role else "authenticated",
+                    org_id=clerk_user.org_id,
                 )
         except Exception:
             pass  # Not a Clerk token or can't decode

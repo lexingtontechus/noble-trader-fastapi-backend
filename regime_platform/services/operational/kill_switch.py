@@ -24,6 +24,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel
 
+from regime_platform.core.tenant import tenant_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,9 +56,9 @@ class HaltRecord(BaseModel):
 class KillSwitchService:
     """Redis-backed kill switch with in-memory cache for hot-path checks."""
 
-    GLOBAL_KEY = "noble:halt:global"
-    USER_KEY_PREFIX = "noble:halt:user:"
-    SYMBOL_KEY_PREFIX = "noble:halt:symbol:"
+    GLOBAL_BASE_KEY = "noble:halt:global"
+    USER_BASE_KEY = "noble:halt:user"
+    SYMBOL_BASE_KEY = "noble:halt:symbol"
 
     def __init__(self):
         self._redis = None
@@ -118,23 +120,28 @@ class KillSwitchService:
                 logger.error(f"KillSwitch: Cache refresh error: {e}")
             await asyncio.sleep(5)
 
-    async def _refresh_cache(self):
+    async def _refresh_cache(
+        self,
+        org_id: Optional[str] = None,
+    ):
         """Read all halt states from Redis into in-memory cache."""
         client = await self._get_client()
         if not client:
             return
         try:
             # Global halt
-            global_data = await client.get(self.GLOBAL_KEY)
-            self._cache[self.GLOBAL_KEY] = (
+            global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
+            global_data = await client.get(global_key)
+            self._cache[global_key] = (
                 HaltRecord.model_validate_json(global_data) if global_data else None
             )
 
-            # User halts - scan for noble:halt:user:*
+            # User halts - scan for noble:halt:user*
+            user_prefix = tenant_key(self.USER_BASE_KEY, org_id=org_id)
             cursor = 0
             while True:
                 cursor, keys = await client.scan(
-                    cursor, match=f"{self.USER_KEY_PREFIX}*", count=100
+                    cursor, match=f"{user_prefix}*", count=100
                 )
                 for key in keys:
                     data = await client.get(key)
@@ -144,11 +151,12 @@ class KillSwitchService:
                 if cursor == 0:
                     break
 
-            # Symbol halts - scan for noble:halt:symbol:*
+            # Symbol halts - scan for noble:halt:symbol*
+            symbol_prefix = tenant_key(self.SYMBOL_BASE_KEY, org_id=org_id)
             cursor = 0
             while True:
                 cursor, keys = await client.scan(
-                    cursor, match=f"{self.SYMBOL_KEY_PREFIX}*", count=100
+                    cursor, match=f"{symbol_prefix}*", count=100
                 )
                 for key in keys:
                     data = await client.get(key)
@@ -167,6 +175,7 @@ class KillSwitchService:
         self,
         user_id: Optional[str] = None,
         symbol: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> bool:
         """
         Check if trading is halted. O(1) from in-memory cache.
@@ -175,18 +184,19 @@ class KillSwitchService:
         If ANY tier is halted, returns True.
         """
         # Global halt
-        if self._cache.get(self.GLOBAL_KEY) is not None:
+        global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
+        if self._cache.get(global_key) is not None:
             return True
 
         # User halt
         if user_id:
-            user_key = f"{self.USER_KEY_PREFIX}{user_id}"
+            user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
             if self._cache.get(user_key) is not None:
                 return True
 
         # Symbol halt
         if symbol:
-            sym_key = f"{self.SYMBOL_KEY_PREFIX}{symbol.upper()}"
+            sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
             if self._cache.get(sym_key) is not None:
                 return True
 
@@ -196,20 +206,24 @@ class KillSwitchService:
         self,
         user_id: Optional[str] = None,
         symbol: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> Optional[HaltRecord]:
         """Get the most specific active halt record (for error messages)."""
         # Check in priority order: global > user > symbol
-        global_halt = self._cache.get(self.GLOBAL_KEY)
+        global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
+        global_halt = self._cache.get(global_key)
         if global_halt:
             return global_halt
 
         if user_id:
-            user_halt = self._cache.get(f"{self.USER_KEY_PREFIX}{user_id}")
+            user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
+            user_halt = self._cache.get(user_key)
             if user_halt:
                 return user_halt
 
         if symbol:
-            sym_halt = self._cache.get(f"{self.SYMBOL_KEY_PREFIX}{symbol.upper()}")
+            sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
+            sym_halt = self._cache.get(sym_key)
             if sym_halt:
                 return sym_halt
 
@@ -224,6 +238,7 @@ class KillSwitchService:
         triggered_by: str,
         scope: Optional[str] = None,
         notes: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> HaltRecord:
         """Activate a halt at the specified level."""
         record = HaltRecord(
@@ -235,7 +250,7 @@ class KillSwitchService:
             notes=notes,
         )
 
-        key = self._get_key(level, scope)
+        key = self._get_key(level, scope, org_id=org_id)
         record_json = record.model_dump_json()
 
         # Write to Redis
@@ -243,7 +258,7 @@ class KillSwitchService:
         if client:
             try:
                 await client.set(key, record_json)
-                logger.warning(f"KillSwitch: HALT ACTIVATED — {level.value} scope={scope} reason={reason.value} by={triggered_by}")
+                logger.warning(f"KillSwitch: HALT ACTIVATED — {level.value} scope={scope} reason={reason.value} by={triggered_by} org={org_id}")
             except Exception as e:
                 logger.error(f"KillSwitch: Failed to write halt to Redis: {e}")
 
@@ -257,16 +272,17 @@ class KillSwitchService:
         level: HaltLevel,
         scope: Optional[str] = None,
         deactivated_by: str = "unknown",
+        org_id: Optional[str] = None,
     ) -> bool:
         """Deactivate a halt at the specified level."""
-        key = self._get_key(level, scope)
+        key = self._get_key(level, scope, org_id=org_id)
 
         # Remove from Redis
         client = await self._get_client()
         if client:
             try:
                 await client.delete(key)
-                logger.info(f"KillSwitch: HALT DEACTIVATED — {level.value} scope={scope} by={deactivated_by}")
+                logger.info(f"KillSwitch: HALT DEACTIVATED — {level.value} scope={scope} by={deactivated_by} org={org_id}")
             except Exception as e:
                 logger.error(f"KillSwitch: Failed to remove halt from Redis: {e}")
 
@@ -332,14 +348,14 @@ class KillSwitchService:
 
     # ── Helpers ──
 
-    def _get_key(self, level: HaltLevel, scope: Optional[str] = None) -> str:
+    def _get_key(self, level: HaltLevel, scope: Optional[str] = None, org_id: Optional[str] = None) -> str:
         if level == HaltLevel.GLOBAL_HALT:
-            return self.GLOBAL_KEY
+            return tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
         elif level == HaltLevel.USER_HALT:
-            return f"{self.USER_KEY_PREFIX}{scope}"
+            return tenant_key(f"{self.USER_BASE_KEY}:{scope}", org_id=org_id, user_id=scope if not org_id else None)
         elif level == HaltLevel.SYMBOL_HALT:
-            return f"{self.SYMBOL_KEY_PREFIX}{scope.upper()}"
-        return self.GLOBAL_KEY
+            return tenant_key(f"{self.SYMBOL_BASE_KEY}:{scope.upper()}", org_id=org_id)
+        return tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
 
 
 # Module-level singleton

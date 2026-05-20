@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
     ALPACA_LIVE_BASE_URL: str = "https://api.alpaca.markets"
     ALPACA_PAPER_BASE_URL: str = "https://paper-api.alpaca.markets"
+    ALPACA_RATE_LIMIT: int = 200        # Max Alpaca API requests per period
+    ALPACA_RATE_PERIOD: int = 60         # Rate limit period in seconds
 
     # ── Binance ─────────────────────────────────────────────────────────────
     BINANCE_TESTNET: bool = False

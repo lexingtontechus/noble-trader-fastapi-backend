@@ -67,6 +67,7 @@ DISCORD_CRITICAL_EVENTS = {
 class AuditEvent(BaseModel):
     event_type: AuditEventType
     user_id: str
+    org_id: Optional[str] = None
     symbol: Optional[str] = None
     order_id: Optional[str] = None
     direction: Optional[str] = None
@@ -126,6 +127,7 @@ class AuditLogger:
         self,
         event_type: AuditEventType,
         user_id: str,
+        org_id: Optional[str] = None,
         symbol: Optional[str] = None,
         order_id: Optional[str] = None,
         direction: Optional[str] = None,
@@ -147,6 +149,7 @@ class AuditLogger:
         event = AuditEvent(
             event_type=event_type,
             user_id=user_id,
+            org_id=org_id,
             symbol=symbol,
             order_id=order_id,
             direction=direction,
@@ -162,7 +165,7 @@ class AuditLogger:
 
         # 1. Always log to Python logging
         log_msg = (
-            f"AUDIT | {event_type.value} | user={user_id} "
+            f"AUDIT | {event_type.value} | user={user_id} org={org_id} "
             f"symbol={symbol} order={order_id} dir={direction} "
             f"qty={quantity} price={price}"
         )
@@ -179,6 +182,7 @@ class AuditLogger:
                 payload = {
                     "event_type": event_type.value,
                     "user_id": user_id,
+                    "org_id": org_id,
                     "symbol": symbol,
                     "order_id": order_id,
                     "direction": direction,
@@ -313,6 +317,7 @@ class AuditLogger:
             from notifications.discord import discord_notifier
             message = (
                 f"**{event.event_type.value}** | "
+                f"Org: {event.org_id or 'N/A'} | "
                 f"User: {event.user_id} | "
                 f"Symbol: {event.symbol or 'N/A'} | "
                 f"Order: {event.order_id or 'N/A'} | "
