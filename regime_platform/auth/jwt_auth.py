@@ -217,40 +217,60 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
     Returns TokenData if successful, None if not a Clerk token.
     """
     try:
-        from .clerk_auth import verify_clerk_token
-        
-        # Check if token looks like a Clerk JWT by examining the issuer
-        # Clerk JWTs have an "iss" claim like https://xxx.clerk.accounts.dev
-        try:
-            import jwt as _jwt
-            payload = _jwt.decode(
-                token,
-                options={
-                    "verify_signature": False,
-                    "verify_exp": False,
-                    "verify_aud": False,
-                },
-                algorithms=["RS256", "HS256"],
-            )
-            iss = payload.get("iss", "")
-            # Only try Clerk verification if the issuer looks like a Clerk domain
-            if "clerk" in iss.lower() or ".accounts.dev" in iss.lower():
-                clerk_user = verify_clerk_token(token)
-                # verify_clerk_token now does privateMetadata role lookup,
-                # so clerk_user.role should be correct (admin/trader/viewer).
-                # Fallback to "viewer" only if something unexpected happens.
-                return TokenData(
-                    sub=clerk_user.sub,
-                    role=clerk_user.role if clerk_user.role in ("admin", "trader", "viewer") else "viewer",
-                    org_id=clerk_user.org_id,
-                )
-        except Exception:
-            pass  # Not a Clerk token or can't decode
-            
+        from .clerk_auth import verify_clerk_token, CLERK_AUTH_ENABLED
     except ImportError:
         log.debug("clerk_auth module not importable; skipping Clerk verification")
-    
-    return None
+        return None
+
+    if not CLERK_AUTH_ENABLED:
+        return None
+
+    # Check if token looks like a Clerk JWT by examining the issuer
+    # Clerk JWTs have an "iss" claim like https://xxx.clerk.accounts.dev
+    try:
+        import jwt as _jwt
+        payload = _jwt.decode(
+            token,
+            key="",            # Required by some PyJWT versions even with verify_signature=False
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+            algorithms=["RS256", "HS256"],
+        )
+    except Exception as e:
+        # Can't decode at all — probably not a JWT, move on
+        log.debug(f"Cannot decode token for issuer check: {e}")
+        return None
+
+    iss = payload.get("iss", "")
+    if "clerk" not in iss.lower() and ".accounts.dev" not in iss.lower():
+        log.debug(f"Token issuer '{iss}' is not a Clerk domain — skipping Clerk verification")
+        return None
+
+    # Issuer is a Clerk domain — attempt full verification
+    try:
+        clerk_user = verify_clerk_token(token)
+        # verify_clerk_token now does privateMetadata role lookup,
+        # so clerk_user.role should be correct (admin/trader/viewer).
+        # Fallback to "viewer" only if something unexpected happens.
+        role = clerk_user.role if clerk_user.role in ("admin", "trader", "viewer") else "viewer"
+        log.info(f"Clerk JWT verified: sub={clerk_user.sub}, role={role}")
+        return TokenData(
+            sub=clerk_user.sub,
+            role=role,
+            org_id=clerk_user.org_id,
+        )
+    except HTTPException as e:
+        # Clerk verification failed with a known HTTP error (e.g. expired token, invalid signature)
+        # Re-raise this so the caller gets a proper 401 instead of falling through to local JWT
+        log.warning(f"Clerk token verification failed (HTTP {e.status_code}): {e.detail}")
+        raise
+    except Exception as e:
+        # Unexpected error — log it and fall through to local JWT
+        log.error(f"Unexpected error during Clerk verification: {type(e).__name__}: {e}")
+        return None
 
 
 async def get_authed_user(
@@ -289,9 +309,14 @@ async def get_authed_user(
     token = credentials.credentials
 
     # Try Clerk JWT verification first (dynamic — works with any Clerk instance)
-    clerk_result = _try_clerk_verification(token)
-    if clerk_result:
-        return clerk_result
+    # NOTE: _try_clerk_verification may raise HTTPException (e.g. expired Clerk token)
+    # which we should propagate rather than falling through to local JWT.
+    try:
+        clerk_result = _try_clerk_verification(token)
+        if clerk_result:
+            return clerk_result
+    except HTTPException:
+        raise  # Re-raise Clerk auth errors (expired, invalid signature, etc.)
 
     # Fall back to local JWT verification
     if JWT_SECRET_KEY:
@@ -359,9 +384,12 @@ async def ws_auth(
     # Query-param JWT / Clerk JWT
     if token:
         # Try Clerk verification first (dynamic)
-        clerk_result = _try_clerk_verification(token)
-        if clerk_result:
-            return clerk_result
+        try:
+            clerk_result = _try_clerk_verification(token)
+            if clerk_result:
+                return clerk_result
+        except HTTPException:
+            raise WebSocketAuthError("Clerk token verification failed")
 
         # Fall back to local JWT
         if JWT_SECRET_KEY:
