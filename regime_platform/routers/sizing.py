@@ -13,7 +13,7 @@ from ..core.position_sizer import (
     PositionSizer, PositionRequest,
     DynamicMasanielloSizer, SizingConfig, TradeContext,
 )
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
@@ -22,7 +22,7 @@ sizer  = PositionSizer()
 
 
 @router.post("/kelly", response_model=SizeResponse, summary="Regime-aware Kelly position sizing")
-async def kelly_size(req: SizeRequest):
+async def kelly_size(req: SizeRequest, user: TokenData = Depends(require_write)):
     """
     Computes fractional Kelly position size, optionally scaled by:
     - Current realised volatility vs target volatility
@@ -72,7 +72,7 @@ async def kelly_size(req: SizeRequest):
 async def masaniello_size(
     request: Request,
     req: MasanielloSizeRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Computes position size using the Dynamic Masaniello formula:
@@ -177,7 +177,7 @@ async def masaniello_size(
 async def masaniello_batch(
     request: Request,
     req: MasanielloBatchRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Sizes an entire batch of trades sequentially, with batch state
@@ -288,7 +288,7 @@ async def masaniello_batch(
 async def masaniello_portfolio(
     request: Request,
     req: PortfolioMasanielloRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Two-stage pipeline for multi-asset position sizing:

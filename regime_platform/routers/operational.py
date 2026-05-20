@@ -37,7 +37,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
 
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.jwt_auth import get_authed_user, require_admin, require_write, TokenData
 from ..core.exceptions import raise_http_exception
 from ..middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from ..services.operational.kill_switch import (
@@ -114,7 +114,7 @@ async def get_kill_switch_status(
 async def activate_halt(
     request: Request,
     req: HaltActivateRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_admin),
 ):
     """
     Activate a halt at the specified level.
@@ -155,7 +155,7 @@ async def activate_halt(
 async def deactivate_halt(
     request: Request,
     req: HaltDeactivateRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_admin),
 ):
     """Deactivate a halt at the specified level."""
     try:
@@ -185,7 +185,7 @@ async def deactivate_halt(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def cancel_all_orders(
     request: Request,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_admin),
 ):
     """Cancel ALL open orders across all symbols. Use in emergencies only."""
     try:
@@ -207,7 +207,7 @@ async def cancel_all_orders(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def close_all_positions(
     request: Request,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_admin),
 ):
     """Close ALL open positions. Use in emergencies only."""
     try:
@@ -352,7 +352,7 @@ async def get_trading_mode(
 async def request_mode_change(
     request: Request,
     req: ModeChangeRequestModel,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Request a mode change. Returns a confirmation token that must be
@@ -390,7 +390,7 @@ async def request_mode_change(
 async def confirm_mode_change(
     request: Request,
     req: ModeConfirmRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Confirm a mode change. For LIVE mode, acknowledgment_text must be
@@ -434,7 +434,7 @@ async def get_reconciliation_status(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def run_reconciliation(
     request: Request,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Trigger a reconciliation of all orders from the last 24 hours.

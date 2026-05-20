@@ -1,6 +1,7 @@
 """Risk analysis endpoints."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
 from ..models.schemas import RiskRequest, RiskResponse, RiskAnalyzeRequest, RiskAnalyzeResponse, StressTestResult
 from ..core.regime_engine import RegimeHMM
@@ -16,7 +17,7 @@ riskman  = RiskManager()
 
 @limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post("/analyse", response_model=RiskResponse, summary="Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions")
-async def risk_analyse(request: Request, req: RiskRequest):
+async def risk_analyse(request: Request, req: RiskRequest, user: TokenData = Depends(require_write)):
     """
     Computes comprehensive risk metrics including parametric + historical VaR/CVaR,
     max drawdown, Sortino & Calmar ratios, and regime-adjusted stop-loss/take-profit.
@@ -74,7 +75,7 @@ async def risk_analyse(request: Request, req: RiskRequest):
     response_model=RiskAnalyzeResponse,
     summary="Enhanced risk analysis with VaR/CVaR, stress tests, and regime context",
 )
-async def risk_analyze(request: Request, req: RiskAnalyzeRequest):
+async def risk_analyze(request: Request, req: RiskAnalyzeRequest, user: TokenData = Depends(require_write)):
     """
     Enhanced risk analysis (US spelling endpoint):
     1. Full VaR/CVaR computation (parametric + historical)

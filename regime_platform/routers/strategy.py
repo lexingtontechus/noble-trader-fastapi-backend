@@ -1,6 +1,7 @@
 """Strategy signal endpoints — combines regime detection, Kelly sizing, and risk guidance."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
 from ..models.schemas import StrategySignalRequest, StrategySignalResponse
 from ..core.regime_engine import RegimeHMM
@@ -18,7 +19,7 @@ riskman = RiskManager()
     response_model=StrategySignalResponse,
     summary="Generate strategy signal with regime context and position sizing",
 )
-async def strategy_signal(req: StrategySignalRequest):
+async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(require_write)):
     """
     Full strategy signal pipeline:
     1. Fit HMM regime model → detect current regime

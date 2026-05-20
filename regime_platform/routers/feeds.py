@@ -22,7 +22,7 @@ from ..core.exceptions import raise_http_exception
 from ..adapters.feed_adapters import (
     FeedManager, AlpacaFeedAdapter, BinanceFeedAdapter, IBFeedAdapter
 )
-from ..auth.jwt_auth import require_write, TokenData
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 
 router  = APIRouter(prefix="/feeds", tags=["Feed Adapters"])
 log     = logging.getLogger("regime.feeds")
@@ -66,7 +66,7 @@ def _build_adapter(cfg: FeedConfig):
     response_model=FeedStatusResponse,
     summary="Get feed adapter status",
 )
-async def feed_status(user: TokenData = Depends(require_write)):
+async def feed_status(user: TokenData = Depends(get_authed_user)):
     """Returns running state and per-symbol bar counts for all active feed adapters."""
     global _manager, _manager_task
     if _manager is None:

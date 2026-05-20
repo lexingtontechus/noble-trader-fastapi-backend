@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from typing import Optional
 
-from ..auth import get_authed_user, TokenData
+from ..auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
 from ..core.backtester import Backtester, BacktestConfig
 from ..models.schemas import (
@@ -94,7 +94,7 @@ def _result_to_response(result, record_id: Optional[str] = None, created_at: Opt
 async def run_backtest(
     request: Request,
     req: BacktestRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Walk-forward backtest pipeline:
@@ -405,7 +405,7 @@ async def compare_backtests(
 )
 async def delete_backtest_result(
     backtest_id: str,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Delete a saved backtest result by ID.
@@ -430,7 +430,7 @@ async def delete_backtest_result(
 async def optimize_backtest(
     request: Request,
     req: BacktestOptimizeRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Grid-search parameter sweep for backtest optimization.

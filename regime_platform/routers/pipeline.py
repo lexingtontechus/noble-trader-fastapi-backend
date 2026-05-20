@@ -1,6 +1,7 @@
 """Full pipeline: regime → sizing → risk in one call."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
 from ..models.schemas import FullAnalysisRequest, FullAnalysisResponse, RegimeResponse, SizeResponse, RiskResponse
 from ..core.regime_engine import RegimeHMM
@@ -14,7 +15,7 @@ riskman = RiskManager()
 
 
 @router.post("/full", response_model=FullAnalysisResponse, summary="One-shot: regime + Kelly sizing + risk metrics")
-async def full_analysis(req: FullAnalysisRequest):
+async def full_analysis(req: FullAnalysisRequest, user: TokenData = Depends(require_write)):
     """
     Runs the complete pipeline in a single request:
     1. Fit HMM regime model → get vol/trend posteriors
