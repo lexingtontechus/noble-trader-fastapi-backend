@@ -1,6 +1,6 @@
 # Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-**Version:** 5.3.0  
+**Version:** 5.5.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
@@ -69,13 +69,34 @@ Each regime maps to a **risk_multiplier** [0.25 – 1.50] that scales the Kelly 
 
 ## Authentication
 
-The platform supports three authentication methods, tried in priority order:
+The platform supports four authentication methods, tried in priority order by the unified `get_authed_user()` dependency:
 
-1. **Clerk JWT** (primary) — verified via Clerk's JWKS endpoint
+1. **Clerk JWT** (primary) — verified via Clerk's JWKS endpoint. The BFF obtains JWTs via `POST /v1/sessions/{id}/tokens` with the "server" template (enriched with email, name, role claims). If the template isn't configured, the default JWT (sub/iss/exp only) is used, and the backend enriches null claims via the Clerk Backend API.
+
 2. **Local JWT** — signed with `JWT_SECRET_KEY`, issued via `/auth/token`
-3. **API Key** — `X-API-Key` header for service-to-service calls
 
-When `AUTH_ENABLED=false` (dev mode), all requests are treated as `admin`.
+3. **API Key** — `X-API-Key` header for service-to-service calls (cron jobs, background tasks)
+
+4. **Dev bypass** — When `AUTH_ENABLED=false`, all requests are treated as admin
+
+### JWT Template System
+
+The BFF frontend requests Clerk JWTs with a "server" template that injects email, first_name, last_name, username, and role into the token. When the template isn't available (not yet configured in Clerk Dashboard), the default JWT is used and the backend automatically enriches null claims by calling `GET /v1/users/{sub}` (cached 5 min per user).
+
+### Clerk API Enrichment
+
+When the JWT lacks email/name/username claims, `_enrich_from_clerk_api()` in `clerk_auth.py` fetches the user profile from the Clerk Backend API. This ensures `/auth/clerk/me` and `/auth/clerk/verify` always return complete user info, even without the JWT template configured.
+
+### Auth Level Summary
+
+All 57 endpoints now require authentication. Auth levels:
+
+| Level | Dependency | Description |
+|-------|-----------|-------------|
+| Public | None | `/`, `/health`, `/auth/token`, `/auth/clerk/verify`, `/auth/clerk/config` |
+| Any authenticated role | `get_authed_user` | Read-only GET endpoints (27 endpoints) |
+| Write (admin/trader) | `require_write` | Mutations, tick ingestion, backtests, regime updates (22 endpoints) |
+| Admin only | `require_admin` | Destructive ops — config, reset, kill-switch (4 endpoints) |
 
 ### Roles
 
@@ -1506,8 +1527,8 @@ The streaming subsystem provides real-time regime detection on live price data. 
 | GET | `/stream/sessions` | List all active streaming sessions | None |
 | GET | `/stream/session/{symbol}` | Get session status | None |
 | DELETE | `/stream/session/{symbol}` | Remove a streaming session | None |
-| GET | `/sse/{symbol}` | Server-Sent Events stream for a symbol | None |
-| GET | `/sse/alerts` | Global SSE stream for all regime-change alerts | None |
+| GET | `/sse/{symbol}` | Server-Sent Events stream for a symbol | Clerk/JWT |
+| GET | `/sse/alerts` | Global SSE stream for all regime-change alerts | Clerk/JWT |
 
 ### POST /stream/seed
 
@@ -1779,22 +1800,22 @@ Tick ──→ [Layer 1: Brick Engine] ──→ [Layer 2: Swing Classifier]
 
 ### Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/renko/tick` | Process single tick through 6-layer pipeline |
-| POST | `/renko/tick/batch` | Batch tick processing (backtest / warm-up) |
-| GET | `/renko/state` | Current pipeline state |
-| GET | `/renko/stats` | Comprehensive pipeline statistics |
-| GET | `/renko/bricks` | Recent Renko bricks |
-| GET | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) |
-| GET | `/renko/signals` | Pattern signals |
-| GET | `/renko/trades` | Trade journal |
-| GET | `/renko/swing-points` | Detected swing points |
-| POST | `/renko/regime` | Update HMM regime for gate filter |
-| POST | `/renko/equity` | Update account equity |
-| POST | `/renko/config` | Update pipeline configuration (resets pipeline) |
-| POST | `/renko/reset` | Reset pipeline for a symbol |
-| GET | `/renko/backtest/stats` | Backtest/trading statistics |
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/renko/tick` | Process single tick through 6-layer pipeline | admin/trader |
+| POST | `/renko/tick/batch` | Batch tick processing (backtest / warm-up) | admin/trader |
+| GET | `/renko/state` | Current pipeline state | any role |
+| GET | `/renko/stats` | Comprehensive pipeline statistics | any role |
+| GET | `/renko/bricks` | Recent Renko bricks | any role |
+| GET | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) | any role |
+| GET | `/renko/signals` | Pattern signals | any role |
+| GET | `/renko/trades` | Trade journal | any role |
+| GET | `/renko/swing-points` | Detected swing points | any role |
+| POST | `/renko/regime` | Update HMM regime for gate filter | admin/trader |
+| POST | `/renko/equity` | Update account equity | admin/trader |
+| POST | `/renko/config` | Update pipeline configuration (resets pipeline) | admin only |
+| POST | `/renko/reset` | Reset pipeline for a symbol | admin only |
+| GET | `/renko/backtest/stats` | Backtest/trading statistics | any role |
 
 All Renko endpoints accept an optional `symbol` query parameter (default `"SPY"`). The backend maintains one `RenkoPipeline` instance per symbol in memory.
 
@@ -1920,9 +1941,10 @@ Isolated Renko pipeline backtest endpoints that run on **standalone `RenkoPipeli
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/renko/backtest/run` | Run a full Renko pipeline backtest (isolated) | Clerk/JWT |
-| POST | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side | Clerk/JWT |
-| POST | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline | Clerk/JWT |
+| POST | `/renko/backtest/run` | Run a full Renko pipeline backtest (isolated) | admin/trader |
+| POST | `/renko/backtest/run/stream` | Stream a full Renko pipeline backtest (SSE) | admin/trader |
+| POST | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side | admin/trader |
+| POST | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline | admin/trader |
 
 All three endpoints are rate-limited under `RATE_LIMIT_WRITE`.
 

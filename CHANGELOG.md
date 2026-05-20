@@ -1,3 +1,49 @@
+## [3.4.0] — 2026-05-21
+
+### Fixed — Auth Hardening (All 57 Endpoints Now Protected)
+
+#### Critical: SSE Endpoints Had No Authentication
+- `GET /sse/{symbol}` — was completely unauthenticated; now requires `get_authed_user`
+- `GET /sse/alerts` — was completely unauthenticated; now requires `get_authed_user`
+- These endpoints exposed real-time regime data, risk metrics, and position info to anyone
+
+#### Renko Write Operations Upgraded from Viewer to Trader/Admin
+- `POST /renko/tick` — `get_authed_user` → `require_write` (viewers can no longer inject ticks)
+- `POST /renko/tick/batch` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/run` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/run/stream` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/optimize` — `get_authed_user` → `require_write`
+
+#### `regime_platform/routers/stream_ws.py` — Updated
+- Added `Depends` import and `get_authed_user`, `TokenData` imports from `jwt_auth`
+- Both SSE endpoints now accept `user: TokenData = Depends(get_authed_user)`
+
+#### `renko/router.py` — Updated
+- All mutation endpoints upgraded to `require_write` dependency
+- Updated docstring to reflect new auth levels
+
+### Added — Clerk JWT Template System + Backend Enrichment
+
+#### `regime_platform/auth/clerk_auth.py` — Updated
+- New `_enrich_from_clerk_api(sub)` function: calls `GET /v1/users/{sub}` when JWT claims are null
+- Extracts email, first_name, last_name, username from Clerk user profile
+- Reads role from `private_metadata.role` (matching frontend convention)
+- Results cached 5 minutes per user to limit Clerk API calls
+- Integrated into `verify_clerk_token()`: when email/name/username are all null, enrichment triggers automatically
+- This ensures `/auth/clerk/me` and `/auth/clerk/verify` always return complete user info
+
+#### Frontend JWT Resolution
+- `getClerkJWT()` in `fastapi-auth.js` now tries `"server"` JWT template first
+- Falls back to default JWT if template not configured
+- Updated all 7 `getClerkJWT()` locations across the codebase
+- Template adds email, first_name, last_name, username, role claims to the JWT
+
+### Changed
+- Auth level summary: 4 public (by design), 27 any-role, 22 write (admin/trader), 4 admin-only
+- All docs updated: API.md (v5.5.0), openapi.yaml (v5.5.0), CHANGELOG.md
+
+---
+
 ## [3.3.0] — 2026-05-19
 
 ### Added — SSE Streaming for Progressive/Chunked Backtest Loading

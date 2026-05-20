@@ -36,7 +36,7 @@ info:
     email: nobletrader@0xdweb.com
   license:
     name: MIT
-  version: 5.0.0
+  version: 5.5.0
 paths:
   /auth/token:
     post:
@@ -704,6 +704,9 @@ paths:
         \nExample JS:\n    const es = new EventSource('/sse/SPY');\n    es.onmessage\
         \ = e => console.log(JSON.parse(e.data));"
       operationId: sse_symbol_sse__symbol__get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       parameters:
       - name: symbol
         in: path
@@ -732,6 +735,9 @@ paths:
 
         Severity levels: info | warning | critical'
       operationId: sse_alerts_sse_alerts_get
+      security:
+      - HTTPBearer: []
+      - APIKeyHeader: []
       responses:
         '200':
           description: Successful Response
