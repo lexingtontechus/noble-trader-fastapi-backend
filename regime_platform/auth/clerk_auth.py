@@ -390,6 +390,96 @@ def _verify_token_with_jwks(token: str, jwks: dict, kid: Optional[str] = None) -
         )
 
 
+# ── Clerk API Enrichment ──────────────────────────────────────────────────────
+
+
+# Cache enriched user profiles to avoid hitting Clerk API on every request.
+# Keyed by Clerk user ID (sub). Values expire after _ENRICH_CACHE_SECONDS.
+_enrich_cache: dict[str, dict] = {}
+_enrich_cache_ttl: dict[str, float] = {}
+_ENRICH_CACHE_SECONDS = 300  # 5 minutes
+
+
+def _enrich_from_clerk_api(sub: str) -> dict:
+    """
+    Call the Clerk Backend API to fetch user profile info.
+
+    Used as a fallback when the JWT does not contain email/name claims
+    (i.e. the 'server' JWT template has not been configured yet).
+
+    Results are cached for 5 minutes per user to limit API calls.
+
+    Parameters
+    ----------
+    sub : str
+        The Clerk user ID (from the JWT's ``sub`` claim).
+
+    Returns
+    -------
+    dict
+        Enriched fields: email, first_name, last_name, username, role.
+        Empty dict on failure.
+    """
+    import httpx
+
+    now = datetime.now(timezone.utc).timestamp()
+
+    # Check cache
+    if sub in _enrich_cache and _enrich_cache_ttl.get(sub, 0) > now:
+        return _enrich_cache[sub]
+
+    if not CLERK_SECRET_KEY:
+        return {}
+
+    try:
+        res = httpx.get(
+            f"https://api.clerk.com/v1/users/{sub}",
+            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+            timeout=5.0,
+        )
+        if res.status_code != 200:
+            log.debug(f"Clerk API enrichment failed for {sub}: HTTP {res.status_code}")
+            return {}
+
+        user = res.json()
+
+        # Extract primary email
+        email = None
+        primary_id = user.get("primary_email_address_id")
+        for ea in user.get("email_addresses", []):
+            if ea.get("id") == primary_id:
+                email = ea.get("email_address")
+                break
+
+        # Extract role from private_metadata (matching our frontend convention)
+        role = None
+        private_meta = user.get("private_metadata", {})
+        if isinstance(private_meta, dict):
+            role = private_meta.get("role")
+
+        enriched = {
+            "email": email,
+            "first_name": user.get("first_name"),
+            "last_name": user.get("last_name"),
+            "username": user.get("username"),
+            "role": role,
+        }
+
+        # Cache the result
+        _enrich_cache[sub] = enriched
+        _enrich_cache_ttl[sub] = now + _ENRICH_CACHE_SECONDS
+
+        log.debug(f"Enriched Clerk user {sub} from API: email={email}, role={role}")
+        return enriched
+
+    except Exception as e:
+        log.warning(f"Clerk API enrichment failed for {sub}: {e}")
+        return {}
+
+
+# ── Token Verification ──────────────────────────────────────────────────────
+
+
 def verify_clerk_token(token: str) -> ClerkTokenData:
     """
     Verify a Clerk-issued JWT token.
@@ -476,6 +566,22 @@ def verify_clerk_token(token: str) -> ClerkTokenData:
         first_name = payload.get("first_name") or payload.get("firstName")
         last_name = payload.get("last_name") or payload.get("lastName")
         username = payload.get("username")
+
+        # ── Enrichment: if claims are missing, call Clerk API ──────────
+        # When the JWT template is not configured, the default token
+        # only has sub/iss/exp. We call GET /v1/users/{sub} to fill in
+        # email, name, and role from the user's Clerk profile.
+        needs_enrichment = not email and not first_name and not username
+        if needs_enrichment and CLERK_SECRET_KEY:
+            enriched = _enrich_from_clerk_api(sub)
+            if enriched:
+                email = email or enriched.get("email")
+                first_name = first_name or enriched.get("first_name")
+                last_name = last_name or enriched.get("last_name")
+                username = username or enriched.get("username")
+                # Only override role if it's the default and Clerk has one
+                if role == "viewer" and enriched.get("role"):
+                    role = enriched["role"]
 
         # Convert timestamps
         exp = payload.get("exp")
