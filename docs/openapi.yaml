@@ -10,15 +10,20 @@ info:
     \ | Portfolio-level correlation regime detection |\n| **Optimisation** | `scipy.optimize`\
     \ | Drawdown-controlled max-Sharpe portfolio |\n| **Dynamic Masaniello** | Adaptive\
     \ batch sizing | Progress-dependent position sizing with regime quality overlay\
+    \ |\n| **Renko HFT** | 6-layer pipeline | Brick construction, swing classification,\
+    \ pattern detection, signal filter, risk manager, execution |\n| **P&L Analytics**\
+    \ | Intraday tracking | Real-time P&L, risk dashboard, alerting |\n| **Operational\
+    \ Hardening** | Kill switch, audit log | Paper/live toggle, reconciliation, throttle\
     \ |\n| **GPU HMM** | `pomegranate` (optional) | 10-50x HMM speedup on CUDA/MPS\
     \ |\n| **API Framework** | `FastAPI` + `pydantic v2` | Typed, validated, auto-documented\
     \ REST API |\n\n## Regime Labels\n\nThe HMM produces a **2D regime** combining:\n\
-    - **Volatility**: `low` / `medium` / `high`\n- **Trend**: `bear` / `neutral` /\
-    \ `bull`\n\nCombined label example: `low_vol_bull`, `high_vol_bear`, etc.\n\n\
-    ## Risk Multiplier\n\nEach regime maps to a **risk_multiplier** [0.25 - 1.50]\
-    \ that scales the Kelly fraction:\n- `low_vol_bull` -> 1.5x (max risk-on)\n- `high_vol_bear`\
-    \ -> 0.25x (max defensive)\n\n## Authentication\n\nClerk JWT (primary) -> local\
-    \ JWT -> API key fallback.\n\n## Recommended Workflow\n\n```\nPOST /analyse/full\
+    - **Volatility**: `low` / `med_low` / `med_high` / `high`\n- **Trend**: `strong_bear`\
+    \ / `bear` / `bull` / `strong_bull`\n\nCombined label example: `low_vol_bull`,\
+    \ `high_vol_bear`, etc.\n\n\
+    ## Risk Multiplier\n\nEach regime maps to a **risk_multiplier** [0.10 - 1.75]\
+    \ that scales the Kelly fraction:\n- `low_vol_strong_bull` -> 1.75x (max risk-on)\n\
+    - `high_vol_strong_bear` -> 0.14x (max defensive)\n\n## Authentication\n\nClerk\
+    \ JWT (primary) -> local JWT -> API key fallback.\n\n## Recommended Workflow\n\n```\nPOST /analyse/full\
     \  ->  regime + sizing + risk in one call\nPOST /correlation/detect  ->  portfolio-level\
     \ correlation regime\nPOST /optimise/full  ->  correlation + optimisation one-shot\n\
     POST /optimise/masaniello  ->  portfolio optimise + per-asset Masaniello sizing\n\
@@ -36,7 +41,7 @@ info:
     email: nobletrader@0xdweb.com
   license:
     name: MIT
-  version: 5.5.0
+  version: 6.0.0
 paths:
   /auth/token:
     post:

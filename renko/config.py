@@ -69,6 +69,10 @@ class RenkoConfig:
     partial_exit_pct: float = 0.0      # 0 = no partial exit; 0.5 = close half at TP/2
     partial_exit_bricks: int = 3       # Bricks of profit for partial exit
 
+    # ── Execution Control ──────────────────────────────────────────
+    dry_run: bool = True               # Default True — never execute real orders without explicit opt-in
+    live_enabled: bool = False         # Master switch: must be True for any real order submission
+
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET
     use_bracket_orders: bool = True    # Alpaca native bracket orders

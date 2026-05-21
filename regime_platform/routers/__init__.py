@@ -9,6 +9,7 @@ from . import (
     observation,
     operational,
     pipeline,
+    pnl,
     portfolio,
     regime,
     risk,

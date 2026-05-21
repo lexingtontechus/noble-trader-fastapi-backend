@@ -166,6 +166,52 @@ class AccountUpdateEvent(PnlEvent):
         }
 
 
+@dataclass
+class PnlAlertEvent(PnlEvent):
+    """Pushed when a P&L alert threshold is breached."""
+    event: str = "pnl_alert"
+    alert_id: str = ""
+    metric: str = ""
+    operator: str = ""
+    threshold_value: float = 0.0
+    current_value: float = 0.0
+    severity: str = "warning"
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "event": self.event,
+            "timestamp": self.timestamp,
+            "data": {
+                "alert_id": self.alert_id,
+                "metric": self.metric,
+                "operator": self.operator,
+                "threshold_value": self.threshold_value,
+                "current_value": self.current_value,
+                "severity": self.severity,
+                "message": self.message,
+            },
+        }
+
+
+@dataclass
+class CredentialsErrorEvent(PnlEvent):
+    """Pushed when Alpaca credentials fail (expired, revoked, or invalid)."""
+    event: str = "credentials_error"
+    reason: str = ""
+    stream_type: str = ""  # "trade" or "data"
+
+    def to_dict(self) -> dict:
+        return {
+            "event": self.event,
+            "timestamp": self.timestamp,
+            "data": {
+                "reason": self.reason,
+                "stream_type": self.stream_type,
+            },
+        }
+
+
 # ─── Per-User Stream State ───────────────────────────────────────────────────
 
 @dataclass
@@ -228,18 +274,56 @@ class UserStream:
 
 # ─── Credential Resolution ───────────────────────────────────────────────────
 
-async def resolve_alpaca_credentials(user_id: str) -> Optional[tuple[str, str, str]]:
+async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Optional[tuple[str, str, str]]:
     """
-    Resolve Alpaca API credentials for a user.
+    Resolve Alpaca API credentials for a user (optionally within an org context).
 
     Priority:
-      1. Supabase credentials table (per-user, AES-256-GCM encrypted)
-      2. Global ALPACA_API_KEY / ALPACA_SECRET_KEY env vars (fallback)
+      1. Supabase credentials table — org-level keys (if org_id provided)
+      2. Supabase credentials table — user-level keys (per-user, encrypted)
+      3. Global ALPACA_API_KEY / ALPACA_SECRET_KEY env vars (fallback)
 
     Returns:
       (api_key, secret_key, base_url) or None if no keys found.
     """
-    # Try Supabase first
+    # Try Supabase — org-level credentials first
+    if settings.SUPABASE_URL and settings.SUPABASE_KEY and org_id:
+        try:
+            import httpx
+            supabase_url = f"{settings.SUPABASE_URL}/rest/v1/credentials"
+            headers = {
+                "apikey": settings.SUPABASE_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                "Content-Type": "application/json",
+            }
+            params = {
+                "select": "api_key,secret_key,credential_type",
+                "org_id": f"eq.{org_id}",
+                "is_valid": "eq.true",
+                "order": "credential_type.asc",  # paper first, live second
+                "limit": "1",
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(supabase_url, headers=headers, params=params)
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows:
+                        row = rows[0]
+                        api_key = row.get("api_key", "")
+                        secret_key = row.get("secret_key", "")
+                        if api_key and secret_key:
+                            cred_type = row.get("credential_type", "paper")
+                            base_url = (
+                                settings.ALPACA_LIVE_BASE_URL
+                                if cred_type == "live"
+                                else settings.ALPACA_PAPER_BASE_URL
+                            )
+                            log.info(f"Resolved org-level Alpaca credentials for org {org_id} via Supabase ({cred_type})")
+                            return (api_key, secret_key, base_url)
+        except Exception as e:
+            log.warning(f"Supabase org-level credential lookup failed for org {org_id}: {e}")
+
+    # Try Supabase — user-level credentials
     if settings.SUPABASE_URL and settings.SUPABASE_KEY:
         try:
             import httpx
@@ -413,9 +497,11 @@ class AlpacaStreamManager:
     # ─── Bootstrap: fetch current state via REST ──────────────────────────
 
     async def _bootstrap_positions(self, stream: UserStream) -> None:
-        """Fetch current positions and account data via Alpaca REST API."""
+        """Fetch current positions and account data via Alpaca REST API (rate-throttled)."""
         try:
             import httpx
+            from ..middleware.alpaca_throttle import get_alpaca_throttle
+
             account_url = f"{stream.base_url}/v2/account"
             positions_url = f"{stream.base_url}/v2/positions"
 
@@ -424,8 +510,11 @@ class AlpacaStreamManager:
                 "APCA-API-SECRET-KEY": stream.secret_key,
             }
 
+            throttle = get_alpaca_throttle()
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Fetch account
+                # Fetch account (rate-throttled)
+                await throttle.acquire(timeout=10.0)
                 acc_resp = await client.get(account_url, headers=headers)
                 if acc_resp.status_code == 200:
                     stream.account_cache = acc_resp.json()
@@ -438,7 +527,8 @@ class AlpacaStreamManager:
                         last_equity=stream.account_cache.get("last_equity", "0"),
                     ))
 
-                # Fetch positions
+                # Fetch positions (rate-throttled)
+                await throttle.acquire(timeout=10.0)
                 pos_resp = await client.get(positions_url, headers=headers)
                 if pos_resp.status_code == 200:
                     positions = pos_resp.json()
@@ -507,6 +597,10 @@ class AlpacaStreamManager:
                     auth_resp = json.loads(await ws.recv())
                     if auth_resp.get("data", {}).get("status") != "authorized":
                         log.error(f"Trade stream auth failed for user {stream.user_id}: {auth_resp}")
+                        await stream.broadcast(CredentialsErrorEvent(
+                            reason=f"Trade stream auth failed: {auth_resp.get('data', {}).get('status', 'unknown')}",
+                            stream_type="trade",
+                        ))
                         return
 
                     # Subscribe to trade updates and account updates
@@ -585,14 +679,24 @@ class AlpacaStreamManager:
             stream.account_cache.update(data)
 
     async def _refresh_position(self, stream: UserStream, symbol: str) -> None:
-        """Refresh a single position from Alpaca REST API."""
+        """Refresh a single position from Alpaca REST API (rate-throttled)."""
         try:
             import httpx
+            from ..middleware.alpaca_throttle import get_alpaca_throttle
+
             url = f"{stream.base_url}/v2/positions/{symbol}"
             headers = {
                 "APCA-API-KEY-ID": stream.api_key,
                 "APCA-API-SECRET-KEY": stream.secret_key,
             }
+
+            # Acquire throttle token before the API call
+            throttle = get_alpaca_throttle()
+            acquired = await throttle.acquire(timeout=5.0)
+            if not acquired:
+                log.debug(f"Position refresh skipped for {symbol}: throttle timeout")
+                return
+
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200:
@@ -672,6 +776,10 @@ class AlpacaStreamManager:
                     auth_resp = json.loads(await ws.recv())
                     if auth_resp.get("data", {}).get("status") != "authorized":
                         log.error(f"Data stream auth failed for user {stream.user_id}: {auth_resp}")
+                        await stream.broadcast(CredentialsErrorEvent(
+                            reason=f"Data stream auth failed: {auth_resp.get('data', {}).get('status', 'unknown')}",
+                            stream_type="data",
+                        ))
                         return
 
                     # Subscribe to quotes for held positions
@@ -778,6 +886,8 @@ class AlpacaStreamManager:
         Runs every 5 seconds while the stream is active.
         Provides a consistent aggregate view even if individual events
         are missed.
+
+        Also evaluates P&L alert thresholds and broadcasts triggered alerts.
         """
         while stream.running:
             try:
@@ -814,6 +924,30 @@ class AlpacaStreamManager:
                     day_pnl_pc=day_pnl_pc,
                     positions_count=positions_count,
                 ))
+
+                # ── Evaluate P&L alert thresholds ──
+                try:
+                    from .pnl_service import pnl_service
+                    positions_list = list(stream.positions_cache.values())
+                    triggered = await pnl_service.evaluate_and_broadcast(
+                        user_id=stream.user_id,
+                        account=stream.account_cache,
+                        positions=positions_list,
+                    )
+                    for alert in triggered:
+                        alert_event = PnlAlertEvent(
+                            alert_id=alert["id"],
+                            metric=alert["metric"],
+                            operator=alert["operator"],
+                            threshold_value=alert["threshold_value"],
+                            current_value=alert["current_value"],
+                            severity=alert["severity"],
+                            message=alert["message"],
+                        )
+                        await stream.broadcast(alert_event)
+                        log.info(f"P&L alert triggered for user {stream.user_id}: {alert['message']}")
+                except Exception as e:
+                    log.debug(f"Alert evaluation error: {e}")
 
             except asyncio.CancelledError:
                 break

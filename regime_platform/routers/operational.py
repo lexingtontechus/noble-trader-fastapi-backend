@@ -538,3 +538,22 @@ async def get_executor_status(
         }
     except Exception as e:
         raise_http_exception(e, "executor_status")
+
+
+@router.get(
+    "/throttle/status",
+    summary="Get Alpaca API rate throttle status",
+)
+async def get_throttle_status(
+    user: TokenData = Depends(get_authed_user),
+):
+    """
+    Returns the current Alpaca rate throttle status including:
+    remaining tokens, refill rate, and configuration.
+    """
+    try:
+        from ..middleware.alpaca_throttle import get_alpaca_throttle
+        throttle = get_alpaca_throttle()
+        return throttle.get_status()
+    except Exception as e:
+        raise_http_exception(e, "throttle_status")

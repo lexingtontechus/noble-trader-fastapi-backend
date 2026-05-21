@@ -167,6 +167,8 @@ class RenkoPipeline:
         self._last_signal: Optional[PatternSignal] = None
         self._last_filtered: Optional[FilteredSignal] = None
         self._pending_signal: Optional[FilteredSignal] = None
+        self._pending_execution: Optional[dict] = None   # Signal info for router to execute
+        self._pending_close: Optional[dict] = None        # Close info for router to execute
         self._brick_velocity: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────
@@ -297,6 +299,41 @@ class RenkoPipeline:
             "filter_rejections": len(self.signal_filter.rejected_signals),
         }
 
+    def snapshot(self) -> dict:
+        """
+        Capture a serializable snapshot of the pipeline state for persistence.
+        Includes: config, brick history, classified history, signal history,
+        trade journal, regime, equity, and filter stats.
+        """
+        return {
+            "config": self.config.to_dict(),
+            "brick_count": self.brick_engine.brick_count,
+            "current_direction": self.brick_engine.current_direction.value if self.brick_engine.current_direction else None,
+            "current_price": self.brick_engine.last_brick.close_price if self.brick_engine.last_brick else None,
+            "regime": self._current_regime,
+            "equity": self._current_equity,
+            "brick_velocity": self._brick_velocity,
+            "session_stats": self.signal_filter.session_stats,
+            "journal_stats": self.journal.get_stats(),
+            "snapshot_ts": time.time(),
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict) -> 'RenkoPipeline':
+        """
+        Restore a pipeline from a persisted snapshot.
+        Note: Full brick/trade history is NOT restored (only stats).
+        The pipeline will need re-warmup for full brick history,
+        but session stats and regime state are preserved.
+        """
+        config_data = data.get("config", {})
+        config = RenkoConfig(**{k: v for k, v in config_data.items() if k in RenkoConfig.__dataclass_fields__})
+        pipeline = cls(config)
+        pipeline._current_regime = data.get("regime")
+        pipeline._current_equity = data.get("equity", 100000.0)
+        pipeline._brick_velocity = data.get("brick_velocity", 0.0)
+        return pipeline
+
     def reset(self) -> None:
         """Reset all pipeline components."""
         self.brick_engine.reset()
@@ -311,6 +348,8 @@ class RenkoPipeline:
         self._last_signal = None
         self._last_filtered = None
         self._pending_signal = None
+        self._pending_execution = None
+        self._pending_close = None
         self._brick_velocity = 0.0
 
     # ── Backtest ──────────────────────────────────────────────────
@@ -340,6 +379,9 @@ class RenkoPipeline:
         self.reset()
         all_results = []
 
+        # Enable warmup mode for backtest (bypasses session/cooldown filters)
+        self.signal_filter.set_warmup_mode(True)
+
         for i, price in enumerate(prices):
             ts = timestamps[i] if timestamps else float(i)
             if regimes and i < len(regimes):
@@ -347,6 +389,9 @@ class RenkoPipeline:
 
             tick_result = self.process_tick(price, ts)
             all_results.append(tick_result)
+
+        # Disable warmup mode after backtest
+        self.signal_filter.set_warmup_mode(False)
 
         stats = self.get_stats()
         total_bricks = self.brick_engine.brick_count
@@ -423,7 +468,10 @@ class RenkoPipeline:
         """
         self.reset()
         total_ticks = len(prices)
-        
+
+        # Enable warmup mode for chunked backtest (bypasses session/cooldown filters)
+        self.signal_filter.set_warmup_mode(True)
+
         for i, price in enumerate(prices):
             ts = timestamps[i] if timestamps else float(i)
             if regimes and i < len(regimes):
@@ -446,6 +494,23 @@ class RenkoPipeline:
                     "stats_so_far": self.journal.get_stats(),
                 }
 
+        # Disable warmup mode after chunked backtest
+        self.signal_filter.set_warmup_mode(False)
+
+    # ── Pending Execution Interface (called by router) ─────────────
+
+    def consume_pending_execution(self) -> Optional[dict]:
+        """Get and clear the pending execution payload. Called by router after process_tick()."""
+        pending = self._pending_execution
+        self._pending_execution = None
+        return pending
+
+    def consume_pending_close(self) -> Optional[dict]:
+        """Get and clear the pending close payload. Called by router after process_tick()."""
+        pending = self._pending_close
+        self._pending_close = None
+        return pending
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _open_position(self, filtered: FilteredSignal, brick: Brick) -> None:
@@ -459,8 +524,14 @@ class RenkoPipeline:
                 entry_brick_idx=brick.index,
                 qty=1.0,  # Will be refined by executor
             )
-            # In live mode, also submit the order
-            # (async — would need to be scheduled differently in production)
+            # Store pending execution info for the router to pick up
+            self._pending_execution = {
+                "filtered": filtered,
+                "brick_size": self.config.get_brick_size(),
+                "sl_bricks": self.config.sl_bricks,
+                "tp_bricks": self.config.tp_bricks,
+                "symbol": self.config.symbol,
+            }
             logger.info(
                 f"Position opened: {filtered.original_signal.direction.value} "
                 f"at {filtered.original_signal.price:.2f}"
@@ -557,6 +628,12 @@ class RenkoPipeline:
             record.pnl_dollars = record.pnl_dollars - total_costs
             
             self.journal.record(record)
+
+        # Store pending close info for the router to pick up
+        self._pending_close = {
+            "symbol": self.config.symbol,
+            "trade_result": result,
+        }
 
         if self._on_trade:
             self._on_trade(result)

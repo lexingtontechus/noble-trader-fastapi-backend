@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v5.1.0       ║
+║     Dynamic Regime Risk Management Platform — FastAPI Service  v6.0.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -106,6 +106,8 @@ from regime_platform.routers import (
 )
 # Phase 8: Operational Hardening
 from regime_platform.routers import operational
+# Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
+from regime_platform.routers import pnl
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
@@ -116,7 +118,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v5.1.0 ...")
+    log.info("Starting up v6.0.0 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -229,16 +231,16 @@ A quantitative trading risk management web service built on:
 ## Regime Labels
 
 The HMM produces a **2D regime** combining:
-- **Volatility**: `low` / `medium` / `high`
-- **Trend**: `bear` / `neutral` / `bull`
+- **Volatility**: `low` / `med_low` / `med_high` / `high`
+- **Trend**: `strong_bear` / `bear` / `bull` / `strong_bull`
 
 Combined label example: `low_vol_bull`, `high_vol_bear`, etc.
 
 ## Risk Multiplier
 
-Each regime maps to a **risk_multiplier** [0.25 - 1.50] that scales the Kelly fraction:
-- `low_vol_bull` -> 1.5x (max risk-on)
-- `high_vol_bear` -> 0.25x (max defensive)
+Each regime maps to a **risk_multiplier** [0.10 – 1.75] that scales the Kelly fraction:
+- `low_vol_strong_bull` -> 1.75x (max risk-on)
+- `high_vol_strong_bear` -> 0.14x (max defensive)
 
 ## Authentication
 
@@ -272,7 +274,7 @@ Endpoints:
 - `POST /size/masaniello/batch` — batch Masaniello sizing
 - `POST /optimise/masaniello` — full two-stage pipeline
         """,
-        version="5.0.0",
+        version="6.0.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -414,6 +416,9 @@ Endpoints:
     # Phase 8: Operational Hardening (13 endpoints under /operational/*)
     app.include_router(operational.router)
 
+    # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
+    app.include_router(pnl.router)
+
     # Kill Switch Gate Middleware (blocks order execution when halted)
     app.add_middleware(KillSwitchGateMiddleware)
 
@@ -519,7 +524,7 @@ Excluded from MCP (use REST API directly):
         return JSONResponse(
             {
                 "service": "Noble Trader Dynamic Regime Risk Management Platform",
-                "version": "5.0.0",
+                "version": "6.0.0",
                 "docs": "/docs",
                 "mcp": "/mcp" if MCP_AVAILABLE else "not installed",
                 "gpu": caps,
@@ -624,7 +629,7 @@ Excluded from MCP (use REST API directly):
 
         return {
             "status": "ok",
-            "version": "5.4.0",
+            "version": "6.0.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
             "operational": operational_status,

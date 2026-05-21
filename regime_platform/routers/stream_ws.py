@@ -25,6 +25,7 @@ SSE /sse/pnl events:
   price_tick       — real-time quote for held position
   pnl_snapshot     — aggregate P&L (every 5s)
   account_update   — equity/cash/buying_power change
+  pnl_alert        — P&L threshold breach alert (severity: info/warning/critical)
 """
 
 from __future__ import annotations

@@ -665,3 +665,40 @@ class PortfolioMasanielloResponse(BaseModel):
     # Correlation regime
     corr_regime: str = ""
     corr_confidence: float = 0.0
+
+
+# ─── P&L Dashboard ────────────────────────────────────────────────────────────
+
+class RiskDashboardResponse(BaseModel):
+    """Live portfolio risk metrics dashboard."""
+    total_return: float = 0
+    total_return_pct: float = 0
+    annual_return_pct: float = 0
+    daily_return_avg: float = 0
+    annual_vol: float = 0
+    downside_vol: float = 0
+    sharpe_ratio: float = 0
+    sortino_ratio: float = 0
+    calmar_ratio: float = 0
+    max_drawdown: float = 0
+    max_drawdown_pct: float = 0
+    current_drawdown: float = 0
+    current_drawdown_pct: float = 0
+    avg_drawdown: float = 0
+    var_95: float = 0
+    var_99: float = 0
+    cvar_95: float = 0
+    cvar_99: float = 0
+    win_days: int = 0
+    loss_days: int = 0
+    win_rate: float = 0
+    avg_win: float = 0
+    avg_loss: float = 0
+    profit_factor: float = 0
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
+    n_data_points: int = 0
+    period_days: int = 0
+    start_equity: float = 0
+    end_equity: float = 0
+    computed_at: str = ""

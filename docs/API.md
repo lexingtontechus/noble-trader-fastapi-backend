@@ -1,6 +1,6 @@
 # Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-**Version:** 5.5.0  
+**Version:** 6.0.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
@@ -30,6 +30,8 @@
 - [Renko Backtest Endpoints](#renko-backtest-endpoints)
 - [Statistical Rigor Endpoints (Phase 6)](#statistical-rigor-endpoints-phase-6)
 - [Execution Modeling Endpoints (Phase 7)](#execution-modeling-endpoints-phase-7)
+- [P&L Dashboard](#pl-dashboard)
+- [Operational Hardening](#operational-hardening)
 - [Health](#health)
 - [Recommended Workflows](#recommended-workflows)
 
@@ -229,8 +231,8 @@ Returns Clerk user identity extracted from a valid Clerk JWT in the Authorizatio
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/regime/detect` | Detect market regime from price series | None |
-| POST | `/regime/detect-v2` | Enhanced regime detection with configurable 2-4 states | None |
+| POST | `/regime/detect` | Detect market regime from price series | Write |
+| POST | `/regime/detect-v2` | Enhanced regime detection with configurable 2-4 states | Write |
 
 ### POST /regime/detect
 
@@ -314,7 +316,7 @@ Enhanced HMM regime detection with configurable state count, auto-labeled states
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/size/kelly` | Regime-aware fractional Kelly position sizing (Path A) | None |
+| POST | `/size/kelly` | Regime-aware fractional Kelly position sizing (Path A) | Write |
 | POST | `/size/masaniello` | Dynamic Masaniello position sizing (Path B) | JWT/Key |
 | POST | `/size/masaniello/batch` | Batch Dynamic Masaniello sizing | JWT/Key |
 | POST | `/size/masaniello/portfolio` | Portfolio-optimised Masaniello sizing across multiple assets | JWT/Key |
@@ -561,8 +563,8 @@ Two-stage pipeline for multi-asset position sizing:
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/risk/analyse` | Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions | None |
-| POST | `/risk/analyze` | Enhanced risk analysis with stress tests and regime context | None |
+| POST | `/risk/analyse` | Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions | Write |
+| POST | `/risk/analyze` | Enhanced risk analysis with stress tests and regime context | Write |
 
 ### POST /risk/analyse
 
@@ -654,7 +656,7 @@ Enhanced risk analysis (US spelling) with five built-in stress test scenarios.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/strategy/signal` | Generate strategy signal with regime context and position sizing | None |
+| POST | `/strategy/signal` | Generate strategy signal with regime context and position sizing | Write |
 
 ### POST /strategy/signal
 
@@ -714,7 +716,7 @@ Full strategy signal pipeline:
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/analyse/full` | One-shot: regime + Kelly sizing + risk metrics | None |
+| POST | `/analyse/full` | One-shot: regime + Kelly sizing + risk metrics | Write |
 
 ### POST /analyse/full
 
@@ -2363,6 +2365,250 @@ Compute execution modeling costs for a trade using Almgren-Chriss market impact,
 
 ---
 
+## P&L Dashboard
+
+Live portfolio P&L analytics, risk metrics, CSV export, and alert threshold management. All endpoints require JWT authentication and are org-aware (credentials resolved via org-level → user-level → global fallback).
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/pnl/intraday` | Intraday P&L time-bucketed series | Clerk/JWT |
+| GET | `/pnl/history` | Historical daily P&L with equity curve and drawdown | Clerk/JWT |
+| GET | `/pnl/export` | CSV export of P&L data (positions + trades + equity + risk) | Clerk/JWT |
+| GET | `/pnl/alerts` | List P&L alert thresholds | Clerk/JWT |
+| POST | `/pnl/alerts` | Create P&L alert threshold | Clerk/JWT |
+| DELETE | `/pnl/alerts/{threshold_id}` | Delete P&L alert threshold | Clerk/JWT |
+| POST | `/pnl/alerts/check` | Manually evaluate alert thresholds | Clerk/JWT |
+| GET | `/risk/dashboard` | Live portfolio risk metrics dashboard | Clerk/JWT |
+| GET | `/operational/throttle/status` | Alpaca API rate throttle status | Clerk/JWT |
+
+### GET /pnl/intraday
+
+Fetch intraday P&L with fine-grained time buckets from Alpaca portfolio history. Useful for intraday equity curves and real-time P&L tracking dashboards.
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `timeframe` | `string` | `"15Min"` | Time bucket: `5Min`, `15Min`, `1Hour`, `1Day` |
+| `period` | `string` | `"1D"` | Lookback period: `1D`, `1W`, `1M`, `3M`, `6M`, `1A`, `all` |
+
+**Response:**
+
+```json
+{
+  "timeframe": "15Min",
+  "period": "1D",
+  "buckets": [
+    {
+      "timestamp": 1716300000,
+      "date": "09:30",
+      "equity": 125432.50,
+      "pnl": 432.50,
+      "pnl_pct": 0.3456
+    }
+  ],
+  "count": 26
+}
+```
+
+### GET /pnl/history
+
+Fetch historical daily P&L with equity curve, cumulative P&L, and drawdown series.
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `period` | `string` | `"1M"` | Lookback: `1W`, `1M`, `3M`, `6M`, `1A`, `all` |
+
+**Response:**
+
+```json
+{
+  "period": "1M",
+  "timestamps": [1716300000, ...],
+  "equity": [125000, 125432, ...],
+  "pnl": [0, 432, ...],
+  "pnl_pct": [0, 0.3456, ...],
+  "cumulative_pnl": [0, 432, ...],
+  "drawdown": [0, -200, ...],
+  "drawdown_pct": [0, -0.16, ...],
+  "dates": ["2026-05-01", "2026-05-02", ...],
+  "start_equity": 125000,
+  "end_equity": 128432
+}
+```
+
+### GET /pnl/export
+
+Export P&L data as a CSV file download with multiple sections.
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `period` | `string` | `"1M"` | Lookback period for equity curve |
+| `sections` | `string` | `"all"` | Comma-separated: `positions`, `trades`, `equity_curve`, `risk_metrics`, `all` |
+
+**Response:** Streaming CSV download with `Content-Disposition: attachment; filename="pnl_export_{period}_{user}.csv"`.
+
+### GET /pnl/alerts
+
+List all configured P&L alert thresholds for the authenticated user. Alert thresholds are persisted in Supabase with an in-memory cache for fast SSE evaluation.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid-1",
+    "user_id": "user_2xyz",
+    "metric": "drawdown_pct",
+    "operator": "lte",
+    "value": -5.0,
+    "severity": "critical",
+    "enabled": true,
+    "cooldown_minutes": 15,
+    "created_at": 1716300000,
+    "last_triggered": 0
+  }
+]
+```
+
+### POST /pnl/alerts
+
+Create a new P&L alert threshold. When the metric crosses the threshold, an alert is broadcast via SSE and pushed to Discord and Telegram.
+
+**Request:**
+
+```json
+{
+  "metric": "drawdown_pct",
+  "operator": "lte",
+  "value": -5.0,
+  "severity": "critical",
+  "enabled": true,
+  "cooldown_minutes": 15
+}
+```
+
+**Metrics:** `day_pnl`, `unrealized_pnl`, `drawdown_pct`, `var_breach`, `equity_change_pct`
+
+**Operators:** `lt`, `gt`, `lte`, `gte`, `crosses_below`, `crosses_above` (true cross detection — requires previous value to have been on the other side of the threshold)
+
+**Severities:** `info`, `warning`, `critical`
+
+### DELETE /pnl/alerts/{threshold_id}
+
+Delete a P&L alert threshold by ID.
+
+### POST /pnl/alerts/check
+
+Manually evaluate all alert thresholds against provided current values. Useful for testing threshold configurations.
+
+**Request:**
+
+```json
+{
+  "current_values": {
+    "day_pnl": -2500,
+    "unrealized_pnl": -1200,
+    "drawdown_pct": -3.5,
+    "var_breach": 0,
+    "equity_change_pct": -3.5
+  }
+}
+```
+
+### GET /risk/dashboard
+
+Compute live portfolio risk metrics from the equity curve. Results are cached for 30 seconds per user.
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `period` | `string` | `"1M"` | Lookback: `1W`, `1M`, `3M`, `6M`, `1A`, `all` |
+
+**Response (24-field Pydantic model):**
+
+```json
+{
+  "total_return": 4320.50,
+  "total_return_pct": 3.4564,
+  "annual_return_pct": 43.6780,
+  "daily_return_avg": 0.001234,
+  "annual_vol": 0.1420,
+  "downside_vol": 0.0820,
+  "sharpe_ratio": 1.2890,
+  "sortino_ratio": 1.8500,
+  "calmar_ratio": 2.2400,
+  "max_drawdown": -8500.00,
+  "max_drawdown_pct": -6.8000,
+  "current_drawdown": -1200.00,
+  "current_drawdown_pct": -0.9600,
+  "avg_drawdown": -2100.00,
+  "var_95": 1850.00,
+  "var_99": 2950.00,
+  "cvar_95": 2180.00,
+  "cvar_99": 3450.00,
+  "win_days": 18,
+  "loss_days": 6,
+  "win_rate": 0.7500,
+  "avg_win": 450.20,
+  "avg_loss": -320.50,
+  "profit_factor": 3.7300,
+  "max_consecutive_wins": 7,
+  "max_consecutive_losses": 3,
+  "n_data_points": 24,
+  "period_days": 24,
+  "start_equity": 125000.00,
+  "end_equity": 129320.50,
+  "computed_at": "2026-05-21T14:30:00+00:00"
+}
+```
+
+### GET /operational/throttle/status
+
+Returns the current Alpaca API rate throttle status including remaining tokens, refill rate, and configuration.
+
+**Response:**
+
+```json
+{
+  "tokens_remaining": 185.42,
+  "max_tokens": 210.0,
+  "refill_rate": 3.3333,
+  "last_refill": 48923.456,
+  "rate": 200,
+  "period": 60,
+  "burst": 10
+}
+```
+
+### Organization Multi-Tenancy
+
+When a user selects a Clerk Organization, the JWT includes an `org_id` claim. The backend uses this to scope credential resolution:
+
+1. **Org-level credentials** — Supabase `credentials` table with matching `org_id` (takes priority)
+2. **User-level credentials** — Supabase `credentials` table with matching `user_id`
+3. **Global fallback** — `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` env vars
+
+The frontend automatically requests org-scoped JWTs via `auth().orgId` and forwards the `X-Org-Id` header. No BFF route changes are needed — all routes inherit org-scoping through `getFastAPIAuthHeaders()`.
+
+### Notification Channels
+
+Triggered P&L alerts are pushed to two channels simultaneously:
+
+| Channel | Config | Format |
+|---------|--------|--------|
+| **Discord** | `DISCORD_WEBHOOK_STATUS` env var | Rich embed with severity color coding |
+| **Telegram** | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | HTML-formatted message with emoji severity |
+
+Both channels are fire-and-forget — failures are logged but never crash the alert evaluation loop.
+
+---
+
 ## Health
 
 | Method | Endpoint | Description | Auth |
@@ -2472,3 +2718,107 @@ POST /gpu/benchmark      →  measure speedup
 ```
 
 Best for: Enabling 10-50× HMM speedup with pomegranate on CUDA/MPS hardware.
+
+---
+
+## P&L Dashboard
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/pnl/intraday` | Intraday P&L with realized/unrealized breakdown | Any |
+| `GET` | `/pnl/history` | Historical P&L time series | Any |
+| `GET` | `/pnl/export` | Export P&L data as CSV | Any |
+| `GET` | `/pnl/alerts` | List P&L alert thresholds | Any |
+| `POST` | `/pnl/alerts` | Create P&L alert threshold | Any |
+| `DELETE` | `/pnl/alerts/{threshold_id}` | Delete P&L alert threshold | Any |
+| `POST` | `/pnl/alerts/check` | Evaluate P&L alert thresholds | Any |
+
+### GET /pnl/intraday
+
+Returns intraday P&L breakdown including realized P&L, unrealized P&L, total P&L, and per-position details. Data is sourced from Alpaca positions and account snapshot.
+
+### GET /pnl/history
+
+Returns historical P&L time series for charting. Accepts `period` query parameter (1D, 1W, 1M, 3M, 1A, ALL).
+
+### GET /pnl/export
+
+Streams P&L data as a CSV file download with Content-Disposition header.
+
+### GET /pnl/alerts
+
+Returns all configured P&L alert thresholds for the authenticated user, persisted in Supabase.
+
+### POST /pnl/alerts
+
+Create a new P&L alert threshold. Supports daily loss, drawdown, and profit target alert types.
+
+### DELETE /pnl/alerts/{threshold_id}
+
+Delete a P&L alert threshold by ID.
+
+### POST /pnl/alerts/check
+
+Evaluate all alert thresholds against current P&L data. Returns triggered alerts with current values.
+
+### SSE P&L Streaming
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/sse/pnl` | Real-time SSE stream for P&L updates (JWT-authenticated) | Any |
+| `GET` | `/sse/pnl/status` | P&L SSE connection status | Any |
+
+### Risk Dashboard
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/risk/dashboard` | Full risk dashboard with 12 key metrics (VaR, CVaR, Sharpe, Sortino, etc.) | Any |
+
+---
+
+## Operational Hardening
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/operational/kill-switch/status` | Current kill switch status | Any |
+| `POST` | `/operational/kill-switch/activate` | Activate kill switch (halts all trading) | Admin |
+| `POST` | `/operational/kill-switch/deactivate` | Deactivate kill switch | Admin |
+| `POST` | `/operational/kill-switch/cancel-all` | Cancel all open orders | Admin |
+| `POST` | `/operational/kill-switch/close-all` | Close all positions | Admin |
+| `GET` | `/operational/audit-log` | Paginated audit log entries | Any |
+| `GET` | `/operational/audit-log/summary` | Audit log summary stats | Any |
+| `GET` | `/operational/audit-log/export` | Export audit log as CSV | Any |
+| `GET` | `/operational/mode` | Current trading mode (paper/live) | Any |
+| `POST` | `/operational/mode/request` | Request trading mode change | Write |
+| `POST` | `/operational/mode/confirm` | Confirm trading mode change (2-step safety) | Write |
+| `GET` | `/operational/reconcile/status` | Reconciliation status | Any |
+| `POST` | `/operational/reconcile/run` | Run reconciliation | Write |
+| `POST` | `/operational/reconcile/order` | Reconcile a single order | Any |
+| `GET` | `/operational/reconcile/positions` | Reconcile all positions | Any |
+| `GET` | `/operational/mode/health` | Trading mode health check | Any |
+| `GET` | `/operational/executor/status` | Alpaca executor status | Any |
+| `GET` | `/operational/throttle/status` | Rate throttle status (200 req/min per API key) | Any |
+
+### Kill Switch
+
+The kill switch is an emergency circuit breaker that immediately halts all order execution. When activated:
+- All incoming order requests are blocked by the `KillSwitchGateMiddleware`
+- Optionally cancels all open Alpaca orders
+- Optionally closes all open Alpaca positions
+- Audit log records the activation with timestamp and user
+
+### Audit Log
+
+Every trading action (order submission, kill switch activation, mode changes, reconciliation runs) is recorded in the audit log with timestamp, user ID, action type, and details. The log is queryable and exportable as CSV for compliance.
+
+### Paper/Live Mode Toggle
+
+Trading mode switching uses a two-step confirmation process:
+1. `POST /operational/mode/request` — Initiate mode change (requires trader+ role)
+2. `POST /operational/mode/confirm` — Confirm mode change within 60 seconds
+
+This prevents accidental switches between paper and live trading.
+
+### Fill Reconciliation
+
+The reconciliation system compares expected fills (from signal records) against actual Alpaca fills. It runs automatically every 15 minutes and can be triggered manually. Critical mismatches (MISSING_FILL, ERROR) are logged for investigation.

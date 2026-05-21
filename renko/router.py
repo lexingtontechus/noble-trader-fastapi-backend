@@ -223,6 +223,18 @@ def _get_pipeline(symbol: str = "SPY", config: Optional[RenkoConfig] = None) -> 
     return _pipelines[symbol]
 
 
+async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
+    """Get or create a pipeline for a symbol, restoring from Supabase snapshot if available."""
+    if symbol not in _pipelines:
+        # Try to restore from Supabase snapshot
+        restored = await _restore_pipeline_snapshot(symbol)
+        if restored:
+            _pipelines[symbol] = restored
+        else:
+            _pipelines[symbol] = RenkoPipeline(RenkoConfig(symbol=symbol))
+    return _pipelines[symbol]
+
+
 # ── Router ─────────────────────────────────────────────────────────
 
 if FASTAPI_AVAILABLE:
@@ -233,21 +245,39 @@ if FASTAPI_AVAILABLE:
     async def process_tick(request: Request, body: TickInput, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_with_restore(symbol)
         result = pipeline.process_tick(body.price, body.timestamp)
+
+        # ── Wire executor: check for pending open/close ─────────────
+        if not pipeline.config.dry_run and pipeline.config.live_enabled:
+            # Check for pending position open
+            pending_exec = pipeline.consume_pending_execution()
+            if pending_exec:
+                order_result = await _execute_signal(pending_exec, user, symbol)
+                result["order_result"] = order_result
+
+            # Check for pending position close
+            pending_close = pipeline.consume_pending_close()
+            if pending_close:
+                close_result = await _close_pipeline_position(pending_close, user)
+                result["close_result"] = close_result
 
         # ── Fire Discord notifications (non-blocking) ────────────
         _notify_tick_result(symbol, result, pipeline)
+
+        # ── Save pipeline snapshot periodically (every 100th tick) ───
+        if pipeline.brick_engine.brick_count % 100 == 0:
+            asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         return result
 
     @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick/batch")
     async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict[str, Any]:
-        """Process a batch of ticks (backtest / warm-up)."""
+        """Process a batch of ticks (backtest / warm-up). Enables warmup mode to bypass session/cooldown filters."""
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
-        pipeline = _get_pipeline(active_symbol)
+        pipeline = await _get_pipeline_with_restore(active_symbol)
         result = pipeline.backtest(
             prices=body.prices,
             timestamps=body.timestamps,
@@ -256,6 +286,9 @@ if FASTAPI_AVAILABLE:
 
         # ── Fire Discord status notification for batch completion ─
         _notify_batch_complete(active_symbol, result)
+
+        # ── Save pipeline snapshot after batch processing ─────────────
+        asyncio.create_task(_save_pipeline_snapshot(active_symbol, pipeline))
 
         return result
 
@@ -598,6 +631,62 @@ if FASTAPI_AVAILABLE:
 
         return result
 
+    @renko_router.get("/live/status")
+    async def get_live_status(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+        """Get the live execution status for a pipeline."""
+        pipeline = _get_pipeline(symbol)
+        config = pipeline.config
+        return {
+            "symbol": symbol,
+            "dry_run": config.dry_run,
+            "live_enabled": config.live_enabled,
+            "execution_mode": pipeline.executor.execution_mode,
+            "has_position": pipeline.risk_manager.has_position,
+        }
+
+    @renko_router.post("/live/toggle")
+    async def toggle_live_execution(request: Request, symbol: str = "SPY", enabled: bool = True, user: TokenData = Depends(require_admin)) -> Dict[str, Any]:
+        """
+        Toggle live execution for a pipeline (admin only).
+        When enabled=False, sets dry_run=True (safe mode).
+        When enabled=True, sets dry_run=False and live_enabled=True.
+        """
+        pipeline = _get_pipeline(symbol)
+        pipeline.config.dry_run = not enabled
+        pipeline.config.live_enabled = enabled
+
+        # Update executor mode if keys are available
+        if enabled:
+            pipeline.executor.paper = "paper-api" in pipeline.config.base_url
+
+        mode = "LIVE" if enabled else "DRY_RUN"
+        log.warning(f"Pipeline {symbol} execution mode set to {mode} by user {user.sub}")
+
+        # Discord notification
+        if DISCORD_AVAILABLE:
+            asyncio.create_task(discord_notifier.send_status(
+                message=f"Pipeline {symbol} execution mode changed to {mode}",
+                symbol=symbol,
+                level=AlertLevel.WARNING if enabled else AlertLevel.INFO,
+                data={"enabled": enabled, "user": user.sub},
+            ))
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "dry_run": pipeline.config.dry_run,
+            "live_enabled": pipeline.config.live_enabled,
+        }
+
+    @renko_router.post("/snapshot/restore")
+    async def restore_snapshot(request: Request, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict[str, Any]:
+        """Restore a pipeline from a Supabase snapshot (if available)."""
+        restored = await _restore_pipeline_snapshot(symbol)
+        if restored:
+            _pipelines[symbol] = restored
+            return {"status": "ok", "symbol": symbol, "restored": True, "state": restored.get_state().to_dict()}
+        return {"status": "ok", "symbol": symbol, "restored": False, "message": "No snapshot available"}
+
 else:
     # Stub router for environments without FastAPI
     renko_router = None
@@ -738,3 +827,203 @@ def _notify_reset(symbol: str) -> None:
         ))
     except Exception as e:
         log.warning(f"Discord reset notification failed (non-critical): {e}")
+
+
+# ── Pipeline State Persistence ────────────────────────────────────────────
+
+
+async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
+    """Save pipeline state snapshot to Supabase (fire-and-forget, non-critical)."""
+    try:
+        from regime_platform.core.settings import settings
+        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+            return
+
+        import httpx
+        import json
+
+        snap = pipeline.snapshot()
+        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates",
+        }
+        journal_stats = snap.get("journal_stats", {})
+        row = {
+            "symbol": symbol,
+            "brick_size": snap["config"].get("brick_size", 0.50),
+            "total_bricks": snap.get("brick_count", 0),
+            "total_trades": journal_stats.get("total_trades", 0),
+            "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
+            "config": snap.get("config", {}),
+            "stats": snap,  # full snapshot stored in stats JSONB for restore
+            "prices_fed": 0,
+            "period": "pipeline-persist",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, headers=headers, json=row)
+            if resp.status_code in (200, 201, 204):
+                log.debug(f"Saved pipeline snapshot for {symbol}")
+            else:
+                log.debug(f"Pipeline snapshot save failed for {symbol}: {resp.status_code}")
+    except Exception as e:
+        log.debug(f"Pipeline snapshot save error for {symbol}: {e}")
+
+
+async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
+    """Restore a pipeline from a Supabase snapshot (if available). Returns None on failure."""
+    try:
+        from regime_platform.core.settings import settings
+        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+            return None
+
+        import httpx
+
+        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        }
+        params = {
+            "symbol": f"eq.{symbol}",
+            "select": "stats",
+            "order": "updated_at.desc",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code == 200:
+                rows = resp.json()
+                if rows and rows[0].get("stats"):
+                    data = rows[0]["stats"]
+                    if isinstance(data, str):
+                        import json
+                        data = json.loads(data)
+                    pipeline = RenkoPipeline.from_snapshot(data)
+                    log.info(f"Restored pipeline snapshot for {symbol} (regime={data.get('regime')}, equity={data.get('equity')})")
+                    return pipeline
+    except Exception as e:
+        log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")
+
+    return None
+
+
+# ── Execution Bridge (async — called from router) ────────────────────
+
+
+async def _execute_signal(pending: dict, user: TokenData, symbol: str) -> Optional[dict]:
+    """
+    Execute a filtered signal as an Alpaca order.
+    Resolves user credentials, creates an executor, and submits the order.
+    Returns the OrderResult as a dict, or None on failure.
+    """
+    try:
+        from regime_platform.services.alpaca_stream import resolve_alpaca_credentials
+        from renko.executor import AlpacaExecutor
+
+        # Resolve user's Alpaca credentials
+        creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
+        if not creds:
+            log.warning(f"No Alpaca credentials for user {user.sub} — order not submitted")
+            return {"status": "skipped", "error": "No Alpaca credentials configured"}
+
+        api_key, secret_key, base_url = creds
+        is_paper = "paper-api" in base_url
+
+        # Create a per-request executor with user's credentials
+        executor = AlpacaExecutor(
+            api_key=api_key,
+            api_secret=secret_key,
+            base_url=base_url,
+            paper=is_paper,
+            use_bracket_orders=True,
+        )
+
+        filtered = pending["filtered"]
+        brick_size = pending["brick_size"]
+        sl_bricks = pending["sl_bricks"]
+        tp_bricks = pending["tp_bricks"]
+
+        # Execute the order
+        order_result = await executor.execute(
+            filtered=filtered,
+            symbol=symbol,
+            brick_size=brick_size,
+            sl_bricks=sl_bricks,
+            tp_bricks=tp_bricks,
+        )
+
+        log.info(f"Order submitted: {order_result.order_id} status={order_result.status.value} mode={executor.execution_mode}")
+
+        # Fire Discord execution notification
+        if DISCORD_AVAILABLE and order_result.is_success:
+            signal = filtered.original_signal
+            direction = signal.direction.value
+            side = "buy" if direction.upper() in ("LONG", "BUY") else "sell"
+            asyncio.create_task(discord_notifier.send_execution(
+                symbol=symbol,
+                side=side,
+                qty=order_result.filled_qty or 0,
+                price=order_result.filled_price or signal.price,
+                order_id=order_result.order_id,
+                status=order_result.status.value,
+                order_type="bracket",
+            ))
+
+        return order_result.to_dict()
+
+    except Exception as e:
+        log.error(f"Executor bridge failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+async def _close_pipeline_position(pending: dict, user: TokenData) -> Optional[dict]:
+    """
+    Close an Alpaca position when the pipeline's risk manager closes.
+    """
+    try:
+        from regime_platform.services.alpaca_stream import resolve_alpaca_credentials
+        from renko.executor import AlpacaExecutor
+
+        creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
+        if not creds:
+            log.warning(f"No Alpaca credentials for user {user.sub} — position close not submitted")
+            return {"status": "skipped", "error": "No Alpaca credentials configured"}
+
+        api_key, secret_key, base_url = creds
+        is_paper = "paper-api" in base_url
+        symbol = pending["symbol"]
+
+        executor = AlpacaExecutor(
+            api_key=api_key,
+            api_secret=secret_key,
+            base_url=base_url,
+            paper=is_paper,
+        )
+
+        close_result = await executor.close_position(symbol)
+        log.info(f"Position close submitted: {close_result.order_id} status={close_result.status.value}")
+
+        # Fire Discord close notification
+        if DISCORD_AVAILABLE:
+            trade_result = pending.get("trade_result")
+            pnl_bricks = trade_result.pnl_bricks if trade_result else 0
+            pnl_dollars = trade_result.pnl_dollars if trade_result else 0
+            direction = trade_result.direction.value if trade_result else ""
+            asyncio.create_task(discord_notifier.send_execution(
+                symbol=symbol,
+                side="sell" if direction.upper() in ("LONG", "BUY") else "buy",
+                qty=1,
+                pnl_bricks=pnl_bricks,
+                pnl_dollars=pnl_dollars,
+                status=f"closed_{trade_result.status.value}" if trade_result else "closed",
+                order_id=close_result.order_id,
+            ))
+
+        return close_result.to_dict()
+
+    except Exception as e:
+        log.error(f"Executor close bridge failed: {e}")
+        return {"status": "error", "error": str(e)}

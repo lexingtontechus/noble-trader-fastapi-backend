@@ -22,7 +22,7 @@ Supporting modules:
 - `pipeline.py` — Orchestrates the full pipeline flow
 - `trade_journal.py` — Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
 - `config.py` — `RenkoConfig` dataclass with 30+ tunable parameters
-- `router.py` — 14 FastAPI REST endpoints
+- `router.py` — 22 FastAPI REST endpoints
 - `integration.py` — Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
 - `backtest.py` / `tests.py` — Backtesting and unit tests
 
@@ -30,22 +30,31 @@ Supporting modules:
 
 All endpoints are mounted under `/renko/` on the FastAPI backend.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/tick` | Process single tick through pipeline |
-| `POST` | `/renko/tick/batch` | Batch tick processing (warm-up/backtest) |
-| `GET` | `/renko/state` | Current pipeline state snapshot |
-| `GET` | `/renko/stats` | Comprehensive statistics |
-| `GET` | `/renko/bricks` | Recent Renko bricks (last N) |
-| `GET` | `/renko/classified` | Bricks with swing labels |
-| `GET` | `/renko/signals` | Pattern signals |
-| `GET` | `/renko/trades` | Trade journal entries |
-| `GET` | `/renko/swing-points` | Detected swing points |
-| `POST` | `/renko/regime` | Update HMM regime for gate filter |
-| `POST` | `/renko/equity` | Update account equity |
-| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) |
-| `POST` | `/renko/reset` | Reset pipeline for a symbol |
-| `GET` | `/renko/backtest/stats` | Backtest/trading statistics |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/renko/tick` | Process single tick through pipeline | Write |
+| `POST` | `/renko/tick/batch` | Batch tick processing (warm-up/backtest) | Write |
+| `GET` | `/renko/state` | Current pipeline state snapshot | Any |
+| `GET` | `/renko/stats` | Comprehensive statistics | Any |
+| `GET` | `/renko/bricks` | Recent Renko bricks (last N) | Any |
+| `GET` | `/renko/classified` | Bricks with swing labels | Any |
+| `GET` | `/renko/signals` | Pattern signals | Any |
+| `GET` | `/renko/trades` | Trade journal entries | Any |
+| `GET` | `/renko/swing-points` | Detected swing points | Any |
+| `POST` | `/renko/regime` | Update HMM regime for gate filter | Write |
+| `POST` | `/renko/equity` | Update account equity | Write |
+| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
+| `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
+| `GET` | `/renko/backtest/stats` | Backtest/trading statistics | Any |
+| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices | Write |
+| `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
+| `POST` | `/renko/backtest/compare` | Compare 2–10 Renko configs side-by-side | Any |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep (max 50 combos) | Write |
+| `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
+| `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
+| `GET` | `/renko/live/status` | Check live execution mode status | Any |
+| `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
 
 ### Backtest Endpoints (Isolated — Never Affect Live Pipeline)
 

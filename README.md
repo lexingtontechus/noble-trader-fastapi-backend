@@ -10,7 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v5.2.0** — Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers
+**v6.0.0** — Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
 
 ---
 
@@ -54,17 +54,23 @@ regime_risk_platform/
 │   │   ├── backtest.py            POST /backtest/run | /history | /{id} | /compare | /optimize | /export
 │   │   ├── strategy.py            POST /strategy/signal
 │   │   ├── tda.py                 POST /tda/features
-│   │   └── observation_v2.py      POST /observation/build-v2
+│   │   └── observation.py          POST /observation/build | /build-v2
 │   ├── services/
 │   │   ├── stream_session.py         Per-symbol stateful streaming engine
 │   │   ├── registry.py               Singleton session store
 │   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
 │   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
 │   │   └── backtest_store.py      Supabase persistence for backtest results
-│   ├── renko/                        6-layer Renko HFT pipeline (14 endpoints)
+│   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
 │   ├── notifications/               Discord notifier
+│   ├── middleware/
+│   │   ├── rate_limit.py            SlowAPI rate limiter (compute/write/default)
+│   │   └── kill_switch_gate.py       Kill switch middleware (blocks order execution)
+│   ├── services/
+│   │   ├── alpaca_stream.py          Alpaca WebSocket stream manager
+│   │   └── pnl_service.py            P&L analytics (intraday, risk dashboard, alerts)
 │
-├── main.py                           v5.1 — all features (recommended entry point)
+├── main.py                           v6.0 — all features (recommended entry point)
 ├── requirements.txt
 │
 ├── docs/
@@ -192,6 +198,54 @@ open docs/index.html
 | `GET` | `/auth/clerk/me` | Clerk user info from JWT |
 | `POST` | `/auth/clerk/verify` | Verify Clerk JWT token |
 | `GET` | `/health` | Service health check |
+
+### P&L Analytics
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/pnl/intraday` | Intraday P&L with realized/unrealized breakdown | Any |
+| `GET` | `/pnl/history` | Historical P&L time series | Any |
+| `GET` | `/pnl/export` | Export P&L data as CSV | Any |
+| `GET` | `/pnl/alerts` | List P&L alert thresholds | Any |
+| `POST` | `/pnl/alerts` | Create P&L alert threshold | Any |
+| `DELETE` | `/pnl/alerts/{threshold_id}` | Delete P&L alert threshold | Any |
+| `POST` | `/pnl/alerts/check` | Evaluate P&L alert thresholds | Any |
+
+### Risk Dashboard
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/risk/dashboard` | Full risk dashboard with 12 metrics | Any |
+
+### Operational Hardening
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/operational/kill-switch/status` | Kill switch status | Any |
+| `POST` | `/operational/kill-switch/activate` | Activate kill switch (halts all trading) | Admin |
+| `POST` | `/operational/kill-switch/deactivate` | Deactivate kill switch | Admin |
+| `POST` | `/operational/kill-switch/cancel-all` | Cancel all open orders | Admin |
+| `POST` | `/operational/kill-switch/close-all` | Close all positions | Admin |
+| `GET` | `/operational/audit-log` | Paginated audit log entries | Any |
+| `GET` | `/operational/audit-log/summary` | Audit log summary stats | Any |
+| `GET` | `/operational/audit-log/export` | Export audit log as CSV | Any |
+| `GET` | `/operational/mode` | Current trading mode (paper/live) | Any |
+| `POST` | `/operational/mode/request` | Request trading mode change | Write |
+| `POST` | `/operational/mode/confirm` | Confirm trading mode change (2-step) | Write |
+| `GET` | `/operational/reconcile/status` | Reconciliation status | Any |
+| `POST` | `/operational/reconcile/run` | Run reconciliation | Write |
+| `POST` | `/operational/reconcile/order` | Reconcile a single order | Any |
+| `GET` | `/operational/reconcile/positions` | Reconcile all positions | Any |
+| `GET` | `/operational/mode/health` | Trading mode health check | Any |
+| `GET` | `/operational/executor/status` | Alpaca executor status | Any |
+| `GET` | `/operational/throttle/status` | Rate throttle status (200 req/min) | Any |
+
+### SSE P&L Streaming
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/sse/pnl` | SSE stream for real-time P&L updates | Any |
+| `GET` | `/sse/pnl/status` | SSE P&L connection status | Any |
 
 ---
 
@@ -585,30 +639,31 @@ The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 end
 
 ### Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/brick` | Build Renko bricks from tick data |
-| `POST` | `/renko/swing` | Classify brick swings |
-| `POST` | `/renko/pattern` | Detect chart patterns |
-| `POST` | `/renko/signal` | Generate filtered signals |
-| `POST` | `/renko/risk` | Compute risk metrics for a signal |
-| `POST` | `/renko/execute` | Execute a signal as a paper trade |
-| `GET` | `/renko/status` | Pipeline status for all symbols |
-| `GET` | `/renko/status/{symbol}` | Pipeline status for a single symbol |
-| `DELETE` | `/renko/status/{symbol}` | Clear pipeline state for a symbol |
-| `POST` | `/renko/warmup` | Warm up pipeline with Yahoo Finance data |
-| `GET` | `/renko/trades` | List recent paper trades |
-| `GET` | `/renko/trades/{symbol}` | List trades for a symbol |
-| `GET` | `/renko/cache` | Cache statistics |
-| `DELETE` | `/renko/cache` | Clear cache |
-
-### Renko Backtesting (Isolated — Never Affects Live Pipeline)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices |
-| `POST` | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side (2–10) |
-| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline (max 50 combos) |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/renko/tick` | Process single tick through 6-layer pipeline | Write |
+| `POST` | `/renko/tick/batch` | Batch tick processing (warmup/backtest) | Write |
+| `GET` | `/renko/state` | Current pipeline state snapshot | Any |
+| `GET` | `/renko/stats` | Comprehensive pipeline statistics | Any |
+| `GET` | `/renko/bricks` | Recent Renko bricks (last 500) | Any |
+| `GET` | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) | Any |
+| `GET` | `/renko/signals` | Pattern signals history | Any |
+| `GET` | `/renko/trades` | Trade journal entries | Any |
+| `GET` | `/renko/swing-points` | Detected swing points | Any |
+| `POST` | `/renko/regime` | Update HMM regime for gate filter | Write |
+| `POST` | `/renko/equity` | Update account equity | Write |
+| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
+| `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
+| `GET` | `/renko/backtest/stats` | Backtest/trading statistics from journal | Any |
+| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices | Write |
+| `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
+| `POST` | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side (2–10) | Any |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline (max 50 combos) | Write |
+| `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
+| `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
+| `GET` | `/renko/live/status` | Check live execution mode status | Any |
+| `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
 
 ---
 
@@ -620,7 +675,7 @@ The platform exposes an MCP server at `/mcp` via `fastapi-mcp`, enabling AI agen
 - `MCP_AUTH_ENABLED` — Enable/disable MCP authentication (default: false)
 - `MCP_ISSUER` — JWT issuer for MCP tokens
 
-### Excluded Operations (17)
+### Excluded Operations (19)
 Auth endpoints, feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
 
 ### Available Tools

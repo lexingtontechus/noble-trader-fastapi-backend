@@ -246,10 +246,13 @@ class ExecutorFactory:
                 secret_key=settings.ALPACA_SECRET_KEY,
                 base_url=settings.ALPACA_BASE_URL,
             )
-            # Wrap the raw client with throttling proxy
-            self._api_client = ThrottledAlpacaREST(raw_client)
+            # Wrap the raw client with async throttling proxy
+            # AsyncThrottledAlpacaREST properly awaits throttle.acquire() in
+            # async contexts, unlike the sync ThrottledAlpacaREST which has a
+            # best-effort fallback that effectively bypasses throttling.
+            self._api_client = AsyncThrottledAlpacaREST(raw_client)
             logger.info(
-                f"ExecutorFactory: Alpaca REST client created (throttled) "
+                f"ExecutorFactory: Alpaca REST client created (async-throttled) "
                 f"for {settings.ALPACA_BASE_URL}"
             )
             return self._api_client

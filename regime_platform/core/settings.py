@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_EXECUTIONS: str = ""
     DISCORD_WEBHOOK_STATUS: str = ""
 
+    # ── Telegram ────────────────────────────────────────────────────────────
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+
     # ── Redis ───────────────────────────────────────────────────────────────
     REDIS_URL: str = ""
 
@@ -147,6 +151,11 @@ class Settings(BaseSettings):
             or self.DISCORD_WEBHOOK_EXECUTIONS
             or self.DISCORD_WEBHOOK_STATUS
         )
+
+    @property
+    def telegram_configured(self) -> bool:
+        """True if Telegram bot token and chat ID are configured."""
+        return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHAT_ID)
 
     # ── Validation ──────────────────────────────────────────────────────────
 

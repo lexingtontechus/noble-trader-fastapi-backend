@@ -1,13 +1,13 @@
 """Risk analysis endpoints."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Query
 from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
-from ..models.schemas import RiskRequest, RiskResponse, RiskAnalyzeRequest, RiskAnalyzeResponse, StressTestResult
+from ..models.schemas import RiskRequest, RiskResponse, RiskAnalyzeRequest, RiskAnalyzeResponse, StressTestResult, RiskDashboardResponse
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
-from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE, RATE_LIMIT_DEFAULT
 import numpy as np
 
 router   = APIRouter(prefix="/risk", tags=["Risk Analysis"])
@@ -210,3 +210,72 @@ async def risk_analyze(request: Request, req: RiskAnalyzeRequest, user: TokenDat
         )
     except Exception as e:
         raise_http_exception(e, "risk analysis")
+
+
+# ─── Live Risk Dashboard ─────────────────────────────────────────────────────
+
+@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get(
+    "/dashboard",
+    response_model=RiskDashboardResponse,
+    summary="Live portfolio risk metrics dashboard from equity curve",
+)
+async def risk_dashboard(
+    request: Request,
+    period: str = Query(default="1M", description="Lookback period: 1W, 1M, 3M, 6M, 1A, all"),
+    user: TokenData = Depends(get_authed_user),
+):
+    """
+    Compute live portfolio risk metrics from the equity curve.
+
+    Returns a comprehensive risk dashboard with:
+      - Return metrics: total return, annual return, daily average
+      - Risk metrics: annual vol, downside vol, Sharpe, Sortino, Calmar
+      - Drawdown: max drawdown, current drawdown, average drawdown
+      - VaR/CVaR: 95% and 99% confidence levels (historical)
+      - Win/Loss: win rate, avg win/loss, profit factor, max streaks
+
+    Uses the same credential resolution as AlpacaStreamManager.
+    Results are cached for 30 seconds per user.
+    """
+    from ..services.pnl_service import pnl_service
+
+    metrics = await pnl_service.get_risk_dashboard(
+        user_id=user.sub,
+        period=period,
+        org_id=user.org_id,
+    )
+
+    return RiskDashboardResponse(
+        total_return=metrics.total_return,
+        total_return_pct=metrics.total_return_pct,
+        annual_return_pct=metrics.annual_return_pct,
+        daily_return_avg=metrics.daily_return_avg,
+        annual_vol=metrics.annual_vol,
+        downside_vol=metrics.downside_vol,
+        sharpe_ratio=metrics.sharpe_ratio,
+        sortino_ratio=metrics.sortino_ratio,
+        calmar_ratio=metrics.calmar_ratio,
+        max_drawdown=metrics.max_drawdown,
+        max_drawdown_pct=metrics.max_drawdown_pct,
+        current_drawdown=metrics.current_drawdown,
+        current_drawdown_pct=metrics.current_drawdown_pct,
+        avg_drawdown=metrics.avg_drawdown,
+        var_95=metrics.var_95,
+        var_99=metrics.var_99,
+        cvar_95=metrics.cvar_95,
+        cvar_99=metrics.cvar_99,
+        win_days=metrics.win_days,
+        loss_days=metrics.loss_days,
+        win_rate=metrics.win_rate,
+        avg_win=metrics.avg_win,
+        avg_loss=metrics.avg_loss,
+        profit_factor=metrics.profit_factor,
+        max_consecutive_wins=metrics.max_consecutive_wins,
+        max_consecutive_losses=metrics.max_consecutive_losses,
+        n_data_points=metrics.n_data_points,
+        period_days=metrics.period_days,
+        start_equity=metrics.start_equity,
+        end_equity=metrics.end_equity,
+        computed_at=metrics.computed_at,
+    )
