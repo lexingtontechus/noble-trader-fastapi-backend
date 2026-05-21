@@ -22,7 +22,8 @@ fastapi-mcp>=0.4.0
 slowapi>=0.1.9
 # Centralized settings (pydantic-settings v2+)
 pydantic-settings>=2.0.0
+# Real-time P&L streaming (Alpaca trade + data WebSocket)
+websockets>=12.0
 # Feed adapters (install only the adapter you need)
 # alpaca-py>=0.20.0        # Alpaca Markets
-# websockets>=12.0          # Binance WebSocket
 # ib_async>=0.9.0           # Interactive Brokers
