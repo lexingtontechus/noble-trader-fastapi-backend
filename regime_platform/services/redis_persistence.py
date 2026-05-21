@@ -64,7 +64,7 @@ class RedisPersistence:
         self._enabled  = False
 
         # Use provided URL or fall back to settings
-        _url = redis_url or settings.REDIS_URL
+        _url = redis_url or settings.redis_url_effective
         if not _url:
             log.info("REDIS_URL not set — price buffer persistence disabled (in-memory only)")
             return

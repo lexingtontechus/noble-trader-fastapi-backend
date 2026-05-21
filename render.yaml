@@ -36,3 +36,8 @@ services:
       # ── JWT ───────────────────────────────────────────────────────
       - key: JWT_SECRET_KEY
         sync: false
+      # ── Redis (Upstash) ────────────────────────────────────────────
+      # Value set via Render dashboard (not committed to repo).
+      # Format: rediss://:<token>@<host>.upstash.io:6379
+      - key: REDIS_URL
+        sync: false
