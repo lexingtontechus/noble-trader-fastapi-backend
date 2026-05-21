@@ -193,6 +193,12 @@ class UserStream:
     # Running flag
     running: bool = False
 
+    # Tracked symbols in data stream (to detect when re-subscribe is needed)
+    data_subscribed_symbols: set[str] = field(default_factory=set)
+
+    # Signal to data stream that it should re-subscribe
+    data_resubscribe_event: asyncio.Event = field(default_factory=asyncio.Event)
+
     def add_queue(self, maxsize: int = 500) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.queues.append(q)
@@ -410,8 +416,6 @@ class AlpacaStreamManager:
         """Fetch current positions and account data via Alpaca REST API."""
         try:
             import httpx
-            base = stream.base_url.replace("-api.alpaca.markets", ".alpaca.markets")
-            # Alpaca account URL: https://paper-api.alpaca.markets → https://paper-api.alpaca.markets/v2/account
             account_url = f"{stream.base_url}/v2/account"
             positions_url = f"{stream.base_url}/v2/positions"
 
@@ -553,6 +557,8 @@ class AlpacaStreamManager:
                 if symbol:
                     # Refresh position from REST API
                     await self._refresh_position(stream, symbol)
+                    # Signal data stream to re-subscribe if new symbol
+                    stream.data_resubscribe_event.set()
 
             elif event_type == "closed":
                 # Position closed entirely
@@ -616,6 +622,7 @@ class AlpacaStreamManager:
         Connect to Alpaca data WebSocket for real-time quotes.
 
         Subscribes to quotes for all currently held positions.
+        Dynamically re-subscribes when new positions are opened.
         Uses IEX feed (free tier) or SIP (paid).
         """
         try:
@@ -638,8 +645,14 @@ class AlpacaStreamManager:
             # Only connect if we have positions to watch
             symbols = list(stream.positions_cache.keys())
             if not symbols:
-                # No positions — wait and check again
-                await asyncio.sleep(5)
+                # No positions — wait for a fill or new position
+                stream.data_resubscribe_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        stream.data_resubscribe_event.wait(), timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    pass
                 continue
 
             try:
@@ -670,6 +683,7 @@ class AlpacaStreamManager:
                     })
                     await ws.send(subscribe_msg)
                     listen_resp = json.loads(await ws.recv())
+                    stream.data_subscribed_symbols = set(symbols)
                     log.info(f"Data stream connected for user {stream.user_id}, watching {symbols}")
 
                     reconnect_attempts = 0
@@ -678,9 +692,49 @@ class AlpacaStreamManager:
                     last_sent: dict[str, float] = {}
                     min_interval = 1.0  # seconds between ticks per symbol
 
+                    # Re-subscribe check interval
+                    last_resubscribe_check = time.time()
+                    resubscribe_interval = 2.0  # check every 2s
+
                     async for raw in ws:
                         if not stream.running:
                             break
+
+                        # Dynamic re-subscription: check if new symbols need watching
+                        now = time.time()
+                        if now - last_resubscribe_check >= resubscribe_interval:
+                            last_resubscribe_check = now
+                            current_symbols = set(stream.positions_cache.keys())
+                            new_symbols = current_symbols - stream.data_subscribed_symbols
+                            removed_symbols = stream.data_subscribed_symbols - current_symbols
+
+                            if new_symbols:
+                                # Subscribe to new symbols (Alpaca allows incremental listen)
+                                all_streams = [f"q.{sym}" for sym in current_symbols]
+                                resub_msg = json.dumps({
+                                    "action": "listen",
+                                    "data": {"streams": all_streams},
+                                })
+                                await ws.send(resub_msg)
+                                stream.data_subscribed_symbols = current_symbols
+                                log.info(
+                                    f"Data stream re-subscribed for user {stream.user_id}: "
+                                    f"+{new_symbols} -{removed_symbols}, total={len(current_symbols)}"
+                                )
+                            elif removed_symbols:
+                                # Positions removed — re-subscribe with current set
+                                all_streams = [f"q.{sym}" for sym in current_symbols]
+                                resub_msg = json.dumps({
+                                    "action": "listen",
+                                    "data": {"streams": all_streams},
+                                })
+                                await ws.send(resub_msg)
+                                stream.data_subscribed_symbols = current_symbols
+                                log.debug(
+                                    f"Data stream pruned for user {stream.user_id}: "
+                                    f"-{removed_symbols}, total={len(current_symbols)}"
+                                )
+
                         try:
                             msg = json.loads(raw)
                             stream_key = msg.get("stream", "")
@@ -688,7 +742,6 @@ class AlpacaStreamManager:
 
                             if stream_key.startswith("q."):
                                 symbol = stream_key[2:]
-                                now = time.time()
                                 last = last_sent.get(symbol, 0)
                                 if now - last < min_interval:
                                     continue  # throttle

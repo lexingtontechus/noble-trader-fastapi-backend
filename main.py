@@ -609,6 +609,19 @@ Excluded from MCP (use REST API directly):
         from regime_platform.core.circuit_breaker import all_circuit_stats
         circuit_status = all_circuit_stats()
 
+        # Alpaca stream manager status
+        alpaca_stream_status = {"active": False, "users": 0}
+        try:
+            from regime_platform.services.alpaca_stream import alpaca_stream_manager
+            mgr_status = alpaca_stream_manager.status()
+            alpaca_stream_status = {
+                "active": True,
+                "users": mgr_status.get("active_users", 0),
+                "details": mgr_status.get("users", []),
+            }
+        except Exception:
+            pass
+
         return {
             "status": "ok",
             "version": "5.4.0",
@@ -619,6 +632,7 @@ Excluded from MCP (use REST API directly):
             "discord": discord_status,
             "mcp": mcp_status,
             "circuit_breakers": circuit_status,
+            "alpaca_stream": alpaca_stream_status,
             "gpu_backend": caps["hmm_backend"],
             "device": caps["active_device"],
             "rate_limits": {
