@@ -1,19 +1,26 @@
 """
 JWT Authentication
-══════════════════
+═══════════════════
 
 Provides JWT-based authentication for:
   • HTTP endpoints  — FastAPI Depends(get_current_user)
   • WebSocket       — Token passed as ?token= query param
   • API key fallback — X-API-Key header for service-to-service calls
+  • SaaS API keys   — nt_live_* keys backed by Supabase api_keys table
 
 Configuration (environment variables)
 ──────────────────────────────────────
   JWT_SECRET_KEY   — signing secret (required; no default for security)
   JWT_ALGORITHM    — default "HS256"
   JWT_EXPIRE_MINS  — token lifetime in minutes (default 60)
-  API_KEYS         — comma-separated valid API keys (optional)
+  API_KEYS         — comma-separated valid API keys (optional, static)
   AUTH_ENABLED     — set "false" to disable auth entirely (dev mode)
+
+SaaS API Keys (nt_live_*)
+─────────────────────────
+  API keys with the nt_live_ prefix are looked up in the Supabase api_keys
+  table via SHA-256 hash. They carry the user's role and plan from the key
+  record + Clerk metadata, and respect plan-based rate limits.
 
 Usage
 ─────
@@ -25,8 +32,8 @@ Usage
   # Protect a WebSocket endpoint (auth BEFORE accept)
   @router.websocket("/ws/{symbol}")
   async def ws(websocket, symbol, token=Query(None)):
-      user = await ws_auth(websocket, token)  # raises WebSocketAuthError if invalid
-      await websocket.accept()                # only reached if auth passes
+      user = await ws_auth(websocket, token)
+      await websocket.accept()
       ...
 
   # Issue a token (login endpoint)
@@ -35,7 +42,9 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -58,11 +67,21 @@ AUTH_ENABLED    = settings.AUTH_ENABLED
 # ── Token data model ──────────────────────────────────────────────────────────
 
 class TokenData:
-    def __init__(self, sub: str, role: str = "viewer", exp: Optional[datetime] = None, org_id: Optional[str] = None):
-        self.sub    = sub      # subject / user ID
-        self.role   = role     # "admin" | "trader" | "viewer"
-        self.exp    = exp
-        self.org_id = org_id   # Clerk Org ID (None when not using Orgs)
+    def __init__(
+        self,
+        sub: str,
+        role: str = "viewer",
+        exp: Optional[datetime] = None,
+        org_id: Optional[str] = None,
+        plan: str = "free",
+        is_api_key: bool = False,
+    ):
+        self.sub         = sub       # subject / user ID
+        self.role        = role      # "admin" | "trader" | "viewer"
+        self.exp         = exp
+        self.org_id      = org_id    # Clerk Org ID (None when not using Orgs)
+        self.plan        = plan      # "free" | "premium" | "institutional"
+        self.is_api_key  = is_api_key  # True if authenticated via SaaS API key
 
     @property
     def is_admin(self) -> bool:
@@ -152,6 +171,111 @@ _bearer     = HTTPBearer(auto_error=False)
 _api_key_hdr = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+# ── SaaS API Key Lookup ─────────────────────────────────────────────────────
+
+# In-memory cache for DB-backed API key lookups (key_hash → TokenData)
+# Avoids hitting Supabase on every request for the same key.
+_api_key_cache: dict[str, tuple[TokenData, float]] = {}
+_API_KEY_CACHE_TTL = 60  # seconds — re-validate keys every minute
+
+
+def _hash_api_key(api_key: str) -> str:
+    """Hash an API key using SHA-256 + pepper (matches frontend api-keys.js)."""
+    pepper = getattr(settings, "SUPABASE_ENCRYPTION_KEY", None) or "default-pepper-change-me"
+    return hashlib.sha256((api_key + pepper).encode()).hexdigest()
+
+
+def _lookup_saas_api_key(api_key: str) -> Optional[TokenData]:
+    """
+    Look up a SaaS API key (nt_live_*) in the Supabase api_keys table.
+    Returns TokenData if valid, None otherwise.
+    Results are cached for 60 seconds to avoid DB load.
+    """
+    if not api_key.startswith("nt_live_"):
+        return None
+
+    key_hash = _hash_api_key(api_key)
+
+    # Check cache
+    now = _time.time()
+    cached = _api_key_cache.get(key_hash)
+    if cached and (now - cached[1]) < _API_KEY_CACHE_TTL:
+        return cached[0]
+
+    # DB lookup
+    try:
+        import psycopg2
+        db_url = getattr(settings, "DATABASE_URL", None)
+        if not db_url:
+            log.warning("[api-keys] DATABASE_URL not configured — cannot look up SaaS API keys")
+            return None
+
+        conn = psycopg2.connect(db_url)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT clerk_user_id, plan_at_creation, role_at_creation, expires_at, is_active, rotation_grace_until
+                   FROM api_keys
+                   WHERE key_hash = %s AND is_active = true""",
+                (key_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            clerk_user_id, plan, role, expires_at, is_active, grace_until = row
+
+            # Check expiry
+            if expires_at and expires_at < datetime.now(timezone.utc):
+                # Auto-expire the key
+                cur.execute(
+                    "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE key_hash = %s",
+                    (key_hash,),
+                )
+                conn.commit()
+                return None
+
+            # Check rotation grace period
+            if grace_until and grace_until < datetime.now(timezone.utc):
+                cur.execute(
+                    "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE key_hash = %s",
+                    (key_hash,),
+                )
+                conn.commit()
+                return None
+
+            # Update last_used_at (fire-and-forget, in same transaction)
+            cur.execute(
+                "UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s",
+                (key_hash,),
+            )
+            conn.commit()
+
+            # Build TokenData
+            token_data = TokenData(
+                sub=clerk_user_id,
+                role=role or "viewer",
+                plan=plan or "free",
+                is_api_key=True,
+            )
+
+            # Cache it
+            _api_key_cache[key_hash] = (token_data, now)
+            return token_data
+
+        finally:
+            conn.close()
+
+    except Exception as e:
+        log.error(f"[api-keys] DB lookup failed: {e}")
+        # Return cached value even if expired, better than failing
+        if cached:
+            return cached[0]
+        return None
+
+
+# ── HTTP authentication dependencies ─────────────────────────────────────────
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     api_key: Optional[str] = Depends(_api_key_hdr),
@@ -161,21 +285,22 @@ async def get_current_user(
 
     Accepts:
       - Bearer JWT token in Authorization header
-      - X-API-Key header (service-to-service)
+      - X-API-Key header (SaaS nt_live_* or static service key)
 
     If AUTH_ENABLED=false, returns a synthetic admin user (dev mode).
-
-    Usage:
-        @router.post("/endpoint")
-        async def handler(user: TokenData = Depends(get_current_user)):
-            ...
     """
     if not AUTH_ENABLED:
         return TokenData(sub="dev", role="admin")
 
-    # API key check first (simpler, faster)
-    if api_key and api_key in API_KEYS:
-        return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+    # API key check: try SaaS API key first, then static API_KEYS
+    if api_key:
+        # SaaS API key (nt_live_*) — DB-backed
+        saas_user = _lookup_saas_api_key(api_key)
+        if saas_user:
+            return saas_user
+        # Static API key (service-to-service)
+        if api_key in API_KEYS:
+            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
 
     # JWT check
     if credentials and credentials.scheme.lower() == "bearer":
@@ -206,12 +331,11 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
         return None
 
     # Check if token looks like a Clerk JWT by examining the issuer
-    # Clerk JWTs have an "iss" claim like https://xxx.clerk.accounts.dev
     try:
         import jwt as _jwt
         payload = _jwt.decode(
             token,
-            key="",            # Required by some PyJWT versions even with verify_signature=False
+            key="",
             options={
                 "verify_signature": False,
                 "verify_exp": False,
@@ -220,7 +344,6 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
             algorithms=["RS256", "HS256"],
         )
     except Exception as e:
-        # Can't decode at all — probably not a JWT, move on
         log.debug(f"Cannot decode token for issuer check: {e}")
         return None
 
@@ -232,9 +355,6 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
     # Issuer is a Clerk domain — attempt full verification
     try:
         clerk_user = verify_clerk_token(token)
-        # verify_clerk_token now does privateMetadata role lookup,
-        # so clerk_user.role should be correct (admin/trader/viewer).
-        # Fallback to "viewer" only if something unexpected happens.
         role = clerk_user.role if clerk_user.role in ("admin", "trader", "viewer") else "viewer"
         log.info(f"Clerk JWT verified: sub={clerk_user.sub}, role={role}")
         return TokenData(
@@ -243,12 +363,9 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
             org_id=clerk_user.org_id,
         )
     except HTTPException as e:
-        # Clerk verification failed with a known HTTP error (e.g. expired token, invalid signature)
-        # Re-raise this so the caller gets a proper 401 instead of falling through to local JWT
         log.warning(f"Clerk token verification failed (HTTP {e.status_code}): {e.detail}")
         raise
     except Exception as e:
-        # Unexpected error — log it and fall through to local JWT
         log.error(f"Unexpected error during Clerk verification: {type(e).__name__}: {e}")
         return None
 
@@ -264,19 +381,23 @@ async def get_authed_user(
     Priority order:
       1. Bearer token → try Clerk JWKS verification (dynamic issuer)
       2. Bearer token → try local JWT_SECRET_KEY verification
-      3. X-API-Key header
-      4. AUTH_ENABLED=false → dev mode (synthetic admin)
-
-    This allows both Clerk-issued tokens AND locally-signed tokens to work,
-    making the transition seamless.
+      3. X-API-Key header → SaaS API key (nt_live_*) DB lookup
+      4. X-API-Key header → static API key (service-to-service)
+      5. AUTH_ENABLED=false → dev mode (synthetic admin)
     """
     # Dev mode bypass
     if not AUTH_ENABLED:
         return TokenData(sub="dev", role="admin")
 
-    # API key check (fastest)
-    if api_key and api_key in API_KEYS:
-        return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+    # API key check: try SaaS API key first, then static API_KEYS
+    if api_key:
+        # SaaS API key (nt_live_*) — DB-backed
+        saas_user = _lookup_saas_api_key(api_key)
+        if saas_user:
+            return saas_user
+        # Static API key (service-to-service)
+        if api_key in API_KEYS:
+            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
 
     # No credentials at all
     if not credentials or credentials.scheme.lower() != "bearer":
@@ -288,15 +409,13 @@ async def get_authed_user(
 
     token = credentials.credentials
 
-    # Try Clerk JWT verification first (dynamic — works with any Clerk instance)
-    # NOTE: _try_clerk_verification may raise HTTPException (e.g. expired Clerk token)
-    # which we should propagate rather than falling through to local JWT.
+    # Try Clerk JWT verification first
     try:
         clerk_result = _try_clerk_verification(token)
         if clerk_result:
             return clerk_result
     except HTTPException:
-        raise  # Re-raise Clerk auth errors (expired, invalid signature, etc.)
+        raise
 
     # Fall back to local JWT verification
     if JWT_SECRET_KEY:
@@ -310,12 +429,10 @@ async def get_authed_user(
     )
 
 
-# ── Role-based dependencies (MUST come after get_authed_user) ──────────────────
-
+# ── Role-based dependencies ──────────────────────────────────────────────────
 
 async def require_write(user: TokenData = Depends(get_authed_user)) -> TokenData:
-    """Dependency that additionally requires trader or admin role.
-    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
+    """Dependency that additionally requires trader or admin role."""
     if not user.can_write:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -325,8 +442,7 @@ async def require_write(user: TokenData = Depends(get_authed_user)) -> TokenData
 
 
 async def require_admin(user: TokenData = Depends(get_authed_user)) -> TokenData:
-    """Dependency that requires admin role.
-    Uses get_authed_user which supports Clerk JWT → local JWT → API key."""
+    """Dependency that requires admin role."""
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -335,14 +451,12 @@ async def require_admin(user: TokenData = Depends(get_authed_user)) -> TokenData
     return user
 
 
-# ── WebSocket authentication ──────────────────────────────────────────────────
+# ── WebSocket authentication ─────────────────────────────────────────────────
 
 class WebSocketAuthError(Exception):
     """
     Raised when WebSocket authentication fails before accept().
-
-    The caller should NOT call websocket.accept(). The ASGI server
-    will reject the connection automatically since it was never accepted.
+    The caller should NOT call websocket.accept().
     """
     def __init__(self, reason: str = "Unauthorised"):
         self.reason = reason
@@ -359,36 +473,23 @@ async def ws_auth(
 
     Checks (in order):
       1. AUTH_ENABLED=false → dev mode, always accept
-      2. ?api_key=<key> query parameter
-      3. ?token=<jwt> query parameter  (Clerk JWT → local JWT)
-      4. X-API-Key header
-
-    Raises WebSocketAuthError if authentication fails.
-    The caller should NOT call websocket.accept() after this exception.
-    The ASGI server will reject the unaccepted connection automatically.
-
-    Usage:
-        @router.websocket("/ws/{symbol}")
-        async def ws_handler(
-            websocket: WebSocket,
-            symbol: str,
-            token: Optional[str] = Query(None),
-            api_key: Optional[str] = Query(None),
-        ):
-            user = await ws_auth(websocket, token, api_key)
-            await websocket.accept()
-            ...
+      2. ?api_key=<key> query parameter (SaaS or static)
+      3. ?token=<jwt> query parameter (Clerk JWT → local JWT)
+      4. X-API-Key header (SaaS or static)
     """
     if not AUTH_ENABLED:
         return TokenData(sub="dev", role="admin")
 
-    # Query-param API key
-    if api_key and api_key in API_KEYS:
-        return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+    # Query-param API key: try SaaS first, then static
+    if api_key:
+        saas_user = _lookup_saas_api_key(api_key)
+        if saas_user:
+            return saas_user
+        if api_key in API_KEYS:
+            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
 
     # Query-param JWT / Clerk JWT
     if token:
-        # Try Clerk verification first (dynamic)
         try:
             clerk_result = _try_clerk_verification(token)
             if clerk_result:
@@ -396,7 +497,6 @@ async def ws_auth(
         except HTTPException:
             raise WebSocketAuthError("Clerk token verification failed")
 
-        # Fall back to local JWT
         if JWT_SECRET_KEY:
             try:
                 return decode_token(token)
@@ -405,10 +505,14 @@ async def ws_auth(
 
         raise WebSocketAuthError("No auth method available")
 
-    # Header API key
+    # Header API key: try SaaS first, then static
     hdr_key = websocket.headers.get("x-api-key")
-    if hdr_key and hdr_key in API_KEYS:
-        return TokenData(sub=f"apikey:{hdr_key[:8]}...", role="trader")
+    if hdr_key:
+        saas_user = _lookup_saas_api_key(hdr_key)
+        if saas_user:
+            return saas_user
+        if hdr_key in API_KEYS:
+            return TokenData(sub=f"apikey:{hdr_key[:8]}...")
 
     raise WebSocketAuthError("Unauthorised — provide ?token=<jwt> or ?api_key=<key>")
 
@@ -418,12 +522,6 @@ async def ws_auth(
 def make_login_response(sub: str, role: str = "viewer") -> dict:
     """
     Utility for a /auth/token endpoint to return a standard token response.
-
-    Usage:
-        @router.post("/auth/token")
-        async def login(form: OAuth2PasswordRequestForm = Depends()):
-            # Validate credentials here ...
-            return make_login_response(sub=form.username, role="trader")
     """
     token = create_access_token({"sub": sub, "role": role})
     return {
