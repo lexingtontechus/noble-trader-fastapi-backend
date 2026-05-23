@@ -1,8 +1,9 @@
 """TDA (Topological Data Analysis) endpoints — persistent homology feature extraction."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import TDARequest, TDAResponse
 from ..core.tda_engine import TDAEngine
+from ..auth.jwt_auth import get_authed_user, TokenData
 import numpy as np
 
 router = APIRouter(prefix="/tda", tags=["TDA Features"])
@@ -14,7 +15,7 @@ tda_engine = TDAEngine()
     response_model=TDAResponse,
     summary="Extract TDA features from price series using persistent homology",
 )
-async def extract_tda_features(req: TDARequest):
+async def extract_tda_features(req: TDARequest, user: TokenData = Depends(get_authed_user)):
     """
     Topological Data Analysis feature extraction:
     1. Compute log-returns from price series

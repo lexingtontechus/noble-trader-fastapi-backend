@@ -53,10 +53,17 @@ API_KEYS        = set(filter(None, os.getenv("API_KEYS", "").split(",")))
 AUTH_ENABLED    = os.getenv("AUTH_ENABLED", "true").lower() != "false"
 
 if AUTH_ENABLED and not JWT_SECRET_KEY:
-    log.warning(
-        "JWT_SECRET_KEY is not set. Authentication will reject all JWT tokens. "
-        "Set JWT_SECRET_KEY env var or set AUTH_ENABLED=false for development."
+    log.error(
+        "FATAL: JWT_SECRET_KEY is not set but AUTH_ENABLED=true. "
+        "All JWT authentication will fail. Set JWT_SECRET_KEY or set AUTH_ENABLED=false for development."
     )
+    # In production, refuse to start without a secret key
+    _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+    if _DEPLOY_ENV in ("production", "staging"):
+        raise RuntimeError(
+            "JWT_SECRET_KEY is required in production/staging. "
+            "Set the JWT_SECRET_KEY environment variable or set AUTH_ENABLED=false."
+        )
 
 
 # ── Token data model ──────────────────────────────────────────────────────────
@@ -173,6 +180,14 @@ async def get_current_user(
             ...
     """
     if not AUTH_ENABLED:
+        # Dev mode — only allowed in development, never in production
+        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        if _DEPLOY_ENV in ("production", "staging"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+            )
+        log.warning("AUTH_ENABLED=false: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
 
     # API key check first (simpler, faster)
@@ -268,8 +283,15 @@ async def get_authed_user(
     This allows both Clerk-issued tokens AND locally-signed tokens to work,
     making the transition seamless.
     """
-    # Dev mode bypass
+    # Dev mode bypass (production blocked)
     if not AUTH_ENABLED:
+        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        if _DEPLOY_ENV in ("production", "staging"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+            )
+        log.warning("AUTH_ENABLED=false: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
 
     # API key check (fastest)
@@ -334,6 +356,11 @@ async def ws_auth(
             ...
     """
     if not AUTH_ENABLED:
+        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        if _DEPLOY_ENV in ("production", "staging"):
+            await websocket.close(code=4001, reason="Auth disabled in production")
+            raise HTTPException(status_code=401, detail="Auth disabled in production")
+        log.warning("AUTH_ENABLED=false: WS dev mode (development only)")
         return TokenData(sub="dev", role="admin")
 
     # Query-param API key

@@ -1,9 +1,10 @@
 """Observation builder endpoints — 24-feature and 24+-feature stateful observation vectors."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import ObservationRequest, ObservationResponse, ObservationV2Request, ObservationV2Response
 from ..core.obs_builder import InferenceObservationBuilder, F
 from ..core.tda_engine import TDAEngine
+from ..auth.jwt_auth import get_authed_user, TokenData
 import numpy as np
 
 router = APIRouter(prefix="/observation", tags=["Observation Builder"])
@@ -42,7 +43,7 @@ FEATURE_LABELS = [
     response_model=ObservationResponse,
     summary="Build a 24-feature observation vector from price series",
 )
-async def build_observation(req: ObservationRequest):
+async def build_observation(req: ObservationRequest, user: TokenData = Depends(get_authed_user)):
     """
     Constructs the full 24-feature observation vector used by the RL/ML policy
     layer. Features 14–19 are **Markov features**: live HMM posterior
@@ -108,7 +109,7 @@ TDA_FEATURE_LABELS = [
     response_model=ObservationV2Response,
     summary="Build enhanced 24+ feature observation vector with optional TDA features",
 )
-async def build_observation_v2(req: ObservationV2Request):
+async def build_observation_v2(req: ObservationV2Request, user: TokenData = Depends(get_authed_user)):
     """
     Enhanced observation builder (v2):
     1. Builds the standard 24-feature observation vector (same as /build)

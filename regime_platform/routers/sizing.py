@@ -1,9 +1,10 @@
 """Position sizing endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import SizeRequest, SizeResponse
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
+from ..auth.jwt_auth import get_authed_user, TokenData
 import numpy as np
 
 router = APIRouter(prefix="/size", tags=["Position Sizing"])
@@ -11,7 +12,7 @@ sizer  = PositionSizer()
 
 
 @router.post("/kelly", response_model=SizeResponse, summary="Regime-aware Kelly position sizing")
-async def kelly_size(req: SizeRequest):
+async def kelly_size(req: SizeRequest, user: TokenData = Depends(get_authed_user)):
     """
     Computes fractional Kelly position size, optionally scaled by:
     - Current realised volatility vs target volatility

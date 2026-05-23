@@ -108,7 +108,13 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     Roles: `admin` (full access) · `trader` (read + write) · `viewer` (read-only)
     """
     if not AUTH_ENABLED:
-        # Dev mode — issue a token without credential check
+        # Dev mode — issue a token without credential check (development only)
+        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        if _DEPLOY_ENV in ("production", "staging"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+            )
         return TokenResponse(**make_login_response(sub=form.username, role="admin"))
 
     if not _USERS:

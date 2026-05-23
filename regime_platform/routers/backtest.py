@@ -1,8 +1,9 @@
 """Backtest endpoints — walk-forward backtesting with regime-aware strategy."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import BacktestRequest, BacktestResponse
 from ..core.backtester import Backtester, BacktestConfig
+from ..auth.jwt_auth import get_authed_user, TokenData
 import numpy as np
 
 router = APIRouter(prefix="/backtest", tags=["Backtesting"])
@@ -14,7 +15,7 @@ backtester = Backtester()
     response_model=BacktestResponse,
     summary="Run walk-forward backtest with regime-aware strategy (30+ metrics)",
 )
-async def run_backtest(req: BacktestRequest):
+async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authed_user)):
     """
     Walk-forward backtest pipeline:
     1. Rolling HMM fit on trailing window

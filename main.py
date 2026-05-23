@@ -53,6 +53,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+# Load .env file before any other imports that read env vars
+from dotenv import load_dotenv
+load_dotenv(override=False)  # Don't override already-set env vars (e.g. from Render dashboard)
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -192,10 +196,20 @@ POST /optimise/full  ->  correlation + optimisation one-shot
         lifespan=lifespan,
     )
 
-    # CORS
+    # CORS — restricted to configured origins (never allow_origins=["*"] in production)
+    cors_origins = [
+        o.strip()
+        for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+        if o.strip()
+    ]
+    _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+    if _deploy_env in ("production", "staging") and "*" in cors_origins:
+        log.error("FATAL: CORS wildcard not allowed in production/staging. Set CORS_ALLOWED_ORIGINS explicitly.")
+        raise RuntimeError("CORS wildcard not allowed in production/staging")
+    log.info(f"CORS allowed origins: {cors_origins}")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

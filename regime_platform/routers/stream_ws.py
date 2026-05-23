@@ -25,13 +25,15 @@ import json
 import time
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
 from fastapi.responses import StreamingResponse
 
 from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM
 from ..services.stream_session import RegimeAlert
 from ..models.stream_schemas import WsMessage
+from ..auth.jwt_auth import ws_auth, get_authed_user, require_write, TokenData
+from typing import Optional
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
@@ -42,7 +44,7 @@ _alert_broadcast: asyncio.Queue = asyncio.Queue(maxsize=1000)
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{symbol}")
-async def websocket_stream(websocket: WebSocket, symbol: str):
+async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[str] = Query(None), api_key: Optional[str] = Query(None)):
     """
     Full-duplex WebSocket for a single symbol.
 
@@ -50,11 +52,16 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
     The server pushes back a regime snapshot after every tick
     and an alert message on regime transitions.
 
+    Authentication: Provide ?token=<jwt> or ?api_key=<key> query param.
+
     Example client flow:
-      1. {"type":"seed",  "symbol":"SPY", "prices":[...]}
-      2. {"type":"tick",  "symbol":"SPY", "price":512.34}
-      3. ... receive tick snapshots ...
+      1. Connect with auth: ws://host/ws/SPY?token=eyJhbG...
+      2. {"type":"seed",  "symbol":"SPY", "prices":[...]}
+      3. {"type":"tick",  "symbol":"SPY", "price":512.34}
+      4. ... receive tick snapshots ...
     """
+    # Authenticate the WebSocket connection before accepting
+    user = await ws_auth(websocket, token, api_key)
     await websocket.accept()
 
     async def _send(data: dict):
@@ -161,7 +168,7 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
     summary="Server-Sent Events stream for a symbol",
     response_class=StreamingResponse,
 )
-async def sse_symbol(symbol: str):
+async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
     """
     SSE stream that pushes a JSON regime snapshot on every tick received
     by the server for `symbol`. Subscribe from any browser with EventSource.
@@ -201,7 +208,7 @@ async def sse_symbol(symbol: str):
     summary="Global SSE stream for all regime-change alerts across all symbols",
     response_class=StreamingResponse,
 )
-async def sse_alerts():
+async def sse_alerts(user: TokenData = Depends(get_authed_user)):
     """
     Broadcasts regime-change alerts for all symbols to connected listeners.
     Only fires on regime state transitions (not every tick).
