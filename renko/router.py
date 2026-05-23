@@ -246,6 +246,25 @@ async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
     return _pipelines[symbol]
 
 
+async def _on_config_changed(key: str, entry) -> None:
+    """
+    Callback registered with runtime_config.register_on_change().
+
+    When a renko.* config key changes, invalidate all cached pipelines
+    so the next request creates fresh pipelines with updated config.
+    This ensures runtime config changes take effect immediately without
+    requiring a server restart.
+    """
+    if key.startswith("renko."):
+        invalidated = list(_pipelines.keys())
+        _pipelines.clear()
+        if invalidated:
+            log.info(
+                "Config %s changed — invalidated %d pipeline(s): %s",
+                key, len(invalidated), ", ".join(invalidated),
+            )
+
+
 # ── Router ─────────────────────────────────────────────────────────
 
 if FASTAPI_AVAILABLE:
@@ -319,61 +338,61 @@ if FASTAPI_AVAILABLE:
     @renko_router.get("/state")
     async def get_state(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get current pipeline state."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         return pipeline.get_state().to_dict()
 
     @renko_router.get("/stats")
     async def get_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         return pipeline.get_stats()
 
     @renko_router.get("/bricks")
     async def get_bricks(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent bricks."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         bricks = list(pipeline.brick_engine.history)
         return [b.to_dict() for b in bricks[-last_n:]]
 
     @renko_router.get("/classified")
     async def get_classified(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent classified bricks."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         classified = list(pipeline.swing_classifier.classified_history)
         return [c.to_dict() for c in classified[-last_n:]]
 
     @renko_router.get("/signals")
     async def get_signals(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent pattern signals."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         signals = pipeline.pattern_detector.signals
         return [s.to_dict() for s in signals[-last_n:]]
 
     @renko_router.get("/trades")
     async def get_trades(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent trade records."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         trades = list(pipeline.journal.trades)
         return [t.to_dict() for t in trades[-last_n:]]
 
     @renko_router.get("/swing-points")
     async def get_swing_points(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get detected swing points."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         points = pipeline.swing_classifier.swing_points
         return [p.to_dict() for p in points[-last_n:]]
 
     @renko_router.post("/regime")
     async def set_regime(body: RegimeInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
         """Update the current HMM regime."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         pipeline.set_regime(body.regime)
         return {"status": "ok", "regime": body.regime}
 
     @renko_router.post("/equity")
     async def set_equity(body: EquityInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
         """Update the current account equity."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         pipeline.set_equity(body.equity)
         return {"status": "ok", "equity": body.equity}
 
@@ -413,7 +432,7 @@ if FASTAPI_AVAILABLE:
     @renko_router.post("/reset")
     async def reset_pipeline(symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
         """Reset the pipeline for a symbol."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         pipeline.reset()
 
         # ── Fire Discord status notification ─────────────────────
@@ -424,31 +443,37 @@ if FASTAPI_AVAILABLE:
     @renko_router.get("/backtest/stats")
     async def backtest_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get backtest/trading statistics from the journal."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         return pipeline.journal.get_stats()
 
     @renko_router.post("/backtest/run")
     async def run_backtest(request: Request, body: BacktestRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
-        """Run a full backtest with Phase 2-7 analytics."""
+        """Run a full backtest with Phase 2-7 analytics.
+
+        Uses runtime config as the base, then applies the explicit overrides
+        from the request body. This ensures admin-adjusted defaults via /config
+        API are respected even when per-backtest overrides are provided.
+        """
         symbol = body.symbol or "SPY"
-        config = RenkoConfig(
-            symbol=symbol,
-            brick_size=body.brick_size,
-            sl_bricks=body.sl_bricks,
-            tp_bricks=body.tp_bricks,
-            slippage_bps=body.slippage_bps,
-            commission_bps=body.commission_bps,
-            spread_bps=body.spread_bps,
-            oco_priority=body.oco_priority,
-            market_impact_mode=body.market_impact_mode,
-            adv_shares=body.adv_shares,
-            fill_probability_mode=body.fill_probability_mode,
-            borrow_rate_bps=body.borrow_rate_bps,
-            margin_rate_bps=body.margin_rate_bps,
-            is_hard_to_borrow=body.is_hard_to_borrow,
-            dividend_yield_bps=body.dividend_yield_bps,
-            initial_capital=body.initial_capital,
-        )
+        overrides = {
+            "symbol": symbol,
+            "brick_size": body.brick_size,
+            "sl_bricks": body.sl_bricks,
+            "tp_bricks": body.tp_bricks,
+            "slippage_bps": body.slippage_bps,
+            "commission_bps": body.commission_bps,
+            "spread_bps": body.spread_bps,
+            "oco_priority": body.oco_priority,
+            "market_impact_mode": body.market_impact_mode,
+            "adv_shares": body.adv_shares,
+            "fill_probability_mode": body.fill_probability_mode,
+            "borrow_rate_bps": body.borrow_rate_bps,
+            "margin_rate_bps": body.margin_rate_bps,
+            "is_hard_to_borrow": body.is_hard_to_borrow,
+            "dividend_yield_bps": body.dividend_yield_bps,
+            "initial_capital": body.initial_capital,
+        }
+        config = await RenkoConfig.from_runtime_config(overrides=overrides)
         pipeline = RenkoPipeline(config)
         result = pipeline.backtest_with_analytics(
             prices=body.prices,
@@ -466,21 +491,22 @@ if FASTAPI_AVAILABLE:
         import json
 
         symbol = body.symbol or "SPY"
-        config = RenkoConfig(
-            symbol=symbol,
-            brick_size=body.brick_size,
-            sl_bricks=body.sl_bricks,
-            tp_bricks=body.tp_bricks,
-            slippage_bps=body.slippage_bps,
-            commission_bps=body.commission_bps,
-            spread_bps=body.spread_bps,
-            oco_priority=body.oco_priority,
-            market_impact_mode=body.market_impact_mode,
-            adv_shares=body.adv_shares,
-            fill_probability_mode=body.fill_probability_mode,
-            borrow_rate_bps=body.borrow_rate_bps,
-            margin_rate_bps=body.margin_rate_bps,
-        )
+        overrides = {
+            "symbol": symbol,
+            "brick_size": body.brick_size,
+            "sl_bricks": body.sl_bricks,
+            "tp_bricks": body.tp_bricks,
+            "slippage_bps": body.slippage_bps,
+            "commission_bps": body.commission_bps,
+            "spread_bps": body.spread_bps,
+            "oco_priority": body.oco_priority,
+            "market_impact_mode": body.market_impact_mode,
+            "adv_shares": body.adv_shares,
+            "fill_probability_mode": body.fill_probability_mode,
+            "borrow_rate_bps": body.borrow_rate_bps,
+            "margin_rate_bps": body.margin_rate_bps,
+        }
+        config = await RenkoConfig.from_runtime_config(overrides=overrides)
         pipeline = RenkoPipeline(config)
 
         def event_generator():
@@ -508,20 +534,21 @@ if FASTAPI_AVAILABLE:
         for brick_size in body.brick_sizes:
             for sl in body.sl_bricks_range:
                 for tp in body.tp_bricks_range:
-                    config = RenkoConfig(
-                        symbol=symbol,
-                        brick_size=brick_size,
-                        sl_bricks=sl,
-                        tp_bricks=tp,
-                        slippage_bps=body.slippage_bps,
-                        commission_bps=body.commission_bps,
-                        spread_bps=body.spread_bps,
-                        market_impact_mode=body.market_impact_mode,
-                        adv_shares=body.adv_shares,
-                        fill_probability_mode=body.fill_probability_mode,
-                        borrow_rate_bps=body.borrow_rate_bps,
-                        margin_rate_bps=body.margin_rate_bps,
-                    )
+                    overrides = {
+                        "symbol": symbol,
+                        "brick_size": brick_size,
+                        "sl_bricks": sl,
+                        "tp_bricks": tp,
+                        "slippage_bps": body.slippage_bps,
+                        "commission_bps": body.commission_bps,
+                        "spread_bps": body.spread_bps,
+                        "market_impact_mode": body.market_impact_mode,
+                        "adv_shares": body.adv_shares,
+                        "fill_probability_mode": body.fill_probability_mode,
+                        "borrow_rate_bps": body.borrow_rate_bps,
+                        "margin_rate_bps": body.margin_rate_bps,
+                    }
+                    config = await RenkoConfig.from_runtime_config(overrides=overrides)
                     pipeline = RenkoPipeline(config)
                     bt_result = pipeline.backtest_with_analytics(
                         prices=body.prices,
@@ -626,29 +653,46 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/execution/model")
     async def execution_model(request: Request, body: ExecutionModelRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
-        """Compute execution modeling costs (Phase 7) for a trade."""
+        """Compute execution modeling costs (Phase 7) for a trade.
+
+        Uses runtime_config as the source of defaults for any param not
+        explicitly provided in the request body. This ensures admin-adjusted
+        defaults via the /config API are respected.
+        """
         from regime_platform.services.execution.market_impact import compute_market_impact
         from regime_platform.services.execution.fill_probability import compute_fill_probability
         from regime_platform.services.execution.borrow_financing import compute_total_financing_costs
+        from regime_platform.services.execution import get_execution_defaults
+
+        # Resolve execution defaults from runtime config
+        defaults = await get_execution_defaults()
 
         result = {}
 
-        # Market impact
+        # Market impact — use runtime default for sigma_daily and adv if not specified
+        sigma_daily = body.sigma_daily if body.sigma_daily != 0.02 else defaults["sigma_daily"]
+        adv_shares = body.adv_shares if body.adv_shares != 10_000_000 else defaults["default_adv_shares"]
+
         result["market_impact"] = compute_market_impact(
             order_shares=body.order_shares,
-            adv_shares=body.adv_shares,
-            sigma_daily=body.sigma_daily,
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
             avg_price=body.avg_price,
+            permanent_impact_coeff=defaults["permanent_impact_coeff"],
+            temporary_impact_coeff=defaults["temporary_impact_coeff"],
         )
 
-        # Fill probability
+        # Fill probability — use runtime defaults for time horizon, sensitivity, threshold
         result["fill_probability"] = compute_fill_probability(
             order_type=body.order_type,
             distance_from_mid_pct=body.distance_from_mid_pct,
-            volatility_daily=body.sigma_daily,
+            volatility_daily=sigma_daily,
+            time_horizon_hours=defaults["fill_time_horizon_hours"],
+            sensitivity=defaults["fill_sensitivity"],
+            threshold=defaults["fill_threshold"],
         )
 
-        # Financing costs
+        # Financing costs — use runtime defaults for rates
         if body.position_notional > 0:
             result["financing_costs"] = compute_total_financing_costs(
                 position_notional=body.position_notional,
@@ -658,6 +702,7 @@ if FASTAPI_AVAILABLE:
                 borrow_rate_bps=body.borrow_rate_bps,
                 margin_rate_bps=body.margin_rate_bps,
                 dividend_yield_bps=body.dividend_yield_bps,
+                hard_to_borrow_premium_bps=defaults["htb_premium_bps"],
             )
 
         return result
@@ -665,7 +710,7 @@ if FASTAPI_AVAILABLE:
     @renko_router.get("/live/status")
     async def get_live_status(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
         """Get the live execution status for a pipeline."""
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         config = pipeline.config
         return {
             "symbol": symbol,
@@ -682,7 +727,7 @@ if FASTAPI_AVAILABLE:
         When enabled=False, sets dry_run=True (safe mode).
         When enabled=True, sets dry_run=False and live_enabled=True.
         """
-        pipeline = _get_pipeline(symbol)
+        pipeline = await _get_pipeline_async(symbol)
         pipeline.config.dry_run = not enabled
         pipeline.config.live_enabled = enabled
 

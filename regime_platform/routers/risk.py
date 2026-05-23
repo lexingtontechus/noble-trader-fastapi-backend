@@ -6,6 +6,7 @@ from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
 from ..auth.jwt_auth import get_authed_user, TokenData
+from ..core.runtime_config import runtime_config
 import numpy as np
 
 router   = APIRouter(prefix="/risk", tags=["Risk Analysis"])
@@ -26,22 +27,25 @@ async def risk_analyse(req: RiskRequest, user: TokenData = Depends(get_authed_us
 
         regime = None
         if req.use_regime:
-            model = RegimeHMM()
+            model = await RegimeHMM.from_runtime_config()
             model.fit(prices)
             regime = model.predict(prices)
 
-        size_result = sizer.size(PositionRequest(
+        # Resolve runtime-configurable defaults for risk params
+        base_risk_limit = req.base_risk_limit or await runtime_config.get_float("risk.base_risk_limit", default=0.02)
+
+        size_result = await sizer.size_async(PositionRequest(
             returns=returns.tolist(),
             kelly_fraction=req.kelly_fraction,
             target_vol=req.target_vol,
             regime=regime,
         ))
 
-        risk = riskman.analyse(
+        risk = await riskman.analyse_async(
             returns=returns,
             recommended_f=size_result.recommended_f,
             regime=regime,
-            base_risk_limit=req.base_risk_limit,
+            base_risk_limit=base_risk_limit,
         )
 
         return RiskResponse(
@@ -92,39 +96,52 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
 
         regime = None
         if req.use_regime:
-            model = RegimeHMM(n_components=req.n_hmm_states)
+            model = await RegimeHMM.from_runtime_config(n_components=req.n_hmm_states)
             model.fit(prices)
             regime = model.predict(prices)
 
-        size_result = sizer.size(PositionRequest(
+        # Resolve runtime-configurable defaults for risk params
+        base_risk_limit = req.base_risk_limit or await runtime_config.get_float("risk.base_risk_limit", default=0.02)
+
+        size_result = await sizer.size_async(PositionRequest(
             returns=returns.tolist(),
             kelly_fraction=req.kelly_fraction,
             target_vol=req.target_vol,
             regime=regime,
         ))
 
-        risk = riskman.analyse(
+        risk = await riskman.analyse_async(
             returns=returns,
             recommended_f=size_result.recommended_f,
             regime=regime,
-            base_risk_limit=req.base_risk_limit,
+            base_risk_limit=base_risk_limit,
         )
 
-        # Stress tests
+        # Stress tests — params resolved from runtime_config
         stress_tests = []
         if req.stress_scenarios and len(returns) > 20:
             mu = float(np.mean(returns))
             sigma = float(np.std(returns, ddof=1))
 
+            # Resolve stress test parameters from runtime config
+            crash_mean = await runtime_config.get_float("risk.stress_crash_mean", default=-0.02)
+            crash_std = await runtime_config.get_float("risk.stress_crash_std", default=0.04)
+            crash_seed = await runtime_config.get_int("risk.stress_crash_seed", default=42)
+            flash_drop = await runtime_config.get_float("risk.stress_flash_drop", default=-0.10)
+            vol_multiplier = await runtime_config.get_int("risk.stress_vol_multiplier", default=3)
+            vol_spike_bars = await runtime_config.get_int("risk.stress_vol_spike_bars", default=20)
+            rate_shock_bps = await runtime_config.get_float("risk.stress_rate_shock_bps", default=0.002)
+            liquidity_shift = await runtime_config.get_float("risk.stress_liquidity_shift", default=0.001)
+
             # 2008 crash scenario
             crash_returns = returns.copy()
-            crash_factor = np.random.default_rng(42).normal(-0.02, 0.04, len(returns))
+            crash_factor = np.random.default_rng(crash_seed).normal(crash_mean, crash_std, len(returns))
             crash_returns_stressed = crash_returns + crash_factor
             crash_var = float(-np.percentile(crash_returns_stressed, 5))
             crash_max_dd = float(np.min(np.cumsum(crash_returns_stressed)))
             stress_tests.append(StressTestResult(
                 scenario="2008_crash",
-                description="2008-style crash: sustained -2%/day with elevated vol",
+                description=f"2008-style crash: sustained {crash_mean*100:.1f}%/day with vol {crash_std*100:.1f}%",
                 simulated_return=float(np.sum(crash_returns_stressed)),
                 simulated_var_95=round(crash_var, 6),
                 simulated_max_dd=round(crash_max_dd, 6),
@@ -133,13 +150,13 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
             # Flash crash scenario
             flash_returns = returns.copy()
             flash_day = len(flash_returns) // 2
-            flash_returns[flash_day] = -0.10  # -10% in single day
+            flash_returns[flash_day] = flash_drop
             flash_var = float(-np.percentile(flash_returns, 5))
             flash_dd_series = np.cumsum(flash_returns)
             flash_max_dd = float(np.min(flash_dd_series))
             stress_tests.append(StressTestResult(
                 scenario="flash_crash",
-                description="Flash crash: -10% single-day drop",
+                description=f"Flash crash: {flash_drop*100:.0f}% single-day drop",
                 simulated_return=float(np.sum(flash_returns)),
                 simulated_var_95=round(flash_var, 6),
                 simulated_max_dd=round(flash_max_dd, 6),
@@ -147,12 +164,15 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
 
             # Volatility spike scenario
             vol_spike_returns = returns.copy()
-            vol_spike_returns[-20:] = np.random.default_rng(43).normal(mu, sigma * 3, 20)
+            spike_bars = min(vol_spike_bars, len(vol_spike_returns))
+            vol_spike_returns[-spike_bars:] = np.random.default_rng(crash_seed + 1).normal(
+                mu, sigma * vol_multiplier, spike_bars
+            )
             vol_var = float(-np.percentile(vol_spike_returns, 5))
             vol_dd = float(np.min(np.cumsum(vol_spike_returns)))
             stress_tests.append(StressTestResult(
                 scenario="volatility_spike",
-                description="Volatility spike: 3x normal vol for 20 bars",
+                description=f"Volatility spike: {vol_multiplier}x normal vol for {spike_bars} bars",
                 simulated_return=float(np.sum(vol_spike_returns)),
                 simulated_var_95=round(vol_var, 6),
                 simulated_max_dd=round(vol_dd, 6),
@@ -160,12 +180,12 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
 
             # Rate shock scenario
             rate_returns = returns.copy()
-            rate_returns -= 0.002  # -20bp/day for rate shock
+            rate_returns -= rate_shock_bps
             rate_var = float(-np.percentile(rate_returns, 5))
             rate_dd = float(np.min(np.cumsum(rate_returns)))
             stress_tests.append(StressTestResult(
                 scenario="rate_shock",
-                description="Interest rate shock: +2% rates reducing equity returns",
+                description=f"Interest rate shock: {rate_shock_bps*10_000:.0f}bps/day shift",
                 simulated_return=float(np.sum(rate_returns)),
                 simulated_var_95=round(rate_var, 6),
                 simulated_max_dd=round(rate_dd, 6),
@@ -173,13 +193,13 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
 
             # Liquidity crisis scenario
             liq_returns = returns.copy()
-            liq_returns -= 0.001  # worse execution
+            liq_returns -= liquidity_shift  # worse execution
             liq_returns = np.where(liq_returns < 0, liq_returns * 1.5, liq_returns * 0.8)  # asymmetric slippage
             liq_var = float(-np.percentile(liq_returns, 5))
             liq_dd = float(np.min(np.cumsum(liq_returns)))
             stress_tests.append(StressTestResult(
                 scenario="liquidity_crisis",
-                description="Liquidity crisis: wider spreads and asymmetric slippage",
+                description=f"Liquidity crisis: {liquidity_shift*10_000:.0f}bps shift + asymmetric slippage",
                 simulated_return=float(np.sum(liq_returns)),
                 simulated_var_95=round(liq_var, 6),
                 simulated_max_dd=round(liq_dd, 6),

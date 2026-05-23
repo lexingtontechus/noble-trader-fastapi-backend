@@ -114,6 +114,7 @@ class RuntimeConfig:
         self._supabase_url = settings.SUPABASE_URL
         self._supabase_key = settings.SUPABASE_KEY
         self._client: Optional[httpx.AsyncClient] = None
+        self._on_change_callbacks: List[Any] = []  # list of async callables
 
     # ── Supabase client ─────────────────────────────────────────────────────
 
@@ -413,6 +414,14 @@ class RuntimeConfig:
             key, coerced, changed_by,
             f" (reason: {reason})" if reason else "",
         )
+
+        # Fire on-change callbacks (non-blocking, errors caught)
+        for cb in self._on_change_callbacks:
+            try:
+                await cb(key, entry)
+            except Exception as exc:
+                log.warning("On-change callback error for %s: %s", key, exc)
+
         return entry
 
     async def reset_value(self, key: str, changed_by: str = "api") -> ConfigEntry:
@@ -429,6 +438,16 @@ class RuntimeConfig:
         return await self.set_value(key, entry.default_value, changed_by, reason="Reset to default")
 
     # ── Category access ─────────────────────────────────────────────────────
+
+    def register_on_change(self, callback) -> None:
+        """
+        Register an async callback to be invoked when a config value changes.
+
+        The callback receives (key: str, entry: ConfigEntry).
+        Callbacks are fired after the value is persisted and the cache is updated.
+        Errors in callbacks are caught and logged — they never block set_value().
+        """
+        self._on_change_callbacks.append(callback)
 
     async def get_category(self, category: str) -> Dict[str, ConfigEntry]:
         """Get all config entries for a category."""
@@ -766,6 +785,15 @@ sync_config.register_defaults({
     "risk.base_risk_limit": 0.02,
     "risk.stop_cvar_multiplier": 2,
     "risk.tp_cvar_multiplier": 3,
+    # Risk — Stress tests
+    "risk.stress_crash_mean": -0.02,
+    "risk.stress_crash_std": 0.04,
+    "risk.stress_crash_seed": 42,
+    "risk.stress_flash_drop": -0.10,
+    "risk.stress_vol_multiplier": 3,
+    "risk.stress_vol_spike_bars": 20,
+    "risk.stress_rate_shock_bps": 0.002,
+    "risk.stress_liquidity_shift": 0.001,
     # Regime
     "regime.vol_window_long": 20,
     "regime.vol_window_short": 5,
@@ -793,4 +821,12 @@ sync_config.register_defaults({
     "stream.base_risk_limit": 0.02,
     "stream.refit_every": 50,
     "stream.regime_debounce": 3,
+    # Alpaca
+    "alpaca.ws_max_reconnects": 20,
+    "alpaca.ws_base_backoff": 1.0,
+    "alpaca.ws_ping_interval": 30,
+    "alpaca.ws_ping_timeout": 10,
+    "alpaca.snapshot_interval_sec": 5,
+    "alpaca.stream_grace_period": 30,
+    "alpaca.sse_queue_size": 500,
 })

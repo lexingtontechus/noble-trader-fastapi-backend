@@ -3,6 +3,12 @@ SessionRegistry — global store of active StreamSessions.
 
 One registry per process. Accessed by all WebSocket and SSE handlers.
 Thread-safe via asyncio.Lock.
+
+Configuration:
+  New sessions are created via StreamSession.from_runtime_config()
+  which resolves all params from the runtime configuration system.
+  Legacy get_or_create() with explicit params is retained for backward
+  compatibility but defaults to runtime config when no overrides are given.
 """
 
 from __future__ import annotations
@@ -19,22 +25,38 @@ class SessionRegistry:
     async def get_or_create(
         self,
         symbol: str,
-        window: int = 500,
-        kelly_fraction: float = 0.5,
-        target_vol: float = 0.15,
-        base_risk_limit: float = 0.02,
-        refit_every: int = 50,
+        window: int | None = None,
+        kelly_fraction: float | None = None,
+        target_vol: float | None = None,
+        base_risk_limit: float | None = None,
+        refit_every: int | None = None,
     ) -> StreamSession:
+        """
+        Get an existing session or create a new one.
+
+        When no explicit params are provided (all None), creates the session
+        via StreamSession.from_runtime_config() which resolves all params
+        from the runtime configuration system (DB → env → hardcoded default).
+
+        When explicit params are given, creates with those overrides (backward
+        compatible for Redis restore and other callers that provide params).
+        """
         async with self._lock:
             if symbol not in self._sessions:
-                self._sessions[symbol] = StreamSession(
-                    symbol=symbol,
-                    window=window,
-                    kelly_fraction=kelly_fraction,
-                    target_vol=target_vol,
-                    base_risk_limit=base_risk_limit,
-                    refit_every=refit_every,
-                )
+                # If any param is explicitly provided, use the old constructor
+                explicit = any(p is not None for p in (window, kelly_fraction, target_vol, base_risk_limit, refit_every))
+                if explicit:
+                    self._sessions[symbol] = StreamSession(
+                        symbol=symbol,
+                        window=window or 500,
+                        kelly_fraction=kelly_fraction or 0.5,
+                        target_vol=target_vol or 0.15,
+                        base_risk_limit=base_risk_limit or 0.02,
+                        refit_every=refit_every or 50,
+                    )
+                else:
+                    # Resolve all params from runtime config
+                    self._sessions[symbol] = await StreamSession.from_runtime_config(symbol)
             return self._sessions[symbol]
 
     async def get(self, symbol: str) -> Optional[StreamSession]:

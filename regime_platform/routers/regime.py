@@ -15,10 +15,13 @@ async def detect_regime(req: RegimeRequest, user: TokenData = Depends(get_authed
     """
     Fits dual Gaussian HMMs (volatility + trend) on the supplied price series
     and returns posterior regime probabilities plus a risk multiplier.
+
+    HMM parameters (n_iter, window sizes, random_state) are resolved from
+    the runtime configuration system (DB → env → hardcoded default).
     """
     try:
         prices = np.array(req.prices, dtype=float)
-        model  = RegimeHMM()
+        model  = await RegimeHMM.from_runtime_config()
         model.fit(prices)
         snap   = model.predict(prices)
 
@@ -57,7 +60,7 @@ async def detect_regime_v2(req: RegimeV2Request, user: TokenData = Depends(get_a
     """
     try:
         prices = np.array(req.prices, dtype=float)
-        model = RegimeHMM(n_components=req.n_states, n_iter=req.n_iter)
+        model = await RegimeHMM.from_runtime_config(n_components=req.n_states, n_iter=req.n_iter)
         model.fit(prices)
         snap = model.predict(prices)
 

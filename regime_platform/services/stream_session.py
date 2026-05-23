@@ -78,6 +78,11 @@ class StreamSession:
       2. tick(price)                       →  returns StreamTick in ~1ms
       3. Every `refit_every` bars          →  background HMM re-fit
       4. On regime change                  →  alert callbacks fired
+
+    Configuration:
+      All params (window, kelly_fraction, target_vol, base_risk_limit,
+      refit_every, regime_debounce) are configurable via from_runtime_config()
+      which resolves from the DB → env → hardcoded default chain.
     """
 
     MIN_PRICES_FOR_FIT = 81
@@ -90,6 +95,7 @@ class StreamSession:
         target_vol: float = 0.15,
         base_risk_limit: float = 0.02,
         refit_every: int = 50,
+        regime_debounce: int = 3,
     ):
         self.symbol          = symbol
         self.window          = window
@@ -97,6 +103,7 @@ class StreamSession:
         self.target_vol      = target_vol
         self.base_risk_limit = base_risk_limit
         self.refit_every     = refit_every
+        self.regime_debounce = regime_debounce
 
         self._prices:  deque[float]  = deque(maxlen=window)
         self._model:   Optional[RegimeHMM] = None
@@ -110,6 +117,32 @@ class StreamSession:
         self._tick_count:    int   = 0
         self._alert_callbacks: list[Callable[[RegimeAlert], Awaitable[None]]] = []
         self._subscribers:     list[asyncio.Queue] = []
+
+    @classmethod
+    async def from_runtime_config(cls, symbol: str) -> "StreamSession":
+        """
+        Create a StreamSession with params from the runtime configuration system.
+
+        Resolution: DB override → env var → hardcoded default.
+        """
+        from ..core.runtime_config import runtime_config
+
+        window = await runtime_config.get_int("stream.window", default=500)
+        kelly_fraction = await runtime_config.get_float("stream.kelly_fraction", default=0.5)
+        target_vol = await runtime_config.get_float("stream.target_vol", default=0.15)
+        base_risk_limit = await runtime_config.get_float("stream.base_risk_limit", default=0.02)
+        refit_every = await runtime_config.get_int("stream.refit_every", default=50)
+        regime_debounce = await runtime_config.get_int("stream.regime_debounce", default=3)
+
+        return cls(
+            symbol=symbol,
+            window=window,
+            kelly_fraction=kelly_fraction,
+            target_vol=target_vol,
+            base_risk_limit=base_risk_limit,
+            refit_every=refit_every,
+            regime_debounce=regime_debounce,
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -211,7 +244,7 @@ class StreamSession:
             self._candidate_count = 0
             self._regime_candidate = snap.regime_label
 
-        DEBOUNCE_BARS = 3
+        DEBOUNCE_BARS = self.regime_debounce
         regime_changed = (
             self._candidate_count == DEBOUNCE_BARS
             and self._last_regime != ""

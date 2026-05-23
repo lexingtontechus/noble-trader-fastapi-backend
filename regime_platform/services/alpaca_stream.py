@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..core.settings import settings
+from ..core.runtime_config import runtime_config
 
 log = logging.getLogger("regime.alpaca_stream")
 
@@ -245,7 +246,10 @@ class UserStream:
     # Signal to data stream that it should re-subscribe
     data_resubscribe_event: asyncio.Event = field(default_factory=asyncio.Event)
 
-    def add_queue(self, maxsize: int = 500) -> asyncio.Queue:
+    def add_queue(self, maxsize: int = 0) -> asyncio.Queue:
+        if maxsize <= 0:
+            # Will be set from runtime_config at call site
+            maxsize = 500
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.queues.append(q)
         return q
@@ -442,6 +446,7 @@ class AlpacaStreamManager:
         Subscribe to P&L events for a user. Returns an asyncio.Queue.
 
         If the user's stream isn't running yet, starts it automatically.
+        Queue size is resolved from runtime_config (alpaca.sse_queue_size).
         """
         stream = self._streams.get(user_id)
         if stream is None or not stream.running:
@@ -449,7 +454,8 @@ class AlpacaStreamManager:
             if stream is None:
                 return None
 
-        return stream.add_queue()
+        queue_size = await runtime_config.get_int("alpaca.sse_queue_size", default=500)
+        return stream.add_queue(maxsize=queue_size)
 
     async def unsubscribe(self, user_id: str, q: asyncio.Queue) -> None:
         """Unsubscribe a queue. Stops the stream if no more consumers."""
@@ -461,8 +467,9 @@ class AlpacaStreamManager:
 
         # If no more consumers, stop the stream after a grace period
         if not stream.queues:
-            log.info(f"No more SSE consumers for user {user_id} — scheduling stop in 30s")
-            await asyncio.sleep(30)  # grace period for reconnections
+            grace = await runtime_config.get_int("alpaca.stream_grace_period", default=30)
+            log.info(f"No more SSE consumers for user {user_id} — scheduling stop in {grace}s")
+            await asyncio.sleep(grace)  # grace period for reconnections
             stream = self._streams.get(user_id)
             if stream and not stream.queues:
                 await self.stop(user_id)
@@ -575,16 +582,20 @@ class AlpacaStreamManager:
         else:
             ws_url = "wss://api.alpaca.markets/stream"
 
+        # Resolve WS connection params from runtime_config
+        max_reconnects = await runtime_config.get_int("alpaca.ws_max_reconnects", default=20)
+        base_backoff = await runtime_config.get_float("alpaca.ws_base_backoff", default=1.0)
+        ping_interval = await runtime_config.get_int("alpaca.ws_ping_interval", default=30)
+        ping_timeout = await runtime_config.get_int("alpaca.ws_ping_timeout", default=10)
+
         reconnect_attempts = 0
-        max_reconnects = 20
-        base_backoff = 1.0
 
         while stream.running and reconnect_attempts < max_reconnects:
             try:
                 async with websockets.connect(
                     ws_url,
-                    ping_interval=30,
-                    ping_timeout=10,
+                    ping_interval=ping_interval,
+                    ping_timeout=ping_timeout,
                     close_timeout=5,
                 ) as ws:
                     # Authenticate
@@ -741,9 +752,13 @@ class AlpacaStreamManager:
         else:
             ws_url = "wss://stream.data.alpaca.markets/v2/iex"  # Use IEX for now
 
+        # Resolve WS connection params from runtime_config
+        max_reconnects = await runtime_config.get_int("alpaca.ws_max_reconnects", default=20)
+        base_backoff = await runtime_config.get_float("alpaca.ws_base_backoff", default=1.0)
+        ping_interval = await runtime_config.get_int("alpaca.ws_ping_interval", default=30)
+        ping_timeout = await runtime_config.get_int("alpaca.ws_ping_timeout", default=10)
+
         reconnect_attempts = 0
-        max_reconnects = 20
-        base_backoff = 1.0
 
         while stream.running and reconnect_attempts < max_reconnects:
             # Only connect if we have positions to watch
@@ -762,8 +777,8 @@ class AlpacaStreamManager:
             try:
                 async with websockets.connect(
                     ws_url,
-                    ping_interval=30,
-                    ping_timeout=10,
+                    ping_interval=ping_interval,
+                    ping_timeout=ping_timeout,
                     close_timeout=5,
                 ) as ws:
                     # Authenticate
@@ -889,9 +904,12 @@ class AlpacaStreamManager:
 
         Also evaluates P&L alert thresholds and broadcasts triggered alerts.
         """
+        # Resolve snapshot interval from runtime_config
+        snapshot_interval = await runtime_config.get_int("alpaca.snapshot_interval_sec", default=5)
+
         while stream.running:
             try:
-                await asyncio.sleep(5)
+                await asyncio.sleep(snapshot_interval)
                 if not stream.running:
                     break
 

@@ -173,6 +173,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning(f"Kill switch service start failed: {e}")
 
+    # Phase 9: Register runtime config change callbacks
+    try:
+        from regime_platform.core.runtime_config import runtime_config
+        from renko.router import _on_config_changed
+        runtime_config.register_on_change(_on_config_changed)
+        log.info("Pipeline invalidation callback registered for runtime config changes")
+    except Exception as e:
+        log.warning(f"Runtime config callback registration failed: {e}")
+
     yield
 
     # Phase 8: Stop operational services

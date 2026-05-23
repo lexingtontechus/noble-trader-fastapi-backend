@@ -138,11 +138,24 @@ class PositionSizer:
 
     Call .size(PositionRequest) → KellyResult.
     All values in [0, 1] portfolio-fraction space.
+
+    The ANNUALISE_FACTOR is configurable via the async size_async() method
+    which resolves it from the runtime configuration system.
     """
 
     ANNUALISE_FACTOR = 252
 
-    def size(self, req: PositionRequest) -> KellyResult:
+    def size(self, req: PositionRequest, annualise_factor: int | None = None) -> KellyResult:
+        """
+        Compute Kelly position size.
+
+        Args:
+            req: Position request with returns, kelly_fraction, target_vol, regime.
+            annualise_factor: Override for annualisation factor (default: class-level 252).
+                              When None, uses self.ANNUALISE_FACTOR.
+        """
+        af = annualise_factor if annualise_factor is not None else self.ANNUALISE_FACTOR
+
         r = np.array(req.returns, dtype=float)
 
         if len(r) < 2:
@@ -152,8 +165,8 @@ class PositionSizer:
         sigma2 = float(np.var(r, ddof=1))
         sigma = float(np.std(r, ddof=1))
 
-        annual_mu = mu * self.ANNUALISE_FACTOR
-        annual_sigma = sigma * np.sqrt(self.ANNUALISE_FACTOR)
+        annual_mu = mu * af
+        annual_sigma = sigma * np.sqrt(af)
         sharpe = annual_mu / annual_sigma if annual_sigma > 0 else 0.0
 
         full_kelly = float(np.clip(_kelly_continuous(mu, sigma2), 0.0, 1.0))
@@ -191,6 +204,16 @@ class PositionSizer:
             fraction_type=f"{int(req.kelly_fraction * 100)}% Kelly",
             notes=notes,
         )
+
+    async def size_async(self, req: PositionRequest) -> KellyResult:
+        """
+        Async version of size() that resolves ANNUALISE_FACTOR from runtime config.
+
+        Resolution: runtime_config (DB/env) → hardcoded class default (252).
+        """
+        from .runtime_config import runtime_config
+        annualise = await runtime_config.get_int("risk.annualise_factor", default=self.ANNUALISE_FACTOR)
+        return self.size(req, annualise_factor=annualise)
 
     @staticmethod
     def _build_notes(

@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import SizeRequest, SizeResponse
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..core.runtime_config import runtime_config
 import numpy as np
 
 router = APIRouter(prefix="/size", tags=["Position Sizing"])
@@ -24,14 +25,18 @@ async def kelly_size(req: SizeRequest, user: TokenData = Depends(get_authed_user
 
         regime = None
         if req.use_regime:
-            model = RegimeHMM()
+            model = await RegimeHMM.from_runtime_config()
             model.fit(prices)
             regime = model.predict(prices)
 
+        # Resolve runtime-configurable defaults for kelly_fraction and target_vol
+        kelly_fraction = req.kelly_fraction or await runtime_config.get_float("stream.kelly_fraction", default=0.5)
+        target_vol = req.target_vol or await runtime_config.get_float("stream.target_vol", default=0.15)
+
         result = sizer.size(PositionRequest(
             returns=returns.tolist(),
-            kelly_fraction=req.kelly_fraction,
-            target_vol=req.target_vol,
+            kelly_fraction=kelly_fraction,
+            target_vol=target_vol,
             regime=regime,
         ))
 
@@ -78,18 +83,21 @@ async def masaniello_size(
     Supports optional Kelly overlay cap and regime auto-detection from prices.
     """
     try:
-        # Build config from request overrides
-        config = SizingConfig(
-            base_risk=req.base_risk,
-            min_risk=req.min_risk,
-            max_risk=req.max_risk,
-            min_prob=req.min_prob,
-            min_rr=req.min_rr,
-            use_kelly_overlay=req.use_kelly_overlay,
-            kelly_fraction=req.kelly_fraction,
-            batch_size=req.batch_size,
-            target_wins=req.target_wins,
-        )
+        # Build config from runtime config, then overlay request overrides
+        override_kwargs = {
+            "base_risk": req.base_risk,
+            "min_risk": req.min_risk,
+            "max_risk": req.max_risk,
+            "min_prob": req.min_prob,
+            "min_rr": req.min_rr,
+            "use_kelly_overlay": req.use_kelly_overlay,
+            "kelly_fraction": req.kelly_fraction,
+            "batch_size": req.batch_size,
+            "target_wins": req.target_wins,
+        }
+        # Filter out None/zero values so runtime config defaults can fill in
+        overrides = {k: v for k, v in override_kwargs.items() if v is not None and v != 0}
+        config = await SizingConfig.from_runtime_config(overrides=overrides or None)
         
         # Detect regime if prices provided and use_regime=True
         regime_quality = 1.0
@@ -97,7 +105,7 @@ async def masaniello_size(
         regime_label = "no_regime"
         
         if req.use_regime and req.prices:
-            model = RegimeHMM()
+            model = await RegimeHMM.from_runtime_config()
             model.fit(np.array(req.prices, dtype=float))
             snap = model.predict(np.array(req.prices, dtype=float))
             regime_quality = snap.risk_multiplier
@@ -186,21 +194,21 @@ async def masaniello_batch(
         regime_label = "no_regime"
         
         if req.prices:
-            model = RegimeHMM()
+            model = await RegimeHMM.from_runtime_config()
             model.fit(np.array(req.prices, dtype=float))
             snap = model.predict(np.array(req.prices, dtype=float))
             regime_quality = snap.risk_multiplier
             state_confidence = snap.confidence
             regime_label = snap.regime_label
         
-        config = SizingConfig(
-            base_risk=req.base_risk,
-            min_rr=req.min_rr,
-            batch_size=req.batch_size,
-            target_wins=req.target_wins,
-            use_kelly_overlay=req.use_kelly_overlay,
-            kelly_fraction=req.kelly_fraction,
-        )
+        config = await SizingConfig.from_runtime_config(overrides={
+            "base_risk": req.base_risk,
+            "min_rr": req.min_rr,
+            "batch_size": req.batch_size,
+            "target_wins": req.target_wins,
+            "use_kelly_overlay": req.use_kelly_overlay,
+            "kelly_fraction": req.kelly_fraction,
+        })
         sizer_m = DynamicMasanielloSizer.create(config, equity=req.equity)
         
         # Build contexts
@@ -311,7 +319,7 @@ async def masaniello_portfolio(
         for j in range(n):
             try:
                 prices = 100.0 * np.cumprod(1 + returns_matrix[:, j])
-                model = RegimeHMM()
+                model = await RegimeHMM.from_runtime_config()
                 model.fit(prices)
                 asset_snaps.append(model.predict(prices))
             except Exception:
@@ -345,14 +353,14 @@ async def masaniello_portfolio(
         weights = opt_result.regime_adj_weights
         
         # ── Stage 2: Per-Asset Masaniello Sizing ────────────────────────
-        sizing_config = SizingConfig(
-            base_risk=req.base_risk,
-            min_rr=req.min_rr,
-            batch_size=req.batch_size,
-            target_wins=req.target_wins,
-            use_kelly_overlay=req.use_kelly_overlay,
-            kelly_fraction=req.kelly_fraction,
-        )
+        sizing_config = await SizingConfig.from_runtime_config(overrides={
+            "base_risk": req.base_risk,
+            "min_rr": req.min_rr,
+            "batch_size": req.batch_size,
+            "target_wins": req.target_wins,
+            "use_kelly_overlay": req.use_kelly_overlay,
+            "kelly_fraction": req.kelly_fraction,
+        })
         
         asset_sizes = []
         total_risk = 0.0
