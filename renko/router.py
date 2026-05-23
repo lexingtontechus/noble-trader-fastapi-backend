@@ -215,10 +215,20 @@ _pipelines: Dict[str, RenkoPipeline] = {}
 
 
 def _get_pipeline(symbol: str = "SPY", config: Optional[RenkoConfig] = None) -> RenkoPipeline:
-    """Get or create a pipeline for a symbol."""
+    """Get or create a pipeline for a symbol. Uses hardcoded defaults (sync)."""
     if symbol not in _pipelines:
         if config is None:
             config = RenkoConfig(symbol=symbol)
+        _pipelines[symbol] = RenkoPipeline(config)
+    return _pipelines[symbol]
+
+
+async def _get_pipeline_async(symbol: str = "SPY", config_overrides: Optional[dict] = None) -> RenkoPipeline:
+    """Get or create a pipeline for a symbol. Uses runtime config (async)."""
+    if symbol not in _pipelines:
+        config = await RenkoConfig.from_runtime_config(
+            overrides={"symbol": symbol, **(config_overrides or {})}
+        )
         _pipelines[symbol] = RenkoPipeline(config)
     return _pipelines[symbol]
 
@@ -231,7 +241,8 @@ async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
         if restored:
             _pipelines[symbol] = restored
         else:
-            _pipelines[symbol] = RenkoPipeline(RenkoConfig(symbol=symbol))
+            config = await RenkoConfig.from_runtime_config(overrides={"symbol": symbol})
+            _pipelines[symbol] = RenkoPipeline(config)
     return _pipelines[symbol]
 
 
@@ -368,25 +379,32 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/config")
     async def update_config(body: ConfigInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
-        """Update pipeline configuration (resets the pipeline)."""
-        config = RenkoConfig(
-            brick_size=body.brick_size,
-            brick_size_mode=body.brick_size_mode,
-            reversal_bricks=body.reversal_bricks,
-            bull_trigger_n=body.bull_trigger_n,
-            bear_trigger_n=body.bear_trigger_n,
-            sl_bricks=body.sl_bricks,
-            tp_bricks=body.tp_bricks,
-            trailing_stop=body.trailing_stop,
-            trail_after_bricks=body.trail_after_bricks,
-            trail_distance_bricks=body.trail_distance_bricks,
-            max_trades_per_session=body.max_trades_per_session,
-            max_daily_loss_bricks=body.max_daily_loss_bricks,
-            max_consecutive_losses=body.max_consecutive_losses,
-            cooldown_seconds=body.cooldown_seconds,
-            regime_gate=body.regime_gate,
-            symbol=body.symbol,
-        )
+        """Update pipeline configuration (resets the pipeline).
+
+        Uses runtime config as the base, then applies the explicit overrides
+        from the request body. This ensures admin-adjusted defaults via /config
+        API are respected even when per-pipeline overrides are provided.
+        """
+        # Build overrides from the request body (non-default fields)
+        overrides = {
+            "brick_size": body.brick_size,
+            "brick_size_mode": body.brick_size_mode,
+            "reversal_bricks": body.reversal_bricks,
+            "bull_trigger_n": body.bull_trigger_n,
+            "bear_trigger_n": body.bear_trigger_n,
+            "sl_bricks": body.sl_bricks,
+            "tp_bricks": body.tp_bricks,
+            "trailing_stop": body.trailing_stop,
+            "trail_after_bricks": body.trail_after_bricks,
+            "trail_distance_bricks": body.trail_distance_bricks,
+            "max_trades_per_session": body.max_trades_per_session,
+            "max_daily_loss_bricks": body.max_daily_loss_bricks,
+            "max_consecutive_losses": body.max_consecutive_losses,
+            "cooldown_seconds": body.cooldown_seconds,
+            "regime_gate": body.regime_gate,
+            "symbol": body.symbol,
+        }
+        config = await RenkoConfig.from_runtime_config(overrides=overrides)
         pipeline = RenkoPipeline(config)
         _pipelines[symbol] = pipeline
         return {"status": "ok", "config": config.to_dict()}

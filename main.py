@@ -112,6 +112,8 @@ from regime_platform.routers import (
 from regime_platform.routers import operational
 # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
 from regime_platform.routers import pnl
+# Phase 9: Runtime Configuration (admin-adjustable params)
+from regime_platform.routers import config as config_router_module
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
@@ -203,6 +205,15 @@ async def lifespan(app: FastAPI):
         pass
 
     await persistence.close()
+
+    # Close runtime config HTTP client
+    try:
+        from regime_platform.core.runtime_config import runtime_config
+        await runtime_config.close()
+        log.info("Runtime config client closed")
+    except Exception as e:
+        log.warning(f"Runtime config shutdown error: {e}")
+
     from regime_platform.routers.feeds import _manager
 
     if _manager:
@@ -339,6 +350,9 @@ Endpoints:
 
     # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
     app.include_router(pnl.router)
+
+    # Phase 9: Runtime Configuration (admin-adjustable params)
+    app.include_router(config_router_module.config_router)
 
     # Kill Switch Gate Middleware (blocks order execution when halted)
     app.add_middleware(KillSwitchGateMiddleware)
@@ -487,6 +501,11 @@ Excluded from MCP (use REST API directly):
                     "masaniello_sizing": "POST /size/masaniello",
                     "masaniello_batch": "POST /size/masaniello/batch",
                     "portfolio_masaniello": "POST /optimise/masaniello",
+                    # Phase 9: Runtime Configuration
+                    "config_list": "GET /config/",
+                    "config_category": "GET /config/{category}",
+                    "config_update": "PATCH /config/key/{key}",
+                    "config_reload": "GET /config/reload",
                 },
             }
         )

@@ -4,10 +4,16 @@ Configuration dataclasses for the Renko HFT module.
 All tunable parameters are centralised here so the pipeline
 can be optimised via walk-forward analysis or the GA strategy
 evolution module.
+
+Configuration resolution order (highest priority wins):
+  1. Explicit constructor arguments (per-pipeline overrides)
+  2. Runtime config DB overrides (admin-adjustable via /config API)
+  3. Environment variables (e.g. RENKO_BRICK_SIZE)
+  4. Hardcoded defaults (the dataclass defaults below)
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, Optional
 from enum import Enum
 
 
@@ -124,3 +130,140 @@ class RenkoConfig:
         """Serialise config to a plain dict (for API responses / logging)."""
         import dataclasses
         return dataclasses.asdict(self)
+
+    @classmethod
+    async def from_runtime_config(cls, overrides: Optional[Dict[str, Any]] = None) -> "RenkoConfig":
+        """
+        Build a RenkoConfig with values from the runtime configuration system.
+
+        Resolution: explicit overrides → DB/env runtime config → dataclass defaults.
+
+        This is the recommended way to create a RenkoConfig in async contexts
+        (FastAPI endpoints, pipeline creation). The sync dataclass constructor
+        still works for backwards compatibility and non-async code.
+        """
+        from regime_platform.core.runtime_config import runtime_config
+
+        # Map RenkoConfig field names → runtime_config keys
+        key_map: Dict[str, str] = {
+            "brick_size": "renko.brick_size",
+            "brick_size_mode": "renko.brick_size_mode",
+            "atr_period": "renko.atr_period",
+            "atr_multiplier": "renko.atr_multiplier",
+            "reversal_bricks": "renko.reversal_bricks",
+            "swing_lookback": "renko.swing_lookback",
+            "min_swing_distance_bricks": "renko.min_swing_distance",
+            "bull_trigger_n": "renko.bull_trigger_n",
+            "bear_trigger_n": "renko.bear_trigger_n",
+            "double_top_bricks": "renko.double_top_bricks",
+            "consolidation_max_mix": "renko.consolidation_max_mix",
+            "session_start": "renko.session_start",
+            "session_end": "renko.session_end",
+            "skip_lunch": "renko.skip_lunch",
+            "lunch_start": "renko.lunch_start",
+            "lunch_end": "renko.lunch_end",
+            "max_trades_per_session": "renko.max_trades_per_session",
+            "max_daily_loss_bricks": "renko.max_daily_loss_bricks",
+            "max_consecutive_losses": "renko.max_consecutive_losses",
+            "cooldown_seconds": "renko.cooldown_seconds",
+            "regime_gate": "renko.regime_gate",
+            "sl_bricks": "renko.sl_bricks",
+            "tp_bricks": "renko.tp_bricks",
+            "trailing_stop": "renko.trailing_stop",
+            "trail_after_bricks": "renko.trail_after_bricks",
+            "trail_distance_bricks": "renko.trail_distance_bricks",
+            "time_stop_bricks": "renko.time_stop_bricks",
+            "partial_exit_pct": "renko.partial_exit_pct",
+            "partial_exit_bricks": "renko.partial_exit_bricks",
+            "kelly_fraction": "renko.kelly_fraction",
+            "max_position_pct": "renko.max_position_pct",
+            "min_position_usd": "renko.min_position_usd",
+            "default_win_rate": "renko.default_win_rate",
+            "slippage_bps": "renko.slippage_bps",
+            "commission_bps": "renko.commission_bps",
+            "spread_bps": "renko.spread_bps",
+            "oco_priority": "renko.oco_priority",
+            "market_impact_mode": "renko.market_impact_mode",
+            "adv_shares": "renko.adv_shares",
+            "fill_probability_mode": "renko.fill_probability_mode",
+            "borrow_rate_bps": "renko.borrow_rate_bps",
+            "margin_rate_bps": "renko.margin_rate_bps",
+            "is_hard_to_borrow": "renko.is_hard_to_borrow",
+            "dividend_yield_bps": "renko.dividend_yield_bps",
+            "initial_capital": "renko.initial_capital",
+            "symbol": "renko.default_symbol",
+            "timezone": "renko.timezone",
+        }
+
+        # Type map: field name → getter method on runtime_config
+        type_map: Dict[str, str] = {
+            "brick_size": "get_float",
+            "brick_size_mode": "get_str",
+            "atr_period": "get_int",
+            "atr_multiplier": "get_float",
+            "reversal_bricks": "get_int",
+            "swing_lookback": "get_int",
+            "min_swing_distance_bricks": "get_int",
+            "bull_trigger_n": "get_int",
+            "bear_trigger_n": "get_int",
+            "double_top_bricks": "get_int",
+            "consolidation_max_mix": "get_float",
+            "session_start": "get_str",
+            "session_end": "get_str",
+            "skip_lunch": "get_bool",
+            "lunch_start": "get_str",
+            "lunch_end": "get_str",
+            "max_trades_per_session": "get_int",
+            "max_daily_loss_bricks": "get_float",
+            "max_consecutive_losses": "get_int",
+            "cooldown_seconds": "get_float",
+            "regime_gate": "get_bool",
+            "sl_bricks": "get_int",
+            "tp_bricks": "get_int",
+            "trailing_stop": "get_bool",
+            "trail_after_bricks": "get_int",
+            "trail_distance_bricks": "get_int",
+            "time_stop_bricks": "get_int",
+            "partial_exit_pct": "get_float",
+            "partial_exit_bricks": "get_int",
+            "kelly_fraction": "get_float",
+            "max_position_pct": "get_float",
+            "min_position_usd": "get_float",
+            "default_win_rate": "get_float",
+            "slippage_bps": "get_float",
+            "commission_bps": "get_float",
+            "spread_bps": "get_float",
+            "oco_priority": "get_str",
+            "market_impact_mode": "get_str",
+            "adv_shares": "get_float",
+            "fill_probability_mode": "get_str",
+            "borrow_rate_bps": "get_float",
+            "margin_rate_bps": "get_float",
+            "is_hard_to_borrow": "get_bool",
+            "dividend_yield_bps": "get_float",
+            "initial_capital": "get_float",
+            "symbol": "get_str",
+            "timezone": "get_str",
+        }
+
+        # Build a default instance to get fallback values
+        defaults = cls()
+        kwargs: Dict[str, Any] = {}
+
+        for field_name, config_key in key_map.items():
+            # If caller provided an explicit override, use it
+            if overrides and field_name in overrides:
+                kwargs[field_name] = overrides[field_name]
+                continue
+
+            # Otherwise, resolve from runtime config
+            default_val = getattr(defaults, field_name)
+            getter_name = type_map.get(field_name, "get")
+            getter = getattr(runtime_config, getter_name)
+            kwargs[field_name] = await getter(config_key, default=default_val)
+
+        # Handle enum fields
+        if isinstance(kwargs.get("brick_size_mode"), str):
+            kwargs["brick_size_mode"] = BrickSizeMode(kwargs["brick_size_mode"])
+
+        return cls(**kwargs)

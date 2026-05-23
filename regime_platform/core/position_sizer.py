@@ -232,6 +232,12 @@ class SizingConfig:
     Configuration for the Dynamic Masaniello sizer.
 
     All risk values are fractions of equity (0.005 = 0.5%).
+
+    Configuration resolution (highest priority wins):
+      1. Explicit constructor arguments
+      2. Runtime config DB overrides (admin-adjustable via /config API)
+      3. Environment variables (e.g. SIZING_BASE_RISK)
+      4. Hardcoded defaults (below)
     """
 
     # Base risk  β
@@ -257,6 +263,44 @@ class SizingConfig:
     # Batch parameters
     batch_size: int = 5  # N trades per batch
     target_wins: int = 3  # W target wins to hit per batch
+
+    @classmethod
+    async def from_runtime_config(cls, overrides: Optional[dict] = None) -> "SizingConfig":
+        """
+        Build a SizingConfig with values from the runtime configuration system.
+
+        Resolution: explicit overrides → DB/env runtime config → dataclass defaults.
+        """
+        from regime_platform.core.runtime_config import runtime_config
+
+        key_map = {
+            "base_risk": ("sizing.base_risk", "get_float"),
+            "min_risk": ("sizing.min_risk", "get_float"),
+            "max_risk": ("sizing.max_risk", "get_float"),
+            "min_prob": ("sizing.min_prob", "get_float"),
+            "min_rr": ("sizing.min_rr", "get_float"),
+            "max_drawdown": ("sizing.max_drawdown", "get_float"),
+            "batch_halt_dd": ("sizing.batch_halt_dd", "get_float"),
+            "regime_floor": ("sizing.regime_floor", "get_float"),
+            "use_kelly_overlay": ("sizing.use_kelly_overlay", "get_bool"),
+            "kelly_fraction": ("sizing.kelly_fraction", "get_float"),
+            "batch_size": ("sizing.batch_size", "get_int"),
+            "target_wins": ("sizing.target_wins", "get_int"),
+        }
+
+        defaults = cls()
+        kwargs = {}
+
+        for field_name, (config_key, getter_name) in key_map.items():
+            if overrides and field_name in overrides:
+                kwargs[field_name] = overrides[field_name]
+                continue
+
+            default_val = getattr(defaults, field_name)
+            getter = getattr(runtime_config, getter_name)
+            kwargs[field_name] = await getter(config_key, default=default_val)
+
+        return cls(**kwargs)
 
 
 # ── Trade context ─────────────────────────────────────────────────────────────

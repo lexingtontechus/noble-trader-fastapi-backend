@@ -1,11 +1,18 @@
 """Backtest endpoints — walk-forward backtesting with regime-aware strategy."""
 
-from fastapi import APIRouter, HTTPException, Depends
+import asyncio
+import csv
+import io
+import itertools
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from ..models.schemas import BacktestRequest, BacktestResponse
 from ..core.backtester import Backtester, BacktestConfig
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 import numpy as np
-from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 

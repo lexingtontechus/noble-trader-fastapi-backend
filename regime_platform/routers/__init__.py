@@ -3,6 +3,7 @@
 from . import (
     auth_router,
     backtest,
+    config,
     feeds,
     gpu,
     multi_asset,

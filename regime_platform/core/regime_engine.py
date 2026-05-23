@@ -115,6 +115,11 @@ class RegimeHMM:
         n_components: int = 4,
         n_iter: int = 100,
         covariance_type: str = "diag",
+        vol_window_long: int = 20,
+        vol_window_short: int = 5,
+        trend_window_short: int = 10,
+        trend_window_long: int = 30,
+        random_state: int = 42,
     ):
         if n_components not in (2, 3, 4):
             raise ValueError(f"n_components must be 2, 3, or 4. Got {n_components}.")
@@ -130,6 +135,47 @@ class RegimeHMM:
         # Active label sets for current n_components
         self._vol_labels   = self.VOL_LABELS_BY_N[n_components]
         self._trend_labels = self.TREND_LABELS_BY_N[n_components]
+
+        # Configurable feature engineering windows
+        self.vol_window_long  = vol_window_long
+        self.vol_window_short = vol_window_short
+        self.trend_window_short = trend_window_short
+        self.trend_window_long  = trend_window_long
+        self.random_state = random_state
+
+    @classmethod
+    async def from_runtime_config(cls, **overrides) -> "RegimeHMM":
+        """Build a RegimeHMM with values from the runtime configuration system."""
+        from regime_platform.core.runtime_config import runtime_config
+
+        defaults = {"n_components": 4, "n_iter": 100, "covariance_type": "diag",
+                     "vol_window_long": 20, "vol_window_short": 5,
+                     "trend_window_short": 10, "trend_window_long": 30,
+                     "random_state": 42}
+
+        key_map = {
+            "n_iter": ("regime.hmm_n_iter", "get_int"),
+            "vol_window_long": ("regime.vol_window_long", "get_int"),
+            "vol_window_short": ("regime.vol_window_short", "get_int"),
+            "trend_window_short": ("regime.trend_window_short", "get_int"),
+            "trend_window_long": ("regime.trend_window_long", "get_int"),
+            "random_state": ("regime.hmm_random_state", "get_int"),
+        }
+
+        kwargs = dict(defaults)
+        for field_name, (config_key, getter_name) in key_map.items():
+            if field_name in overrides:
+                kwargs[field_name] = overrides[field_name]
+                continue
+            getter = getattr(runtime_config, getter_name)
+            kwargs[field_name] = await getter(config_key, default=defaults[field_name])
+
+        # Pass through any overrides for non-configurable params
+        for k in ("n_components", "covariance_type"):
+            if k in overrides:
+                kwargs[k] = overrides[k]
+
+        return cls(**kwargs)
 
     # ── Fitting ──────────────────────────────────────────────────────────────
 
@@ -147,8 +193,8 @@ class RegimeHMM:
             )
 
         returns        = np.diff(np.log(prices))
-        vol_features   = self._vol_features(returns)
-        trend_features = self._trend_features(returns)
+        vol_features   = self._vol_features(returns, self.vol_window_long, self.vol_window_short)
+        trend_features = self._trend_features(returns, self.trend_window_short, self.trend_window_long)
 
         self._vol_model   = self._build_hmm()
         self._trend_model = self._build_hmm()
@@ -173,8 +219,8 @@ class RegimeHMM:
             raise RuntimeError("Call .fit() before .predict()")
 
         returns        = np.diff(np.log(prices))
-        vol_features   = self._vol_features(returns)
-        trend_features = self._trend_features(returns)
+        vol_features   = self._vol_features(returns, self.vol_window_long, self.vol_window_short)
+        trend_features = self._trend_features(returns, self.trend_window_short, self.trend_window_long)
 
         vol_posteriors   = self._vol_model.predict_proba(vol_features)[-1]
         trend_posteriors = self._trend_model.predict_proba(trend_features)[-1]
@@ -214,17 +260,7 @@ class RegimeHMM:
     # ── Feature Engineering ──────────────────────────────────────────────────
 
     @staticmethod
-    def _vol_features(returns: np.ndarray) -> np.ndarray:
-        """
-        Three volatility features:
-          1. 20-bar rolling realised vol   (primary sorting signal)
-          2. 5-bar rolling realised vol    (short-term spike detector)
-          3. |return|                      (instantaneous absolute move)
-        The richer feature set helps the 4-state model distinguish
-        med_low from med_high more reliably than a 2-feature version.
-        """
-        window_long  = 20
-        window_short = 5
+    def _vol_features(returns: np.ndarray, window_long: int = 20, window_short: int = 5) -> np.ndarray:
         rv_long  = np.array([
             np.std(returns[max(0, i - window_long):i + 1])
             for i in range(len(returns))
@@ -236,17 +272,7 @@ class RegimeHMM:
         return np.column_stack([rv_long, rv_short, np.abs(returns)])
 
     @staticmethod
-    def _trend_features(returns: np.ndarray) -> np.ndarray:
-        """
-        Three trend features:
-          1. Raw return                    (instantaneous direction)
-          2. 10-bar cumulative return      (short-term momentum)
-          3. 30-bar cumulative return      (medium-term trend)
-        Dual momentum windows help strong_bull/strong_bear states separate
-        from their weaker counterparts without manual threshold tuning.
-        """
-        window_short = 10
-        window_long  = 30
+    def _trend_features(returns: np.ndarray, window_short: int = 10, window_long: int = 30) -> np.ndarray:
         cum_short = np.array([
             np.sum(returns[max(0, i - window_short):i + 1])
             for i in range(len(returns))
@@ -264,7 +290,7 @@ class RegimeHMM:
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             n_iter=self.n_iter,
-            random_state=42,
+            random_state=self.random_state,
         )
 
     @staticmethod
