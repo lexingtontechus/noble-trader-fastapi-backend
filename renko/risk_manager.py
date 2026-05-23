@@ -34,6 +34,9 @@ class PositionStatus(str, Enum):
     OPEN = "open"
     CLOSED_TP = "closed_tp"
     CLOSED_SL = "closed_sl"
+    CLOSED_SL_GAP = "closed_sl_gap"      # Gap-through stop (Phase 3)
+    CLOSED_OCO_SL = "closed_oco_sl"      # OCO resolved as SL (Phase 3)
+    CLOSED_OCO_TP = "closed_oco_tp"      # OCO resolved as TP (Phase 3)
     CLOSED_TRAIL = "closed_trail"
     CLOSED_TIME = "closed_time"
     CLOSED_MANUAL = "closed_manual"
@@ -51,6 +54,8 @@ class RiskParams:
     time_stop_bricks: int = 10
     partial_exit_pct: float = 0.0
     partial_exit_bricks: int = 3
+    slippage_bps: float = 2.0            # Slippage in basis points (Phase 2)
+    oco_priority: str = "sl_first"       # OCO resolution priority (Phase 3)
 
     @property
     def risk_reward_ratio(self) -> float:
@@ -146,8 +151,9 @@ class RiskManager:
     should be closed.
     """
 
-    def __init__(self, params: Optional[RiskParams] = None):
+    def __init__(self, params: Optional[RiskParams] = None, slippage_bps: float = 2.0):
         self.params = params or RiskParams()
+        self.slippage_bps = slippage_bps
         self.active_position: Optional[ActivePosition] = None
         self.closed_trades: List[TradeResult] = []
 
@@ -187,47 +193,50 @@ class RiskManager:
         """
         Evaluate the current position against the latest brick.
 
-        Call this on EVERY new brick. Returns a TradeResult if the
-        position should be closed, None otherwise.
-
-        Parameters
-        ----------
-        brick : Brick
-            The latest Renko brick.
-
-        Returns
-        -------
-        TradeResult or None
+        Checks OCO first (both SL+TP in same brick), then individual
+        SL, TP, trailing, time stop, and partial exit.
         """
         pos = self.active_position
         if pos is None:
             return None
 
         pos.bricks_open += 1
-        result = None
+
+        # Check OCO first (both SL and TP triggered in same brick)
+        oco_result = self._check_oco(pos, brick)
+        if oco_result is not None:
+            self._close_position(oco_result)
+            return oco_result
 
         # Check SL
-        result = result or self._check_stop_loss(pos, brick)
-
-        # Check TP
-        result = result or self._check_take_profit(pos, brick)
-
-        # Check trailing stop (only if not already triggered)
-        if result is None:
-            self._update_trailing(pos, brick)
-            result = self._check_trailing_stop(pos, brick)
-
-        # Check time stop
-        result = result or self._check_time_stop(pos, brick)
-
-        # Check partial exit
-        if result is None:
-            self._check_partial_exit(pos, brick)
-
+        result = self._check_stop_loss(pos, brick)
         if result is not None:
             self._close_position(result)
+            return result
 
-        return result
+        # Check TP
+        result = self._check_take_profit(pos, brick)
+        if result is not None:
+            self._close_position(result)
+            return result
+
+        # Update trailing stop
+        self._update_trailing(pos, brick)
+        result = self._check_trailing_stop(pos, brick)
+        if result is not None:
+            self._close_position(result)
+            return result
+
+        # Check time stop
+        result = self._check_time_stop(pos, brick)
+        if result is not None:
+            self._close_position(result)
+            return result
+
+        # Check partial exit (no close)
+        self._check_partial_exit(pos, brick)
+
+        return None
 
     def force_close(self, brick: Brick) -> TradeResult:
         """Force close the current position at the brick's price."""
@@ -271,23 +280,38 @@ class RiskManager:
     # ── Internal checks ───────────────────────────────────────────
 
     def _check_stop_loss(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
-        """Check if stop-loss has been hit."""
+        """Check if stop-loss has been hit, with gap-through and slippage."""
         if pos.direction == SignalDirection.LONG:
+            # Gap-through: brick opens below stop
+            if brick.open_price <= pos.current_sl_price:
+                exit_price = brick.open_price * (1 - self.slippage_bps / 10000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_SL_GAP, brick)
+            # Normal: brick closes below stop
             if brick.close_price <= pos.current_sl_price:
-                return self._make_result(pos, pos.current_sl_price, PositionStatus.CLOSED_SL, brick)
+                exit_price = pos.current_sl_price * (1 - self.slippage_bps / 10000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_SL, brick)
         else:
+            # Gap-through: brick opens above stop (for short)
+            if brick.open_price >= pos.current_sl_price:
+                exit_price = brick.open_price * (1 + self.slippage_bps / 10000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_SL_GAP, brick)
+            # Normal: brick closes above stop
             if brick.close_price >= pos.current_sl_price:
-                return self._make_result(pos, pos.current_sl_price, PositionStatus.CLOSED_SL, brick)
+                exit_price = pos.current_sl_price * (1 + self.slippage_bps / 10000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_SL, brick)
         return None
 
     def _check_take_profit(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
-        """Check if take-profit has been reached."""
+        """Check if take-profit has been reached, with slight adverse slippage on limit fills."""
         if pos.direction == SignalDirection.LONG:
             if brick.close_price >= pos.tp_price:
-                return self._make_result(pos, pos.tp_price, PositionStatus.CLOSED_TP, brick)
+                # TP is a limit order — slight adverse fill but much less than SL
+                exit_price = pos.tp_price * (1 - self.slippage_bps / 20000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_TP, brick)
         else:
             if brick.close_price <= pos.tp_price:
-                return self._make_result(pos, pos.tp_price, PositionStatus.CLOSED_TP, brick)
+                exit_price = pos.tp_price * (1 + self.slippage_bps / 20000)
+                return self._make_result(pos, exit_price, PositionStatus.CLOSED_TP, brick)
         return None
 
     def _update_trailing(self, pos: ActivePosition, brick: Brick) -> None:
@@ -327,6 +351,27 @@ class RiskManager:
             if brick.close_price >= pos.current_sl_price and pos.current_sl_price < pos.sl_price:
                 return self._make_result(pos, pos.current_sl_price, PositionStatus.CLOSED_TRAIL, brick)
         return None
+
+    def _check_oco(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
+        """Check if both SL and TP are triggered in the same brick (OCO handling)."""
+        sl_triggered = False
+        tp_triggered = False
+
+        if pos.direction == SignalDirection.LONG:
+            sl_triggered = brick.close_price <= pos.current_sl_price or brick.open_price <= pos.current_sl_price
+            tp_triggered = brick.close_price >= pos.tp_price or brick.open_price >= pos.tp_price
+        else:
+            sl_triggered = brick.close_price >= pos.current_sl_price or brick.open_price >= pos.current_sl_price
+            tp_triggered = brick.close_price <= pos.tp_price or brick.open_price <= pos.tp_price
+
+        if not (sl_triggered and tp_triggered):
+            return None
+
+        # Both triggered — use priority
+        if self.params.oco_priority == "sl_first":
+            return self._check_stop_loss(pos, brick)
+        else:
+            return self._check_take_profit(pos, brick)
 
     def _check_time_stop(self, pos: ActivePosition, brick: Brick) -> Optional[TradeResult]:
         """Check if position has been open too long."""

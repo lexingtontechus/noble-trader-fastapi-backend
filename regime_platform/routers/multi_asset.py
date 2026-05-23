@@ -4,12 +4,14 @@ Multi-asset correlation regime + drawdown-optimised portfolio endpoints.
   POST /correlation/detect   — detect portfolio-level correlation regime
   POST /optimise             — solve drawdown-controlled max-Sharpe portfolio
   POST /optimise/full        — correlation detect + optimise in one request
+  POST /optimise/masaniello  — two-stage: portfolio optimisation + per-asset Masaniello sizing
 """
 
 from __future__ import annotations
 
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, Request
+from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -19,7 +21,13 @@ from ..core.correlation_regime import (
     CorrelationSnapshot, AssetRegime,
 )
 from ..core.portfolio_optimiser import DrawdownOptimiser, OptimiserConfig, OptimisationResult
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..core.position_sizer import SizingConfig
+from ..services.masaniello_bridge import MasanielloBridge
+from ..models.schemas import (
+    PortfolioMasanielloRequest, PortfolioMasanielloResponse, AssetMasanielloResult,
+)
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 
 router = APIRouter(tags=["Multi-Asset"])
 
@@ -134,7 +142,7 @@ def _snap_to_dict(ar: AssetRegime) -> dict:
 )
 async def detect_correlation_regime(
     req: CorrDetectRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Fits a 4-state Gaussian HMM on rolling correlation features across all assets.
@@ -173,17 +181,19 @@ async def detect_correlation_regime(
             asset_regimes=[_snap_to_dict(ar) for ar in snap.asset_regimes],
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "correlation detection")
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/optimise",
     response_model=OptimiseResponse,
     summary="Drawdown-controlled regime-aware portfolio optimisation",
 )
 async def optimise_portfolio(
+    request: Request,
     req: OptimiseRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constraint.
@@ -228,17 +238,19 @@ async def optimise_portfolio(
             solver_message=res.solver_message,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "portfolio optimisation")
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/optimise/full",
     response_model=FullOptimiseResponse,
     summary="One-shot: correlation regime detection + portfolio optimisation",
 )
 async def full_optimise(
+    request: Request,
     req: FullOptimiseRequest,
-    user: TokenData = Depends(get_authed_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Runs the complete multi-asset pipeline in one request:
@@ -297,4 +309,110 @@ async def full_optimise(
             ),
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "full optimisation")
+
+
+@limiter.limit(RATE_LIMIT_COMPUTE)
+@router.post(
+    "/optimise/masaniello",
+    response_model=PortfolioMasanielloResponse,
+    summary="Two-stage pipeline: portfolio optimisation + per-asset Masaniello sizing",
+)
+async def optimise_with_masaniello(
+    request: Request,
+    req: PortfolioMasanielloRequest,
+    user: TokenData = Depends(require_write),
+):
+    """
+    Full two-stage pipeline in one request:
+
+    **Stage 1** — DrawdownOptimiser:
+    Solves a regime-adjusted max-Sharpe portfolio with drawdown constraint.
+    Produces per-asset portfolio weights (capital allocation).
+
+    **Stage 2** — Dynamic Masaniello Sizer:
+    Sizes each asset's position within its allocated capital using:
+      f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
+
+    Where:
+    - M_i = urgency (wins needed / trades remaining)
+    - Q_i = quality (prob × regime × confidence)
+    - DD_i = drawdown scaling (floor 0.25)
+    - V_i = volatility adjustment (ATR-based)
+
+    The optimiser says "what to hold"; Masaniello says "how much".
+    """
+    try:
+        arr = np.array(req.returns_matrix, dtype=float)
+        if arr.shape[1] != len(req.symbols):
+            raise ValueError(
+                f"returns_matrix columns ({arr.shape[1]}) ≠ symbols length ({len(req.symbols)})"
+            )
+
+        # Build configs
+        opt_config = OptimiserConfig(
+            max_dd_limit=req.max_dd_limit,
+            max_weight=req.max_weight,
+        )
+        sizing_config = SizingConfig(
+            base_risk=req.base_risk,
+            min_rr=req.min_rr,
+            batch_size=req.batch_size,
+            target_wins=req.target_wins,
+            use_kelly_overlay=req.use_kelly_overlay,
+            kelly_fraction=req.kelly_fraction,
+        )
+
+        # Run the two-stage pipeline
+        bridge = MasanielloBridge(opt_config, sizing_config)
+        result = bridge.optimise_and_size(
+            returns_matrix=arr,
+            symbols=req.symbols,
+            equity=req.equity,
+            stop_distances=req.stop_distances,
+            p_wins=req.p_wins,
+            reward_risks=req.reward_risks,
+            atr_baselines=req.atr_baselines,
+            atr_currents=req.atr_currents,
+            point_values=req.point_values or None,
+            directions=req.directions or None,
+        )
+
+        # Build response
+        asset_results = []
+        for a in result.asset_sizes:
+            asset_results.append(AssetMasanielloResult(
+                symbol=a.symbol,
+                portfolio_weight=a.portfolio_weight,
+                capital_allocation=a.capital_allocation,
+                allowed=a.allowed,
+                risk_fraction=a.risk_fraction,
+                risk_amount=a.risk_amount,
+                contracts=a.contracts,
+                masaniello_factor=a.masaniello_factor,
+                quality_factor=a.quality_factor,
+                drawdown_factor=a.drawdown_factor,
+                volatility_factor=a.volatility_factor,
+                expected_edge=a.expected_edge,
+                reason=a.reason,
+                regime_label=a.regime_label,
+            ))
+
+        opt = result.optimisation
+        return PortfolioMasanielloResponse(
+            symbols=opt.symbols,
+            weights=opt.weights,
+            regime_adj_weights=opt.regime_adj_weights,
+            expected_return=opt.expected_return,
+            expected_vol=opt.expected_vol,
+            sharpe_ratio=opt.sharpe_ratio,
+            expected_max_drawdown=opt.expected_max_drawdown,
+            regime_exposure=opt.regime_exposure,
+            asset_sizes=asset_results,
+            total_risk_amount=result.total_risk_amount,
+            total_contracts=result.total_contracts,
+            corr_regime=result.corr_regime or "",
+            corr_confidence=result.corr_confidence,
+        )
+    except Exception as e:
+        raise_http_exception(e, "Masaniello optimisation")

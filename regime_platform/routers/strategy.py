@@ -115,4 +115,4 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
             notes=notes,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "strategy signal")

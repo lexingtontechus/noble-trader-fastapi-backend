@@ -86,7 +86,7 @@ async def build_observation(req: ObservationRequest, user: TokenData = Depends(g
             n_bars_fitted=len(prices),
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "observation building")
 
 
 # TDA feature labels for the extended vector
@@ -183,4 +183,4 @@ async def build_observation_v2(req: ObservationV2Request, user: TokenData = Depe
             tda_regime_change_prob=tda_regime_change,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "observation building v2")

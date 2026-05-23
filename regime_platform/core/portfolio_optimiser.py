@@ -171,7 +171,26 @@ class DrawdownOptimiser:
         # ── Per-asset weight bounds ───────────────────────────────────────────
         base_max  = cfg.max_weight
         ub_assets = [_regime_weight_bound(snap, base_max) for snap in snaps]
-        bounds    = [(cfg.min_weight, ub) for ub in ub_assets]
+
+        # ── Kelly-informed weight bounds (override if provided) ───────────────
+        if kelly_fractions is not None and len(kelly_fractions) == n:
+            for j, kf in enumerate(kelly_fractions):
+                if kf <= 0:
+                    ub_assets[j] = min(ub_assets[j], 0.01)
+                else:
+                    snap_j = snaps[j]
+                    if snap_j is not None and snap_j.risk_multiplier < 0.5:
+                        # Adverse regime: Kelly tightens the bound significantly
+                        kelly_ub = min(kf * 0.25, base_max * 0.25)
+                    elif snap_j is not None and snap_j.risk_multiplier > 1.2:
+                        # Favourable regime: Kelly allows expansion up to 1.5x
+                        kelly_ub = min(kf * 1.5, base_max)
+                    else:
+                        # Neutral: Kelly informs but doesn't expand beyond base
+                        kelly_ub = min(kf, base_max)
+                    ub_assets[j] = min(ub_assets[j], max(kelly_ub, 0.01))
+
+        bounds = [(cfg.min_weight, ub) for ub in ub_assets]
 
         # ── Correlation regime exposure scalar ────────────────────────────────
         exposure  = _corr_regime_exposure(corr_regime)

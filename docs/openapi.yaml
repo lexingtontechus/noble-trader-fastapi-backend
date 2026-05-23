@@ -1,56 +1,469 @@
 openapi: "3.1.0"
 
 info:
-  title: Dynamic Regime Risk Management Platform
-  version: "2.0.0"
+  title: Noble Trader Agent — FastAPI Backend
+  version: "7.0.0"
   description: |
-    A production-grade FastAPI service for quantitative trading risk management.
-    Detects market regimes with Hidden Markov Models, gates position sizes via
-    the Kelly Criterion, computes real-time VaR/CVaR, and streams live regime
-    snapshots and alerts over WebSocket and SSE.
+    A production-grade quantitative trading platform combining two major subsystems:
+
+    ## Renko HFT Pipeline (`/renko/*`)
+    A 6-layer Renko brick processing pipeline for high-frequency trading:
+    1. **Brick Engine** — price → Renko brick conversion (fixed / ATR / dynamic sizing)
+    2. **Swing Classifier** — HH/HL/LH/LL brick labelling with swing-point detection
+    3. **Pattern Detector** — consecutive-swing pattern recognition (bull/bear triggers, double-top/bottom, consolidation)
+    4. **Signal Filter** — session-time, regime-gate, cooldown, loss-limit, and velocity filters
+    5. **Risk Manager** — bracket orders with SL/TP in brick units, trailing stop, daily loss cap
+    6. **Executor** — paper/live order submission via Alpaca with Discord notification hooks
+
+    ## Regime Platform (multiple routers)
+    HMM-based regime detection, Kelly position sizing, VaR/CVaR risk analysis,
+    walk-forward backtesting, topological data analysis, Monte Carlo simulation,
+    multi-asset correlation, portfolio optimisation, live feed adapters, GPU HMM
+    acceleration, and real-time streaming over SSE and WebSocket.
+
+    ### Authentication
+    All endpoints require a **Clerk JWT** via `Authorization: Bearer <token>`.
+    SSE endpoints also require auth. Renko write operations require `admin` or
+    `trader` role. Admin-only endpoints (config, reset) require the `admin` role.
+    The `/health` endpoint is public.
   contact:
-    name: Regime Risk Platform
+    name: Noble Trader Agent
+    email: nobletrader@0xdweb.com
   license:
     name: MIT
 
 servers:
+  - url: https://noble-trader-fastapi-backend.onrender.com
+    description: Production (Render)
   - url: http://localhost:8000
     description: Local development
 
 tags:
+  - name: Renko HFT Pipeline
+    description: 6-layer Renko brick processing pipeline for HFT signal generation and trade execution
   - name: Full Pipeline
-    description: One-shot batch analysis
+    description: One-shot batch analysis (regime + sizing + risk)
   - name: Regime Detection
-    description: HMM-based regime classification
+    description: HMM-based volatility + trend regime classification
   - name: Position Sizing
-    description: Kelly Criterion position sizing
+    description: Regime-gated fractional Kelly Criterion position sizing
   - name: Risk Analysis
-    description: VaR, CVaR, drawdown, stop/TP
+    description: VaR, CVaR, drawdown, stop/TP, stress testing
+  - name: Strategy Signals
+    description: Strategy signal generation with regime context and position sizing
+  - name: Backtesting
+    description: Walk-forward backtesting, result management, comparison, optimisation, and export
+  - name: Observation Builder
+    description: 24-feature HMM observation vector construction
+  - name: TDA Features
+    description: Topological Data Analysis — persistent homology feature extraction
+  - name: Simulation
+    description: Monte Carlo regime transition simulation
+  - name: Portfolio
+    description: Multi-symbol aggregated regime + risk, correlation matrix
+  - name: Multi-Asset
+    description: Portfolio-level correlation regime detection and drawdown-optimised allocation
   - name: Live Stream
     description: REST tick ingestion and session management
   - name: Real-Time Streaming
     description: WebSocket and Server-Sent Events
+  - name: Feed Adapters
+    description: Alpaca / Binance / IB live data feed management
+  - name: GPU Engine
+    description: GPU HMM backend capabilities and latency benchmarks
   - name: Health
+    description: Service health check
 
 # ─────────────────────────────────────────────────────────────────────────────
+security:
+  - BearerAuth: []
+
 paths:
+
+  # ── HEALTH ────────────────────────────────────────────────────────────────
 
   /health:
     get:
       tags: [Health]
-      summary: Health check
+      summary: Health check + Discord status
+      security: []
       responses:
-        "200":♥
+        "200":
           description: Service is healthy
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status: { type: string, example: ok }
-                  version: { type: string, example: "2.0.0" }
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                    example: "7.0.0"
+                  sessions:
+                    type: integer
+                    description: Number of active streaming sessions
+                  redis:
+                    type: boolean
+                    description: Whether Redis persistence is enabled
+                  discord:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      channels:
+                        type: object
+                        properties:
+                          signals:
+                            type: boolean
+                          executions:
+                            type: boolean
+                          status:
+                            type: boolean
+                  gpu_backend:
+                    type: string
+                    example: RegimeHMM (hmmlearn)
+                  device:
+                    type: string
+                    example: cpu
 
-  # ── BATCH ────────────────────────────────────────────────────────────────
+  # ══════════════════════════════════════════════════════════════════════════
+  #  RENKO HFT PIPELINE
+  # ══════════════════════════════════════════════════════════════════════════
+
+  /renko/tick:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Process single tick through 6-layer pipeline
+      description: |
+        Pushes a single price tick through the full Renko HFT pipeline:
+        Brick Engine → Swing Classifier → Pattern Detector → Signal Filter →
+        Risk Manager → Executor. Returns the complete processing result
+        including any generated signals, trade results, and brick updates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TickInput' }
+      responses:
+        "200":
+          description: Tick processing result
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Pipeline processing result dict
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/tick/batch:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Batch tick processing (backtest/warmup)
+      description: |
+        Processes a batch of ticks through the Renko pipeline for backtesting
+        or warm-up. Supports pre-computed regime labels for regime-gated backtests.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchTickInput' }
+      responses:
+        "200":
+          description: Batch processing result
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Batch backtest result with trades, bricks, and statistics
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/state:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Current pipeline state snapshot
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline state
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Complete pipeline state snapshot
+
+  /renko/stats:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Comprehensive pipeline statistics
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Comprehensive statistics from all pipeline layers
+
+  /renko/bricks:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Recent Renko bricks
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 100 }
+          description: Number of recent bricks to return
+      responses:
+        "200":
+          description: List of Renko bricks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Renko brick with direction, price, timestamp
+
+  /renko/classified:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Bricks with swing labels
+      description: |
+        Returns recent bricks with swing classification labels (HH, HL, LH, LL)
+        applied by the Swing Classifier layer.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: Classified bricks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Classified brick with swing label
+
+  /renko/signals:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Pattern signals history
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Pattern signals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Pattern signal with direction, type, strength
+
+  /renko/trades:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Trade journal records
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Trade records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Trade journal entry with PnL, direction, entry/exit
+
+  /renko/swing-points:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Detected swing points
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: last_n
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Swing points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Swing point with type (high/low), price, index
+
+  /renko/regime:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Update HMM regime for gate filter
+      description: |
+        Updates the current HMM regime label used by the Signal Filter's
+        regime gate. Only trades aligned with the current regime are allowed.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegimeInput' }
+      responses:
+        "200":
+          description: Regime updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  regime: { type: string }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/equity:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Update account equity
+      description: |
+        Updates the current account equity used for position sizing
+        calculations in the Risk Manager layer.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EquityInput' }
+      responses:
+        "200":
+          description: Equity updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  equity: { type: number }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/config:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Update pipeline configuration (resets pipeline)
+      description: |
+        Replaces the entire pipeline configuration and resets the pipeline
+        for the symbol. **Admin-only endpoint.**
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigInput' }
+      responses:
+        "200":
+          description: Configuration updated and pipeline reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  config:
+                    type: object
+                    description: Applied configuration dict
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/reset:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Reset pipeline for a symbol
+      description: |
+        Resets the pipeline state (bricks, trades, signals) for a symbol
+        without changing configuration. **Admin-only endpoint.**
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Pipeline reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /renko/backtest/stats:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Backtest statistics from journal
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Backtest/trading statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Journal statistics including win rate, PnL, trade count
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  REGIME PLATFORM
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── FULL PIPELINE ──────────────────────────────────────────────────────────
 
   /analyse/full:
     post:
@@ -81,10 +494,15 @@ paths:
         "422":
           $ref: '#/components/responses/ValidationError'
 
+  # ── REGIME DETECTION ──────────────────────────────────────────────────────
+
   /regime/detect:
     post:
       tags: [Regime Detection]
       summary: Detect market regime from price series
+      description: |
+        Fits dual Gaussian HMMs (volatility + trend) on the supplied price
+        series and returns posterior regime probabilities plus a risk multiplier.
       requestBody:
         required: true
         content:
@@ -99,10 +517,65 @@ paths:
         "422":
           $ref: '#/components/responses/ValidationError'
 
+  /regime/detect-v2:
+    post:
+      tags: [Regime Detection]
+      summary: Enhanced regime detection with configurable 2-4 states
+      description: |
+        Enhanced HMM regime detection with configurable states per dimension,
+        auto-labeled states sorted by emission means, transition matrix entropy,
+        and regime stability metric.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegimeV2Request' }
+      responses:
+        "200":
+          description: Enhanced regime classification result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegimeV2Response' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /regime/simulate/{symbol}:
+    post:
+      tags: [Regime Detection, Simulation]
+      summary: Markov-chain regime simulation
+      description: |
+        Fits a 4-state HMM on the supplied price series, then simulates
+        `n_paths` forward paths of `horizon` bars using the fitted
+        Markov transition matrix.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SimulateRequest' }
+      responses:
+        "200":
+          description: Simulation result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimulateResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── POSITION SIZING ───────────────────────────────────────────────────────
+
   /size/kelly:
     post:
       tags: [Position Sizing]
-      summary: Regime-aware fractional Kelly position sizing
+      summary: Regime-gated fractional Kelly sizing
+      description: |
+        Computes fractional Kelly position size, optionally scaled by
+        current realised volatility vs target volatility and the dynamic
+        regime risk multiplier from HMM.
       requestBody:
         required: true
         content:
@@ -117,10 +590,16 @@ paths:
         "422":
           $ref: '#/components/responses/ValidationError'
 
+  # ── RISK ANALYSIS ─────────────────────────────────────────────────────────
+
   /risk/analyse:
     post:
       tags: [Risk Analysis]
-      summary: Full risk decomposition — VaR, CVaR, drawdown, stop/TP
+      summary: VaR, CVaR, drawdown, stop/TP
+      description: |
+        Computes comprehensive risk metrics including parametric + historical
+        VaR/CVaR, max drawdown, Sortino & Calmar ratios, and regime-adjusted
+        stop-loss/take-profit.
       requestBody:
         required: true
         content:
@@ -135,12 +614,448 @@ paths:
         "422":
           $ref: '#/components/responses/ValidationError'
 
-  # ── STREAMING REST ────────────────────────────────────────────────────────
+  /risk/analyze:
+    post:
+      tags: [Risk Analysis]
+      summary: Enhanced risk analysis with stress testing
+      description: |
+        Enhanced risk analysis (US spelling endpoint) with VaR/CVaR,
+        stress test scenarios (2008 crash, flash crash, volatility spike,
+        rate shock, liquidity crisis), and regime context.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RiskAnalyzeRequest' }
+      responses:
+        "200":
+          description: Enhanced risk analysis result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskAnalyzeResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /risk/stress-test:
+    post:
+      tags: [Risk Analysis]
+      summary: Portfolio stress testing
+      description: |
+        Runs stress test scenarios on a portfolio including 2008-style crash,
+        flash crash, volatility spike, interest rate shock, and liquidity crisis.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RiskAnalyzeRequest' }
+      responses:
+        "200":
+          description: Stress test results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskAnalyzeResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── STRATEGY SIGNALS ──────────────────────────────────────────────────────
+
+  /strategy/signal:
+    post:
+      tags: [Strategy Signals]
+      summary: Strategy signal generation
+      description: |
+        Full strategy signal pipeline:
+        1. Fit HMM regime model → detect current regime
+        2. Generate trading signal (long/short/flat) based on regime
+        3. Compute regime-gated Kelly position size
+        4. Compute risk metrics and guidance (stop/TP, VaR/CVaR)
+        5. Return combined signal with all context
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StrategySignalRequest' }
+      responses:
+        "200":
+          description: Strategy signal result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StrategySignalResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── BACKTESTING ───────────────────────────────────────────────────────────
+
+  /backtest/run:
+    post:
+      tags: [Backtesting]
+      summary: Backtest execution
+      description: |
+        Walk-forward backtest pipeline with 30+ metrics:
+        1. Rolling HMM fit on trailing window
+        2. Strategy signal generation based on regime
+        3. Regime-gated Kelly position sizing
+        4. Risk check gates (VaR, max drawdown)
+        5. Trade execution with commission/slippage
+        6. Comprehensive performance metrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BacktestRequest' }
+      responses:
+        "200":
+          description: Backtest result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BacktestResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /backtest/history:
+    get:
+      tags: [Backtesting]
+      summary: Paginated list of saved backtest results
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: per_page
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Paginated backtest result list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                  total: { type: integer }
+                  page: { type: integer }
+                  per_page: { type: integer }
+
+  /backtest/{id}:
+    get:
+      tags: [Backtesting]
+      summary: Full backtest result by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Full backtest result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BacktestResponse' }
+        "404":
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Backtesting]
+      summary: Delete a saved backtest result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Backtest deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deleted }
+                  id: { type: string }
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /backtest/compare:
+    post:
+      tags: [Backtesting]
+      summary: Side-by-side comparison of saved results
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items: { type: string }
+                  minItems: 2
+                  maxItems: 10
+                  description: Backtest result IDs to compare
+      responses:
+        "200":
+          description: Comparison result
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Side-by-side comparison of backtest metrics
+
+  /backtest/optimize:
+    post:
+      tags: [Backtesting]
+      summary: Parameter grid sweep (max 50 combos)
+      description: |
+        Runs a parameter grid sweep over backtest configurations.
+        Maximum of 50 parameter combinations per request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prices, param_grid]
+              properties:
+                symbol: { type: string, default: UNKNOWN }
+                prices:
+                  type: array
+                  items: { type: number, exclusiveMinimum: 0 }
+                  minItems: 81
+                param_grid:
+                  type: object
+                  description: Parameter ranges to sweep
+                  properties:
+                    kelly_fraction:
+                      type: array
+                      items: { type: number }
+                    target_vol:
+                      type: array
+                      items: { type: number }
+                    window:
+                      type: array
+                      items: { type: integer }
+      responses:
+        "200":
+          description: Optimisation results
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Grid sweep results ranked by Sharpe ratio
+
+  /backtest/export:
+    post:
+      tags: [Backtesting]
+      summary: Export result as CSV/JSON
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, format]
+              properties:
+                id:
+                  type: string
+                  description: Backtest result ID to export
+                format:
+                  type: string
+                  enum: [csv, json]
+                  description: Export format
+      responses:
+        "200":
+          description: Exported backtest data
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Exported backtest result in requested format
+            text/csv:
+              schema:
+                type: string
+                description: CSV export of trade log and metrics
+
+  # ── PORTFOLIO ─────────────────────────────────────────────────────────────
+
+  /portfolio/:
+    get:
+      tags: [Portfolio]
+      summary: Multi-symbol aggregated regime + risk
+      description: |
+        Returns a portfolio-level view aggregating all (or specified) active
+        streaming sessions. Includes per-symbol regime, risk, and Kelly data,
+        plus portfolio-level VaR, regime consensus, and risk flags.
+      parameters:
+        - name: symbols
+          in: query
+          schema: { type: string }
+          description: Comma-separated symbols (omit for all active sessions)
+        - name: kelly_fraction
+          in: query
+          schema: { type: number, default: 0.5, minimum: 0.1, maximum: 1.0 }
+        - name: target_vol
+          in: query
+          schema: { type: number, default: 0.15, exclusiveMinimum: 0, maximum: 1.0 }
+        - name: base_risk_limit
+          in: query
+          schema: { type: number, default: 0.02, exclusiveMinimum: 0, maximum: 0.5 }
+      responses:
+        "200":
+          description: Portfolio summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortfolioResponse' }
+        "500":
+          description: Internal error
+
+  /portfolio/correlation:
+    get:
+      tags: [Portfolio]
+      summary: Correlation matrix
+      description: |
+        Returns the correlation matrix across all active streaming session symbols.
+      responses:
+        "200":
+          description: Correlation matrix
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbols:
+                    type: array
+                    items: { type: string }
+                  matrix:
+                    type: array
+                    items:
+                      type: array
+                      items: { type: number }
+
+  # ── TDA FEATURES ──────────────────────────────────────────────────────────
+
+  /tda/features:
+    post:
+      tags: [TDA Features]
+      summary: TDA feature extraction
+      description: |
+        Topological Data Analysis feature extraction using persistent homology:
+        1. Compute log-returns from price series
+        2. Create Takens time-delay embedding (point cloud)
+        3. Compute persistent homology (0-dim: connected components, 1-dim: loops)
+        4. Compute Betti numbers at each filtration step
+        5. Compute persistence entropy (topological complexity)
+        6. Compute anomaly score and regime change probability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TDARequest' }
+      responses:
+        "200":
+          description: TDA feature extraction result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TDAResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── OBSERVATION BUILDER ───────────────────────────────────────────────────
+
+  /observation/build:
+    post:
+      tags: [Observation Builder]
+      summary: 24-feature HMM observation vector
+      description: |
+        Constructs the full 24-feature observation vector used by the RL/ML
+        policy layer. Features 14–19 are Markov features: live HMM posterior
+        probabilities from a fitted RegimeHMM.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObservationRequest' }
+      responses:
+        "200":
+          description: Observation vector
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObservationResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /observation/batch:
+    post:
+      tags: [Observation Builder]
+      summary: Batch observation building
+      description: |
+        Builds observation vectors for multiple price windows in a single
+        request. Useful for pre-computing features for ML training.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [windows]
+              properties:
+                windows:
+                  type: array
+                  items: { $ref: '#/components/schemas/ObservationRequest' }
+                  maxItems: 100
+      responses:
+        "200":
+          description: Batch observation results
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ObservationResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── SIMULATION ────────────────────────────────────────────────────────────
+
+  /simulate/{symbol}:
+    post:
+      tags: [Simulation]
+      summary: Monte Carlo simulation
+      description: |
+        Fits a 4-state HMM on the supplied price series, then simulates
+        `n_paths` forward paths of `horizon` bars using the fitted
+        Markov transition matrix. Returns price fan, terminal return
+        distribution, and regime path projections.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SimulateRequest' }
+      responses:
+        "200":
+          description: Simulation result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimulateResponse' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  # ── LIVE STREAM ───────────────────────────────────────────────────────────
 
   /stream/seed:
     post:
       tags: [Live Stream]
-      summary: Seed a symbol streaming session with historical prices
+      summary: Seed historical prices
+      description: |
+        Creates (or resets) a streaming session for a symbol and pre-loads
+        historical prices so the HMM can be fitted immediately. Must be called
+        before streaming ticks for a new symbol.
       requestBody:
         required: true
         content:
@@ -158,7 +1073,11 @@ paths:
   /stream/tick:
     post:
       tags: [Live Stream]
-      summary: Push one price tick — receive regime snapshot
+      summary: Ingest single tick
+      description: |
+        Push a single price tick. Returns a full TickResponse once the
+        session has enough bars; returns a buffering stub while warming up.
+        The session must have been seeded first.
       requestBody:
         required: true
         content:
@@ -179,7 +1098,10 @@ paths:
   /stream/ticks:
     post:
       tags: [Live Stream]
-      summary: Batch tick ingestion / backtest replay
+      summary: Batch tick ingestion
+      description: |
+        Replay or batch-ingest multiple ticks. Returns a snapshot for each
+        tick (or a buffering stub when warming up). Useful for backtesting/replay.
       parameters:
         - name: symbol
           in: query
@@ -188,11 +1110,15 @@ paths:
         - name: prices
           in: query
           required: true
-          schema: { type: array, items: { type: number } }
+          schema:
+            type: array
+            items: { type: number }
         - name: timestamps
           in: query
           required: false
-          schema: { type: array, items: { type: number } }
+          schema:
+            type: array
+            items: { type: number }
       responses:
         "200":
           description: Array of tick snapshots
@@ -210,7 +1136,8 @@ paths:
   /stream/sessions:
     get:
       tags: [Live Stream]
-      summary: List all active streaming sessions and their stats
+      summary: List active streaming sessions
+      description: Returns all active streaming sessions and their stats.
       responses:
         "200":
           description: Map of symbol → session stats
@@ -224,7 +1151,7 @@ paths:
   /stream/session/{symbol}:
     get:
       tags: [Live Stream]
-      summary: Get status of a single streaming session
+      summary: Get session status
       parameters:
         - name: symbol
           in: path
@@ -240,7 +1167,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [Live Stream]
-      summary: Remove a streaming session
+      summary: Remove a session
       parameters:
         - name: symbol
           in: path
@@ -257,12 +1184,117 @@ paths:
                   status: { type: string, example: removed }
                   symbol: { type: string }
 
+  # ── FEED ADAPTERS ─────────────────────────────────────────────────────────
+
+  /feeds/status:
+    get:
+      tags: [Feed Adapters]
+      summary: Feed adapter health
+      description: Returns running state and per-symbol bar counts for all active feed adapters.
+      responses:
+        "200":
+          description: Feed adapter status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedStatusResponse' }
+
+  /feeds/start:
+    post:
+      tags: [Feed Adapters]
+      summary: Start Alpaca/Binance/IB feed
+      description: |
+        Start one or more live feed adapters. Symbols must be seeded via
+        `POST /stream/seed` before starting feeds. Adapters reconnect
+        automatically on disconnect (exponential backoff).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/FeedConfig' }
+      responses:
+        "200":
+          description: Feeds started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: started }
+                  adapters:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        source: { type: string }
+                        symbols:
+                          type: array
+                          items: { type: string }
+                  note: { type: string }
+        "409":
+          description: Feeds already running
+
+  /feeds/stop:
+    post:
+      tags: [Feed Adapters]
+      summary: Stop a feed adapter
+      description: Gracefully stops all running feed adapter tasks.
+      responses:
+        "200":
+          description: Feeds stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: stopped }
+
+  # ── GPU ENGINE ────────────────────────────────────────────────────────────
+
+  /gpu/capabilities:
+    get:
+      tags: [GPU Engine]
+      summary: GPU HMM backend info
+      description: |
+        Returns which HMM backend will be used and what hardware is available.
+        - `hmm_backend`: `"GpuRegimeHMM (pomegranate)"` or `"RegimeHMM (hmmlearn)"`
+        - `active_device`: `"cuda"` | `"mps"` | `"cpu"`
+      responses:
+        "200":
+          description: GPU capabilities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GpuCapabilitiesResponse' }
+
+  /gpu/benchmark:
+    post:
+      tags: [GPU Engine]
+      summary: HMM fit/predict latency benchmark
+      description: |
+        Runs `n_iterations` fit+predict cycles on synthetic price data of
+        length `n_bars`. Returns mean latency for fit and predict separately.
+        Use `force_cpu=true` to benchmark the hmmlearn baseline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BenchmarkRequest' }
+      responses:
+        "200":
+          description: Benchmark result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkResult' }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
   # ── SSE ───────────────────────────────────────────────────────────────────
 
   /sse/{symbol}:
     get:
       tags: [Real-Time Streaming]
-      summary: SSE stream — per-symbol regime snapshots
+      summary: SSE stream per-symbol regime snapshots
       description: |
         Server-Sent Events stream. Pushes a TickResponse JSON on every tick
         processed for `symbol`. Requires a seeded session. Sends comment
@@ -290,10 +1322,10 @@ paths:
   /sse/alerts:
     get:
       tags: [Real-Time Streaming]
-      summary: SSE stream — global regime-change alert broadcast
+      summary: Global SSE alert stream
       description: |
         Broadcasts RegimeAlert events across all active symbol sessions.
-        Only fires on transitions that persist for 3+ bars (debounced).
+        Only fires on regime state transitions (not every tick).
 
         Connect with: `new EventSource('/sse/alerts')`
       responses:
@@ -307,8 +1339,46 @@ paths:
                   Each `data:` line is a JSON-serialised RegimeAlert.
                   First event: `{"type": "connected", "scope": "alerts"}`
 
+  # ── WEBSOCKET ─────────────────────────────────────────────────────────────
+
+  /ws/{symbol}:
+    get:  # OpenAPI workaround — actual protocol is WS
+      tags: [Real-Time Streaming]
+      summary: WebSocket stream
+      description: |
+        Full-duplex WebSocket for a single symbol. Connect, then send JSON
+        messages to seed / push ticks. The server pushes back a regime
+        snapshot after every tick and an alert message on regime transitions.
+
+        **Client → Server messages:**
+        - `{"type":"seed", "symbol":"SPY", "prices":[...]}`
+        - `{"type":"tick", "symbol":"SPY", "price":512.34}`
+        - `{"type":"subscribe", "symbol":"SPY"}`
+        - `{"type":"ping"}`
+
+        **Server → Client messages:**
+        - Tick snapshots (TickResponse JSON)
+        - `{"type":"pong"}`
+        - `{"type":"error", "detail":"..."}`
+        - `{"type":"alert", ...}`
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "101":
+          description: WebSocket upgrade
+
 # ─────────────────────────────────────────────────────────────────────────────
 components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Clerk JWT token
 
   responses:
     ValidationError:
@@ -330,7 +1400,7 @@ components:
                         type: { type: string }
 
     NotFound:
-      description: Session not found for symbol
+      description: Resource not found
       content:
         application/json:
           schema:
@@ -340,7 +1410,139 @@ components:
 
   schemas:
 
-    # ── Shared ─────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    #  RENKO HFT PIPELINE SCHEMAS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    TickInput:
+      type: object
+      required: [price]
+      properties:
+        price:
+          type: number
+          exclusiveMinimum: 0
+          description: Latest trade price
+        timestamp:
+          type: number
+          nullable: true
+          description: Unix timestamp (auto-filled if omitted)
+        symbol:
+          type: string
+          nullable: true
+          description: Override symbol (defaults to query param)
+
+    BatchTickInput:
+      type: object
+      required: [prices]
+      properties:
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+          description: Price series for batch processing
+        timestamps:
+          type: array
+          items: { type: number }
+          nullable: true
+          description: Corresponding timestamps
+        regimes:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Pre-computed regime labels for regime-gated backtests
+        symbol:
+          type: string
+          nullable: true
+          description: Override symbol (defaults to query param)
+
+    ConfigInput:
+      type: object
+      description: Pipeline configuration (resets the pipeline when applied)
+      properties:
+        brick_size:
+          type: number
+          default: 0.50
+          description: Fixed brick size in dollars
+        brick_size_mode:
+          type: string
+          enum: [fixed, atr, dynamic]
+          default: fixed
+          description: Brick size determination mode
+        reversal_bricks:
+          type: integer
+          default: 2
+          description: Bricks needed for reversal
+        bull_trigger_n:
+          type: integer
+          default: 3
+          description: N consecutive HH/HL for bull trigger
+        bear_trigger_n:
+          type: integer
+          default: 3
+          description: N consecutive LL/LH for bear trigger
+        sl_bricks:
+          type: integer
+          default: 3
+          description: Stop-loss in brick units
+        tp_bricks:
+          type: integer
+          default: 5
+          description: Take-profit in brick units
+        trailing_stop:
+          type: boolean
+          default: true
+          description: Enable trailing stop
+        trail_after_bricks:
+          type: integer
+          default: 3
+          description: Activate trail after N bricks profit
+        trail_distance_bricks:
+          type: integer
+          default: 2
+          description: Trail distance in bricks
+        max_trades_per_session:
+          type: integer
+          default: 15
+          description: Max trades per session
+        max_daily_loss_bricks:
+          type: number
+          default: 10.0
+          description: Max daily loss in bricks
+        max_consecutive_losses:
+          type: integer
+          default: 3
+          description: Pause after N consecutive losses
+        cooldown_seconds:
+          type: number
+          default: 30.0
+          description: Min seconds between trades
+        regime_gate:
+          type: boolean
+          default: true
+          description: Only trade with HMM regime alignment
+        symbol:
+          type: string
+          default: SPY
+          description: Trading symbol
+
+    RegimeInput:
+      type: object
+      required: [regime]
+      properties:
+        regime:
+          type: string
+          description: Current regime name
+
+    EquityInput:
+      type: object
+      required: [equity]
+      properties:
+        equity:
+          type: number
+          description: Current account equity
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  SHARED REGIME PLATFORM SCHEMAS
+    # ══════════════════════════════════════════════════════════════════════════
 
     PricePayload:
       type: object
@@ -414,6 +1616,347 @@ components:
               maximum: 0.5
               default: 0.02
 
+    RiskAnalyzeRequest:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          properties:
+            returns:
+              type: array
+              items: { type: number }
+              nullable: true
+              description: Explicit returns (optional)
+            kelly_fraction:
+              type: number
+              minimum: 0.1
+              maximum: 1.0
+              default: 0.5
+            target_vol:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1.0
+              default: 0.15
+            use_regime:
+              type: boolean
+              default: true
+            base_risk_limit:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 0.5
+              default: 0.02
+            n_hmm_states:
+              type: integer
+              minimum: 2
+              maximum: 4
+              default: 4
+            stress_scenarios:
+              type: boolean
+              default: true
+              description: Include stress test scenarios
+
+    StrategySignalRequest:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          properties:
+            kelly_fraction:
+              type: number
+              minimum: 0.1
+              maximum: 1.0
+              default: 0.5
+            target_vol:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1.0
+              default: 0.15
+            use_regime:
+              type: boolean
+              default: true
+            base_risk_limit:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 0.5
+              default: 0.02
+            n_hmm_states:
+              type: integer
+              minimum: 2
+              maximum: 4
+              default: 4
+
+    RegimeV2Request:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          properties:
+            n_states:
+              type: integer
+              minimum: 2
+              maximum: 4
+              default: 4
+              description: Number of HMM states per dimension
+            n_iter:
+              type: integer
+              minimum: 10
+              maximum: 500
+              default: 100
+              description: Maximum EM iterations
+
+    BacktestRequest:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          properties:
+            window:
+              type: integer
+              minimum: 81
+              default: 200
+              description: Trailing window for HMM fit
+            refit_every:
+              type: integer
+              minimum: 10
+              default: 50
+              description: Refit HMM every N bars
+            n_hmm_states:
+              type: integer
+              minimum: 2
+              maximum: 4
+              default: 4
+            kelly_fraction:
+              type: number
+              minimum: 0.1
+              maximum: 1.0
+              default: 0.5
+            target_vol:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1.0
+              default: 0.15
+            base_risk_limit:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 0.5
+              default: 0.02
+            initial_equity:
+              type: number
+              exclusiveMinimum: 0
+              default: 100000.0
+            commission_bps:
+              type: number
+              minimum: 0
+              maximum: 50.0
+              default: 5.0
+            slippage_bps:
+              type: number
+              minimum: 0
+              maximum: 50.0
+              default: 2.0
+            max_position_pct:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1.0
+              default: 0.25
+            risk_check:
+              type: boolean
+              default: true
+            regime_gate:
+              type: boolean
+              default: true
+
+    TDARequest:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          properties:
+            embedding_dim:
+              type: integer
+              minimum: 2
+              maximum: 10
+              default: 3
+              description: Takens embedding dimension
+            embedding_delay:
+              type: integer
+              minimum: 1
+              maximum: 5
+              default: 1
+              description: Time delay for embedding
+            max_filtration:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 10.0
+              default: 2.0
+              description: Maximum filtration value (std units)
+            n_filtration_steps:
+              type: integer
+              minimum: 5
+              maximum: 100
+              default: 20
+              description: Filtration resolution
+            anomaly_threshold:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 5.0
+              default: 1.5
+              description: Std deviations for anomaly detection
+            baseline_prices:
+              type: array
+              items: { type: number, exclusiveMinimum: 0 }
+              nullable: true
+              description: Optional baseline price series for anomaly comparison
+
+    ObservationRequest:
+      allOf:
+        - $ref: '#/components/schemas/PricePayload'
+        - type: object
+          required: [high, low]
+          properties:
+            high:
+              type: array
+              items: { type: number, exclusiveMinimum: 0 }
+              minItems: 81
+              description: Ordered high-price series (same length as prices)
+            low:
+              type: array
+              items: { type: number, exclusiveMinimum: 0 }
+              minItems: 81
+              description: Ordered low-price series (same length as prices)
+            window:
+              type: integer
+              minimum: 81
+              default: 200
+              description: Rolling window length for feature computation
+            refit_every:
+              type: integer
+              minimum: 1
+              default: 50
+              description: HMM refit interval (bars)
+            n_hmm_states:
+              type: integer
+              minimum: 2
+              maximum: 8
+              default: 4
+              description: Number of HMM hidden states
+            recommended_f:
+              type: number
+              minimum: 0
+              maximum: 1.0
+              default: 0.0
+              description: Kelly fraction for Masaniello feature (idx 22)
+
+    SimulateRequest:
+      type: object
+      required: [prices]
+      properties:
+        symbol:
+          type: string
+          default: UNKNOWN
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+          minItems: 81
+        horizon:
+          type: integer
+          minimum: 1
+          maximum: 252
+          default: 20
+          description: Forward steps to simulate
+        n_paths:
+          type: integer
+          minimum: 50
+          maximum: 5000
+          default: 500
+          description: Monte Carlo paths
+        seed:
+          type: integer
+          nullable: true
+          default: 42
+          description: Random seed for reproducibility
+        current_price:
+          type: number
+          exclusiveMinimum: 0
+          nullable: true
+          description: Override starting price
+
+    FeedConfig:
+      type: object
+      required: [source, symbols]
+      properties:
+        source:
+          type: string
+          enum: [alpaca, binance, ib]
+          description: Data source
+        symbols:
+          type: array
+          items: { type: string }
+          minItems: 1
+        bar_size:
+          type: string
+          default: "1Min"
+          description: "Bar interval (Alpaca: '1Min', Binance: '1m', IB: '5 secs')"
+        feed:
+          type: string
+          default: sip
+          description: "Alpaca feed type: 'sip' or 'iex'"
+
+    BenchmarkRequest:
+      type: object
+      properties:
+        n_bars:
+          type: integer
+          minimum: 81
+          maximum: 50000
+          default: 500
+        n_iterations:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+        force_cpu:
+          type: boolean
+          default: false
+
+    SeedRequest:
+      type: object
+      required: [symbol, prices]
+      properties:
+        symbol: { type: string }
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+          minItems: 81
+        window:
+          type: integer
+          minimum: 81
+          maximum: 5000
+          default: 500
+        kelly_fraction:
+          type: number
+          minimum: 0.1
+          maximum: 1.0
+          default: 0.5
+        target_vol:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1.0
+          default: 0.15
+        base_risk_limit:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 0.5
+          default: 0.02
+        refit_every:
+          type: integer
+          minimum: 5
+          maximum: 500
+          default: 50
+
+    TickIngest:
+      type: object
+      required: [symbol, price]
+      properties:
+        symbol: { type: string }
+        price:  { type: number, exclusiveMinimum: 0 }
+        ts:     { type: number, nullable: true, description: Unix timestamp }
+
     # ── Batch responses ─────────────────────────────────────────────────────
 
     RegimeResponse:
@@ -438,6 +1981,23 @@ components:
         confidence:      { type: number, minimum: 0, maximum: 1 }
         risk_multiplier: { type: number, minimum: 0.10, maximum: 1.75 }
         n_bars_fitted:   { type: integer }
+
+    RegimeV2Response:
+      allOf:
+        - $ref: '#/components/schemas/RegimeResponse'
+        - type: object
+          properties:
+            n_states:
+              type: integer
+              description: Number of HMM states per dimension
+            transition_entropy:
+              type: number
+              description: Shannon entropy of the transition matrix (low = persistent regimes)
+            regime_stability:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: Fraction of last 20 bars in the same regime
 
     SizeResponse:
       type: object
@@ -480,6 +2040,27 @@ components:
           type: array
           items: { type: string }
 
+    RiskAnalyzeResponse:
+      allOf:
+        - $ref: '#/components/schemas/RiskResponse'
+        - type: object
+          properties:
+            risk_multiplier:
+              type: number
+              description: Regime risk multiplier
+            stress_tests:
+              type: array
+              items: { $ref: '#/components/schemas/StressTestResult' }
+
+    StressTestResult:
+      type: object
+      properties:
+        scenario:          { type: string, example: 2008_crash }
+        description:       { type: string }
+        simulated_return:  { type: number }
+        simulated_var_95:  { type: number }
+        simulated_max_dd:  { type: number }
+
     FullAnalysisResponse:
       type: object
       properties:
@@ -488,50 +2069,253 @@ components:
         sizing:  { $ref: '#/components/schemas/SizeResponse' }
         risk:    { $ref: '#/components/schemas/RiskResponse' }
 
-    # ── Streaming requests ──────────────────────────────────────────────────
-
-    SeedRequest:
+    StrategySignalResponse:
       type: object
-      required: [symbol, prices]
       properties:
         symbol:           { type: string }
-        prices:
+        signal:           { type: string, enum: [long, short, flat] }
+        signal_strength:  { type: number, minimum: 0, maximum: 1 }
+        confidence:       { type: number, minimum: 0, maximum: 1 }
+        regime_label:     { type: string }
+        vol_state:        { type: string }
+        trend_state:      { type: string }
+        risk_multiplier:  { type: number }
+        recommended_f:    { type: number }
+        full_kelly_f:     { type: number }
+        fractional_f:     { type: number }
+        vol_scaled_f:     { type: number }
+        regime_gated_f:   { type: number }
+        sharpe_ratio:     { type: number }
+        suggested_stop:   { type: number }
+        suggested_tp:     { type: number }
+        var_95:           { type: number }
+        cvar_95:          { type: number }
+        notes:
           type: array
-          items: { type: number, exclusiveMinimum: 0 }
-          minItems: 81
-        window:
-          type: integer
-          minimum: 51
-          maximum: 5000
-          default: 500
-        kelly_fraction:
-          type: number
-          minimum: 0.1
-          maximum: 1.0
-          default: 0.5
-        target_vol:
-          type: number
-          exclusiveMinimum: 0
-          maximum: 1.0
-          default: 0.15
-        base_risk_limit:
-          type: number
-          exclusiveMinimum: 0
-          maximum: 0.5
-          default: 0.02
-        refit_every:
-          type: integer
-          minimum: 5
-          maximum: 500
-          default: 50
+          items: { type: string }
 
-    TickIngest:
+    BacktestResponse:
       type: object
-      required: [symbol, price]
       properties:
-        symbol: { type: string }
-        price:  { type: number, exclusiveMinimum: 0 }
-        ts:     { type: number, nullable: true, description: Unix timestamp }
+        symbol:                   { type: string }
+        n_bars:                   { type: integer }
+        n_trades:                 { type: integer }
+        n_wins:                   { type: integer }
+        n_losses:                 { type: integer }
+        win_rate:                 { type: number }
+        total_return:             { type: number }
+        annual_return:            { type: number }
+        buy_hold_return:          { type: number }
+        excess_return:            { type: number }
+        monthly_return_avg:       { type: number }
+        max_drawdown:             { type: number }
+        max_drawdown_duration:    { type: integer }
+        avg_drawdown:             { type: number }
+        var_95:                   { type: number }
+        cvar_95:                  { type: number }
+        annual_vol:               { type: number }
+        downside_vol:             { type: number }
+        sharpe_ratio:             { type: number }
+        sortino_ratio:            { type: number }
+        calmar_ratio:             { type: number }
+        information_ratio:        { type: number }
+        avg_win_pct:              { type: number }
+        avg_loss_pct:             { type: number }
+        avg_win_loss_ratio:       { type: number }
+        max_consecutive_wins:     { type: integer }
+        max_consecutive_losses:   { type: integer }
+        avg_hold_bars:            { type: number }
+        profit_factor:            { type: number }
+        regime_distribution:      { type: object }
+        trades_by_regime:         { type: object }
+        equity_curve:
+          type: array
+          items: { type: number }
+        drawdown_curve:
+          type: array
+          items: { type: number }
+        trade_log:
+          type: array
+          items: { type: object }
+
+    TDAResponse:
+      type: object
+      properties:
+        symbol:                      { type: string }
+        n_bars:                      { type: integer }
+        n_components:                { type: integer }
+        n_loops:                     { type: integer }
+        max_persistence_0d:          { type: number }
+        mean_persistence_0d:         { type: number }
+        max_persistence_1d:          { type: number }
+        mean_persistence_1d:         { type: number }
+        persistence_entropy_0d:      { type: number }
+        persistence_entropy_1d:      { type: number }
+        total_persistence_entropy:   { type: number }
+        anomaly_score:               { type: number }
+        regime_change_probability:   { type: number }
+        feature_vector:
+          type: array
+          items: { type: number }
+          description: 10-dim TDA feature vector for ML pipeline
+        feature_labels:
+          type: array
+          items: { type: string }
+        betti_0:
+          type: array
+          items: { type: integer }
+          description: Betti-0 numbers at each filtration step
+        betti_1:
+          type: array
+          items: { type: integer }
+          description: Betti-1 numbers at each filtration step
+
+    ObservationResponse:
+      type: object
+      properties:
+        symbol:
+          type: string
+        observation_vector:
+          type: array
+          items: { type: number }
+          minItems: 24
+          maxItems: 24
+          description: Full 24-feature observation vector
+        feature_labels:
+          type: array
+          items: { type: string }
+          minItems: 24
+          maxItems: 24
+        vol_probs:
+          type: array
+          items: { type: number }
+          minItems: 4
+          maxItems: 4
+          description: "4-state vol posteriors: [low, med_low, med_high, high]"
+        trend_probs:
+          type: array
+          items: { type: number }
+          minItems: 4
+          maxItems: 4
+          description: "4-state trend posteriors: [strong_bear, bear, bull, strong_bull]"
+        regime_label:     { type: string }
+        confidence:       { type: number, minimum: 0, maximum: 1 }
+        bar_index:        { type: integer }
+        is_markov_uniform: { type: boolean, description: True if Markov features (14-19) appear suspiciously uniform }
+        n_bars_fitted:    { type: integer }
+
+    SimulateResponse:
+      type: object
+      properties:
+        symbol:               { type: string }
+        horizon:              { type: integer }
+        n_paths:              { type: integer }
+        current_regime:       { type: string }
+        current_price:        { type: number }
+        price_p5:
+          type: array
+          items: { type: number }
+          description: Price percentile 5 at each forward step
+        price_p25:
+          type: array
+          items: { type: number }
+        price_median:
+          type: array
+          items: { type: number }
+        price_p75:
+          type: array
+          items: { type: number }
+        price_p95:
+          type: array
+          items: { type: number }
+        expected_risk_mult:
+          type: array
+          items: { type: number }
+          description: Expected risk multiplier per step
+        return_mean:           { type: number }
+        return_std:            { type: number }
+        return_var95:          { type: number }
+        return_cvar95:         { type: number }
+        terminal_regime_mode:  { type: string }
+        pct_paths_positive:    { type: number }
+        max_drawdown_mean:     { type: number }
+        step_dominant_regime:
+          type: array
+          items: { type: string }
+          description: Most likely regime at each forward step
+
+    PortfolioResponse:
+      type: object
+      properties:
+        n_symbols:               { type: integer }
+        symbols:
+          type: array
+          items: { $ref: '#/components/schemas/SymbolSummaryResponse' }
+        regime_counts:           { type: object, additionalProperties: { type: integer } }
+        dominant_regime:         { type: string }
+        regime_consensus:        { type: number }
+        avg_risk_multiplier:     { type: number }
+        avg_recommended_f:       { type: number }
+        avg_sharpe:              { type: number }
+        portfolio_var95:         { type: number }
+        portfolio_cvar95:        { type: number }
+        high_risk_count:         { type: integer }
+        concentration_flag:      { type: boolean }
+        regime_divergence_flag:  { type: boolean }
+        active_alerts:
+          type: array
+          items: { type: string }
+
+    SymbolSummaryResponse:
+      type: object
+      properties:
+        symbol:          { type: string }
+        regime_label:    { type: string }
+        vol_state:       { type: string }
+        trend_state:     { type: string }
+        confidence:      { type: number }
+        risk_multiplier: { type: number }
+        recommended_f:   { type: number }
+        var_95:          { type: number }
+        cvar_95:         { type: number }
+        sharpe_ratio:    { type: number }
+        last_price:      { type: number, nullable: true }
+        n_bars:          { type: integer }
+        ready:           { type: boolean }
+
+    FeedStatusResponse:
+      type: object
+      properties:
+        running:    { type: boolean }
+        adapters:
+          type: array
+          items: { type: object }
+        total_bars:
+          type: object
+          additionalProperties: { type: integer }
+
+    GpuCapabilitiesResponse:
+      type: object
+      properties:
+        hmm_backend:          { type: string }
+        active_device:        { type: string, enum: [cuda, mps, cpu] }
+        pomegranate_installed: { type: boolean }
+        cuda_available:       { type: boolean }
+        mps_available:        { type: boolean }
+
+    BenchmarkResult:
+      type: object
+      properties:
+        backend:               { type: string }
+        device:                { type: string }
+        n_bars:                { type: integer }
+        n_iterations:          { type: integer }
+        mean_fit_ms:           { type: number }
+        mean_predict_ms:       { type: number }
+        regime_label:          { type: string }
+        pomegranate_available: { type: boolean }
+        cuda_available:        { type: boolean }
+        mps_available:         { type: boolean }
 
     # ── Streaming responses ─────────────────────────────────────────────────
 
@@ -650,10 +2434,10 @@ components:
           minItems: 4
           maxItems: 4
           description: "4-state trend posteriors: [strong_bear, bear, bull, strong_bull]"
-        regime_label:   { type: string }
-        confidence:     { type: number, minimum: 0, maximum: 1 }
-        bar_index:      { type: integer }
-        markov_uniform: { type: boolean, description: "true if Markov features appear uniform (bug indicator)" }
+        regime_label:     { type: string }
+        confidence:       { type: number, minimum: 0, maximum: 1 }
+        bar_index:        { type: integer }
+        is_markov_uniform: { type: boolean, description: true if Markov features appear uniform (bug indicator) }
 
     FeatureIndex:
       type: object

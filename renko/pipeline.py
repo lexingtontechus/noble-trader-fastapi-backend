@@ -32,6 +32,16 @@ from renko.executor import AlpacaExecutor, OrderResult
 from renko.trade_journal import TradeJournal, TradeRecord
 from renko.config import RenkoConfig
 
+import hashlib
+import numpy as np
+from regime_platform.services.execution.market_impact import compute_market_impact
+from regime_platform.services.execution.fill_probability import compute_fill_probability
+from regime_platform.services.execution.borrow_financing import compute_total_financing_costs
+from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio
+from regime_platform.services.statistics.bootstrap_ci import compute_all_bootstrap_cis
+from regime_platform.services.statistics.multiple_testing import apply_all_corrections
+from regime_platform.services.statistics.significance_tests import run_significance_tests
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,7 +145,10 @@ class RenkoPipeline:
                 time_stop_bricks=self.config.time_stop_bricks,
                 partial_exit_pct=self.config.partial_exit_pct,
                 partial_exit_bricks=self.config.partial_exit_bricks,
-            )
+                slippage_bps=self.config.slippage_bps,
+                oco_priority=self.config.oco_priority,
+            ),
+            slippage_bps=self.config.slippage_bps,
         )
         self.executor = AlpacaExecutor(
             api_key=self.config.api_key,
@@ -154,6 +167,8 @@ class RenkoPipeline:
         self._last_signal: Optional[PatternSignal] = None
         self._last_filtered: Optional[FilteredSignal] = None
         self._pending_signal: Optional[FilteredSignal] = None
+        self._pending_execution: Optional[dict] = None   # Signal info for router to execute
+        self._pending_close: Optional[dict] = None        # Close info for router to execute
         self._brick_velocity: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────
@@ -284,6 +299,41 @@ class RenkoPipeline:
             "filter_rejections": len(self.signal_filter.rejected_signals),
         }
 
+    def snapshot(self) -> dict:
+        """
+        Capture a serializable snapshot of the pipeline state for persistence.
+        Includes: config, brick history, classified history, signal history,
+        trade journal, regime, equity, and filter stats.
+        """
+        return {
+            "config": self.config.to_dict(),
+            "brick_count": self.brick_engine.brick_count,
+            "current_direction": self.brick_engine.current_direction.value if self.brick_engine.current_direction else None,
+            "current_price": self.brick_engine.last_brick.close_price if self.brick_engine.last_brick else None,
+            "regime": self._current_regime,
+            "equity": self._current_equity,
+            "brick_velocity": self._brick_velocity,
+            "session_stats": self.signal_filter.session_stats,
+            "journal_stats": self.journal.get_stats(),
+            "snapshot_ts": time.time(),
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict) -> 'RenkoPipeline':
+        """
+        Restore a pipeline from a persisted snapshot.
+        Note: Full brick/trade history is NOT restored (only stats).
+        The pipeline will need re-warmup for full brick history,
+        but session stats and regime state are preserved.
+        """
+        config_data = data.get("config", {})
+        config = RenkoConfig(**{k: v for k, v in config_data.items() if k in RenkoConfig.__dataclass_fields__})
+        pipeline = cls(config)
+        pipeline._current_regime = data.get("regime")
+        pipeline._current_equity = data.get("equity", 100000.0)
+        pipeline._brick_velocity = data.get("brick_velocity", 0.0)
+        return pipeline
+
     def reset(self) -> None:
         """Reset all pipeline components."""
         self.brick_engine.reset()
@@ -298,6 +348,8 @@ class RenkoPipeline:
         self._last_signal = None
         self._last_filtered = None
         self._pending_signal = None
+        self._pending_execution = None
+        self._pending_close = None
         self._brick_velocity = 0.0
 
     # ── Backtest ──────────────────────────────────────────────────
@@ -327,6 +379,9 @@ class RenkoPipeline:
         self.reset()
         all_results = []
 
+        # Enable warmup mode for backtest (bypasses session/cooldown filters)
+        self.signal_filter.set_warmup_mode(True)
+
         for i, price in enumerate(prices):
             ts = timestamps[i] if timestamps else float(i)
             if regimes and i < len(regimes):
@@ -334,6 +389,9 @@ class RenkoPipeline:
 
             tick_result = self.process_tick(price, ts)
             all_results.append(tick_result)
+
+        # Disable warmup mode after backtest
+        self.signal_filter.set_warmup_mode(False)
 
         stats = self.get_stats()
         total_bricks = self.brick_engine.brick_count
@@ -344,6 +402,114 @@ class RenkoPipeline:
             "total_ticks": len(prices),
             "trades": [t.to_dict() for t in self.journal.trades],
         }
+
+    def backtest_with_analytics(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        n_trials: int = 1,
+        confidence_level: float = 0.95,
+    ) -> Dict:
+        """
+        Run a full backtest with statistical rigor and execution modeling analytics.
+        
+        Extends the basic backtest with:
+          - Data hash for reproducibility (Phase 5)
+          - Bootstrap confidence intervals (Phase 6)
+          - Deflated Sharpe Ratio (Phase 6)
+          - Full cost breakdown (Phase 2 + 7)
+        """
+        result = self.backtest(prices, timestamps, regimes)
+        
+        # Data hash (Phase 5 — data lineage)
+        price_bytes = ",".join(f"{p:.6f}" for p in prices).encode()
+        data_hash = hashlib.sha256(price_bytes).hexdigest()[:16]
+        result["data_hash"] = data_hash
+        
+        # Get journal stats (now includes cost summary, fill stats, dollar stats)
+        stats = self.journal.get_stats()
+        result["stats"]["journal"] = stats
+        
+        # Bootstrap confidence intervals (Phase 6)
+        if len(self.journal.trades) >= 5:
+            trade_pnls = np.array([t.pnl_bricks for t in self.journal.trades])
+            bootstrap = compute_all_bootstrap_cis(trade_pnls, confidence_level)
+            result["bootstrap_ci"] = bootstrap
+        else:
+            result["bootstrap_ci"] = {"error": "Insufficient trades for bootstrap CI"}
+        
+        # Deflated Sharpe Ratio (Phase 6)
+        sharpe = stats.get("sharpe_estimate", 0.0)
+        if n_trials > 1 and sharpe > 0:
+            trade_pnls = np.array([t.pnl_bricks for t in self.journal.trades])
+            dsr = deflated_sharpe_ratio(
+                observed_sharpe=sharpe,
+                n_trials=n_trials,
+                sample_length=len(self.journal.trades),
+                returns=trade_pnls,
+            )
+            result["deflated_sharpe"] = dsr
+        else:
+            result["deflated_sharpe"] = {"dsr": 1.0, "n_trials": 1, "interpretation": "Single trial — no multiple testing adjustment needed"}
+        
+        return result
+
+    def backtest_chunked(
+        self,
+        prices: List[float],
+        timestamps: Optional[List[float]] = None,
+        regimes: Optional[List[str]] = None,
+        chunk_size: int = 150,
+    ):
+        """
+        Generator that yields intermediate results every chunk_size ticks.
+        Used for SSE streaming (Phase 1).
+        """
+        self.reset()
+        total_ticks = len(prices)
+
+        # Enable warmup mode for chunked backtest (bypasses session/cooldown filters)
+        self.signal_filter.set_warmup_mode(True)
+
+        for i, price in enumerate(prices):
+            ts = timestamps[i] if timestamps else float(i)
+            if regimes and i < len(regimes):
+                self.set_regime(regimes[i])
+            
+            self.process_tick(price, ts)
+            
+            # Yield intermediate results every chunk_size ticks
+            if (i + 1) % chunk_size == 0 or i == total_ticks - 1:
+                chunk_num = (i + 1) // chunk_size + (1 if (i + 1) % chunk_size > 0 else 0)
+                total_chunks = max((total_ticks + chunk_size - 1) // chunk_size, 1)
+                
+                yield {
+                    "type": "progress" if i < total_ticks - 1 else "complete",
+                    "chunk": chunk_num,
+                    "total_chunks": total_chunks,
+                    "ticks_processed": i + 1,
+                    "total_ticks": total_ticks,
+                    "trades_so_far": [t.to_dict() for t in list(self.journal.trades)[-10:]],
+                    "stats_so_far": self.journal.get_stats(),
+                }
+
+        # Disable warmup mode after chunked backtest
+        self.signal_filter.set_warmup_mode(False)
+
+    # ── Pending Execution Interface (called by router) ─────────────
+
+    def consume_pending_execution(self) -> Optional[dict]:
+        """Get and clear the pending execution payload. Called by router after process_tick()."""
+        pending = self._pending_execution
+        self._pending_execution = None
+        return pending
+
+    def consume_pending_close(self) -> Optional[dict]:
+        """Get and clear the pending close payload. Called by router after process_tick()."""
+        pending = self._pending_close
+        self._pending_close = None
+        return pending
 
     # ── Internal ──────────────────────────────────────────────────
 
@@ -358,8 +524,14 @@ class RenkoPipeline:
                 entry_brick_idx=brick.index,
                 qty=1.0,  # Will be refined by executor
             )
-            # In live mode, also submit the order
-            # (async — would need to be scheduled differently in production)
+            # Store pending execution info for the router to pick up
+            self._pending_execution = {
+                "filtered": filtered,
+                "brick_size": self.config.get_brick_size(),
+                "sl_bricks": self.config.sl_bricks,
+                "tp_bricks": self.config.tp_bricks,
+                "symbol": self.config.symbol,
+            }
             logger.info(
                 f"Position opened: {filtered.original_signal.direction.value} "
                 f"at {filtered.original_signal.price:.2f}"
@@ -368,7 +540,7 @@ class RenkoPipeline:
             logger.warning(f"Cannot open position: {e}")
 
     def _handle_trade_close(self, result: TradeResult) -> None:
-        """Handle a closed trade — update journal and filter stats."""
+        """Handle a closed trade — update journal with full cost modeling."""
         self.signal_filter.record_trade_result(result.pnl_bricks)
 
         # Create journal record if we have filtered signal context
@@ -379,7 +551,89 @@ class RenkoPipeline:
                 result=result,
                 regime=self._current_regime,
             )
+            
+            # ── Phase 2: Transaction cost modeling ──
+            entry_value = record.entry_price  # per share
+            exit_value = record.exit_price
+            
+            # Commission: commission_bps of notional
+            notional = entry_value * record.qty
+            record.commission = notional * self.config.commission_bps / 10000
+            
+            # Slippage cost: difference between ideal and actual fill
+            if record.direction.value == "LONG":
+                ideal_entry = entry_value / (1 + self.config.slippage_bps / 10000)
+                ideal_exit = exit_value / (1 - self.config.slippage_bps / 20000)  # TP limit
+                if "SL" in record.status.value:
+                    ideal_exit = exit_value / (1 + self.config.slippage_bps / 10000)  # SL market
+            else:
+                ideal_entry = entry_value / (1 - self.config.slippage_bps / 10000)
+                ideal_exit = exit_value / (1 + self.config.slippage_bps / 20000)
+                if "SL" in record.status.value:
+                    ideal_exit = exit_value / (1 - self.config.slippage_bps / 10000)
+            record.slippage_cost = abs(exit_value - ideal_exit) * record.qty + abs(entry_value - ideal_entry) * record.qty
+            
+            # Spread cost: half-spread on entry and exit
+            record.spread_cost = notional * self.config.spread_bps / 10000 / 2 + exit_value * record.qty * self.config.spread_bps / 10000 / 2
+            
+            # Total basic cost
+            record.total_cost = record.commission + record.slippage_cost + record.spread_cost
+            
+            # ── Phase 7: Market impact ──
+            if self.config.market_impact_mode == "almgren_chriss":
+                impact = compute_market_impact(
+                    order_shares=record.qty,
+                    adv_shares=self.config.adv_shares,
+                    sigma_daily=0.02,  # Default; should come from data
+                    avg_price=record.entry_price,
+                )
+                record.impact_cost = impact["impact_cost_dollars"]
+            
+            # ── Phase 7: Borrow & financing costs ──
+            if record.direction.value == "SHORT" or self.config.margin_rate_bps > 0:
+                holding_days = max(record.bricks_held / 252, 1/252)  # Approximate
+                position_notional = entry_value * record.qty
+                
+                financing = compute_total_financing_costs(
+                    position_notional=position_notional,
+                    holding_days=holding_days,
+                    direction="short" if record.direction.value == "SHORT" else "long",
+                    is_hard_to_borrow=self.config.is_hard_to_borrow,
+                    borrow_rate_bps=self.config.borrow_rate_bps,
+                    margin_rate_bps=self.config.margin_rate_bps,
+                    dividend_yield_bps=self.config.dividend_yield_bps,
+                )
+                record.borrow_cost = financing["components"].get("borrow", {}).get("total_borrow_cost", 0.0)
+                record.margin_cost = financing["components"].get("margin", {}).get("total_margin_cost", 0.0)
+                record.dividend_cost = financing["components"].get("dividend", {}).get("total_dividend_cost", 0.0)
+                record.total_financing_cost = financing["total_financing_cost"]
+            
+            # ── Phase 7: Fill probability ──
+            if self.config.fill_probability_mode == "realistic":
+                # Check if entry was a limit order (TP) or market order
+                fill_prob = compute_fill_probability(
+                    order_type="limit",
+                    distance_from_mid_pct=abs(record.entry_price - (record.entry_price)) * 0.01,
+                    volatility_daily=0.02,
+                )
+                record.fill_probability = fill_prob["fill_probability"]
+                
+                # Probabilistic missed fill (for TP limit orders)
+                import random
+                if random.random() > record.fill_probability:
+                    record.missed_fill = True
+            
+            # Adjust P&L for costs
+            total_costs = record.total_cost + record.impact_cost + record.total_financing_cost
+            record.pnl_dollars = record.pnl_dollars - total_costs
+            
             self.journal.record(record)
+
+        # Store pending close info for the router to pick up
+        self._pending_close = {
+            "symbol": self.config.symbol,
+            "trade_result": result,
+        }
 
         if self._on_trade:
             self._on_trade(result)

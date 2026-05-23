@@ -9,6 +9,7 @@ import numpy as np
 router = APIRouter(prefix="/regime", tags=["Regime Detection"])
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post("/detect", response_model=RegimeResponse, summary="Detect market regime from price series")
 async def detect_regime(req: RegimeRequest, user: TokenData = Depends(get_authed_user)):
     """
@@ -33,9 +34,10 @@ async def detect_regime(req: RegimeRequest, user: TokenData = Depends(get_authed
             n_bars_fitted=snap.n_bars_fitted,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "regime detection")
 
 
+@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/detect-v2",
     response_model=RegimeV2Response,
@@ -142,4 +144,4 @@ async def detect_regime_v2(req: RegimeV2Request, user: TokenData = Depends(get_a
             regime_stability=stability,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "regime detection v2")

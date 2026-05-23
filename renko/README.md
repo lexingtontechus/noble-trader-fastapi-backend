@@ -22,7 +22,7 @@ Supporting modules:
 - `pipeline.py` — Orchestrates the full pipeline flow
 - `trade_journal.py` — Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
 - `config.py` — `RenkoConfig` dataclass with 30+ tunable parameters
-- `router.py` — 14 FastAPI REST endpoints
+- `router.py` — 22 FastAPI REST endpoints
 - `integration.py` — Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
 - `backtest.py` / `tests.py` — Backtesting and unit tests
 
@@ -30,22 +30,164 @@ Supporting modules:
 
 All endpoints are mounted under `/renko/` on the FastAPI backend.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/renko/tick` | Process single tick through pipeline |
-| `POST` | `/renko/tick/batch` | Batch tick processing (warm-up/backtest) |
-| `GET` | `/renko/state` | Current pipeline state snapshot |
-| `GET` | `/renko/stats` | Comprehensive statistics |
-| `GET` | `/renko/bricks` | Recent Renko bricks (last N) |
-| `GET` | `/renko/classified` | Bricks with swing labels |
-| `GET` | `/renko/signals` | Pattern signals |
-| `GET` | `/renko/trades` | Trade journal entries |
-| `GET` | `/renko/swing-points` | Detected swing points |
-| `POST` | `/renko/regime` | Update HMM regime for gate filter |
-| `POST` | `/renko/equity` | Update account equity |
-| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) |
-| `POST` | `/renko/reset` | Reset pipeline for a symbol |
-| `GET` | `/renko/backtest/stats` | Backtest/trading statistics |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/renko/tick` | Process single tick through pipeline | Write |
+| `POST` | `/renko/tick/batch` | Batch tick processing (warm-up/backtest) | Write |
+| `GET` | `/renko/state` | Current pipeline state snapshot | Any |
+| `GET` | `/renko/stats` | Comprehensive statistics | Any |
+| `GET` | `/renko/bricks` | Recent Renko bricks (last N) | Any |
+| `GET` | `/renko/classified` | Bricks with swing labels | Any |
+| `GET` | `/renko/signals` | Pattern signals | Any |
+| `GET` | `/renko/trades` | Trade journal entries | Any |
+| `GET` | `/renko/swing-points` | Detected swing points | Any |
+| `POST` | `/renko/regime` | Update HMM regime for gate filter | Write |
+| `POST` | `/renko/equity` | Update account equity | Write |
+| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
+| `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
+| `GET` | `/renko/backtest/stats` | Backtest/trading statistics | Any |
+| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices | Write |
+| `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
+| `POST` | `/renko/backtest/compare` | Compare 2–10 Renko configs side-by-side | Any |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep (max 50 combos) | Write |
+| `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
+| `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
+| `GET` | `/renko/live/status` | Check live execution mode status | Any |
+| `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
+
+### Backtest Endpoints (Isolated — Never Affect Live Pipeline)
+
+These endpoints create standalone `RenkoPipeline` instances for each request. They never read from or write to the live pipeline registry, making them safe for experimentation and parameter tuning.
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/renko/backtest/run` | Run a full Renko pipeline backtest on historical prices | Any role |
+| `POST` | `/renko/backtest/compare` | Compare 2–10 Renko configs side-by-side on the same price data | Any role |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline optimisation (max 50 combos) | Any role |
+
+All three endpoints are rate-limited under `RATE_LIMIT_WRITE` and executed in thread pools via `asyncio.to_thread` to avoid blocking the event loop.
+
+#### POST /renko/backtest/run
+
+Run a complete backtest through the full 6-layer pipeline on historical prices. Accepts all `RenkoConfig` parameters plus the price series and optional timestamps/regimes/signal_confidence_min.
+
+**Request body (`RenkoBacktestRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `brick_size` | `float` | `0.50` | Brick size (>0) |
+| `brick_size_mode` | `string` | `"fixed"` | `"fixed"`, `"atr"`, or `"dynamic"` |
+| `reversal_bricks` | `int` | `2` | Reversal threshold (≥1) |
+| `bull_trigger_n` | `int` | `3` | Bull trigger (≥1) |
+| `bear_trigger_n` | `int` | `3` | Bear trigger (≥1) |
+| `sl_bricks` | `int` | `3` | Stop-loss bricks (≥1) |
+| `tp_bricks` | `int` | `5` | Take-profit bricks (≥1) |
+| `trailing_stop` | `bool` | `true` | Trailing stop enabled |
+| `trail_after_bricks` | `int` | `3` | Trail after N bricks profit |
+| `trail_distance_bricks` | `int` | `2` | Trail distance in bricks |
+| `max_trades_per_session` | `int` | `15` | Max trades per session |
+| `max_daily_loss_bricks` | `float` | `10.0` | Max daily loss in bricks |
+| `max_consecutive_losses` | `int` | `3` | Max consecutive losses |
+| `cooldown_seconds` | `float` | `30.0` | Min seconds between trades |
+| `regime_gate` | `bool` | `true` | HMM regime alignment gate |
+| `timestamps` | `list[float]` | `null` | Matching timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+| `signal_confidence_min` | `float` | `null` | Min confidence to trade (0–1) |
+
+**Response (`RenkoBacktestResponse`):**
+
+```json
+{
+  "symbol": "SPY",
+  "total_ticks": 5000,
+  "total_bricks": 342,
+  "config_used": { "brick_size": 0.50, "...": "..." },
+  "stats": {
+    "total_trades": 28,
+    "win_rate": 0.607,
+    "profit_factor": 2.35,
+    "total_pnl_bricks": 12.5,
+    "sharpe_estimate": 1.42,
+    "max_drawdown_bricks": 5.0,
+    "avg_pnl_bricks": 0.45,
+    "...": "per-pattern, per-regime, Kelly inputs"
+  },
+  "trades": ["...full trade records..."]
+}
+```
+
+#### POST /renko/backtest/compare
+
+Run multiple labelled configs on the same price data and compare results. Returns a diff summary of key metrics (first config vs best by Sharpe estimate).
+
+**Request body (`RenkoBacktestCompareRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `configs` | `list[RenkoCompareConfig]` | *required* | 2–10 labelled configs |
+| `timestamps` | `list[float]` | `null` | Matching timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+
+Each `RenkoCompareConfig` has a required `label` field plus standard pipeline params (brick_size, sl_bricks, tp_bricks, trailing_stop, trail_after_bricks, trail_distance_bricks, bull_trigger_n, bear_trigger_n, regime_gate, max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses).
+
+**Response (`RenkoBacktestCompareResponse`):**
+
+```json
+{
+  "comparisons": ["...RenkoBacktestResponse per config..."],
+  "diff": {
+    "total_trades": { "first": 28, "best": 28, "delta": 0 },
+    "win_rate": { "first": 0.65, "best": 0.65, "delta": 0.0 },
+    "profit_factor": { "first": 2.85, "best": 2.85, "delta": 0.0 },
+    "total_pnl_bricks": { "first": 14.5, "best": 14.5, "delta": 0.0 },
+    "avg_pnl_bricks": { "first": 0.52, "best": 0.52, "delta": 0.0 },
+    "max_drawdown_bricks": { "first": 4.0, "best": 4.0, "delta": 0.0 },
+    "sharpe_estimate": { "first": 1.52, "best": 1.52, "delta": 0.0 }
+  }
+}
+```
+
+#### POST /renko/backtest/optimize
+
+Grid-search parameter sweep across a `param_grid` of parameter names → value lists. Each combination runs a full isolated backtest. Max 50 combinations per request.
+
+**Request body (`RenkoBacktestOptimizeRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
+| `symbol` | `string` | `"SPY"` | Trading symbol |
+| `param_grid` | `dict[str, list]` | *required* | Map of parameter → values to sweep. Keys: `brick_size`, `sl_bricks`, `tp_bricks`, `bull_trigger_n`, `bear_trigger_n`, `trailing_stop`, `trail_after_bricks`, `trail_distance_bricks`, `regime_gate`, `max_trades_per_session`, `max_daily_loss_bricks`, `max_consecutive_losses` |
+| `brick_size` | `float` | `0.50` | Fixed default brick size |
+| `...` | `...` | `...` | All other `RenkoConfig` params as fixed defaults |
+| `timestamps` | `list[float]` | `null` | Matching timestamps |
+| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
+
+**Response (`RenkoBacktestOptimizeResponse`):**
+
+```json
+{
+  "results": [
+    {
+      "params": { "brick_size": 0.25, "sl_bricks": 2, "tp_bricks": 4 },
+      "total_pnl_bricks": 8.5,
+      "win_rate": 0.55,
+      "sharpe_estimate": 1.15,
+      "profit_factor": 1.85,
+      "max_drawdown_bricks": 6.0,
+      "total_trades": 42
+    }
+  ],
+  "best_by_sharpe": { "...best combo by Sharpe..." },
+  "best_by_return": { "...best combo by total PnL..." },
+  "n_combinations": 18
+}
+```
 
 The backend maintains an in-memory pipeline registry: one `RenkoPipeline` instance per symbol. Pipelines are created on first request and persist for the lifetime of the server process.
 

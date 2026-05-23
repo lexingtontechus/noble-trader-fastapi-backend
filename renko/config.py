@@ -69,6 +69,10 @@ class RenkoConfig:
     partial_exit_pct: float = 0.0      # 0 = no partial exit; 0.5 = close half at TP/2
     partial_exit_bricks: int = 3       # Bricks of profit for partial exit
 
+    # ── Execution Control ──────────────────────────────────────────
+    dry_run: bool = True               # Default True — never execute real orders without explicit opt-in
+    live_enabled: bool = False         # Master switch: must be True for any real order submission
+
     # ── Executor ──────────────────────────────────────────────────
     order_type: OrderType = OrderType.MARKET
     use_bracket_orders: bool = True    # Alpaca native bracket orders
@@ -82,6 +86,24 @@ class RenkoConfig:
     max_position_pct: float = 0.10     # Max 10 % of equity per trade
     min_position_usd: float = 50.0     # Minimum order value
     default_win_rate: float = 0.55     # Fallback WR for Kelly when no history
+
+    # ── Transaction Cost Modeling (Phase 2) ────────────────────────
+    slippage_bps: float = 2.0            # Slippage in basis points
+    commission_bps: float = 5.0          # Commission in basis points
+    spread_bps: float = 1.0             # Bid-ask spread in basis points (half-spread each side)
+
+    # ── Execution Realism (Phase 3) ────────────────────────────────
+    oco_priority: str = "sl_first"       # When SL+TP both trigger: "sl_first" (conservative) or "tp_first"
+
+    # ── Execution Modeling (Phase 7) ───────────────────────────────
+    market_impact_mode: str = "none"     # "none" (backward-compatible) or "almgren_chriss"
+    adv_shares: float = 10_000_000       # Average daily volume in shares
+    fill_probability_mode: str = "always_fill"  # "always_fill" or "realistic"
+    borrow_rate_bps: float = 50.0        # Annualized short borrow cost
+    margin_rate_bps: float = 150.0       # Annualized margin rate for leveraged longs
+    is_hard_to_borrow: bool = False      # Whether stock is hard-to-borrow
+    dividend_yield_bps: float = 200.0    # Annualized dividend yield
+    initial_capital: float = 100_000.0   # Starting capital for dollar P&L
 
     # ── Pipeline ──────────────────────────────────────────────────
     symbol: str = "SPY"

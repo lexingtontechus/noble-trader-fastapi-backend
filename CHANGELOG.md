@@ -1,3 +1,138 @@
+## [3.4.0] — 2026-05-21
+
+### Fixed — Auth Hardening (All 57 Endpoints Now Protected)
+
+#### Critical: SSE Endpoints Had No Authentication
+- `GET /sse/{symbol}` — was completely unauthenticated; now requires `get_authed_user`
+- `GET /sse/alerts` — was completely unauthenticated; now requires `get_authed_user`
+- These endpoints exposed real-time regime data, risk metrics, and position info to anyone
+
+#### Renko Write Operations Upgraded from Viewer to Trader/Admin
+- `POST /renko/tick` — `get_authed_user` → `require_write` (viewers can no longer inject ticks)
+- `POST /renko/tick/batch` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/run` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/run/stream` — `get_authed_user` → `require_write`
+- `POST /renko/backtest/optimize` — `get_authed_user` → `require_write`
+
+#### `regime_platform/routers/stream_ws.py` — Updated
+- Added `Depends` import and `get_authed_user`, `TokenData` imports from `jwt_auth`
+- Both SSE endpoints now accept `user: TokenData = Depends(get_authed_user)`
+
+#### `renko/router.py` — Updated
+- All mutation endpoints upgraded to `require_write` dependency
+- Updated docstring to reflect new auth levels
+
+### Added — Clerk JWT Template System + Backend Enrichment
+
+#### `regime_platform/auth/clerk_auth.py` — Updated
+- New `_enrich_from_clerk_api(sub)` function: calls `GET /v1/users/{sub}` when JWT claims are null
+- Extracts email, first_name, last_name, username from Clerk user profile
+- Reads role from `private_metadata.role` (matching frontend convention)
+- Results cached 5 minutes per user to limit Clerk API calls
+- Integrated into `verify_clerk_token()`: when email/name/username are all null, enrichment triggers automatically
+- This ensures `/auth/clerk/me` and `/auth/clerk/verify` always return complete user info
+
+#### Frontend JWT Resolution
+- `getClerkJWT()` in `fastapi-auth.js` now tries `"server"` JWT template first
+- Falls back to default JWT if template not configured
+- Updated all 7 `getClerkJWT()` locations across the codebase
+- Template adds email, first_name, last_name, username, role claims to the JWT
+
+### Changed
+- Auth level summary: 4 public (by design), 27 any-role, 22 write (admin/trader), 4 admin-only
+- All docs updated: API.md (v5.5.0), openapi.yaml (v5.5.0), CHANGELOG.md
+
+---
+
+## [3.3.0] — 2026-05-19
+
+### Added — SSE Streaming for Progressive/Chunked Backtest Loading
+
+#### `renko/pipeline.py` — Updated
+- `backtest_chunked()` — new generator method that yields intermediate results after every N ticks
+- Yields `progress` events with: chunk number, total chunks, percent complete, trades so far, running stats, bricks/ticks processed
+- Final `complete` event matches the shape of `backtest()` return value for seamless compatibility
+- Configurable `chunk_size` parameter (default 150 ticks)
+- Supports `timestamps` and `regimes` parameters like the regular `backtest()`
+
+#### `renko/router.py` — Updated
+- `POST /renko/backtest/run/stream` — new SSE endpoint with `StreamingResponse`
+- Streams `progress` → `progress` → ... → `complete` events as `data: {...}\n\n` SSE format
+- `error` event type for pipeline failures
+- Redis cache check on entry — if cache HIT, emits single `complete` event immediately
+- Final complete result is cached in Redis (1h TTL) for subsequent non-streaming requests
+- Rate-limited under `RATE_LIMIT_WRITE`
+- Requires authentication via `get_authed_user`
+
+#### `tests/test_renko_backtest.py` — Updated
+- `TestRenkoBacktestChunked` — 6-test suite covering:
+  - Progress events are yielded with correct count (>= 2 progress + 1 complete)
+  - Each progress event has required keys (chunk, total_chunks, percent, trades_so_far, stats_so_far, etc.)
+  - Percent increases monotonically across progress events
+  - Complete event matches regular `backtest()` result (same total_ticks, total_bricks, trades count)
+  - Last progress event has percent = 100
+  - Chunked backtest accepts regime labels
+
+### Changed
+- Total backend test count: 25 Renko backtest tests (19 existing + 6 new chunked)
+
+---
+
+## [3.2.0] — 2026-05-19
+
+### Added — Walk-Forward Backtest Engine + Persistence + Optimization
+
+#### `core/backtester.py` — NEW FILE
+- 503-line walk-forward HMM backtest engine
+- Rolling HMM fit on trailing window with configurable refit interval
+- Strategy signal generation based on detected regime
+- Regime-gated Kelly position sizing
+- Risk check gates (VaR, max drawdown)
+- Trade execution with configurable commission and slippage
+- 30+ performance metrics: win rate, Sharpe, Sortino, Calmar, profit factor,
+  max drawdown, VaR/CVaR, avg hold bars, regime distribution, trades by regime
+- Equity curve, drawdown curve, and full trade log output
+- Optional date labels in trade log (pass `dates` array)
+
+#### `services/backtest_store.py` — NEW FILE
+- Supabase persistence layer for backtest results
+- `save_backtest_result()` — persist to `ta_backtest_result` table (user-scoped)
+- `get_backtest_history()` — paginated history with summary metrics only
+- `get_backtest_detail()` — full result by ID (user-scoped)
+- `delete_backtest()` — delete by ID (user-scoped)
+- Graceful degradation when Supabase is not configured
+
+#### `routers/backtest.py` — NEW FILE
+- `POST /backtest/run` — run walk-forward backtest (rate-limited, Clerk/JWT auth)
+- `GET /backtest/history` — paginated list of saved results
+- `GET /backtest/{id}` — full result by ID
+- `POST /backtest/compare` — side-by-side comparison with diff summary
+- `POST /backtest/optimize` — parameter grid sweep (max 50 combos)
+- `POST /backtest/export` — CSV/JSON export with section selection
+- `DELETE /backtest/{id}` — delete saved result
+
+#### `models/schemas.py` — Updated
+- `BacktestRequest` — extended with `dates` and `save` fields
+- `BacktestResponse` — full response with 30+ metric fields
+- `BacktestSummary` — lightweight summary for list views
+- `BacktestHistoryResponse` — paginated summary list
+- `BacktestCompareRequest` / `BacktestCompareResponse` — comparison + diff
+- `BacktestOptimizeRequest` / `BacktestOptimizeResponse` — grid sweep
+- `BacktestExportRequest` — export format + section selection
+
+#### `supabase/migrations/00000000000007_backtest_results.sql` — NEW FILE
+- `ta_backtest_result` table with RLS policies (user-scoped access)
+- Summary columns + JSONB columns for heavy data (equity curve, trade log, etc.)
+
+### Fixed
+- `pnl_pct` was always returning 0.0 in backtest trade log — now correctly computed
+
+### Changed
+- All backtest endpoints require Clerk/JWT authentication
+- Rate-limited under `RATE_LIMIT_COMPUTE`
+
+---
+
 ## [3.1.0] — 2026-Q2
 
 ### Changed — Dynamic Masaniello + Kelly Unified Sizing Engine

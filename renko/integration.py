@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
+from regime_platform.core.circuit_breaker import circuit, CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class NobleTraderRenkoBridge:
 
         self.pipeline = RenkoPipeline(config)
         self._auth_token: Optional[str] = None
+        self._supabase_warning_logged: bool = False
 
     # ── Regime Integration ────────────────────────────────────────
 
@@ -63,8 +65,14 @@ class NobleTraderRenkoBridge:
         Calls ``/regime/detect`` with recent price data and returns
         the regime name for the Signal Filter's regime gate.
         """
+        cb = circuit("fastapi_regime", failure_threshold=5, reset_timeout=30.0)
+
         try:
             import httpx
+
+            if cb.is_open:
+                logger.warning(f"Circuit [fastapi_regime] OPEN — skipping regime fetch")
+                return None
 
             headers = await self._get_headers()
 
@@ -86,11 +94,15 @@ class NobleTraderRenkoBridge:
                     regime_name = data.get("regime_name", data.get("regime", None))
                     if regime_name:
                         self.pipeline.set_regime(regime_name)
+                    cb._on_success()
                     return regime_name
+                else:
+                    cb._on_failure(RuntimeError(f"HTTP {resp.status_code}"))
 
         except ImportError:
             logger.warning("httpx not installed — cannot fetch regime")
         except Exception as e:
+            cb._on_failure(e)
             logger.error(f"Regime fetch failed: {e}")
 
         return None
@@ -104,8 +116,14 @@ class NobleTraderRenkoBridge:
         Calls ``/size/kelly`` with win rate and risk/reward data
         derived from the trade journal.
         """
+        cb = circuit("fastapi_kelly", failure_threshold=5, reset_timeout=30.0)
+
         try:
             import httpx
+
+            if cb.is_open:
+                logger.warning(f"Circuit [fastapi_kelly] OPEN — skipping Kelly fetch")
+                return None
 
             headers = await self._get_headers()
             stats = self.pipeline.journal.get_stats(last_n=50)
@@ -125,11 +143,15 @@ class NobleTraderRenkoBridge:
                     headers=headers,
                 )
                 if resp.status_code == 200:
+                    cb._on_success()
                     return resp.json()
+                else:
+                    cb._on_failure(RuntimeError(f"HTTP {resp.status_code}"))
 
         except ImportError:
             logger.warning("httpx not installed — cannot fetch Kelly")
         except Exception as e:
+            cb._on_failure(e)
             logger.error(f"Kelly fetch failed: {e}")
 
         return None
@@ -142,6 +164,12 @@ class NobleTraderRenkoBridge:
         table for persistence and dashboard display.
         """
         if not self.supabase_url or not self.supabase_key:
+            if not self._supabase_warning_logged:
+                logger.warning(
+                    "Supabase not configured — trade data not persisted. "
+                    "Set SUPABASE_URL and SUPABASE_KEY env vars."
+                )
+                self._supabase_warning_logged = True
             return False
 
         try:
@@ -158,10 +186,22 @@ class NobleTraderRenkoBridge:
                         "Prefer": "return=minimal",
                     },
                 )
-                return resp.status_code in (200, 201)
+                if resp.status_code in (200, 201):
+                    return True
+                else:
+                    logger.error(
+                        "Supabase push failed: status=%s body=%s",
+                        resp.status_code,
+                        resp.text,
+                    )
+                    return False
 
         except Exception as e:
-            logger.error(f"Supabase push failed: {e}")
+            logger.error(
+                "Supabase push failed: %s — trade_data keys=%s",
+                e,
+                list(trade_data.keys()) if isinstance(trade_data, dict) else "N/A",
+            )
             return False
 
     # ── Strategy Evolution Integration ────────────────────────────

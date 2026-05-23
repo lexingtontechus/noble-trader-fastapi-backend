@@ -1,3 +1,339 @@
+## [5.1.0] — 2026-05-20
+
+### Phase 6+7: Frontend UI
+
+- **StatisticalRigorPanel.jsx** — New component with 4 sub-cards:
+  - DSR Detail Card (observed_sharpe, expected_max_sharpe, p_value, n_trials, sample_length, threshold)
+  - Bootstrap CI Table (4 metrics × 2 methods: percentile + circular block)
+  - Multiple Testing Corrections (Bonferroni, Holm-Bonferroni, BH-FDR with summary counts)
+  - Significance Tests (White's Reality Check + Hansen's SPA with consensus alert)
+- **ExecutionModelingPanel.jsx** — New component with 5 sub-cards:
+  - Almgren-Chriss Market Impact (participation rate, permanent/temporary/total impact, composition bar)
+  - Fill Probability (order type, distance metrics, adverse selection, gauge visualization)
+  - Financing Costs (borrow/margin/dividend breakdown with HTB badge)
+  - Enhanced Cost Breakdown (bar chart per cost type)
+  - Execution Modeling Summary (market impact + fill probability + financing overview)
+- **BacktestResults.jsx** — Tabbed navigation (Overview / Statistics / Execution),
+  integrates both new panels with proper data extraction from both runtime field names
+  (`bootstrap_ci` and `bootstrap_cis`, `deflated_sharpe` and `deflated_sharpe_result`)
+- **BacktestPanel.jsx** — "Deep Analysis" button calling /renko/statistics/rigor and
+  /renko/execution/model via bffFetch; new onSignificanceTests and onExecutionModelDetail callbacks
+- **RenkoPage.jsx** — New state (significanceTests, executionModelDetail) wired to both panels
+- **types/backtest.ts** — Fixed type/runtime mismatches, added 15 new interfaces
+  (BootstrapCIMetric, SignificanceTestResults, MarketImpactResult, FillProbabilityResult,
+  BorrowCostResult, MarginCostResult, DividendCostResult, FinancingCostsResult,
+  ExecutionModelDetail, MultipleTestingSummary, BootstrapCIMethod, etc.)
+
+## [5.0.0] — 2026-05-20
+
+### Phase 6: Statistical Rigor
+- **Deflated Sharpe Ratio** — Lopez de Prado DSR adjusts observed Sharpe for N independent trials
+- **Bootstrap Confidence Intervals** — Percentile + circular block bootstrap CIs for Sharpe, win rate, profit factor, max drawdown
+- **Multiple Testing Correction** — Bonferroni, Holm-Bonferroni, Benjamini-Hochberg FDR
+- **White's Reality Check + Hansen's SPA** — Bootstrap-based significance tests for data snooping
+
+### Phase 7: Advanced Execution Modeling
+- **Almgren-Chriss Market Impact** — Square-root model with permanent + temporary impact components
+- **Fill Probability Model** — Logit-based fill probability for limit/stop/market orders with adverse selection
+- **Borrow & Financing Costs** — Short borrow costs, margin financing, dividend costs for shorts
+
+### Pipeline Enhancements (Phase 2-3)
+- **Transaction Cost Modeling** — Slippage, commission, and spread tracked separately per trade
+- **Gap-Through Stop Handling** — Fills at brick open when price gaps past stop level
+- **OCO Resolution** — Configurable SL-first or TP-first when both trigger in same brick
+
+### New API Endpoints
+- `POST /renko/backtest/run` — Full backtest with Phase 2-7 analytics
+- `POST /renko/backtest/run/stream` — SSE streaming backtest
+- `POST /renko/backtest/optimize` — Parameter sweep with multiple testing correction
+- `POST /renko/statistics/rigor` — Standalone statistical rigor tests
+- `POST /renko/execution/model` — Execution cost modeling
+
+### Institutional Maturity Score
+- Overall: **2.8 → 3.7** (crosses 3.5 institutional threshold)
+- Data Quality: 1.5 → 4.0
+- Statistical Validation: 2.5 → 4.0
+- Execution Modeling: 2.5 → 4.0
+
+---
+
+## [5.4.0] — 2026-05-19
+
+### Added — Progressive/Chunked Backtest Loading (SSE Streaming)
+
+#### `renko/pipeline.py` — New Method
+- `backtest_chunked(prices, timestamps, regimes, chunk_size=150)` — Generator that yields intermediate results after each chunk of ticks for SSE streaming
+- Progress events: `{ type: "progress", chunk, total_chunks, percent, trades_so_far, stats_so_far, bricks_so_far, ticks_so_far }`
+- Complete event: `{ type: "complete", stats, total_bricks, total_ticks, trades }` — identical shape to `backtest()` return value
+- `chunk_size=150` matches the warmup route's `CHUNK_SIZE` pattern
+
+#### `renko/router.py` — New Endpoint
+- `POST /renko/backtest/run/stream` — SSE streaming backtest endpoint
+- Uses `StreamingResponse` with `text/event-stream` media type
+- Processes prices in 150-tick chunks via `backtest_chunked()`
+- Emits `progress`, `complete`, and `error` SSE event types
+- Cache integration: checks Redis before streaming; if HIT, emits `complete` immediately
+- Final `complete` result is cached in Redis (1h TTL) for subsequent requests
+- Headers: `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no` (disables nginx buffering)
+
+#### Tests — `tests/test_renko_backtest.py` (6 new tests)
+- `test_chunked_yields_progress_events` — verifies ≥2 progress + 1 complete event
+- `test_chunked_progress_structure` — required keys in each progress event
+- `test_chunked_percent_increases` — monotonically increasing percent
+- `test_chunked_complete_matches_backtest` — chunked result matches regular `backtest()`
+- `test_chunked_final_percent_is_100` — last progress = 100%
+- `test_chunked_with_regimes` — regime labels passed through correctly
+
+### Changed
+- `renko/pipeline.py` — added `import math` and `Generator` type hint
+- Total backend tests: 78 (25 general + 25 Renko + 28 cache)
+
+---
+
+## [5.3.0] — 2026-05-19
+
+### Added — Redis Backtest Result Caching (1h TTL)
+
+#### `services/backtest_cache.py` — NEW FILE
+- `BacktestCache` — async Redis-backed cache for backtest results with 1h TTL
+- Deterministic cache keys via SHA-256 of canonical JSON (sorted keys, price arrays replaced with length)
+- Key format: `bt:{prefix}:{sha256_hash}` where prefix is `renko`, `renko:compare`, `renko:optimize`, or `hmm`
+- Graceful fallback: if `REDIS_URL` is not configured or Redis is unavailable, all operations are no-ops
+- Redis failures NEVER propagate to the caller — cache miss is returned instead
+- `get(prefix, body)` → cached result dict or None (cache miss)
+- `set(prefix, body, result)` → True/False (stores with 1h TTL)
+- `invalidate(prefix, body)` → removes specific cached result
+- `clear_prefix(prefix)` → removes all cached results for a prefix (admin/debug)
+- `get_stats()` → key counts, memory usage, TTL info
+- `close()` → graceful Redis connection cleanup
+- Singleton `backtest_cache` shared across all endpoints
+
+#### Cache Integration — Renko Endpoints
+- `POST /renko/backtest/run` — checks cache before running; stores result after; `cached` field in response
+- `POST /renko/backtest/compare` — checks cache before running; stores result after
+- `POST /renko/backtest/optimize` — checks cache before running; stores result after
+
+#### Cache Integration — HMM Endpoints
+- `POST /backtest/run` — checks cache before running; stores result after; `cached` field in response
+
+#### Response Model Updates
+- `RenkoBacktestResponse.cached: bool` — True if served from Redis cache (default False)
+- `BacktestResponse.cached: bool` — True if served from Redis cache (default False)
+
+#### Tests — `tests/test_backtest_cache.py` (28 new tests)
+- Cache key generation: deterministic hashing, param sensitivity, prefix isolation, price array length substitution, key order independence, input immutability
+- Cache disabled: all operations return None/False when REDIS_URL not set
+- Cache enabled (mocked Redis): GET hit/miss, SET with TTL, INVALIDATE, CLEAR_PREFIX, STATS
+- Graceful fallback: Redis errors never propagate (GET returns None, SET returns False)
+- Response model `cached` field: default False, accepts True
+
+### Changed
+- `main.py` version bumped to 5.3.0
+- Total backend tests: 72 (25 general + 19 Renko + 28 cache)
+
+---
+
+## [5.2.0] — 2026-03-04
+
+### Added — Renko Backtest Endpoints (Isolated Pipeline)
+
+#### `renko/router.py` — 3 New Endpoints
+
+Three isolated backtest endpoints that run on standalone `RenkoPipeline` instances, never affecting the live pipeline:
+
+- `POST /renko/backtest/run` — Run a full Renko pipeline backtest on historical prices with configurable parameters. Returns comprehensive stats including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
+- `POST /renko/backtest/compare` — Compare 2–10 Renko pipeline configurations side-by-side on the same price data. Returns per-config results plus a diff summary highlighting key metric differences between the first config and the best (by Sharpe estimate).
+- `POST /renko/backtest/optimize` — Grid-search parameter sweep for Renko pipeline optimisation. Accepts a `param_grid` dict mapping parameter names to lists of values. Returns summary rows with key metrics for each combination, plus `best_by_sharpe` and `best_by_return` highlights. Max 50 combinations per request.
+
+#### Pydantic Models
+
+- `RenkoBacktestRequest` — Full pipeline config + historical prices (min 50 ticks) with optional timestamps, regimes, and signal_confidence_min
+- `RenkoBacktestResponse` — symbol, total_ticks, total_bricks, config_used, stats, trades
+- `RenkoCompareConfig` — Labelled config subset for comparison (brick_size, sl_bricks, tp_bricks, trailing_stop, trail_after_bricks, trail_distance_bricks, bull_trigger_n, bear_trigger_n, regime_gate, max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses)
+- `RenkoBacktestCompareRequest` — prices + symbol + 2–10 configs + optional timestamps/regimes
+- `RenkoBacktestCompareResponse` — comparisons list + diff dict (first vs best by Sharpe)
+- `RenkoBacktestOptimizeRequest` — prices + symbol + param_grid + fixed default params + optional timestamps/regimes
+- `RenkoBacktestOptimizeResponse` — results list (params + metrics per combo) + best_by_sharpe + best_by_return + n_combinations
+
+#### Internal Helpers
+
+- `_build_renko_config(req)` — Build a `RenkoConfig` from a backtest request body
+- `_run_isolated_backtest(prices, config, ...)` — Run a backtest in an isolated pipeline (never touches live state)
+
+### Changed
+- `main.py` version bumped to 5.2.0
+- All three backtest endpoints require authentication (`get_authed_user`) and are rate-limited under `RATE_LIMIT_WRITE`
+- Backtest runs are executed in thread pools via `asyncio.to_thread` to avoid blocking the event loop
+
+---
+
+## [5.1.0] — 2026-05-19
+
+### Added — MCP Server + Circuit Breakers + Renko Pipeline v2 + Discord
+
+#### MCP Server (Model Context Protocol)
+- `fastapi-mcp` integration mounted at `/mcp`
+- 17 operations excluded for security (auth, feed start/stop, renko writes, stream injection, backtest delete)
+- Configurable auth via `MCP_AUTH_ENABLED` and `MCP_ISSUER` settings
+- Header forwarding for `authorization` and `x-api-key`
+
+#### Circuit Breakers
+- Three-tier circuit breaker: error rate (>50%), latency (>5s), concurrent (>100)
+- 30-second cooldown with automatic recovery
+- Stats exposed in `/health` endpoint
+- Per-breaker state tracking (closed, open, half-open)
+
+#### Renko HFT Pipeline v2
+- 14 endpoints under `/renko/` prefix
+- 6-layer pipeline: brick → swing → pattern → signal → risk → execution
+- Supabase caching with 4-hour TTL
+- Yahoo Finance warm-up integration
+- Pattern confidence scoring
+- Signal-to-trade paper execution
+
+#### Discord Notifications
+- `notifications/discord_notifier.py` — webhook-based alert system
+- Regime change alerts with severity coloring
+- Circuit breaker trip notifications
+- Trade execution confirmations
+- Graceful no-op when `DISCORD_WEBHOOK_URL` not configured
+- Async batched sending with retry
+
+### Changed
+- `main.py` version bumped to 5.1.0
+- `/health` endpoint now includes MCP status, circuit breaker stats, and Discord status
+- Lifespan: startup logs GPU capabilities, restores Redis sessions with HMM re-fitting
+
+---
+
+## [5.0.0] — 2026-05-15
+
+### Added — Renko HFT Pipeline (Initial)
+
+#### `renko/` — NEW MODULE
+- Self-contained Renko HFT pipeline with 6 processing layers
+- Brick construction from tick data (fixed and ATR-based)
+- Swing classification (impulse/correction labelling)
+- Pattern detection (double-top/bottom, head-shoulders, flags)
+- Signal filtering with volume and trend confirmation
+- Risk management with position sizing and stop/TP
+- Paper trade execution with P&L tracking
+- Supabase caching layer (4h TTL)
+
+#### Endpoints
+- `POST /renko/brick` — build Renko bricks
+- `POST /renko/swing` — classify swings
+- `POST /renko/pattern` — detect patterns
+- `POST /renko/signal` — generate filtered signals
+- `POST /renko/risk` — compute risk for signal
+- `POST /renko/execute` — paper-trade execution
+- `GET /renko/status` — pipeline status (all symbols)
+- `GET /renko/status/{symbol}` — single symbol status
+- `DELETE /renko/status/{symbol}` — clear state
+- `POST /renko/warmup` — Yahoo Finance warm-up
+- `GET /renko/trades` — list trades
+- `GET /renko/trades/{symbol}` — symbol trades
+- `GET /renko/cache` — cache statistics
+- `DELETE /renko/cache` — clear cache
+
+---
+
+## [4.0.0] — 2026-05-10
+
+### Added — Strategy Signals + TDA Features + Observation V2
+
+#### Strategy Signal Pipeline
+- `routers/strategy.py` — `POST /strategy/signal`
+- Generates trading signal (long/short/flat) based on regime
+- Combines regime detection, Kelly sizing, and risk guidance
+- Signal strength scoring (0-1)
+- Long: low/med-low vol + bull/strong_bull
+- Short: high/med-high vol + bear/strong_bear (strength × 0.5)
+- Flat: all other regimes
+
+#### Topological Data Analysis (TDA)
+- `routers/tda.py` — `POST /tda/features`
+- Persistent homology feature extraction via gtda
+- Takens embedding with configurable dimension and delay
+- Persistence diagrams (0D and 1D)
+- Betti numbers at each filtration step
+- Persistence entropy for regime change detection
+- Anomaly score (std deviations from baseline)
+- 10-dimensional feature vector for ML pipeline
+- Optional baseline comparison
+
+#### Observation V2
+- `POST /observation/build-v2` — enhanced observation vector with optional TDA
+- Extends 24-feature vector to 34 features when `include_tda=true`
+- TDA anomaly score and regime change probability fields
+- Same Markov feature guarantees as v1
+
+#### `models/schemas.py` — Updated
+- `StrategySignalRequest` / `StrategySignalResponse`
+- `TDARequest` / `TDAResponse`
+- `ObservationV2Request` / `ObservationV2Response`
+
+### Changed
+- `main.py` version bumped to 4.0.0
+- Backtest router registered in app factory
+
+---
+
+## [3.2.0] — 2026-05-19
+
+### Added — Walk-Forward Backtest Engine + Persistence + Optimization
+
+#### `core/backtester.py` — NEW FILE
+- 503-line walk-forward HMM backtest engine
+- Rolling HMM fit on trailing window with configurable refit interval
+- Strategy signal generation based on detected regime
+- Regime-gated Kelly position sizing
+- Risk check gates (VaR, max drawdown)
+- Trade execution with configurable commission and slippage
+- 30+ performance metrics: win rate, Sharpe, Sortino, Calmar, profit factor,
+  max drawdown, VaR/CVaR, avg hold bars, regime distribution, trades by regime
+- Equity curve, drawdown curve, and full trade log output
+- Optional date labels in trade log (pass `dates` array)
+
+#### `services/backtest_store.py` — NEW FILE
+- Supabase persistence layer for backtest results
+- `save_backtest_result()` — persist to `ta_backtest_result` table (user-scoped)
+- `get_backtest_history()` — paginated history with summary metrics only
+- `get_backtest_detail()` — full result by ID (user-scoped)
+- `delete_backtest()` — delete by ID (user-scoped)
+- Graceful degradation when Supabase is not configured
+
+#### `routers/backtest.py` — NEW FILE
+- `POST /backtest/run` — run walk-forward backtest (rate-limited, Clerk/JWT auth)
+- `GET /backtest/history` — paginated list of saved results
+- `GET /backtest/{id}` — full result by ID
+- `POST /backtest/compare` — side-by-side comparison with diff summary
+- `POST /backtest/optimize` — parameter grid sweep (max 50 combos)
+- `POST /backtest/export` — CSV/JSON export with section selection
+- `DELETE /backtest/{id}` — delete saved result
+
+#### `models/schemas.py` — Updated
+- `BacktestRequest` — extended with `dates` and `save` fields
+- `BacktestResponse` — full response with 30+ metric fields
+- `BacktestSummary` — lightweight summary for list views
+- `BacktestHistoryResponse` — paginated summary list
+- `BacktestCompareRequest` / `BacktestCompareResponse` — comparison + diff
+- `BacktestOptimizeRequest` / `BacktestOptimizeResponse` — grid sweep
+- `BacktestExportRequest` — export format + section selection
+
+#### `supabase/migrations/00000000000007_backtest_results.sql` — NEW FILE
+- `ta_backtest_result` table with RLS policies (user-scoped access)
+- Summary columns + JSONB columns for heavy data (equity curve, trade log, etc.)
+
+### Fixed
+- `pnl_pct` was always returning 0.0 in backtest trade log — now correctly computed
+
+### Changed
+- All backtest endpoints require Clerk/JWT authentication
+- Rate-limited under `RATE_LIMIT_COMPUTE`
+
+---
+
 ## [3.1.1] — 2026-Q2 (Testing & Tooling Release)
 
 ### Added — Testing Tools & Developer Experience

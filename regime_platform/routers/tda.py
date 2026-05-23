@@ -69,4 +69,4 @@ async def extract_tda_features(req: TDARequest, user: TokenData = Depends(get_au
             betti_1=result.betti_1,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "TDA feature extraction")

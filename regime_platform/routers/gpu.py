@@ -1,12 +1,13 @@
 """GPU HMM capabilities and benchmark endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends
+from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 import numpy as np
 import time
 
 from ..core.gpu_engine import gpu_capabilities, create_regime_hmm
-from ..auth.jwt_auth import get_current_user, TokenData
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 
 router = APIRouter(prefix="/gpu", tags=["GPU Engine"])
 
@@ -34,7 +35,7 @@ class BenchmarkResult(BaseModel):
     "/capabilities",
     summary="Report GPU availability and active HMM backend",
 )
-async def get_capabilities(user: TokenData = Depends(get_current_user)):
+async def get_capabilities(user: TokenData = Depends(get_authed_user)):
     """
     Returns which HMM backend will be used and what hardware is available.
 
@@ -52,7 +53,7 @@ async def get_capabilities(user: TokenData = Depends(get_current_user)):
 )
 async def benchmark(
     req: BenchmarkRequest,
-    user: TokenData = Depends(get_current_user),
+    user: TokenData = Depends(require_write),
 ):
     """
     Runs `n_iterations` fit+predict cycles on synthetic price data of length `n_bars`.
@@ -99,4 +100,4 @@ async def benchmark(
             mps_available=caps["mps_available"],
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "GPU benchmark")

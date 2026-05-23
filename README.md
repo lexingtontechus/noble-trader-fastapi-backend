@@ -10,8 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v3.1.0** — GPU HMM · Live feeds · Correlation regimes · Portfolio optimisation ·
-Dynamic Masaniello+Kelly sizer · Streaming test tools
+**v6.0.0** — Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
 
 ---
 
@@ -29,7 +28,8 @@ regime_risk_platform/
 │   │   ├── simulator.py              Markov-chain Monte Carlo regime simulation
 │   │   ├── gpu_engine.py             Pomegranate GPU HMM + create_regime_hmm()
 │   │   ├── correlation_regime.py     DCC multi-asset correlation regime detector
-│   │   └── portfolio_optimiser.py    Drawdown-controlled max-Sharpe optimiser
+│   │   ├── portfolio_optimiser.py    Drawdown-controlled max-Sharpe optimiser
+│   │   └── backtester.py          Walk-forward HMM backtest engine (503 lines)
 │   ├── adapters/
 │   │   └── feed_adapters.py          Alpaca / Binance / IB live OHLCV adapters
 │   ├── auth/
@@ -44,23 +44,33 @@ regime_risk_platform/
 │   │   ├── risk.py                   POST /risk/analyse
 │   │   ├── pipeline.py               POST /analyse/full
 │   │   ├── stream_rest.py            POST /stream/seed | /tick | /ticks
-│   │   ├── stream_.py              WS /ws/{symbol} | GET /sse/{symbol|alerts}
+│   │   ├── stream_ws.py            WS /ws/{symbol} | GET /sse/{symbol|alerts}
 │   │   ├── simulate.py               POST /simulate/{symbol}
 │   │   ├── portfolio.py              GET /portfolio
 │   │   ├── auth_router.py            POST /auth/token | GET /auth/me | Clerk endpoints
 │   │   ├── gpu.py                    GET /gpu/capabilities | POST /gpu/benchmark
 │   │   ├── feeds.py                  POST /feeds/start | /stop | GET /feeds/status
-│   │   └── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
-│   └── services/
-│       ├── stream_session.py         Per-symbol stateful streaming engine
-│       ├── registry.py               Singleton session store
-│       ├── portfolio_service.py      Multi-symbol regime + risk aggregation
-│       └── redis_persistence.py      Optional Redis Streams price buffer persistence
+│   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
+│   │   ├── backtest.py            POST /backtest/run | /history | /{id} | /compare | /optimize | /export
+│   │   ├── strategy.py            POST /strategy/signal
+│   │   ├── tda.py                 POST /tda/features
+│   │   └── observation.py          POST /observation/build | /build-v2
+│   ├── services/
+│   │   ├── stream_session.py         Per-symbol stateful streaming engine
+│   │   ├── registry.py               Singleton session store
+│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
+│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
+│   │   └── backtest_store.py      Supabase persistence for backtest results
+│   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
+│   ├── notifications/               Discord notifier
+│   ├── middleware/
+│   │   ├── rate_limit.py            SlowAPI rate limiter (compute/write/default)
+│   │   └── kill_switch_gate.py       Kill switch middleware (blocks order execution)
+│   ├── services/
+│   │   ├── alpaca_stream.py          Alpaca WebSocket stream manager
+│   │   └── pnl_service.py            P&L analytics (intraday, risk dashboard, alerts)
 │
-├── main.py                           v1 — batch API only
-├── main_v2.py                        v2 — batch + streaming
-├── main_v3.py                        v2.1 — + simulation, portfolio, auth, Redis
-├── main_v4.py                        v3.1 — all features (recommended entry point)
+├── main.py                           v6.0 — all features (recommended entry point)
 ├── requirements.txt
 │
 ├── docs/
@@ -77,7 +87,8 @@ regime_risk_platform/
 │   ├── test_obs_builder.py           24-feature observation builder (7 tests)
 │   ├── test_streaming.py             StreamSession: asyncio ticks + alerts
 │   ├── test_v21.py                   Simulation, portfolio, Redis, JWT
-│   └── test_v30.py                   GPU, feeds, correlation, optimiser
+│   ├── test_v30.py                   GPU, feeds, correlation, optimiser
+│   └── test_backtest.py             25-test backtest suite (unit + integration)
 │
 └── tools/
     ├── curl_test.sh                  bash: health + full-pipeline + edge cases
@@ -149,6 +160,18 @@ open docs/index.html
 | `POST` | `/optimise/full` | Correlation + optimise one-shot |
 | `GET` | `/portfolio` | Multi-symbol aggregated risk view |
 
+### Backtesting
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/backtest/run` | Walk-forward backtest with 30+ metrics, Supabase persistence |
+| `GET` | `/backtest/history` | Paginated list of saved backtest results |
+| `GET` | `/backtest/{id}` | Full backtest result by ID |
+| `POST` | `/backtest/compare` | Side-by-side comparison of saved results |
+| `POST` | `/backtest/optimize` | Parameter grid sweep (max 50 combinations) |
+| `POST` | `/backtest/export` | Export result as CSV or JSON download |
+| `DELETE` | `/backtest/{id}` | Delete a saved backtest result |
+
 ### Live Streaming
 
 | Method | Path | Description |
@@ -175,6 +198,54 @@ open docs/index.html
 | `GET` | `/auth/clerk/me` | Clerk user info from JWT |
 | `POST` | `/auth/clerk/verify` | Verify Clerk JWT token |
 | `GET` | `/health` | Service health check |
+
+### P&L Analytics
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/pnl/intraday` | Intraday P&L with realized/unrealized breakdown | Any |
+| `GET` | `/pnl/history` | Historical P&L time series | Any |
+| `GET` | `/pnl/export` | Export P&L data as CSV | Any |
+| `GET` | `/pnl/alerts` | List P&L alert thresholds | Any |
+| `POST` | `/pnl/alerts` | Create P&L alert threshold | Any |
+| `DELETE` | `/pnl/alerts/{threshold_id}` | Delete P&L alert threshold | Any |
+| `POST` | `/pnl/alerts/check` | Evaluate P&L alert thresholds | Any |
+
+### Risk Dashboard
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/risk/dashboard` | Full risk dashboard with 12 metrics | Any |
+
+### Operational Hardening
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/operational/kill-switch/status` | Kill switch status | Any |
+| `POST` | `/operational/kill-switch/activate` | Activate kill switch (halts all trading) | Admin |
+| `POST` | `/operational/kill-switch/deactivate` | Deactivate kill switch | Admin |
+| `POST` | `/operational/kill-switch/cancel-all` | Cancel all open orders | Admin |
+| `POST` | `/operational/kill-switch/close-all` | Close all positions | Admin |
+| `GET` | `/operational/audit-log` | Paginated audit log entries | Any |
+| `GET` | `/operational/audit-log/summary` | Audit log summary stats | Any |
+| `GET` | `/operational/audit-log/export` | Export audit log as CSV | Any |
+| `GET` | `/operational/mode` | Current trading mode (paper/live) | Any |
+| `POST` | `/operational/mode/request` | Request trading mode change | Write |
+| `POST` | `/operational/mode/confirm` | Confirm trading mode change (2-step) | Write |
+| `GET` | `/operational/reconcile/status` | Reconciliation status | Any |
+| `POST` | `/operational/reconcile/run` | Run reconciliation | Write |
+| `POST` | `/operational/reconcile/order` | Reconcile a single order | Any |
+| `GET` | `/operational/reconcile/positions` | Reconcile all positions | Any |
+| `GET` | `/operational/mode/health` | Trading mode health check | Any |
+| `GET` | `/operational/executor/status` | Alpaca executor status | Any |
+| `GET` | `/operational/throttle/status` | Rate throttle status (200 req/min) | Any |
+
+### SSE P&L Streaming
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/sse/pnl` | SSE stream for real-time P&L updates | Any |
+| `GET` | `/sse/pnl/status` | SSE P&L connection status | Any |
 
 ---
 
@@ -503,6 +574,165 @@ GET /gpu/capabilities
 ```
 
 Transparent fallback to hmmlearn on CPU — no code changes required.
+
+---
+
+## Walk-Forward Backtest Engine
+
+`core/backtester.py` runs a comprehensive walk-forward backtest with HMM regime detection:
+
+1. **Rolling HMM fit** on a trailing window (default 200 bars)
+2. **Strategy signal generation** based on detected regime
+3. **Regime-gated Kelly position sizing**
+4. **Risk check gates** (VaR, max drawdown)
+5. **Trade execution** with configurable commission and slippage
+6. **30+ performance metrics** computed
+
+Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) for history, comparison, and export.
+
+### Parameters
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `window` | 200 | 81+ | Trailing HMM window |
+| `refit_every` | 50 | 10+ | HMM refit interval |
+| `n_hmm_states` | 4 | 2-4 | Number of HMM hidden states |
+| `kelly_fraction` | 0.5 | 0.1-1.0 | Fractional Kelly multiplier |
+| `target_vol` | 0.15 | 0-1.0 | Annualised target volatility |
+| `base_risk_limit` | 0.02 | 0-0.5 | Max daily loss fraction |
+| `initial_equity` | 100000 | >0 | Starting equity |
+| `commission_bps` | 5.0 | 0-50 | Commission in basis points |
+| `slippage_bps` | 2.0 | 0-50 | Slippage in basis points |
+| `max_position_pct` | 0.25 | 0-1.0 | Max position as equity fraction |
+| `risk_check` | true | — | Enable VaR/drawdown risk gates |
+| `regime_gate` | true | — | Only trade in favorable regimes |
+| `save` | true | — | Persist result to Supabase |
+
+### Optimization (Grid Search)
+
+`POST /backtest/optimize` accepts a `param_grid` dict mapping parameter names to arrays of values. For each combination, a full walk-forward backtest runs and returns summary metrics. Maximum 50 combinations per request to prevent timeout. Returns `best_by_sharpe` and `best_by_return` highlights.
+
+### Export
+
+`POST /backtest/export` streams a saved result as CSV or JSON with section selection (`summary`, `equity_curve`, `drawdown_curve`, `trade_log`).
+
+---
+
+## Renko HFT Pipeline
+
+The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 endpoints:
+
+1. **Brick Construction** — Convert ticks to fixed/ATR Renko bricks
+2. **Swing Classification** — Label brick sequences as impulse/correction
+3. **Pattern Detection** — Identify double-top, head-shoulders, etc.
+4. **Signal Filter** — Confirm patterns with volume and trend alignment
+5. **Risk Manager** — Position sizing, stop-loss, take-profit
+6. **Execution** — Paper-trade signal execution with P&L tracking
+
+### Features
+- Supabase caching with 4-hour TTL
+- Yahoo Finance warm-up integration
+- Per-symbol brick state persistence
+- Real-time tick ingestion and brick updates
+- Pattern confidence scoring
+- Signal-to-trade pipeline
+
+### Endpoints
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/renko/tick` | Process single tick through 6-layer pipeline | Write |
+| `POST` | `/renko/tick/batch` | Batch tick processing (warmup/backtest) | Write |
+| `GET` | `/renko/state` | Current pipeline state snapshot | Any |
+| `GET` | `/renko/stats` | Comprehensive pipeline statistics | Any |
+| `GET` | `/renko/bricks` | Recent Renko bricks (last 500) | Any |
+| `GET` | `/renko/classified` | Bricks with swing labels (HH/HL/LH/LL) | Any |
+| `GET` | `/renko/signals` | Pattern signals history | Any |
+| `GET` | `/renko/trades` | Trade journal entries | Any |
+| `GET` | `/renko/swing-points` | Detected swing points | Any |
+| `POST` | `/renko/regime` | Update HMM regime for gate filter | Write |
+| `POST` | `/renko/equity` | Update account equity | Write |
+| `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
+| `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
+| `GET` | `/renko/backtest/stats` | Backtest/trading statistics from journal | Any |
+| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices | Write |
+| `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
+| `POST` | `/renko/backtest/compare` | Compare multiple Renko configs side-by-side (2–10) | Any |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline (max 50 combos) | Write |
+| `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
+| `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
+| `GET` | `/renko/live/status` | Check live execution mode status | Any |
+| `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
+
+---
+
+## MCP Server (Model Context Protocol)
+
+The platform exposes an MCP server at `/mcp` via `fastapi-mcp`, enabling AI agents to invoke read-only and analysis endpoints as tools.
+
+### Configuration
+- `MCP_AUTH_ENABLED` — Enable/disable MCP authentication (default: false)
+- `MCP_ISSUER` — JWT issuer for MCP tokens
+
+### Excluded Operations (19)
+Auth endpoints, feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
+
+### Available Tools
+All read-only and analysis endpoints are automatically exposed as MCP tools with proper request/response schemas.
+
+---
+
+## Strategy Signals
+
+`POST /strategy/signal` generates a full trading signal based on the current regime:
+
+| Signal | Condition |
+|--------|-----------|
+| `long` | Low/med-low vol + bull/strong_bull trend |
+| `short` | High/med-high vol + bear/strong_bear trend (strength × 0.5) |
+| `flat` | All other regimes |
+
+Returns combined regime context, Kelly position sizing, and risk guidance in one response.
+
+## Topological Data Analysis (TDA)
+
+`POST /tda/features` extracts persistent homology features from price series:
+
+- Takens embedding with configurable dimension and delay
+- Persistence diagrams (0D and 1D features)
+- Betti numbers at each filtration step
+- Persistence entropy for regime change detection
+- Anomaly score based on deviation from baseline topology
+
+The 10-dimensional TDA feature vector can be appended to the observation vector via `POST /observation/build-v2` with `include_tda=true`.
+
+---
+
+## Discord Notifications
+
+The platform sends real-time alerts to a Discord channel via webhook:
+
+- Regime change alerts (with severity coloring)
+- Circuit breaker triggers
+- Trade execution confirmations
+- Error notifications
+
+Configure via `DISCORD_WEBHOOK_URL` environment variable. Graceful no-op when not configured.
+
+---
+
+## Circuit Breakers
+
+Three-tier circuit breaker system protects against cascading failures:
+
+| Breaker | Threshold | Recovery |
+|---------|-----------|----------|
+| **Error rate** | >50% errors in 60s | 30s cooldown |
+| **Latency** | >5s average in 60s | 30s cooldown |
+| **Concurrent** | >100 concurrent requests | 30s cooldown |
+
+Circuit breaker stats are reported in the `/health` endpoint.
 
 ---
 

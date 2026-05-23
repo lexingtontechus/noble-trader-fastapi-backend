@@ -35,17 +35,17 @@ Error policy
 
 from __future__ import annotations
 
-import os
 import asyncio
 import logging
 from typing import Optional, TYPE_CHECKING
+
+from regime_platform.core.settings import settings
 
 if TYPE_CHECKING:
     from .stream_session import StreamSession
 
 log = logging.getLogger("regime.redis")
 
-REDIS_URL = os.getenv("REDIS_URL", "")
 STREAM_PREFIX = "regime:prices:"
 META_PREFIX   = "regime:meta:"
 
@@ -58,21 +58,23 @@ class RedisPersistence:
     all methods become no-ops and `enabled` is False.
     """
 
-    def __init__(self, redis_url: str = REDIS_URL, maxlen: int = 5000):
+    def __init__(self, redis_url: str = "", maxlen: int = 5000):
         self.maxlen    = maxlen
         self._redis    = None
         self._enabled  = False
 
-        if not redis_url:
+        # Use provided URL or fall back to settings
+        _url = redis_url or settings.redis_url_effective
+        if not _url:
             log.info("REDIS_URL not set — price buffer persistence disabled (in-memory only)")
             return
 
         try:
             import redis.asyncio as aioredis
             self._client_cls = aioredis.from_url
-            self._url        = redis_url
+            self._url        = _url
             self._enabled    = True
-            log.info(f"Redis persistence configured: {redis_url}")
+            log.info(f"Redis persistence configured: {_url}")
         except ImportError:
             log.warning("redis package not installed — persistence disabled. pip install redis")
 

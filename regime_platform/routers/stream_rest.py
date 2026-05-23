@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from fastapi import APIRouter, HTTPException, Depends
 
+from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..models.stream_schemas import SeedRequest, TickIngest, TickResponse, SessionStatus
 from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM

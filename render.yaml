@@ -2,11 +2,14 @@ services:
   - type: web
     name: noble-trader-fastapi-backend
     runtime: python
-    plan: free
+    plan: starter
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
+      # ── CORS ───────────────────────────────────────────────────────
+      - key: CORS_ORIGINS
+        value: https://noble-trader-agent-frontend.vercel.app
       # ── Alpaca Trading API ───────────────────────────────────────
       - key: ALPACA_API_KEY
         sync: false
@@ -23,4 +26,18 @@ services:
         sync: false
       # ── Auth (Clerk) ─────────────────────────────────────────────
       - key: CLERK_SECRET_KEY
+        sync: false
+      # ── CORS ──────────────────────────────────────────────────────
+      - key: CORS_ORIGINS
+        value: https://noble-trader-agent-frontend.vercel.app
+      # ── MCP Auth ──────────────────────────────────────────────────
+      - key: MCP_AUTH_ENABLED
+        value: "true"
+      # ── JWT ───────────────────────────────────────────────────────
+      - key: JWT_SECRET_KEY
+        sync: false
+      # ── Redis (Upstash) ────────────────────────────────────────────
+      # Value set via Render dashboard (not committed to repo).
+      # Format: rediss://:<token>@<host>.upstash.io:6379
+      - key: REDIS_URL
         sync: false

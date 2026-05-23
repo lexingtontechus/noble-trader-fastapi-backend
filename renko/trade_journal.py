@@ -50,6 +50,21 @@ class TradeRecord:
     label_sequence: List[str] = field(default_factory=list)
     filters_passed: List[str] = field(default_factory=list)
 
+    # Cost tracking (Phase 2)
+    commission: float = 0.0              # Commission cost in dollars
+    slippage_cost: float = 0.0           # Slippage cost in dollars
+    spread_cost: float = 0.0            # Spread cost in dollars
+    total_cost: float = 0.0             # commission + slippage_cost + spread_cost
+
+    # Execution modeling (Phase 7)
+    impact_cost: float = 0.0            # Market impact cost in dollars
+    borrow_cost: float = 0.0            # Short borrow cost in dollars
+    margin_cost: float = 0.0            # Margin financing cost in dollars
+    dividend_cost: float = 0.0          # Dividend cost for shorts in dollars
+    total_financing_cost: float = 0.0   # borrow + margin + dividend costs
+    fill_probability: float = 1.0       # Fill probability for this trade's entry
+    missed_fill: bool = False           # Whether this trade was a missed fill
+
     @property
     def is_win(self) -> bool:
         return self.pnl_bricks > 0
@@ -79,6 +94,17 @@ class TradeRecord:
             "velocity": self.velocity,
             "label_sequence": self.label_sequence,
             "filters_passed": self.filters_passed,
+            "commission": self.commission,
+            "slippage_cost": self.slippage_cost,
+            "spread_cost": self.spread_cost,
+            "total_cost": self.total_cost,
+            "impact_cost": self.impact_cost,
+            "borrow_cost": self.borrow_cost,
+            "margin_cost": self.margin_cost,
+            "dividend_cost": self.dividend_cost,
+            "total_financing_cost": self.total_financing_cost,
+            "fill_probability": self.fill_probability,
+            "missed_fill": self.missed_fill,
         }
 
 
@@ -272,6 +298,52 @@ class TradeJournal:
             "implied_kelly": self._calc_kelly(
                 stats["win_rate"], stats["avg_win_bricks"], stats["avg_loss_bricks"]
             ),
+        }
+
+        # Cost summary (Phase 2 + 7)
+        total_commission = sum(t.commission for t in trades)
+        total_slippage = sum(t.slippage_cost for t in trades)
+        total_spread = sum(t.spread_cost for t in trades)
+        total_impact = sum(t.impact_cost for t in trades)
+        total_borrow = sum(t.borrow_cost for t in trades)
+        total_margin = sum(t.margin_cost for t in trades)
+        total_dividend = sum(t.dividend_cost for t in trades)
+        total_financing = sum(t.total_financing_cost for t in trades)
+        total_all_costs = sum(t.total_cost + t.impact_cost + t.total_financing_cost for t in trades)
+
+        stats["cost_summary"] = {
+            "commission": round(total_commission, 2),
+            "slippage": round(total_slippage, 2),
+            "spread": round(total_spread, 2),
+            "market_impact": round(total_impact, 2),
+            "borrow": round(total_borrow, 2),
+            "margin": round(total_margin, 2),
+            "dividend": round(total_dividend, 2),
+            "total_financing": round(total_financing, 2),
+            "total_all_costs": round(total_all_costs, 2),
+            "cost_per_trade": round(total_all_costs / len(trades), 2) if trades else 0.0,
+            "total_cost_pct_of_pnl": round(total_all_costs / abs(total_pnl) * 100, 2) if abs(total_pnl) > 0 else 0.0,
+        }
+
+        # Fill statistics (Phase 7)
+        fill_probs = [t.fill_probability for t in trades]
+        missed_fills = sum(1 for t in trades if t.missed_fill)
+        stats["fill_stats"] = {
+            "avg_fill_probability": round(sum(fill_probs) / len(fill_probs), 4) if fill_probs else 1.0,
+            "missed_fills": missed_fills,
+            "missed_fill_rate": round(missed_fills / len(trades), 4) if trades else 0.0,
+        }
+
+        # Dollar-denominated metrics (Phase 4A)
+        initial_capital = 100_000.0  # Default; can be overridden
+        total_pnl_dollars = sum(t.pnl_dollars for t in trades)
+        net_pnl_dollars = total_pnl_dollars - total_all_costs
+        stats["dollar_stats"] = {
+            "initial_capital": initial_capital,
+            "gross_pnl_dollars": round(total_pnl_dollars, 2),
+            "total_costs_dollars": round(total_all_costs, 2),
+            "net_pnl_dollars": round(net_pnl_dollars, 2),
+            "net_return_pct": round(net_pnl_dollars / initial_capital * 100, 4),
         }
 
         return stats

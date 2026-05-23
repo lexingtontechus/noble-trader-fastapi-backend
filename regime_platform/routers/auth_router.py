@@ -25,7 +25,6 @@ Clerk Authentication:
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -45,9 +44,11 @@ from ..auth.jwt_auth import (
     JWT_EXPIRE_MINS,
     TokenData,
     create_access_token,
+    get_authed_user,
     get_current_user,
     make_login_response,
 )
+from ..core.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -55,14 +56,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def _load_users() -> dict[str, dict]:
-    raw = os.getenv("AUTH_USERS", "")
-    users = {}
-    for entry in raw.split(","):
-        parts = entry.strip().split(":")
-        if len(parts) == 3:
-            username, password, role = parts
-            users[username] = {"password": password, "role": role}
-    return users
+    return settings.auth_users_dict
 
 
 _USERS = _load_users()
@@ -139,7 +133,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     response_model=UserInfo,
     summary="Return current user info decoded from token",
 )
-async def me(user: TokenData = Depends(get_current_user)):
+async def me(user: TokenData = Depends(get_authed_user)):
     """
     Returns the identity and role extracted from the Bearer JWT.
     Useful for verifying a token is valid and checking its role.
@@ -152,7 +146,7 @@ async def me(user: TokenData = Depends(get_current_user)):
     response_model=TokenResponse,
     summary="Refresh a (non-expired) token",
 )
-async def refresh(user: TokenData = Depends(get_current_user)):
+async def refresh(user: TokenData = Depends(get_authed_user)):
     """
     Issues a fresh token with a new expiry, keeping the same subject and role.
     Only works if the current token is still valid (not yet expired).
@@ -296,3 +290,44 @@ async def clerk_config():
         "jwt_algorithm": "RS256",
         "jwks_endpoint": "https://large-shark-21.clerk.accounts.dev/.well-known/jwks.json",
     }
+
+
+@router.get(
+    "/debug/clerk-flow",
+    summary="Debug: test the Clerk JWT verification flow step by step",
+    tags=["Debug"],
+)
+async def debug_clerk_flow(user: ClerkTokenData = Depends(get_current_clerk_user)):
+    """
+    Debug endpoint that tests the full Clerk verification flow.
+    Requires a valid Clerk JWT in the Authorization header.
+    Returns step-by-step results for each verification stage.
+    """
+    import jwt as _jwt
+
+    # We already have a verified user from get_current_clerk_user
+    # Now simulate what _try_clerk_verification() does
+    from ..auth.jwt_auth import _try_clerk_verification, TokenData
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    # Re-run _try_clerk_verification to see its result
+    # (In production, the token comes from the Authorization header)
+    try:
+        # Get the raw token from the request's auth header
+        from fastapi import Request
+        # We'll use the already-verified user info
+        return {
+            "clerk_direct_verification": {
+                "status": "success",
+                "sub": user.sub,
+                "role": user.role,
+                "email": user.email,
+            },
+            "clerk_auth_enabled": CLERK_AUTH_ENABLED,
+            "jwks_accessible": True,  # If we got here, JWKS was accessible
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"{type(e).__name__}: {e}",
+        }

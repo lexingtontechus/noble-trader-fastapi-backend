@@ -110,6 +110,11 @@ class SignalFilter:
         self._stats = _SessionStats()
         self._rejected: List[dict] = []  # Log of rejected signals
 
+        # Warmup mode: bypasses session window, lunch, and cooldown filters.
+        # Enabled during batch warmup and backtests where timestamps are
+        # synthetic or historical and don't represent real market hours.
+        self._warmup_mode: bool = False
+
     # ── Public API ────────────────────────────────────────────────
 
     def evaluate(
@@ -148,37 +153,44 @@ class SignalFilter:
         passed: List[str] = []
         rejection_reason: Optional[str] = None
 
-        # Filter 1: Session window
-        if not self._check_session_window(now):
-            rejection_reason = "outside_session_window"
+        # In warmup mode, bypass session window, lunch, and cooldown filters.
+        # These are time-based checks that don't apply to batch/backtest
+        # processing where timestamps are synthetic or historical.
+        if self._warmup_mode:
+            passed.append("session_window_warmup")
+            passed.append("cooldown_warmup")
         else:
-            passed.append("session_window")
+            # Filter 1: Session window
+            if not self._check_session_window(now):
+                rejection_reason = "outside_session_window"
+            else:
+                passed.append("session_window")
 
-        # Filter 2: Max trades per session
+            # Filter 5: Cooldown (only in live mode)
+            if rejection_reason is None:
+                elapsed = now - self._stats.last_trade_ts
+                if elapsed < self.cooldown_seconds:
+                    rejection_reason = f"cooldown_{self.cooldown_seconds - elapsed:.1f}s_remaining"
+                else:
+                    passed.append("cooldown")
+
+        # Filter 2: Max trades per session (applies even in warmup — hard risk limit)
         if rejection_reason is None and self._stats.trades_taken >= self.max_trades_per_session:
             rejection_reason = "max_trades_reached"
         elif rejection_reason is None:
             passed.append("max_trades")
 
-        # Filter 3: Max daily loss
+        # Filter 3: Max daily loss (applies even in warmup — hard risk limit)
         if rejection_reason is None and self._stats.daily_pnl_bricks <= -self.max_daily_loss_bricks:
             rejection_reason = "max_daily_loss"
         elif rejection_reason is None:
             passed.append("daily_loss_limit")
 
-        # Filter 4: Max consecutive losses
+        # Filter 4: Max consecutive losses (applies even in warmup — hard risk limit)
         if rejection_reason is None and self._stats.consecutive_losses >= self.max_consecutive_losses:
             rejection_reason = "max_consecutive_losses"
         elif rejection_reason is None:
             passed.append("consecutive_loss_limit")
-
-        # Filter 5: Cooldown
-        if rejection_reason is None:
-            elapsed = now - self._stats.last_trade_ts
-            if elapsed < self.cooldown_seconds:
-                rejection_reason = f"cooldown_{self.cooldown_seconds - elapsed:.1f}s_remaining"
-            else:
-                passed.append("cooldown")
 
         # Filter 6: Brick velocity
         if rejection_reason is None and self.min_brick_velocity > 0:
@@ -241,9 +253,29 @@ class SignalFilter:
             self._stats.consecutive_losses += 1
             self._stats.total_losses += 1
 
+    def set_warmup_mode(self, enabled: bool) -> None:
+        """
+        Enable or disable warmup mode.
+
+        When enabled, session window, lunch skip, and cooldown filters
+        are bypassed. This is used during batch warmup and backtests
+        where timestamps are synthetic or historical and don't represent
+        real market hours.
+
+        Risk limits (max trades, max daily loss, consecutive losses)
+        still apply even in warmup mode.
+        """
+        self._warmup_mode = enabled
+
+    @property
+    def warmup_mode(self) -> bool:
+        """Whether warmup mode is currently active."""
+        return self._warmup_mode
+
     def reset_session(self) -> None:
         """Reset per-session statistics (call at market open)."""
         self._stats = _SessionStats()
+        self._warmup_mode = False  # Disable warmup mode on session reset
 
     @property
     def session_stats(self) -> dict:

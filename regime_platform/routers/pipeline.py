@@ -99,4 +99,4 @@ async def full_analysis(req: FullAnalysisRequest, user: TokenData = Depends(get_
             risk=risk_resp,
         )
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise_http_exception(e, "full pipeline analysis")

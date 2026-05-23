@@ -8,10 +8,10 @@ Operational reference for running the Dynamic Regime Risk Management Platform in
 
 ```bash
 # Development (single worker, auto-reload)
-uvicorn main_v2:app --reload --port 8000
+uvicorn main:app --reload --port 8000
 
 # Production-like (4 workers, no reload)
-uvicorn main_v2:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 > **Note on multiple workers:** Each uvicorn worker process has its own `SessionRegistry`. Live streaming sessions are not shared across workers. For multi-worker deployments with streaming, use a single worker or add Redis-backed session storage (see Extending below).
@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8000
-CMD ["uvicorn", "main_v2:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ```bash
@@ -66,7 +66,7 @@ docker run -p 8000:8000 regime-platform
 
 ```bash
 curl http://localhost:8000/health
-# {"status": "ok", "version": "2.0.0"}
+# {"status": "ok", "version": "6.0.0"}
 ```
 
 ---
