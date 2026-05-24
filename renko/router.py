@@ -208,6 +208,22 @@ class ExecutionModelRequest(BaseModel):
     dividend_yield_bps: float = Field(200.0)
 
 
+class SizingModelRequest(BaseModel):
+    """Set or query the position sizing model for a pipeline."""
+    sizing_mode: str = Field("kelly", description="Sizing mode: 'kelly' or 'masaniello'")
+    # Masaniello-specific overrides (only used when sizing_mode=masaniello)
+    base_risk: Optional[float] = Field(None, description="Base risk fraction β (default 0.005)")
+    min_risk: Optional[float] = Field(None, description="Hard floor risk fraction (default 0.0025)")
+    max_risk: Optional[float] = Field(None, description="Hard cap risk fraction (default 0.010)")
+    min_prob: Optional[float] = Field(None, description="Min win probability to trade (default 0.50)")
+    min_rr: Optional[float] = Field(None, description="Min reward/risk ratio (default 2.50)")
+    max_drawdown: Optional[float] = Field(None, description="Max strategy drawdown fraction (default 0.10)")
+    regime_floor: Optional[float] = Field(None, description="Min regime quality to trade (default 0.50)")
+    use_kelly_overlay: Optional[bool] = Field(None, description="Cap Masaniello at Kelly bound")
+    batch_size: Optional[int] = Field(None, description="N trades per batch (default 5)")
+    target_wins: Optional[int] = Field(None, description="W target wins per batch (default 3)")
+
+
 # ── Pipeline registry ─────────────────────────────────────────────
 
 # In-memory registry of active pipelines (one per symbol)
@@ -826,6 +842,124 @@ if FASTAPI_AVAILABLE:
             )
 
         return result
+
+    # ── Sizing Model Endpoints ────────────────────────────────────────
+
+    @renko_router.get("/sizing/model")
+    async def get_sizing_model(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+        """Get the current position sizing model and parameters for a pipeline.
+
+        Returns the active sizing mode (kelly or masaniello) along with
+        all relevant configuration parameters. This is useful for:
+        - Checking which sizing model a pipeline is using
+        - Reviewing Masaniello batch state (wins, losses, trade index)
+        - Validating configuration before backtests
+        """
+        pipeline = await _get_pipeline_async(symbol)
+        config = pipeline.config
+        sizing_mode = config.sizing_mode.value
+
+        result: Dict[str, Any] = {
+            "symbol": symbol,
+            "sizing_mode": sizing_mode,
+            "kelly": {
+                "kelly_fraction": config.kelly_fraction,
+                "max_position_pct": config.max_position_pct,
+                "min_position_usd": config.min_position_usd,
+                "default_win_rate": config.default_win_rate,
+            },
+        }
+
+        if sizing_mode == "masaniello":
+            result["masaniello"] = {
+                "base_risk": config.masaniello_base_risk,
+                "min_risk": config.masaniello_min_risk,
+                "max_risk": config.masaniello_max_risk,
+                "min_prob": config.masaniello_min_prob,
+                "min_rr": config.masaniello_min_rr,
+                "max_drawdown": config.masaniello_max_drawdown,
+                "regime_floor": config.masaniello_regime_floor,
+                "use_kelly_overlay": config.masaniello_use_kelly_overlay,
+                "batch_size": config.masaniello_batch_size,
+                "target_wins": config.masaniello_target_wins,
+                "batch_state": {
+                    "wins": pipeline.signal_filter._masaniello_batch_wins,
+                    "losses": pipeline.signal_filter._masaniello_batch_losses,
+                    "trade_index": pipeline.signal_filter._masaniello_trade_index,
+                    "initial_equity": pipeline.signal_filter._masaniello_initial_equity,
+                    "peak_equity": pipeline.signal_filter._masaniello_peak_equity,
+                    "pnl": pipeline.signal_filter._masaniello_pnl,
+                },
+            }
+
+        return result
+
+    @renko_router.post("/sizing/model")
+    async def set_sizing_model(request: Request, body: SizingModelRequest, symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict[str, Any]:
+        """Set the position sizing model for a pipeline (admin only).
+
+        Switches between Kelly (simple equity fraction) and Masaniello
+        (dynamic adaptive sizing with urgency, quality, drawdown, and
+        volatility factors). When switching to Masaniello, the pipeline
+        is rebuilt with the new sizing configuration.
+
+        This endpoint is critical for:
+        - Backtests: test the same strategy with different sizing models
+        - Live trading: switch from Kelly to Masaniello mid-session
+        - Risk tuning: adjust Masaniello parameters without full pipeline reset
+        """
+        from renko.config import SizingMode
+
+        pipeline = await _get_pipeline_async(symbol)
+        config = pipeline.config
+
+        # Validate sizing_mode
+        mode = body.sizing_mode.lower().strip()
+        if mode not in ("kelly", "masaniello"):
+            raise HTTPException(status_code=400, detail=f"Invalid sizing_mode '{mode}'. Must be 'kelly' or 'masaniello'.")
+
+        # Build overrides for the new pipeline
+        overrides = {
+            "sizing_mode": mode,
+            "symbol": symbol,
+        }
+
+        # Apply Masaniello-specific overrides
+        if mode == "masaniello":
+            if body.base_risk is not None:
+                overrides["masaniello_base_risk"] = body.base_risk
+            if body.min_risk is not None:
+                overrides["masaniello_min_risk"] = body.min_risk
+            if body.max_risk is not None:
+                overrides["masaniello_max_risk"] = body.max_risk
+            if body.min_prob is not None:
+                overrides["masaniello_min_prob"] = body.min_prob
+            if body.min_rr is not None:
+                overrides["masaniello_min_rr"] = body.min_rr
+            if body.max_drawdown is not None:
+                overrides["masaniello_max_drawdown"] = body.max_drawdown
+            if body.regime_floor is not None:
+                overrides["masaniello_regime_floor"] = body.regime_floor
+            if body.use_kelly_overlay is not None:
+                overrides["masaniello_use_kelly_overlay"] = body.use_kelly_overlay
+            if body.batch_size is not None:
+                overrides["masaniello_batch_size"] = body.batch_size
+            if body.target_wins is not None:
+                overrides["masaniello_target_wins"] = body.target_wins
+
+        # Rebuild pipeline with new sizing config
+        config = await RenkoConfig.from_runtime_config(overrides=overrides)
+        new_pipeline = RenkoPipeline(config)
+        _pipelines[symbol] = new_pipeline
+
+        log.warning(f"Pipeline {symbol} sizing mode changed to {mode} by user {user.sub}")
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "sizing_mode": mode,
+            "config": config.to_dict(),
+        }
 
     @renko_router.get("/live/status")
     async def get_live_status(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:

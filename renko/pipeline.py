@@ -121,6 +121,24 @@ class RenkoPipeline:
             double_top_bricks=self.config.double_top_bricks,
             consolidation_max_mix=self.config.consolidation_max_mix,
         )
+        # Build Masaniello sizer if sizing_mode=masaniello
+        masaniello_sizer = None
+        if self.config.sizing_mode.value == "masaniello":
+            from regime_platform.core.position_sizer import DynamicMasanielloSizer, SizingConfig
+            mcfg = SizingConfig(
+                base_risk=self.config.masaniello_base_risk,
+                min_risk=self.config.masaniello_min_risk,
+                max_risk=self.config.masaniello_max_risk,
+                min_prob=self.config.masaniello_min_prob,
+                min_rr=self.config.masaniello_min_rr,
+                max_drawdown=self.config.masaniello_max_drawdown,
+                regime_floor=self.config.masaniello_regime_floor,
+                use_kelly_overlay=self.config.masaniello_use_kelly_overlay,
+                batch_size=self.config.masaniello_batch_size,
+                target_wins=self.config.masaniello_target_wins,
+            )
+            masaniello_sizer = DynamicMasanielloSizer(mcfg)
+
         self.signal_filter = SignalFilter(
             session_start=self.config.session_start,
             session_end=self.config.session_end,
@@ -134,6 +152,8 @@ class RenkoPipeline:
             min_brick_velocity=self.config.min_brick_velocity,
             regime_gate=self.config.regime_gate,
             timezone=self.config.timezone,
+            sizing_mode=self.config.sizing_mode.value,
+            masaniello_sizing_config=masaniello_sizer,
         )
         self.risk_manager = RiskManager(
             params=RiskParams(
@@ -162,6 +182,9 @@ class RenkoPipeline:
         # External state (set by caller)
         self._current_regime: Optional[str] = None
         self._current_equity: float = 100000.0
+        self._current_regime_quality: float = 1.0   # From RegimeSnapshot.risk_multiplier
+        self._current_regime_confidence: float = 0.75  # From RegimeSnapshot.confidence
+        self._current_drawdown: float = 0.0  # Current batch drawdown fraction
 
         # Internal tracking
         self._last_signal: Optional[PatternSignal] = None
@@ -240,6 +263,14 @@ class RenkoPipeline:
                 equity=self._current_equity,
                 brick_size=self.config.get_brick_size(),
                 kelly_fraction=kelly,
+                regime_quality=self._current_regime_quality,
+                regime_confidence=self._current_regime_confidence,
+                current_drawdown=self._current_drawdown,
+                atr_baseline=self.config.brick_size * 20,  # Approx ATR
+                atr_current=self.config.brick_size * 20,
+                default_win_rate=self.config.default_win_rate,
+                sl_bricks=self.config.sl_bricks,
+                tp_bricks=self.config.tp_bricks,
             )
 
             if filtered is None:
@@ -260,9 +291,18 @@ class RenkoPipeline:
         """Set the current HMM regime (called externally)."""
         self._current_regime = regime
 
+    def set_regime_quality(self, quality: float, confidence: float = 0.75) -> None:
+        """Set the current regime quality and confidence (from RegimeSnapshot)."""
+        self._current_regime_quality = quality
+        self._current_regime_confidence = confidence
+
     def set_equity(self, equity: float) -> None:
         """Set the current account equity (called externally)."""
         self._current_equity = equity
+
+    def set_drawdown(self, drawdown: float) -> None:
+        """Set the current batch drawdown fraction (called externally)."""
+        self._current_drawdown = drawdown
 
     def get_state(self) -> PipelineState:
         """Get a snapshot of the pipeline's current state."""
@@ -297,6 +337,7 @@ class RenkoPipeline:
             "session": self.signal_filter.session_stats,
             "journal": self.journal.get_stats(),
             "filter_rejections": len(self.signal_filter.rejected_signals),
+            "sizing_mode": self.config.sizing_mode.value,
         }
 
     def snapshot(self) -> dict:

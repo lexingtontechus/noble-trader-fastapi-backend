@@ -30,6 +30,12 @@ class OrderType(str, Enum):
     LIMIT = "limit"
 
 
+class SizingMode(str, Enum):
+    """Position sizing strategy."""
+    KELLY = "kelly"           # Simple Kelly: position_usd = equity × min(kelly_fraction, 0.10)
+    MASANIELLO = "masaniello"  # Dynamic Masaniello: f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
+
+
 @dataclass
 class RenkoConfig:
     """Master configuration for the Renko HFT pipeline."""
@@ -88,10 +94,23 @@ class RenkoConfig:
     base_url: str = "https://paper-api.alpaca.markets"
 
     # ── Position Sizing ───────────────────────────────────────────
+    sizing_mode: SizingMode = SizingMode.KELLY  # kelly or masaniello
     kelly_fraction: float = 0.5        # Half-Kelly by default
     max_position_pct: float = 0.10     # Max 10 % of equity per trade
     min_position_usd: float = 50.0     # Minimum order value
     default_win_rate: float = 0.55     # Fallback WR for Kelly when no history
+
+    # ── Masaniello Sizing Parameters (only used when sizing_mode=masaniello) ──
+    masaniello_base_risk: float = 0.005    # β = 0.50% base risk fraction
+    masaniello_min_risk: float = 0.0025    # Hard floor 0.25%
+    masaniello_max_risk: float = 0.010     # Hard cap   1.00%
+    masaniello_min_prob: float = 0.50      # Min win probability to trade
+    masaniello_min_rr: float = 2.50        # Min reward/risk ratio to trade
+    masaniello_max_drawdown: float = 0.10  # 10% max strategy drawdown
+    masaniello_regime_floor: float = 0.50  # Min regime_quality to allow trade
+    masaniello_use_kelly_overlay: bool = False  # Cap Masaniello at Kelly bound
+    masaniello_batch_size: int = 5         # N trades per batch
+    masaniello_target_wins: int = 3        # W target wins per batch
 
     # ── Transaction Cost Modeling (Phase 2) ────────────────────────
     slippage_bps: float = 2.0            # Slippage in basis points
@@ -193,6 +212,17 @@ class RenkoConfig:
             "initial_capital": "renko.initial_capital",
             "symbol": "renko.default_symbol",
             "timezone": "renko.timezone",
+            "sizing_mode": "renko.sizing_mode",
+            "masaniello_base_risk": "renko.masaniello_base_risk",
+            "masaniello_min_risk": "renko.masaniello_min_risk",
+            "masaniello_max_risk": "renko.masaniello_max_risk",
+            "masaniello_min_prob": "renko.masaniello_min_prob",
+            "masaniello_min_rr": "renko.masaniello_min_rr",
+            "masaniello_max_drawdown": "renko.masaniello_max_drawdown",
+            "masaniello_regime_floor": "renko.masaniello_regime_floor",
+            "masaniello_use_kelly_overlay": "renko.masaniello_use_kelly_overlay",
+            "masaniello_batch_size": "renko.masaniello_batch_size",
+            "masaniello_target_wins": "renko.masaniello_target_wins",
         }
 
         # Type map: field name → getter method on runtime_config
@@ -244,6 +274,17 @@ class RenkoConfig:
             "initial_capital": "get_float",
             "symbol": "get_str",
             "timezone": "get_str",
+            "sizing_mode": "get_str",
+            "masaniello_base_risk": "get_float",
+            "masaniello_min_risk": "get_float",
+            "masaniello_max_risk": "get_float",
+            "masaniello_min_prob": "get_float",
+            "masaniello_min_rr": "get_float",
+            "masaniello_max_drawdown": "get_float",
+            "masaniello_regime_floor": "get_float",
+            "masaniello_use_kelly_overlay": "get_bool",
+            "masaniello_batch_size": "get_int",
+            "masaniello_target_wins": "get_int",
         }
 
         # Build a default instance to get fallback values
@@ -278,5 +319,12 @@ class RenkoConfig:
         elif isinstance(ot, str):
             ot_clean = ot.replace("OrderType.", "")
             kwargs["order_type"] = OrderType(ot_clean)
+
+        sm = kwargs.get("sizing_mode")
+        if isinstance(sm, SizingMode):
+            pass
+        elif isinstance(sm, str):
+            sm_clean = sm.replace("SizingMode.", "")
+            kwargs["sizing_mode"] = SizingMode(sm_clean)
 
         return cls(**kwargs)

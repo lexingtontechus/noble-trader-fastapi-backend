@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time
-from typing import Deque, List, Optional
+from typing import Any, Deque, List, Optional
 
 from collections import deque
 
@@ -40,6 +40,14 @@ class FilteredSignal:
     kelly_fraction: float = 0.0  # Kelly-derived position size fraction
     position_size_usd: float = 0.0
     brick_size: float = 0.0
+    # Masaniello sizing fields (populated when sizing_mode=masaniello)
+    sizing_mode: str = "kelly"           # "kelly" or "masaniello"
+    masaniello_factor: float = 0.0       # M_i: urgency
+    quality_factor: float = 0.0          # Q_i: model quality
+    drawdown_factor: float = 0.0         # DD_i: drawdown scaling
+    volatility_factor: float = 0.0       # V_i: vol adjustment
+    risk_fraction: float = 0.0           # Final risk fraction after all factors
+    contracts: int = 0                   # Calculated contracts/shares
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +57,13 @@ class FilteredSignal:
             "kelly_fraction": self.kelly_fraction,
             "position_size_usd": self.position_size_usd,
             "brick_size": self.brick_size,
+            "sizing_mode": self.sizing_mode,
+            "masaniello_factor": self.masaniello_factor,
+            "quality_factor": self.quality_factor,
+            "drawdown_factor": self.drawdown_factor,
+            "volatility_factor": self.volatility_factor,
+            "risk_fraction": self.risk_fraction,
+            "contracts": self.contracts,
         }
 
 
@@ -93,6 +108,8 @@ class SignalFilter:
         min_brick_velocity: float = 0.0,
         regime_gate: bool = True,
         timezone: str = "America/New_York",
+        sizing_mode: str = "kelly",
+        masaniello_sizing_config: Optional[Any] = None,
     ):
         self.session_start = self._parse_time(session_start)
         self.session_end = self._parse_time(session_end)
@@ -106,6 +123,16 @@ class SignalFilter:
         self.min_brick_velocity = min_brick_velocity
         self.regime_gate = regime_gate
         self.timezone = timezone
+        self.sizing_mode = sizing_mode
+
+        # Masaniello sizer instance (lazy-created from config when mode=masaniello)
+        self._masaniello_sizer = masaniello_sizing_config
+        self._masaniello_batch_wins = 0
+        self._masaniello_batch_losses = 0
+        self._masaniello_trade_index = 0
+        self._masaniello_peak_equity = 0.0
+        self._masaniello_initial_equity = 0.0
+        self._masaniello_pnl = 0.0
 
         self._stats = _SessionStats()
         self._rejected: List[dict] = []  # Log of rejected signals
@@ -125,6 +152,14 @@ class SignalFilter:
         equity: float = 100000.0,
         brick_size: float = 0.50,
         kelly_fraction: float = 0.0,
+        regime_quality: float = 1.0,
+        regime_confidence: float = 0.75,
+        current_drawdown: float = 0.0,
+        atr_baseline: float = 0.0,
+        atr_current: float = 0.0,
+        default_win_rate: float = 0.55,
+        sl_bricks: int = 3,
+        tp_bricks: int = 5,
     ) -> Optional[FilteredSignal]:
         """
         Evaluate a signal through all filters.
@@ -143,6 +178,22 @@ class SignalFilter:
             Current brick size in dollars.
         kelly_fraction : float
             Kelly-derived position sizing fraction.
+        regime_quality : float
+            Regime risk multiplier [0.10, 1.75] — from RegimeSnapshot.
+        regime_confidence : float
+            HMM state confidence [0, 1].
+        current_drawdown : float
+            Current batch drawdown as fraction [0, 1].
+        atr_baseline : float
+            Historical ATR reference value (for Masaniello V_i).
+        atr_current : float
+            Current ATR value (for Masaniello V_i).
+        default_win_rate : float
+            Fallback win rate for Masaniello Q_i.
+        sl_bricks : int
+            Stop-loss in bricks (for Masaniello stop_distance_price).
+        tp_bricks : int
+            Take-profit in bricks (for Masaniello reward_risk).
 
         Returns
         -------
@@ -220,7 +271,27 @@ class SignalFilter:
             })
             return None
 
-        # Passed — compute position size
+        # Passed — compute position size based on sizing_mode
+        if self.sizing_mode == "masaniello" and self._masaniello_sizer is not None:
+            sizing_result = self._compute_masaniello_size(
+                signal=signal,
+                equity=equity,
+                brick_size=brick_size,
+                regime_quality=regime_quality,
+                regime_confidence=regime_confidence,
+                current_drawdown=current_drawdown,
+                atr_baseline=atr_baseline,
+                atr_current=atr_current,
+                default_win_rate=default_win_rate,
+                sl_bricks=sl_bricks,
+                tp_bricks=tp_bricks,
+            )
+            if sizing_result is not None:
+                return sizing_result
+            # Masaniello blocked the trade — fall through to Kelly as fallback
+            # (This happens when Masaniello gates reject, e.g. p_win too low)
+
+        # Kelly sizing (default or Masaniello fallback)
         effective_kelly = kelly_fraction if kelly_fraction > 0 else 0.05
         position_usd = equity * min(effective_kelly, 0.10)  # Cap at 10%
 
@@ -231,6 +302,7 @@ class SignalFilter:
             kelly_fraction=effective_kelly,
             position_size_usd=position_usd,
             brick_size=brick_size,
+            sizing_mode="kelly",
         )
 
     def record_trade_result(self, pnl_bricks: float) -> None:
@@ -272,10 +344,128 @@ class SignalFilter:
         """Whether warmup mode is currently active."""
         return self._warmup_mode
 
+    def _compute_masaniello_size(
+        self,
+        signal: PatternSignal,
+        equity: float,
+        brick_size: float,
+        regime_quality: float,
+        regime_confidence: float,
+        current_drawdown: float,
+        atr_baseline: float,
+        atr_current: float,
+        default_win_rate: float,
+        sl_bricks: int,
+        tp_bricks: int,
+    ) -> Optional[FilteredSignal]:
+        """Compute position size using the Dynamic Masaniello formula."""
+        from regime_platform.core.position_sizer import DynamicMasanielloSizer, TradeContext
+
+        sizer = self._masaniello_sizer
+
+        # Compute stop distance and reward/risk from brick params
+        stop_distance_price = sl_bricks * brick_size
+        reward_risk = tp_bricks / sl_bricks if sl_bricks > 0 else 2.0
+
+        # Use trade journal win rate if available, else default
+        p_win = default_win_rate
+        wr = self.session_stats.get("win_rate", 0.0)
+        if wr > 0:
+            p_win = wr
+
+        # Use default ATR values if not provided
+        if atr_baseline <= 0:
+            atr_baseline = brick_size * 20  # Approximate: 20-brick ATR
+        if atr_current <= 0:
+            atr_current = atr_baseline
+
+        # Compute actual drawdown if we have equity tracking
+        if self._masaniello_initial_equity > 0 and self._masaniello_peak_equity > 0:
+            current_equity = self._masaniello_initial_equity + self._masaniello_pnl
+            if current_equity < self._masaniello_peak_equity:
+                current_drawdown = (self._masaniello_peak_equity - current_equity) / self._masaniello_peak_equity
+
+        direction = "long" if signal.direction.value.upper() in ("LONG", "BUY") else "short"
+
+        ctx = TradeContext(
+            equity=equity,
+            stop_distance_price=stop_distance_price,
+            point_value=1.0,  # Stocks: 1 point = $1
+            p_win=float(min(max(p_win, 0.0), 1.0)),
+            reward_risk=float(max(reward_risk, 0.0)),
+            regime_quality=float(regime_quality),
+            state_confidence=float(regime_confidence),
+            current_drawdown=float(current_drawdown),
+            atr_baseline=float(atr_baseline),
+            atr_current=float(atr_current),
+            wins_so_far=self._masaniello_batch_wins,
+            losses_so_far=self._masaniello_batch_losses,
+            trade_index=self._masaniello_trade_index + 1,
+            batch_size=sizer.config.batch_size,
+            target_wins=sizer.config.target_wins,
+            direction=direction,
+            symbol="",
+            regime_label="",
+        )
+
+        result = sizer.size_trade(ctx)
+
+        if not result.allowed:
+            # Masaniello blocked — log and return None to fall back to Kelly
+            self._rejected.append({
+                "timestamp": signal.timestamp,
+                "reason": f"masaniello_blocked: {result.reason}",
+                "signal": signal.to_dict(),
+            })
+            return None
+
+        position_usd = result.risk_amount
+
+        # Update Masaniello batch state
+        self._masaniello_trade_index += 1
+        if equity > self._masaniello_peak_equity:
+            self._masaniello_peak_equity = equity
+        if self._masaniello_initial_equity <= 0:
+            self._masaniello_initial_equity = equity
+            self._masaniello_peak_equity = equity
+
+        return FilteredSignal(
+            original_signal=signal,
+            passed_filters=[],  # Already validated above
+            regime_aligned=True,
+            kelly_fraction=0.0,  # Not Kelly
+            position_size_usd=position_usd,
+            brick_size=brick_size,
+            sizing_mode="masaniello",
+            masaniello_factor=result.masaniello_factor,
+            quality_factor=result.quality_factor,
+            drawdown_factor=result.drawdown_factor,
+            volatility_factor=result.volatility_factor,
+            risk_fraction=result.risk_fraction,
+            contracts=result.contracts,
+        )
+
+    def record_masaniello_trade(self, pnl_bricks: float, pnl_dollars: float = 0.0) -> None:
+        """Record a trade result for Masaniello batch state tracking."""
+        if pnl_bricks > 0:
+            self._masaniello_batch_wins += 1
+        else:
+            self._masaniello_batch_losses += 1
+        self._masaniello_pnl += pnl_dollars
+        # Update peak equity
+        current_equity = self._masaniello_initial_equity + self._masaniello_pnl
+        self._masaniello_peak_equity = max(self._masaniello_peak_equity, current_equity)
+
     def reset_session(self) -> None:
         """Reset per-session statistics (call at market open)."""
         self._stats = _SessionStats()
         self._warmup_mode = False  # Disable warmup mode on session reset
+        self._masaniello_batch_wins = 0
+        self._masaniello_batch_losses = 0
+        self._masaniello_trade_index = 0
+        self._masaniello_peak_equity = 0.0
+        self._masaniello_initial_equity = 0.0
+        self._masaniello_pnl = 0.0
 
     @property
     def session_stats(self) -> dict:
