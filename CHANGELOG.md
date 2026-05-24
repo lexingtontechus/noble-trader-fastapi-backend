@@ -1,3 +1,65 @@
+## [7.0.0] — 2026-05-24
+
+### Added — Runtime Configuration Engine + Admin API
+
+#### `core/runtime_config.py` — NEW FILE
+- `RuntimeConfig` singleton with 30-second TTL in-memory cache backed by Supabase `system_config` table
+- Resolution order: DB override (highest) → env var → hardcoded default (lowest)
+- Async-safe via `asyncio.Lock` with double-checked locking pattern
+- Type-strict getters: `get_float()`, `get_int()`, `get_bool()`, `get_str()`, `get_json()`
+- `set_value()` with validation (type coercion, range check, enum check), DB persist, audit logging, and on-change callbacks
+- `reset_value()` to revert a key to its hardcoded default
+- `reload()` to force full cache refresh from DB (bypasses TTL)
+- `_SyncProxy` / `sync_config` for non-async contexts (env var → default only, no DB)
+- 148 default values registered across 8 categories (renko, execution, alpaca, risk, sizing, stream, auth, regime)
+
+#### `routers/config.py` — NEW FILE
+- 9 REST endpoints under `/config/`:
+  - `GET /config/` — List all entries grouped by category
+  - `GET /config/categories` — List category names
+  - `GET /config/{category}` — Get entries for a category
+  - `GET /config/key/{key}` — Get single entry
+  - `PATCH /config/key/{key}` — Update value (admin only, validated)
+  - `POST /config/key/{key}/reset` — Reset to default (admin only)
+  - `GET /config/reload` — Force cache reload (admin only)
+  - `GET /config/schema` — Full schema with types/ranges
+  - `GET /config/audit` — Config change audit log (admin only)
+- Sensitive value masking for non-admin readers
+- Pydantic models: `ConfigValueUpdate`, `ConfigEntryResponse`, `ConfigCategoryResponse`, `ConfigListResponse`, `ConfigReloadResponse`, `ConfigAuditEntry`
+
+#### `supabase/migrations/007_system_config.sql` — NEW FILE
+- `system_config` table with JSONB values, type/category metadata, range constraints, RLS policies
+- `system_config_audit` table with immutable append-only change log
+- Auto-updating `updated_at` trigger
+- Seeds for 139 config keys across renko, sizing, risk, regime, execution, stream, alpaca, auth
+
+#### `supabase/migrations/008_system_config_extended.sql` — NEW FILE
+- Adds 9 extended config keys: execution financing (4), fill probability internals (5), stream subscriber queue (1), Alpaca WS timeouts/throttling (10), risk stress test extended (3)
+- Uses `ON CONFLICT (key) DO NOTHING` — safe to re-run
+
+#### Documentation — NEW FILES
+- `docs/ADMIN_CONFIG_API.md` — Full API reference for all 9 config endpoints
+- `docs/ADMIN_CONFIG_KEY_CATALOG.md` — Complete catalog of all 148 config keys with types, defaults, ranges, and descriptions
+
+### Fixed — Deployment Import Errors
+- `routers/backtest.py` — Added missing `raise_http_exception` import
+- `routers/regime.py` — Added missing `limiter`, `RATE_LIMIT_COMPUTE`, `raise_http_exception`, `Request` imports; fixed `@limiter.limit` decorator order
+- `routers/risk.py` — Added missing `limiter`, `RATE_LIMIT_COMPUTE`, `RATE_LIMIT_DEFAULT`, `raise_http_exception`, `Request`, `Query`, `RiskDashboardResponse`; fixed decorator order
+- `routers/sizing.py` — Added missing `limiter`, `RATE_LIMIT_COMPUTE`, `raise_http_exception`, `Request`, all Masaniello schema imports; fixed import sources
+- `routers/strategy.py`, `routers/observation.py`, `routers/pipeline.py`, `routers/tda.py` — Added missing `raise_http_exception` import
+- `routers/auth_router.py` — Added missing `import os`
+- `routers/stream_ws.py` — Added missing `import logging` and `_log = logging.getLogger(__name__)`
+- `renko/router.py` — Added `Request` import and `request: Request` parameter to 3 endpoints (`process_tick`, `process_batch`, `reset_pipeline`); fixed `@limiter.limit` decorator order
+- `main.py` — Added missing `import os` (used by `os.getenv("CORS_ALLOWED_ORIGINS")` and `os.getenv("DEPLOY_ENV")`)
+
+### Changed
+- All backend hardcoded parameters are now runtime-configurable via `runtime_config.get_*()` calls
+- Config changes propagate to all services within 30 seconds (TTL cache)
+- Admin role required for all config mutations (`require_admin` dependency)
+- Auth level summary updated: 4 admin-only config endpoints added (PATCH, POST reset, GET reload, GET audit)
+
+---
+
 ## [3.4.0] — 2026-05-21
 
 ### Fixed — Auth Hardening (All 57 Endpoints Now Protected)
