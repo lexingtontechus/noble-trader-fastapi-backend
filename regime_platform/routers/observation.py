@@ -5,6 +5,7 @@ from ..models.schemas import ObservationRequest, ObservationResponse, Observatio
 from ..core.obs_builder import InferenceObservationBuilder, F
 from ..core.tda_engine import TDAEngine
 from ..auth.jwt_auth import get_authed_user, TokenData
+from ..core.exceptions import raise_http_exception
 import numpy as np
 
 router = APIRouter(prefix="/observation", tags=["Observation Builder"])

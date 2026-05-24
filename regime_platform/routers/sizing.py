@@ -1,11 +1,18 @@
 """Position sizing endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends
-from ..models.schemas import SizeRequest, SizeResponse
+from fastapi import APIRouter, HTTPException, Depends, Request
+from ..models.schemas import (
+    SizeRequest, SizeResponse,
+    MasanielloSizeRequest, MasanielloSizeResponse,
+    MasanielloBatchRequest, MasanielloBatchResponse,
+    PortfolioMasanielloRequest, PortfolioMasanielloResponse,
+)
 from ..core.regime_engine import RegimeHMM
-from ..core.position_sizer import PositionSizer, PositionRequest
+from ..core.position_sizer import PositionSizer, PositionRequest, DynamicMasanielloSizer, TradeContext, SizingConfig
+from ..core.exceptions import raise_http_exception
 from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.runtime_config import runtime_config
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
 router = APIRouter(prefix="/size", tags=["Position Sizing"])
@@ -58,12 +65,12 @@ async def kelly_size(req: SizeRequest, user: TokenData = Depends(get_authed_user
         raise_http_exception(e, "Kelly sizing")
 
 
-@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello",
     response_model=MasanielloSizeResponse,
     summary="Dynamic Masaniello position sizing (Path B)",
 )
+@limiter.limit(RATE_LIMIT_COMPUTE)
 async def masaniello_size(
     request: Request,
     req: MasanielloSizeRequest,
@@ -166,12 +173,12 @@ async def masaniello_size(
         raise_http_exception(e, "Masaniello sizing")
 
 
-@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello/batch",
     response_model=MasanielloBatchResponse,
     summary="Batch Dynamic Masaniello sizing for a sequence of trades",
 )
+@limiter.limit(RATE_LIMIT_COMPUTE)
 async def masaniello_batch(
     request: Request,
     req: MasanielloBatchRequest,
@@ -277,12 +284,12 @@ async def masaniello_batch(
         raise_http_exception(e, "Masaniello batch")
 
 
-@limiter.limit(RATE_LIMIT_COMPUTE)
 @router.post(
     "/masaniello/portfolio",
     response_model=PortfolioMasanielloResponse,
     summary="Portfolio-optimised Masaniello sizing across multiple assets",
 )
+@limiter.limit(RATE_LIMIT_COMPUTE)
 async def masaniello_portfolio(
     request: Request,
     req: PortfolioMasanielloRequest,

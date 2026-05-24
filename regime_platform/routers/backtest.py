@@ -22,6 +22,7 @@ from ..models.schemas import (
 )
 from ..core.backtester import Backtester, BacktestConfig
 from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..core.exceptions import raise_http_exception
 from ..services.backtest_cache import backtest_cache
 from ..services.backtest_store import (
     save_backtest_result,

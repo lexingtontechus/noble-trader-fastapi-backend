@@ -6,6 +6,7 @@ from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
 from ..auth.jwt_auth import get_authed_user, TokenData
+from ..core.exceptions import raise_http_exception
 import numpy as np
 
 router  = APIRouter(prefix="/analyse", tags=["Full Pipeline"])

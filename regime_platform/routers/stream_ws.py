@@ -31,6 +31,7 @@ SSE /sse/pnl events:
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import time
 from typing import AsyncGenerator
 
@@ -46,6 +47,8 @@ from ..auth.jwt_auth import ws_auth, get_authed_user, require_write, TokenData
 from typing import Optional
 
 router = APIRouter(tags=["Real-Time Streaming"])
+
+_log = logging.getLogger("regime.stream_ws")
 
 # Global alert broadcast queue
 _alert_broadcast: asyncio.Queue = asyncio.Queue(maxsize=1000)
