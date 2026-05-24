@@ -36,7 +36,7 @@ from scipy import stats as sp_stats
 
 # FastAPI is optional — the module works without it for backtesting
 try:
-    from fastapi import APIRouter, HTTPException, Depends
+    from fastapi import APIRouter, HTTPException, Depends, Request
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -283,9 +283,9 @@ if FASTAPI_AVAILABLE:
 
     renko_router = APIRouter(prefix="/renko", tags=["renko"])
 
-    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick")
-    async def process_tick(body: TickInput, user=Depends(get_authed_user)) -> Dict[str, Any]:
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def process_tick(request: Request, body: TickInput, user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
         pipeline = await _get_pipeline_with_restore(symbol)
@@ -314,9 +314,9 @@ if FASTAPI_AVAILABLE:
 
         return result
 
-    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/tick/batch")
-    async def process_batch(body: BatchTickInput, symbol: str = "SPY", user=Depends(require_write)) -> Dict[str, Any]:
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user=Depends(require_write)) -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up)."""
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
@@ -428,9 +428,9 @@ if FASTAPI_AVAILABLE:
         _pipelines[symbol] = pipeline
         return {"status": "ok", "config": config.to_dict()}
 
-    @limiter.limit(RATE_LIMIT_WRITE)
     @renko_router.post("/reset")
-    async def reset_pipeline(symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def reset_pipeline(request: Request, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
         """Reset the pipeline for a symbol."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.reset()
