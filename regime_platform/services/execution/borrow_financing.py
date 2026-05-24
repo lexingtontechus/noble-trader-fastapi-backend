@@ -11,6 +11,9 @@ Leveraged longs also incur margin interest:
 
 These costs can be the difference between a profitable short strategy
 and an unprofitable one, especially for strategies with long holding periods.
+
+All financing parameters are configurable via runtime_config (DB → env → hardcoded).
+Use FinancingParams.from_runtime_config() to resolve them in async contexts.
 """
 
 import math
@@ -26,6 +29,45 @@ class FinancingParams:
     hard_to_borrow_premium_bps: float = 500.0  # Additional cost for HTB stocks (5%)
     dividend_yield_bps: float = 200.0  # Average dividend yield (2.0%)
     trading_days_per_year: int = 252
+    trading_days_per_quarter: int = 63
+
+    @classmethod
+    async def from_runtime_config(cls, overrides: Optional[Dict[str, Any]] = None) -> "FinancingParams":
+        """
+        Build FinancingParams from runtime_config (DB → env → hardcoded default).
+
+        Optional overrides dict takes highest priority.
+        """
+        from regime_platform.core.runtime_config import runtime_config
+
+        defaults = cls()
+        key_map = {
+            "borrow_rate_bps": "exec.borrow_rate_bps",
+            "margin_rate_bps": "exec.margin_rate_bps",
+            "hard_to_borrow_premium_bps": "exec.htb_premium_bps",
+            "dividend_yield_bps": "exec.dividend_yield_bps",
+            "trading_days_per_year": "exec.trading_days_per_year",
+            "trading_days_per_quarter": "exec.trading_days_per_quarter",
+        }
+        type_getters = {
+            "borrow_rate_bps": "get_float",
+            "margin_rate_bps": "get_float",
+            "hard_to_borrow_premium_bps": "get_float",
+            "dividend_yield_bps": "get_float",
+            "trading_days_per_year": "get_int",
+            "trading_days_per_quarter": "get_int",
+        }
+
+        kwargs = {}
+        for field_name, config_key in key_map.items():
+            if overrides and field_name in overrides:
+                kwargs[field_name] = overrides[field_name]
+                continue
+            getter_name = type_getters.get(field_name, "get")
+            getter = getattr(runtime_config, getter_name)
+            kwargs[field_name] = await getter(config_key, default=getattr(defaults, field_name))
+
+        return cls(**kwargs)
 
 
 def compute_borrow_cost(
@@ -34,10 +76,11 @@ def compute_borrow_cost(
     borrow_rate_bps: float = 50.0,
     is_hard_to_borrow: bool = False,
     hard_to_borrow_premium_bps: float = 500.0,
+    trading_days_per_year: int = 252,
 ) -> Dict[str, Any]:
     """
     Compute the borrow cost for a short position.
-    
+
     Parameters
     ----------
     position_notional : float
@@ -50,7 +93,9 @@ def compute_borrow_cost(
         Whether the stock is hard-to-borrow (HTB).
     hard_to_borrow_premium_bps : float
         Additional annualized cost for HTB stocks.
-    
+    trading_days_per_year : int
+        Number of trading days per year for daily rate calculation.
+
     Returns
     -------
     dict with daily and total borrow costs.
@@ -58,11 +103,11 @@ def compute_borrow_cost(
     effective_rate_bps = borrow_rate_bps
     if is_hard_to_borrow:
         effective_rate_bps += hard_to_borrow_premium_bps
-    
-    daily_rate = effective_rate_bps / 10_000 / 252
+
+    daily_rate = effective_rate_bps / 10_000 / trading_days_per_year
     daily_cost = position_notional * daily_rate
     total_cost = daily_cost * holding_days
-    
+
     return {
         "daily_borrow_cost": round(daily_cost, 4),
         "total_borrow_cost": round(total_cost, 2),
@@ -77,10 +122,11 @@ def compute_margin_cost(
     borrowed_amount: float,
     holding_days: float,
     margin_rate_bps: float = 150.0,
+    trading_days_per_year: int = 252,
 ) -> Dict[str, Any]:
     """
     Compute the margin interest cost for a leveraged long position.
-    
+
     Parameters
     ----------
     borrowed_amount : float
@@ -89,15 +135,17 @@ def compute_margin_cost(
         Number of days the margin loan is outstanding.
     margin_rate_bps : float
         Annualized margin rate in basis points (default 150 = 1.50%).
-    
+    trading_days_per_year : int
+        Number of trading days per year for daily rate calculation.
+
     Returns
     -------
     dict with daily and total margin costs.
     """
-    daily_rate = margin_rate_bps / 10_000 / 252
+    daily_rate = margin_rate_bps / 10_000 / trading_days_per_year
     daily_cost = borrowed_amount * daily_rate
     total_cost = daily_cost * holding_days
-    
+
     return {
         "daily_margin_cost": round(daily_cost, 4),
         "total_margin_cost": round(total_cost, 2),
@@ -111,13 +159,15 @@ def compute_dividend_cost_short(
     position_notional: float,
     dividend_yield_bps: float = 200.0,
     holding_days: float = 0.0,
+    trading_days_per_year: int = 252,
+    trading_days_per_quarter: int = 63,
 ) -> Dict[str, Any]:
     """
     Compute the dividend cost for a short position.
-    
+
     When short, you OWE the dividend to the lender. This is a real cost
     that must be tracked.
-    
+
     Parameters
     ----------
     position_notional : float
@@ -126,20 +176,24 @@ def compute_dividend_cost_short(
         Annualized dividend yield in basis points.
     holding_days : float
         Number of days held.
-    
+    trading_days_per_year : int
+        Number of trading days per year for daily rate calculation.
+    trading_days_per_quarter : int
+        Number of trading days per quarter for dividend probability.
+
     Returns
     -------
     dict with dividend cost information.
     """
-    daily_dividend_rate = dividend_yield_bps / 10_000 / 252
+    daily_dividend_rate = dividend_yield_bps / 10_000 / trading_days_per_year
     daily_cost = position_notional * daily_dividend_rate
     total_cost = daily_cost * holding_days
-    
+
     # Probability of an ex-dividend date during holding period
     # Approximate: quarterly dividends, so ~4 per year
-    n_quarters = holding_days / 63  # ~63 trading days per quarter
+    n_quarters = holding_days / trading_days_per_quarter
     prob_dividend = 1 - math.exp(-n_quarters) if n_quarters > 0 else 0
-    
+
     return {
         "daily_dividend_cost": round(daily_cost, 4),
         "total_dividend_cost": round(total_cost, 2),
@@ -158,10 +212,12 @@ def compute_total_financing_costs(
     margin_rate_bps: float = 150.0,
     dividend_yield_bps: float = 200.0,
     hard_to_borrow_premium_bps: float = 500.0,
+    trading_days_per_year: int = 252,
+    trading_days_per_quarter: int = 63,
 ) -> Dict[str, Any]:
     """
     Compute the total financing costs for a position.
-    
+
     Parameters
     ----------
     position_notional : float
@@ -182,39 +238,47 @@ def compute_total_financing_costs(
         Annualized dividend yield.
     hard_to_borrow_premium_bps : float
         Additional cost for HTB stocks.
-    
+    trading_days_per_year : int
+        Number of trading days per year.
+    trading_days_per_quarter : int
+        Number of trading days per quarter.
+
     Returns
     -------
     Combined dict with all financing cost components.
     """
     total_cost = 0.0
     components = {}
-    
+
     if direction == "short":
         # Borrow cost
         borrow = compute_borrow_cost(
             position_notional, holding_days, borrow_rate_bps,
             is_hard_to_borrow, hard_to_borrow_premium_bps,
+            trading_days_per_year=trading_days_per_year,
         )
         components["borrow"] = borrow
         total_cost += borrow["total_borrow_cost"]
-        
+
         # Dividend cost (short seller owes dividends)
         dividend = compute_dividend_cost_short(
             position_notional, dividend_yield_bps, holding_days,
+            trading_days_per_year=trading_days_per_year,
+            trading_days_per_quarter=trading_days_per_quarter,
         )
         components["dividend"] = dividend
         total_cost += dividend["total_dividend_cost"]
-    
+
     if direction == "long" and leverage_ratio > 1.0:
         # Margin interest on the borrowed portion
         borrowed_amount = position_notional * (1 - 1.0 / leverage_ratio)
         margin = compute_margin_cost(
             borrowed_amount, holding_days, margin_rate_bps,
+            trading_days_per_year=trading_days_per_year,
         )
         components["margin"] = margin
         total_cost += margin["total_margin_cost"]
-    
+
     return {
         "direction": direction,
         "position_notional": position_notional,

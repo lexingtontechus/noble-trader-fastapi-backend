@@ -9,12 +9,20 @@ Configuration:
   which resolves all params from the runtime configuration system.
   Legacy get_or_create() with explicit params is retained for backward
   compatibility but defaults to runtime config when no overrides are given.
+
+Pipeline Invalidation:
+  When a stream.* config key changes, all cached sessions are invalidated
+  so the next tick() creates fresh sessions with updated config.
+  Registered via runtime_config.register_on_change() in main.py startup.
 """
 
 from __future__ import annotations
 import asyncio
+import logging
 from typing import Optional
 from .stream_session import StreamSession
+
+log = logging.getLogger("regime.registry")
 
 
 class SessionRegistry:
@@ -83,6 +91,43 @@ class SessionRegistry:
                 }
                 for sym, s in self._sessions.items()
             }
+
+    async def invalidate_all(self) -> list[str]:
+        """
+        Invalidate all cached sessions.
+
+        Called when stream.* config keys change so that the next
+        tick() or get_or_create() creates fresh sessions with
+        updated runtime config values.
+
+        Returns list of invalidated symbol names.
+        """
+        async with self._lock:
+            invalidated = list(self._sessions.keys())
+            self._sessions.clear()
+            if invalidated:
+                log.info(
+                    "Stream config changed — invalidated %d session(s): %s",
+                    len(invalidated), ", ".join(invalidated),
+                )
+            return invalidated
+
+
+async def on_stream_config_changed(key: str, entry) -> None:
+    """
+    Callback registered with runtime_config.register_on_change().
+
+    When a stream.* config key changes, invalidate all cached StreamSessions
+    so the next request creates fresh sessions with updated config.
+    This ensures runtime config changes take effect immediately without
+    requiring a server restart.
+
+    Note: Alpaca WS params (alpaca.*) are read per-connection cycle,
+    so reconnections naturally pick up new values. No explicit invalidation
+    needed — the 30s TTL cache ensures freshness.
+    """
+    if key.startswith("stream."):
+        await registry.invalidate_all()
 
 
 # Singleton — imported everywhere

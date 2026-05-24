@@ -10,6 +10,10 @@ fill probability based on:
 The logit model provides a smooth probability curve:
     P(fill) = 1 / (1 + exp(k * (distance/sigma - threshold)))
 
+All internal thresholds and multipliers are configurable via runtime_config.
+Use `get_fill_defaults()` to resolve them in async contexts, or pass them
+explicitly via the `fill_cfg` dict parameter.
+
 Reference:
   Cont & de Larrard (2013) "Price Dynamics in a Markovian Limit Order Market"
 """
@@ -25,6 +29,32 @@ class OrderType(str, Enum):
     STOP = "stop"
 
 
+async def get_fill_defaults() -> dict:
+    """
+    Resolve fill probability internals from runtime_config.
+
+    Returns a dict of all fill-probability-specific parameters.
+    Resolution: DB override → env var → hardcoded default.
+    """
+    from regime_platform.core.runtime_config import runtime_config
+
+    return {
+        "volatility_daily": await runtime_config.get_float("exec.sigma_daily", default=0.02),
+        "time_horizon_hours": await runtime_config.get_float("exec.fill_time_horizon_hours", default=6.5),
+        "volume_participation_rate": await runtime_config.get_float("exec.default_participation_rate", default=0.01),
+        "sensitivity": await runtime_config.get_float("exec.fill_sensitivity", default=5.0),
+        "threshold": await runtime_config.get_float("exec.fill_threshold", default=1.0),
+        "volume_penalty_multiplier": await runtime_config.get_float("exec.volume_penalty_multiplier", default=10.0),
+        "max_volume_penalty": await runtime_config.get_float("exec.max_volume_penalty", default=0.3),
+        "stop_min_fill_probability": await runtime_config.get_float("exec.stop_min_fill_probability", default=0.90),
+        "stop_adverse_sigma": await runtime_config.get_float("exec.stop_adverse_sigma", default=0.5),
+        "limit_adverse_sigma": await runtime_config.get_float("exec.limit_adverse_sigma", default=0.2),
+        "fill_interp_high": await runtime_config.get_float("exec.fill_interp_high", default=0.8),
+        "fill_interp_mid": await runtime_config.get_float("exec.fill_interp_mid", default=0.5),
+        "fill_interp_low": await runtime_config.get_float("exec.fill_interp_low", default=0.2),
+    }
+
+
 def compute_fill_probability(
     order_type: str,
     distance_from_mid_pct: float = 0.0,
@@ -33,10 +63,11 @@ def compute_fill_probability(
     volume_participation_rate: float = 0.01,
     sensitivity: float = 5.0,
     threshold: float = 1.0,
+    fill_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compute the probability that an order will fill.
-    
+
     Parameters
     ----------
     order_type : str
@@ -55,7 +86,17 @@ def compute_fill_probability(
         Logit sensitivity parameter (k). Higher = sharper transition.
     threshold : float
         Distance (in volatility units) where P(fill) = 0.5.
-    
+    fill_cfg : dict, optional
+        Runtime config overrides for internal thresholds. Keys:
+          - volume_penalty_multiplier (default 10.0)
+          - max_volume_penalty (default 0.3)
+          - stop_min_fill_probability (default 0.90)
+          - stop_adverse_sigma (default 0.5)
+          - limit_adverse_sigma (default 0.2)
+          - fill_interp_high (default 0.8)
+          - fill_interp_mid (default 0.5)
+          - fill_interp_low (default 0.2)
+
     Returns
     -------
     dict with:
@@ -66,6 +107,17 @@ def compute_fill_probability(
         expected_fill_price_offset_bps: float — adverse selection offset
         interpretation: str
     """
+    # Extract internal thresholds from fill_cfg or use hardcoded defaults
+    cfg = fill_cfg or {}
+    volume_penalty_mult = cfg.get("volume_penalty_multiplier", 10.0)
+    max_volume_penalty = cfg.get("max_volume_penalty", 0.3)
+    stop_min_fill = cfg.get("stop_min_fill_probability", 0.90)
+    stop_adverse_sigma = cfg.get("stop_adverse_sigma", 0.5)
+    limit_adverse_sigma = cfg.get("limit_adverse_sigma", 0.2)
+    interp_high = cfg.get("fill_interp_high", 0.8)
+    interp_mid = cfg.get("fill_interp_mid", 0.5)
+    interp_low = cfg.get("fill_interp_low", 0.2)
+
     # Market orders always fill
     if order_type == OrderType.MARKET or order_type == "market":
         return {
@@ -76,49 +128,47 @@ def compute_fill_probability(
             "expected_fill_price_offset_bps": 0.0,
             "interpretation": "Market order — guaranteed fill at current price.",
         }
-    
+
     # Convert distance to volatility units
-    # intraday_vol ≈ daily_vol / sqrt(6.5) for 1-hour windows
+    # intraday_vol ≈ daily_vol / sqrt(time_horizon) for 1-hour windows
     intraday_vol = volatility_daily / math.sqrt(time_horizon_hours)
-    
+
     # Distance in standard deviations
     distance_in_sigmas = (distance_from_mid_pct / 100) / intraday_vol if intraday_vol > 0 else float('inf')
-    
-    # Logit fill probability
-    # P(fill) = 1 / (1 + exp(k * (distance/sigma - threshold)))
-    logit_arg = sensitivity * (distance_in_sigmas - threshold)
-    
+
     # Adjust for time horizon: longer horizon = more chance to fill
-    # Scale by sqrt(time) since price扩散 is ~ sqrt(t)
+    # Scale by sqrt(time) since price diffusion is ~ sqrt(t)
     time_factor = math.sqrt(time_horizon_hours / 6.5)  # Normalized to 1 day
     adjusted_distance = distance_in_sigmas / time_factor if time_factor > 0 else distance_in_sigmas
-    
+
+    # Logit fill probability
+    # P(fill) = 1 / (1 + exp(k * (distance/sigma - threshold)))
     logit_arg = sensitivity * (adjusted_distance - threshold)
     fill_probability = 1.0 / (1.0 + math.exp(min(logit_arg, 500)))  # Clamp to prevent overflow
-    
+
     # Volume participation penalty: large orders fill less easily
-    volume_penalty = 1.0 - min(volume_participation_rate * 10, 0.3)  # Up to 30% penalty
+    volume_penalty = 1.0 - min(volume_participation_rate * volume_penalty_mult, max_volume_penalty)
     fill_probability *= volume_penalty
-    
+
     # Adverse selection: when limit orders fill, it's often because the market
     # moved against you. Expected fill offset captures this.
     if order_type == OrderType.STOP or order_type == "stop":
         # Stop orders are market orders when triggered, so they fill but with slippage
-        fill_probability = max(fill_probability, 0.90)  # Stops almost always trigger
-        expected_offset = volatility_daily * 10_000 * 0.5  # ~0.5 sigma adverse
+        fill_probability = max(fill_probability, stop_min_fill)
+        expected_offset = volatility_daily * 10_000 * stop_adverse_sigma
         interpretation = f"Stop order — {fill_probability:.1%} fill probability (near-certain when triggered)."
     else:
         # Limit orders: adverse selection means the fill is "too early"
-        expected_offset = volatility_daily * 10_000 * 0.2  # Small adverse
-        if fill_probability > 0.8:
+        expected_offset = volatility_daily * 10_000 * limit_adverse_sigma
+        if fill_probability > interp_high:
             interpretation = f"Limit order close to market — {fill_probability:.1%} fill probability (high confidence)."
-        elif fill_probability > 0.5:
+        elif fill_probability > interp_mid:
             interpretation = f"Limit order moderate distance — {fill_probability:.1%} fill probability (uncertain fill)."
-        elif fill_probability > 0.2:
+        elif fill_probability > interp_low:
             interpretation = f"Limit order far from market — {fill_probability:.1%} fill probability (low confidence)."
         else:
             interpretation = f"Limit order very far from market — {fill_probability:.1%} fill probability (unlikely to fill)."
-    
+
     return {
         "fill_probability": round(fill_probability, 4),
         "order_type": order_type,

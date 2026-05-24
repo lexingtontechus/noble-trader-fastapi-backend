@@ -27,6 +27,42 @@ class ImpactParams:
     adv_shares: float = 10_000_000    # Average daily volume in shares (default for SPY)
     avg_price: float = 450.0          # Average price (for notional ADV computation)
 
+    @classmethod
+    async def from_runtime_config(cls, overrides: Optional[Dict[str, Any]] = None) -> "ImpactParams":
+        """
+        Build ImpactParams from runtime_config (DB → env → hardcoded default).
+
+        Optional overrides dict takes highest priority.
+        """
+        from regime_platform.core.runtime_config import runtime_config
+
+        defaults = cls()
+        key_map = {
+            "sigma_daily": "exec.sigma_daily",
+            "permanent_impact_coeff": "exec.permanent_impact_coeff",
+            "temporary_impact_coeff": "exec.temporary_impact_coeff",
+            "adv_shares": "exec.default_adv_shares",
+            "avg_price": "exec.default_avg_price",
+        }
+        type_getters = {
+            "sigma_daily": "get_float",
+            "permanent_impact_coeff": "get_float",
+            "temporary_impact_coeff": "get_float",
+            "adv_shares": "get_int",
+            "avg_price": "get_float",
+        }
+
+        kwargs = {}
+        for field_name, config_key in key_map.items():
+            if overrides and field_name in overrides:
+                kwargs[field_name] = overrides[field_name]
+                continue
+            getter_name = type_getters.get(field_name, "get")
+            getter = getattr(runtime_config, getter_name)
+            kwargs[field_name] = await getter(config_key, default=getattr(defaults, field_name))
+
+        return cls(**kwargs)
+
 
 def compute_market_impact(
     order_shares: float,
@@ -38,7 +74,7 @@ def compute_market_impact(
 ) -> Dict[str, Any]:
     """
     Compute market impact cost using the Almgren-Chriss square-root model.
-    
+
     Parameters
     ----------
     order_shares : float
@@ -53,7 +89,7 @@ def compute_market_impact(
         Permanent impact coefficient (eta). Default 0.1 from institutional calibrations.
     temporary_impact_coeff : float
         Temporary impact coefficient. Default 0.142 from Almgren-Thum (2005) calibration.
-    
+
     Returns
     -------
     dict with keys:
@@ -73,30 +109,30 @@ def compute_market_impact(
             "impact_cost_dollars": 0.0,
             "impact_cost_pct": 0.0,
         }
-    
+
     participation_rate = order_shares / adv_shares
-    
+
     # Almgren-Chriss square-root model:
     # Permanent impact: eta * sigma * sqrt(participation_rate)
     # Temporary impact: epsilon * sigma * sqrt(participation_rate)
     # Where epsilon > eta because temporary impact captures the liquidity concession
-    
+
     sqrt_participation = math.sqrt(participation_rate)
-    
+
     permanent_impact = permanent_impact_coeff * sigma_daily * sqrt_participation
     temporary_impact = temporary_impact_coeff * sigma_daily * sqrt_participation
     total_impact = permanent_impact + temporary_impact
-    
+
     # Convert to basis points
     permanent_impact_bps = permanent_impact * 10_000
     temporary_impact_bps = temporary_impact * 10_000
     total_impact_bps = total_impact * 10_000
-    
+
     # Dollar cost
     order_value = order_shares * avg_price
     impact_cost_dollars = total_impact * order_value
     impact_cost_pct = total_impact * 100
-    
+
     return {
         "participation_rate": round(participation_rate, 6),
         "permanent_impact_bps": round(permanent_impact_bps, 2),

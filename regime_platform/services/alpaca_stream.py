@@ -248,8 +248,8 @@ class UserStream:
 
     def add_queue(self, maxsize: int = 0) -> asyncio.Queue:
         if maxsize <= 0:
-            # Will be set from runtime_config at call site
-            maxsize = 500
+            # Will be set from runtime_config at call site via subscribe()
+            maxsize = 500  # fallback; subscribe() always passes resolved value
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.queues.append(q)
         return q
@@ -307,7 +307,8 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
                 "order": "credential_type.asc",  # paper first, live second
                 "limit": "1",
             }
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            supabase_timeout = await runtime_config.get_float("alpaca.supabase_http_timeout", default=10.0)
+            async with httpx.AsyncClient(timeout=supabase_timeout) as client:
                 resp = await client.get(supabase_url, headers=headers, params=params)
                 if resp.status_code == 200:
                     rows = resp.json()
@@ -344,7 +345,8 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
                 "order": "credential_type.asc",  # paper first, live second
                 "limit": "1",
             }
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            supabase_timeout = await runtime_config.get_float("alpaca.supabase_http_timeout", default=10.0)
+            async with httpx.AsyncClient(timeout=supabase_timeout) as client:
                 resp = await client.get(supabase_url, headers=headers, params=params)
                 if resp.status_code == 200:
                     rows = resp.json()
@@ -519,9 +521,11 @@ class AlpacaStreamManager:
 
             throttle = get_alpaca_throttle()
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            bootstrap_http_timeout = await runtime_config.get_float("alpaca.bootstrap_http_timeout", default=10.0)
+            bootstrap_throttle_timeout = await runtime_config.get_float("alpaca.bootstrap_throttle_timeout", default=10.0)
+            async with httpx.AsyncClient(timeout=bootstrap_http_timeout) as client:
                 # Fetch account (rate-throttled)
-                await throttle.acquire(timeout=10.0)
+                await throttle.acquire(timeout=bootstrap_throttle_timeout)
                 acc_resp = await client.get(account_url, headers=headers)
                 if acc_resp.status_code == 200:
                     stream.account_cache = acc_resp.json()
@@ -535,7 +539,7 @@ class AlpacaStreamManager:
                     ))
 
                 # Fetch positions (rate-throttled)
-                await throttle.acquire(timeout=10.0)
+                await throttle.acquire(timeout=bootstrap_throttle_timeout)
                 pos_resp = await client.get(positions_url, headers=headers)
                 if pos_resp.status_code == 200:
                     positions = pos_resp.json()
@@ -592,11 +596,13 @@ class AlpacaStreamManager:
 
         while stream.running and reconnect_attempts < max_reconnects:
             try:
+                ws_close_timeout = await runtime_config.get_int("alpaca.ws_close_timeout", default=5)
+                ws_backoff_cap = await runtime_config.get_int("alpaca.ws_backoff_cap", default=8)
                 async with websockets.connect(
                     ws_url,
                     ping_interval=ping_interval,
                     ping_timeout=ping_timeout,
-                    close_timeout=5,
+                    close_timeout=ws_close_timeout,
                 ) as ws:
                     # Authenticate
                     auth_msg = json.dumps({
@@ -639,7 +645,7 @@ class AlpacaStreamManager:
 
             except Exception as e:
                 reconnect_attempts += 1
-                wait = base_backoff * (2 ** min(reconnect_attempts, 8))
+                wait = base_backoff * (2 ** min(reconnect_attempts, ws_backoff_cap))
                 log.warning(
                     f"Trade stream disconnected for user {stream.user_id}: {e}. "
                     f"Reconnecting in {wait:.1f}s (attempt {reconnect_attempts})"
@@ -703,12 +709,14 @@ class AlpacaStreamManager:
 
             # Acquire throttle token before the API call
             throttle = get_alpaca_throttle()
-            acquired = await throttle.acquire(timeout=5.0)
+            pos_refresh_throttle_timeout = await runtime_config.get_float("alpaca.position_refresh_throttle_timeout", default=5.0)
+            acquired = await throttle.acquire(timeout=pos_refresh_throttle_timeout)
             if not acquired:
                 log.debug(f"Position refresh skipped for {symbol}: throttle timeout")
                 return
 
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            pos_refresh_http_timeout = await runtime_config.get_float("alpaca.position_refresh_http_timeout", default=5.0)
+            async with httpx.AsyncClient(timeout=pos_refresh_http_timeout) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200:
                     pos = resp.json()
@@ -766,20 +774,23 @@ class AlpacaStreamManager:
             if not symbols:
                 # No positions — wait for a fill or new position
                 stream.data_resubscribe_event.clear()
+                no_pos_wait_timeout = await runtime_config.get_float("alpaca.data_no_position_wait_timeout", default=5.0)
                 try:
                     await asyncio.wait_for(
-                        stream.data_resubscribe_event.wait(), timeout=5.0
+                        stream.data_resubscribe_event.wait(), timeout=no_pos_wait_timeout
                     )
                 except asyncio.TimeoutError:
                     pass
                 continue
 
             try:
+                data_ws_close_timeout = await runtime_config.get_int("alpaca.ws_close_timeout", default=5)
+                data_ws_backoff_cap = await runtime_config.get_int("alpaca.ws_backoff_cap", default=8)
                 async with websockets.connect(
                     ws_url,
                     ping_interval=ping_interval,
                     ping_timeout=ping_timeout,
-                    close_timeout=5,
+                    close_timeout=data_ws_close_timeout,
                 ) as ws:
                     # Authenticate
                     auth_msg = json.dumps({
@@ -811,13 +822,13 @@ class AlpacaStreamManager:
 
                     reconnect_attempts = 0
 
-                    # Throttle: only send 1 quote per symbol per second
+                    # Throttle: only send N quotes per symbol per interval
                     last_sent: dict[str, float] = {}
-                    min_interval = 1.0  # seconds between ticks per symbol
+                    min_interval = await runtime_config.get_float("alpaca.data_tick_min_interval", default=1.0)
 
                     # Re-subscribe check interval
                     last_resubscribe_check = time.time()
-                    resubscribe_interval = 2.0  # check every 2s
+                    resubscribe_interval = await runtime_config.get_float("alpaca.data_resubscribe_interval", default=2.0)
 
                     async for raw in ws:
                         if not stream.running:
@@ -883,7 +894,7 @@ class AlpacaStreamManager:
 
             except Exception as e:
                 reconnect_attempts += 1
-                wait = base_backoff * (2 ** min(reconnect_attempts, 8))
+                wait = base_backoff * (2 ** min(reconnect_attempts, data_ws_backoff_cap))
                 log.warning(
                     f"Data stream disconnected for user {stream.user_id}: {e}. "
                     f"Reconnecting in {wait:.1f}s (attempt {reconnect_attempts})"

@@ -85,7 +85,9 @@ class StreamSession:
       which resolves from the DB → env → hardcoded default chain.
     """
 
-    MIN_PRICES_FOR_FIT = 81
+    # Hardcoded fallback — overridden by runtime_config in from_runtime_config()
+    _DEFAULT_MIN_PRICES_FOR_FIT = 81
+    _DEFAULT_SUBSCRIBER_QUEUE_SIZE = 500
 
     def __init__(
         self,
@@ -96,6 +98,8 @@ class StreamSession:
         base_risk_limit: float = 0.02,
         refit_every: int = 50,
         regime_debounce: int = 3,
+        min_prices_for_fit: int = 81,
+        subscriber_queue_size: int = 500,
     ):
         self.symbol          = symbol
         self.window          = window
@@ -104,6 +108,8 @@ class StreamSession:
         self.base_risk_limit = base_risk_limit
         self.refit_every     = refit_every
         self.regime_debounce = regime_debounce
+        self.min_prices_for_fit = min_prices_for_fit
+        self.subscriber_queue_size = subscriber_queue_size
 
         self._prices:  deque[float]  = deque(maxlen=window)
         self._model:   Optional[RegimeHMM] = None
@@ -133,6 +139,8 @@ class StreamSession:
         base_risk_limit = await runtime_config.get_float("stream.base_risk_limit", default=0.02)
         refit_every = await runtime_config.get_int("stream.refit_every", default=50)
         regime_debounce = await runtime_config.get_int("stream.regime_debounce", default=3)
+        min_prices_for_fit = await runtime_config.get_int("stream.min_prices_for_fit", default=cls._DEFAULT_MIN_PRICES_FOR_FIT)
+        subscriber_queue_size = await runtime_config.get_int("stream.subscriber_queue_size", default=cls._DEFAULT_SUBSCRIBER_QUEUE_SIZE)
 
         return cls(
             symbol=symbol,
@@ -142,6 +150,8 @@ class StreamSession:
             base_risk_limit=base_risk_limit,
             refit_every=refit_every,
             regime_debounce=regime_debounce,
+            min_prices_for_fit=min_prices_for_fit,
+            subscriber_queue_size=subscriber_queue_size,
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -151,7 +161,7 @@ class StreamSession:
         async with self._lock:
             for p in prices[-self.window:]:
                 self._prices.append(p)
-            if len(self._prices) >= self.MIN_PRICES_FOR_FIT:
+            if len(self._prices) >= self.min_prices_for_fit:
                 await asyncio.get_event_loop().run_in_executor(None, self._refit)
 
     async def tick(self, price: float, ts: float | None = None) -> StreamTick | None:
@@ -165,7 +175,7 @@ class StreamSession:
             self._bars_since_refit += 1
 
             n = len(self._prices)
-            if n < self.MIN_PRICES_FOR_FIT:
+            if n < self.min_prices_for_fit:
                 return None
 
             # Periodic refit in executor (non-blocking)
@@ -177,7 +187,7 @@ class StreamSession:
 
     def subscribe(self) -> asyncio.Queue:
         """Return a Queue that receives every StreamTick for this symbol."""
-        q: asyncio.Queue = asyncio.Queue(maxsize=500)
+        q: asyncio.Queue = asyncio.Queue(maxsize=self.subscriber_queue_size)
         self._subscribers.append(q)
         return q
 
@@ -205,7 +215,7 @@ class StreamSession:
         """Blocking HMM refit — always called via run_in_executor."""
         prices = np.array(list(self._prices), dtype=float)
         prices = prices[np.isfinite(prices) & (prices > 0)]
-        if len(prices) < self.MIN_PRICES_FOR_FIT:
+        if len(prices) < self.min_prices_for_fit:
             return
         model = RegimeHMM()
         model.fit(prices)
@@ -215,7 +225,7 @@ class StreamSession:
     def _compute_tick(self, price: float, ts: float) -> StreamTick:
         prices  = np.array(list(self._prices), dtype=float)
         prices  = prices[np.isfinite(prices) & (prices > 0)]
-        if len(prices) < self.MIN_PRICES_FOR_FIT:
+        if len(prices) < self.min_prices_for_fit:
             return None
         returns = np.diff(np.log(prices))
         returns = np.where(np.isfinite(returns), returns, 0.0)

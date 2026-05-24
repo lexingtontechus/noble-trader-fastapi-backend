@@ -119,7 +119,8 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
 
         # Stress tests — params resolved from runtime_config
         stress_tests = []
-        if req.stress_scenarios and len(returns) > 20:
+        stress_min_returns = await runtime_config.get_int("risk.stress_min_returns", default=20)
+        if req.stress_scenarios and len(returns) > stress_min_returns:
             mu = float(np.mean(returns))
             sigma = float(np.std(returns, ddof=1))
 
@@ -191,10 +192,14 @@ async def risk_analyze(req: RiskAnalyzeRequest, user: TokenData = Depends(get_au
                 simulated_max_dd=round(rate_dd, 6),
             ))
 
+            # Resolve extended stress test parameters from runtime config
+            stress_liquidity_downside_mult = await runtime_config.get_float("risk.stress_liquidity_downside_mult", default=1.5)
+            stress_liquidity_upside_mult = await runtime_config.get_float("risk.stress_liquidity_upside_mult", default=0.8)
+
             # Liquidity crisis scenario
             liq_returns = returns.copy()
             liq_returns -= liquidity_shift  # worse execution
-            liq_returns = np.where(liq_returns < 0, liq_returns * 1.5, liq_returns * 0.8)  # asymmetric slippage
+            liq_returns = np.where(liq_returns < 0, liq_returns * stress_liquidity_downside_mult, liq_returns * stress_liquidity_upside_mult)  # asymmetric slippage
             liq_var = float(-np.percentile(liq_returns, 5))
             liq_dd = float(np.min(np.cumsum(liq_returns)))
             stress_tests.append(StressTestResult(

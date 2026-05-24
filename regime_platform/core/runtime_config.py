@@ -813,6 +813,21 @@ sync_config.register_defaults({
     "exec.fill_threshold": 1.0,
     "exec.htb_premium_bps": 500.0,
     "exec.trading_days_per_year": 252,
+    # Execution — financing
+    "exec.borrow_rate_bps": 50.0,
+    "exec.margin_rate_bps": 150.0,
+    "exec.dividend_yield_bps": 200.0,
+    "exec.trading_days_per_quarter": 63,
+    # Execution — fill probability
+    "exec.default_participation_rate": 0.01,
+    "exec.volume_penalty_multiplier": 10.0,
+    "exec.max_volume_penalty": 0.3,
+    "exec.stop_min_fill_probability": 0.90,
+    "exec.stop_adverse_sigma": 0.5,
+    "exec.limit_adverse_sigma": 0.2,
+    "exec.fill_interp_high": 0.8,
+    "exec.fill_interp_mid": 0.5,
+    "exec.fill_interp_low": 0.2,
     # Stream
     "stream.min_prices_for_fit": 81,
     "stream.window": 500,
@@ -821,7 +836,8 @@ sync_config.register_defaults({
     "stream.base_risk_limit": 0.02,
     "stream.refit_every": 50,
     "stream.regime_debounce": 3,
-    # Alpaca
+    "stream.subscriber_queue_size": 500,
+    # Alpaca — WS core
     "alpaca.ws_max_reconnects": 20,
     "alpaca.ws_base_backoff": 1.0,
     "alpaca.ws_ping_interval": 30,
@@ -829,4 +845,19 @@ sync_config.register_defaults({
     "alpaca.snapshot_interval_sec": 5,
     "alpaca.stream_grace_period": 30,
     "alpaca.sse_queue_size": 500,
+    # Alpaca — WS timeouts & throttling
+    "alpaca.ws_close_timeout": 5,
+    "alpaca.ws_backoff_cap": 8,
+    "alpaca.supabase_http_timeout": 10.0,
+    "alpaca.bootstrap_http_timeout": 10.0,
+    "alpaca.bootstrap_throttle_timeout": 10.0,
+    "alpaca.position_refresh_http_timeout": 5.0,
+    "alpaca.position_refresh_throttle_timeout": 5.0,
+    "alpaca.data_no_position_wait_timeout": 5.0,
+    "alpaca.data_tick_min_interval": 1.0,
+    "alpaca.data_resubscribe_interval": 2.0,
+    # Risk — stress test extended
+    "risk.stress_min_returns": 20,
+    "risk.stress_liquidity_downside_mult": 1.5,
+    "risk.stress_liquidity_upside_mult": 0.8,
 })
