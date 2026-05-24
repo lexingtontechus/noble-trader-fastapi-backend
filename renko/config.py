@@ -262,8 +262,21 @@ class RenkoConfig:
             getter = getattr(runtime_config, getter_name)
             kwargs[field_name] = await getter(config_key, default=default_val)
 
-        # Handle enum fields
-        if isinstance(kwargs.get("brick_size_mode"), str):
-            kwargs["brick_size_mode"] = BrickSizeMode(kwargs["brick_size_mode"])
+        # Handle enum fields — accept enum instances, "ClassName.VALUE" strings, and plain values
+        bsm = kwargs.get("brick_size_mode")
+        if isinstance(bsm, BrickSizeMode):
+            # Already an enum instance — use as-is
+            pass
+        elif isinstance(bsm, str):
+            # Strip "BrickSizeMode." prefix if present (e.g. from str(enum_instance))
+            bsm_clean = bsm.replace("BrickSizeMode.", "")
+            kwargs["brick_size_mode"] = BrickSizeMode(bsm_clean)
+
+        ot = kwargs.get("order_type")
+        if isinstance(ot, OrderType):
+            pass
+        elif isinstance(ot, str):
+            ot_clean = ot.replace("OrderType.", "")
+            kwargs["order_type"] = OrderType(ot_clean)
 
         return cls(**kwargs)

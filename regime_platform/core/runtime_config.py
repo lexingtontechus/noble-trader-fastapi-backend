@@ -336,8 +336,18 @@ class RuntimeConfig:
         return bool(val)
 
     async def get_str(self, key: str, default: str = "") -> str:
-        """Get a string config value."""
+        """Get a string config value.
+
+        Handles enum defaults gracefully: if the default is an Enum,
+        returns its .value (not its repr like 'BrickSizeMode.FIXED').
+        """
         val = await self.get(key, default)
+        if isinstance(val, str):
+            return val
+        # Enum instance → use .value (e.g. BrickSizeMode.FIXED → "fixed")
+        from enum import Enum
+        if isinstance(val, Enum):
+            return val.value
         return str(val)
 
     async def get_json(self, key: str, default: Any = None) -> Any:
