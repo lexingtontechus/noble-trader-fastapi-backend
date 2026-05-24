@@ -9,9 +9,27 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from ..models.schemas import BacktestRequest, BacktestResponse
+from ..models.schemas import (
+    BacktestRequest,
+    BacktestResponse,
+    BacktestSummary,
+    BacktestHistoryResponse,
+    BacktestCompareRequest,
+    BacktestCompareResponse,
+    BacktestOptimizeRequest,
+    BacktestOptimizeResponse,
+    BacktestExportRequest,
+)
 from ..core.backtester import Backtester, BacktestConfig
 from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..services.backtest_cache import backtest_cache
+from ..services.backtest_store import (
+    save_backtest_result,
+    get_backtest_history,
+    get_backtest_detail,
+    delete_backtest as db_delete_backtest,
+)
+from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
 logger = logging.getLogger(__name__)
