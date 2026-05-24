@@ -108,6 +108,7 @@ class RenkoConfig:
     masaniello_min_rr: float = 2.50        # Min reward/risk ratio to trade
     masaniello_max_drawdown: float = 0.10  # 10% max strategy drawdown
     masaniello_regime_floor: float = 0.50  # Min regime_quality to allow trade
+    masaniello_quality_floor: float = 0.50  # Alias for regime_floor (MCP tool compat)
     masaniello_use_kelly_overlay: bool = False  # Cap Masaniello at Kelly bound
     masaniello_batch_size: int = 5         # N trades per batch
     masaniello_target_wins: int = 3        # W target wins per batch
@@ -220,6 +221,7 @@ class RenkoConfig:
             "masaniello_min_rr": "renko.masaniello_min_rr",
             "masaniello_max_drawdown": "renko.masaniello_max_drawdown",
             "masaniello_regime_floor": "renko.masaniello_regime_floor",
+            "masaniello_quality_floor": "renko.quality_floor",
             "masaniello_use_kelly_overlay": "renko.masaniello_use_kelly_overlay",
             "masaniello_batch_size": "renko.masaniello_batch_size",
             "masaniello_target_wins": "renko.masaniello_target_wins",
@@ -282,6 +284,7 @@ class RenkoConfig:
             "masaniello_min_rr": "get_float",
             "masaniello_max_drawdown": "get_float",
             "masaniello_regime_floor": "get_float",
+            "masaniello_quality_floor": "get_float",
             "masaniello_use_kelly_overlay": "get_bool",
             "masaniello_batch_size": "get_int",
             "masaniello_target_wins": "get_int",

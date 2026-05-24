@@ -33,6 +33,7 @@ from regime_platform.core.runtime_config import (
     ConfigRangeError,
     ConfigTypeError,
     runtime_config,
+    _SyncProxy,
 )
 
 log = logging.getLogger("regime.config_router")
@@ -136,7 +137,12 @@ async def list_config(
 ):
     """List all configuration entries grouped by category."""
     is_admin = user.role == "admin"
-    all_entries = await runtime_config.get_all()
+    try:
+        all_entries = await runtime_config.get_all()
+    except Exception as exc:
+        log.error("Failed to load config list: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
+
     categories: Dict[str, Dict[str, ConfigEntryResponse]] = {}
 
     for key, entry in all_entries.items():
@@ -173,7 +179,11 @@ async def get_schema(
 ):
     """Get full schema with types, ranges, descriptions (values always shown for admin reference)."""
     is_admin = user.role == "admin"
-    all_entries = await runtime_config.get_all()
+    try:
+        all_entries = await runtime_config.get_all()
+    except Exception as exc:
+        log.error("Failed to load config schema: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
     return {
         key: _entry_to_response(entry, is_admin)
         for key, entry in all_entries.items()
@@ -211,7 +221,11 @@ async def get_category(
 ):
     """Get all config entries for a specific category."""
     is_admin = user.role == "admin"
-    entries = await runtime_config.get_category(category)
+    try:
+        entries = await runtime_config.get_category(category)
+    except Exception as exc:
+        log.error("Failed to load config category %s: %s", category, exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
 
     if not entries:
         raise HTTPException(status_code=404, detail=f"Category '{category}' not found.")
@@ -231,14 +245,40 @@ async def get_config_key(
     key: str,
     user: TokenData = Depends(get_authed_user),
 ):
-    """Get a single config entry by key."""
+    """Get a single config entry by key.
+
+    Falls back to sync_config defaults if the key isn't in the DB cache,
+    so that known keys (like 'quality_floor') always resolve even when
+    Supabase is unreachable.
+    """
     is_admin = user.role == "admin"
-    all_entries = await runtime_config.get_all()
+    try:
+        all_entries = await runtime_config.get_all()
+    except Exception as exc:
+        log.error("Failed to load config for key %s: %s", key, exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
 
-    if key not in all_entries:
-        raise HTTPException(status_code=404, detail=f"Config key '{key}' not found.")
+    if key in all_entries:
+        return _entry_to_response(all_entries[key], is_admin)
 
-    return _entry_to_response(all_entries[key], is_admin)
+    # Fallback: check sync_config defaults (covers keys not yet seeded in DB)
+    from regime_platform.core.runtime_config import sync_config as _sync
+    if key in _SyncProxy._defaults:
+        from regime_platform.core.runtime_config import ConfigEntry as _CE, ValueType as _VT
+        default_val = _SyncProxy._defaults[key]
+        value_type = _VT.FLOAT if isinstance(default_val, float) else (_VT.INT if isinstance(default_val, int) else (_VT.BOOL if isinstance(default_val, bool) else _VT.STR))
+        category = key.split(".")[0] if "." in key else "general"
+        entry = _CE(
+            key=key,
+            value=default_val,
+            value_type=value_type,
+            category=category,
+            description=f"Default for {key} (not yet in DB)",
+            default_value=default_val,
+        )
+        return _entry_to_response(entry, is_admin)
+
+    raise HTTPException(status_code=404, detail=f"Config key '{key}' not found.")
 
 
 @config_router.patch("/key/{key:path}", response_model=ConfigEntryResponse)

@@ -125,6 +125,10 @@ class RenkoPipeline:
         masaniello_sizer = None
         if self.config.sizing_mode.value == "masaniello":
             from regime_platform.core.position_sizer import DynamicMasanielloSizer, SizingConfig
+            # quality_floor is an alias for regime_floor — use whichever is set
+            regime_floor = self.config.masaniello_regime_floor
+            if hasattr(self.config, 'masaniello_quality_floor') and self.config.masaniello_quality_floor != regime_floor:
+                regime_floor = self.config.masaniello_quality_floor
             mcfg = SizingConfig(
                 base_risk=self.config.masaniello_base_risk,
                 min_risk=self.config.masaniello_min_risk,
@@ -132,7 +136,7 @@ class RenkoPipeline:
                 min_prob=self.config.masaniello_min_prob,
                 min_rr=self.config.masaniello_min_rr,
                 max_drawdown=self.config.masaniello_max_drawdown,
-                regime_floor=self.config.masaniello_regime_floor,
+                regime_floor=regime_floor,
                 use_kelly_overlay=self.config.masaniello_use_kelly_overlay,
                 batch_size=self.config.masaniello_batch_size,
                 target_wins=self.config.masaniello_target_wins,

@@ -270,6 +270,16 @@ class RuntimeConfig:
                 self._cache_time = now
                 self._schema_loaded = True
                 log.debug("Refreshed runtime config cache: %d entries", len(self._cache))
+            elif not self._cache:
+                # Cold start with no DB data — populate from sync_config defaults
+                # so that lookups for known keys don't 404 when Supabase is down.
+                self._cache = self._defaults_to_entries()
+                self._cache_time = now
+                self._schema_loaded = True
+                log.info(
+                    "Populated config cache from sync defaults (%d keys) — DB unavailable",
+                    len(self._cache),
+                )
 
     async def reload(self) -> int:
         """Force a full reload from DB, ignoring TTL. Returns count of entries."""
@@ -622,6 +632,33 @@ class RuntimeConfig:
             return ValueType.JSON
         return ValueType.STR
 
+    # ── Fallback: build ConfigEntry objects from sync_config defaults ────────
+
+    @staticmethod
+    def _defaults_to_entries() -> Dict[str, ConfigEntry]:
+        """
+        Build ConfigEntry objects from the sync_config._defaults registry.
+
+        Used when the DB is unreachable (cold start + Supabase down).
+        This ensures that known keys like 'quality_floor' still resolve
+        instead of returning 404.
+        """
+        from .runtime_config import sync_config  # noqa: F811 — same module
+        entries: Dict[str, ConfigEntry] = {}
+        for key, default_val in _SyncProxy._defaults.items():
+            value_type = RuntimeConfig._infer_type(default_val)
+            # Derive category from key prefix (e.g. 'sizing.base_risk' → 'sizing')
+            category = key.split(".")[0] if "." in key else "general"
+            entries[key] = ConfigEntry(
+                key=key,
+                value=default_val,
+                value_type=value_type,
+                category=category,
+                description=f"Default value for {key} (loaded from fallback)",
+                default_value=default_val,
+            )
+        return entries
+
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
     async def close(self) -> None:
@@ -870,4 +907,9 @@ sync_config.register_defaults({
     "risk.stress_min_returns": 20,
     "risk.stress_liquidity_downside_mult": 1.5,
     "risk.stress_liquidity_upside_mult": 0.8,
+    # Sizing — quality floor (alias for regime_floor, used by MCP tools)
+    "sizing.quality_floor": 0.50,
+    "renko.quality_floor": 0.50,
+    # Renko — sizing mode (exposed for MCP tool discovery)
+    "renko.sizing_mode": "kelly",
 })
