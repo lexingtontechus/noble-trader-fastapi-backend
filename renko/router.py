@@ -283,6 +283,98 @@ if FASTAPI_AVAILABLE:
 
     renko_router = APIRouter(prefix="/renko", tags=["renko"])
 
+    # ── Health-check (no auth required) ──────────────────────────────
+
+    @renko_router.get("/health")
+    async def renko_health() -> Dict[str, Any]:
+        """
+        Diagnostic endpoint — tests pipeline creation, runtime_config,
+        and Supabase connectivity. No auth required.
+        """
+        import traceback
+        checks = {"status": "ok", "errors": []}
+
+        # 1. Test runtime_config
+        try:
+            from regime_platform.core.runtime_config import runtime_config
+            await runtime_config._ensure_cache()
+            checks["runtime_config"] = {
+                "available": True,
+                "cache_entries": len(runtime_config._cache),
+                "db_available": runtime_config._db_available,
+            }
+        except Exception as e:
+            checks["runtime_config"] = {"available": False, "error": str(e)}
+            checks["errors"].append(f"runtime_config: {e}")
+            checks["status"] = "degraded"
+
+        # 2. Test RenkoConfig.from_runtime_config
+        try:
+            config = await RenkoConfig.from_runtime_config(overrides={"symbol": "SPY"})
+            checks["config_creation"] = {
+                "ok": True,
+                "brick_size": config.brick_size,
+                "symbol": config.symbol,
+                "brick_size_mode": config.brick_size_mode.value,
+            }
+        except Exception as e:
+            checks["config_creation"] = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            checks["errors"].append(f"config_creation: {e}")
+            checks["status"] = "broken"
+
+        # 3. Test pipeline creation
+        try:
+            config = RenkoConfig(symbol="SPY")
+            pipeline = RenkoPipeline(config)
+            state = pipeline.get_state()
+            checks["pipeline_creation"] = {
+                "ok": True,
+                "brick_count": state.brick_count,
+            }
+        except Exception as e:
+            checks["pipeline_creation"] = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            checks["errors"].append(f"pipeline_creation: {e}")
+            checks["status"] = "broken"
+
+        # 4. Test Supabase snapshot table
+        try:
+            from regime_platform.core.settings import settings
+            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+                import httpx
+                url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot?select=symbol&limit=1"
+                headers = {
+                    "apikey": settings.SUPABASE_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                }
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, headers=headers)
+                    checks["supabase_snapshot"] = {
+                        "ok": resp.status_code in (200, 201, 204, 404),
+                        "status_code": resp.status_code,
+                    }
+                    if resp.status_code == 404:
+                        checks["supabase_snapshot"]["note"] = "Table may not exist"
+            else:
+                checks["supabase_snapshot"] = {"ok": False, "note": "SUPABASE_URL/KEY not configured"}
+        except Exception as e:
+            checks["supabase_snapshot"] = {"ok": False, "error": str(e)}
+            checks["errors"].append(f"supabase_snapshot: {e}")
+
+        # 5. Test _get_pipeline_async (the actual call path for GET endpoints)
+        try:
+            pipeline = await _get_pipeline_async("SPY")
+            checks["pipeline_async"] = {
+                "ok": True,
+                "brick_count": pipeline.brick_engine.brick_count,
+                "symbol": pipeline.config.symbol,
+            }
+        except Exception as e:
+            checks["pipeline_async"] = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            checks["errors"].append(f"pipeline_async: {e}")
+            checks["status"] = "broken"
+
+        return checks
+
     @renko_router.post("/tick")
     @limiter.limit(RATE_LIMIT_WRITE)
     async def process_tick(request: Request, body: TickInput, user=Depends(get_authed_user)) -> Dict[str, Any]:
@@ -338,49 +430,77 @@ if FASTAPI_AVAILABLE:
     @renko_router.get("/state")
     async def get_state(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get current pipeline state."""
-        pipeline = await _get_pipeline_async(symbol)
-        return pipeline.get_state().to_dict()
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            return pipeline.get_state().to_dict()
+        except Exception as e:
+            log.error(f"get_state failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/stats")
     async def get_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics."""
-        pipeline = await _get_pipeline_async(symbol)
-        return pipeline.get_stats()
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            return pipeline.get_stats()
+        except Exception as e:
+            log.error(f"get_stats failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/bricks")
     async def get_bricks(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent bricks."""
-        pipeline = await _get_pipeline_async(symbol)
-        bricks = list(pipeline.brick_engine.history)
-        return [b.to_dict() for b in bricks[-last_n:]]
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            bricks = list(pipeline.brick_engine.history)
+            return [b.to_dict() for b in bricks[-last_n:]]
+        except Exception as e:
+            log.error(f"get_bricks failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/classified")
     async def get_classified(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent classified bricks."""
-        pipeline = await _get_pipeline_async(symbol)
-        classified = list(pipeline.swing_classifier.classified_history)
-        return [c.to_dict() for c in classified[-last_n:]]
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            classified = list(pipeline.swing_classifier.classified_history)
+            return [c.to_dict() for c in classified[-last_n:]]
+        except Exception as e:
+            log.error(f"get_classified failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/signals")
     async def get_signals(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent pattern signals."""
-        pipeline = await _get_pipeline_async(symbol)
-        signals = pipeline.pattern_detector.signals
-        return [s.to_dict() for s in signals[-last_n:]]
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            signals = pipeline.pattern_detector.signals
+            return [s.to_dict() for s in signals[-last_n:]]
+        except Exception as e:
+            log.error(f"get_signals failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/trades")
     async def get_trades(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get recent trade records."""
-        pipeline = await _get_pipeline_async(symbol)
-        trades = list(pipeline.journal.trades)
-        return [t.to_dict() for t in trades[-last_n:]]
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            trades = list(pipeline.journal.trades)
+            return [t.to_dict() for t in trades[-last_n:]]
+        except Exception as e:
+            log.error(f"get_trades failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/swing-points")
     async def get_swing_points(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
         """Get detected swing points."""
-        pipeline = await _get_pipeline_async(symbol)
-        points = pipeline.swing_classifier.swing_points
-        return [p.to_dict() for p in points[-last_n:]]
+        try:
+            pipeline = await _get_pipeline_async(symbol)
+            points = pipeline.swing_classifier.swing_points
+            return [p.to_dict() for p in points[-last_n:]]
+        except Exception as e:
+            log.error(f"get_swing_points failed for {symbol}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.post("/regime")
     async def set_regime(body: RegimeInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
