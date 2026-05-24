@@ -2,7 +2,7 @@ openapi: "3.1.0"
 
 info:
   title: Noble Trader Agent — FastAPI Backend
-  version: "7.0.0"
+  version: "7.1.0"
   description: |
     A production-grade quantitative trading platform combining two major subsystems:
 
@@ -22,10 +22,18 @@ info:
     acceleration, and real-time streaming over SSE and WebSocket.
 
     ### Authentication
-    All endpoints require a **Clerk JWT** via `Authorization: Bearer <token>`.
-    SSE endpoints also require auth. Renko write operations require `admin` or
-    `trader` role. Admin-only endpoints (config, reset) require the `admin` role.
-    The `/health` endpoint is public.
+    All endpoints support **unified authentication** via one of:
+    1. **Clerk JWT** — `Authorization: Bearer <clerk_jwt>` (preferred)
+    2. **Local JWT** — `Authorization: Bearer <local_jwt>`
+    3. **SaaS API Key** — `X-API-Key: nt_live_*` (looked up in Supabase `api_keys`)
+    4. **Static API Key** — `X-API-Key: <key>` (matched against `API_KEYS` env var)
+
+    Auth levels:
+    - **Read** (`get_authed_user`): Any authenticated user — state, stats, bricks, signals, trades
+    - **Write** (`require_write`): `admin` or `trader` role — tick ingestion, backtests, regime/equity updates, snapshot restore
+    - **Admin** (`require_admin`): `admin` role only — config changes, reset, live toggle
+
+    SSE endpoints also require auth. The `/health` and `/renko/health` endpoints are public.
   contact:
     name: Noble Trader Agent
     email: nobletrader@0xdweb.com
@@ -71,12 +79,21 @@ tags:
     description: Alpaca / Binance / IB live data feed management
   - name: GPU Engine
     description: GPU HMM backend capabilities and latency benchmarks
+  - name: Admin Config
+    description: Runtime configuration management with audit trail and category-based access
+  - name: Operational Hardening
+    description: Operating mode control, kill switch, reconciliation, and audit logging
+  - name: PnL Dashboard
+    description: PnL tracking, history, export, and threshold alerts
+  - name: Live Stream REST
+    description: REST tick ingestion and session management for live streaming
   - name: Health
     description: Service health check
 
 # ─────────────────────────────────────────────────────────────────────────────
 security:
   - BearerAuth: []
+  - ApiKeyAuth: []
 
 paths:
 
@@ -335,10 +352,11 @@ paths:
   /renko/regime:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Update HMM regime for gate filter
+      summary: Update HMM regime for gate filter (admin only)
       description: |
         Updates the current HMM regime label used by the Signal Filter's
         regime gate. Only trades aligned with the current regime are allowed.
+        **Admin-only endpoint** — requires the `admin` role.
       parameters:
         - name: symbol
           in: query
@@ -358,16 +376,21 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   regime: { type: string }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — admin role required
         "422":
           $ref: '#/components/responses/ValidationError'
 
   /renko/equity:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Update account equity
+      summary: Update account equity (admin only)
       description: |
         Updates the current account equity used for position sizing
         calculations in the Risk Manager layer.
+        **Admin-only endpoint** — requires the `admin` role.
       parameters:
         - name: symbol
           in: query
@@ -387,6 +410,10 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   equity: { type: number }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — admin role required
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -707,12 +734,13 @@ paths:
   /renko/snapshot/restore:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Restore pipeline from Supabase snapshot
+      summary: Restore pipeline from Supabase snapshot (write access)
       description: |
         Attempts to restore a pipeline from a previously saved Supabase
         snapshot. If no snapshot exists, returns restored=false. The
         snapshot includes pipeline state (bricks, trades, regime) but
         not the full trade history.
+        **Write access** — requires `admin` or `trader` role.
       parameters:
         - name: symbol
           in: query
@@ -729,6 +757,13 @@ paths:
                   symbol: { type: string }
                   restored: { type: boolean }
                   message: { type: string }
+                  state:
+                    type: object
+                    description: Pipeline state dict (when restored=true)
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — write role required
 
   # ══════════════════════════════════════════════════════════════════════════
   #  REGIME PLATFORM
@@ -1641,6 +1676,1024 @@ paths:
         "101":
           description: WebSocket upgrade
 
+  # ══════════════════════════════════════════════════════════════════════════
+  #  ADMIN CONFIG API
+  # ══════════════════════════════════════════════════════════════════════════
+
+  /config/:
+    get:
+      tags: [Admin Config]
+      summary: Get all config entries
+      description: |
+        Returns all runtime configuration entries across every category.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: All config entries
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Map of config key → value with metadata
+
+  /config/categories:
+    get:
+      tags: [Admin Config]
+      summary: List config categories
+      description: |
+        Returns a list of all available configuration categories.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /config/{category}:
+    get:
+      tags: [Admin Config]
+      summary: Get config by category
+      description: |
+        Returns all configuration entries for a specific category.
+        **Admin-only endpoint.**
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema: { type: string }
+          description: Configuration category name
+      responses:
+        "200":
+          description: Category config entries
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Map of config key → value for the category
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /config/schema:
+    get:
+      tags: [Admin Config]
+      summary: Get full config schema
+      description: |
+        Returns the complete configuration schema including all keys, types,
+        defaults, descriptions, and validation rules.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Full configuration schema
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Schema document with types, defaults, and validation rules
+
+  /config/audit:
+    get:
+      tags: [Admin Config]
+      summary: Get config audit log
+      description: |
+        Returns the audit trail of all configuration changes including who
+        changed what, when, and the previous value.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key: { type: string }
+                    old_value: { type: string, nullable: true }
+                    new_value: { type: string }
+                    changed_by: { type: string }
+                    changed_at: { type: string, format: date-time }
+                    category: { type: string }
+
+  /config/key/{key}:
+    get:
+      tags: [Admin Config]
+      summary: Get single config key
+      description: |
+        Returns the current value and metadata for a single configuration key.
+        **Admin-only endpoint.**
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+          description: Configuration key name
+      responses:
+        "200":
+          description: Config key value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  value: { type: string }
+                  default: { type: string }
+                  type: { type: string }
+                  category: { type: string }
+                  description: { type: string }
+        "404":
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Admin Config]
+      summary: Update a config value
+      description: |
+        Updates a single configuration key. The change is audited.
+        **Admin-only endpoint.**
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+          description: Configuration key name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                  description: New value for the config key
+      responses:
+        "200":
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  key: { type: string }
+                  old_value: { type: string, nullable: true }
+                  new_value: { type: string }
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /config/key/{key}/reset:
+    post:
+      tags: [Admin Config]
+      summary: Reset a config key to default
+      description: |
+        Resets a configuration key to its default value. The change is audited.
+        **Admin-only endpoint.**
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+          description: Configuration key name
+      responses:
+        "200":
+          description: Config reset to default
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: reset }
+                  key: { type: string }
+                  default_value: { type: string }
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /config/reload:
+    get:
+      tags: [Admin Config]
+      summary: Force reload config from DB
+      description: |
+        Forces a reload of all configuration from the database, discarding
+        any in-memory cache. **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Config reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: reloaded }
+                  entries_loaded: { type: integer }
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  OPERATIONAL HARDENING
+  # ══════════════════════════════════════════════════════════════════════════
+
+  /operational/mode:
+    get:
+      tags: [Operational Hardening]
+      summary: Current operating mode
+      description: |
+        Returns the current operating mode (e.g. simulation, paper, live)
+        and mode metadata including who set it and when.
+      responses:
+        "200":
+          description: Operating mode
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string, enum: [simulation, paper, live] }
+                  set_by: { type: string }
+                  set_at: { type: string, format: date-time }
+                  pending_change: { type: boolean }
+
+  /operational/mode/request:
+    post:
+      tags: [Operational Hardening]
+      summary: Request mode change
+      description: |
+        Requests a change to the operating mode. Requires confirmation via
+        `/operational/mode/confirm` within a timeout window. Critical mode
+        changes (e.g. to `live`) require two-step confirmation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [simulation, paper, live]
+                  description: Target operating mode
+      responses:
+        "200":
+          description: Mode change requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: pending }
+                  requested_mode: { type: string }
+                  confirmation_required: { type: boolean }
+                  timeout_seconds: { type: integer }
+        "409":
+          description: Mode change already pending
+
+  /operational/mode/confirm:
+    post:
+      tags: [Operational Hardening]
+      summary: Confirm mode change
+      description: |
+        Confirms a previously requested mode change. Must be called within
+        the confirmation timeout window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [simulation, paper, live]
+                  description: Mode to confirm (must match pending request)
+      responses:
+        "200":
+          description: Mode change confirmed and applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: confirmed }
+                  mode: { type: string }
+        "409":
+          description: No pending mode change or mismatch
+
+  /operational/mode/health:
+    get:
+      tags: [Operational Hardening, Health]
+      summary: Mode health check
+      description: |
+        Returns the health status of the operating mode subsystem, including
+        connectivity to execution venues and data feeds.
+      responses:
+        "200":
+          description: Mode health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string }
+                  healthy: { type: boolean }
+                  execution_connected: { type: boolean }
+                  feed_connected: { type: boolean }
+                  latency_ms: { type: number }
+
+  /operational/kill-switch/status:
+    get:
+      tags: [Operational Hardening]
+      summary: Kill switch status
+      description: |
+        Returns the current status of the kill switch, including whether
+        it is active and when it was last activated/deactivated.
+      responses:
+        "200":
+          description: Kill switch status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: boolean }
+                  activated_at: { type: string, format: date-time, nullable: true }
+                  activated_by: { type: string, nullable: true }
+                  reason: { type: string, nullable: true }
+
+  /operational/kill-switch/activate:
+    post:
+      tags: [Operational Hardening]
+      summary: Activate kill switch
+      description: |
+        Activates the kill switch. Immediately halts all new order submissions
+        and optionally cancels existing orders. **Admin-only endpoint.**
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for activation
+                cancel_orders:
+                  type: boolean
+                  default: true
+                  description: Cancel all open orders on activation
+      responses:
+        "200":
+          description: Kill switch activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: activated }
+                  orders_cancelled: { type: integer }
+                  timestamp: { type: string, format: date-time }
+
+  /operational/kill-switch/deactivate:
+    post:
+      tags: [Operational Hardening]
+      summary: Deactivate kill switch
+      description: |
+        Deactivates the kill switch, allowing order submission to resume.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Kill switch deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deactivated }
+                  timestamp: { type: string, format: date-time }
+
+  /operational/kill-switch/cancel-all:
+    post:
+      tags: [Operational Hardening]
+      summary: Cancel all orders
+      description: |
+        Cancels all open orders across all symbols without activating the
+        kill switch. **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Orders cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: cancelled }
+                  orders_cancelled: { type: integer }
+                  timestamp: { type: string, format: date-time }
+
+  /operational/kill-switch/close-all:
+    post:
+      tags: [Operational Hardening]
+      summary: Close all positions
+      description: |
+        Closes all open positions via market orders. Optionally activates
+        kill switch first. **Admin-only endpoint.**
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                activate_kill_switch:
+                  type: boolean
+                  default: true
+                  description: Also activate kill switch after closing
+      responses:
+        "200":
+          description: Positions closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: closed }
+                  positions_closed: { type: integer }
+                  kill_switch_activated: { type: boolean }
+                  timestamp: { type: string, format: date-time }
+
+  /operational/executor/status:
+    get:
+      tags: [Operational Hardening]
+      summary: Executor status
+      description: |
+        Returns the current status of the order executor, including
+        connectivity, queue depth, and execution statistics.
+      responses:
+        "200":
+          description: Executor status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected: { type: boolean }
+                  mode: { type: string, enum: [simulation, paper, live] }
+                  pending_orders: { type: integer }
+                  total_executed: { type: integer }
+                  last_execution_at: { type: string, format: date-time, nullable: true }
+                  latency_ms: { type: number, nullable: true }
+
+  /operational/throttle/status:
+    get:
+      tags: [Operational Hardening]
+      summary: Throttle status
+      description: |
+        Returns the current rate-limiting throttle status, including
+        limits, current usage, and cooldown state.
+      responses:
+        "200":
+          description: Throttle status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  max_orders_per_minute: { type: integer }
+                  current_minute_count: { type: integer }
+                  max_orders_per_hour: { type: integer }
+                  current_hour_count: { type: integer }
+                  throttled: { type: boolean }
+                  cooldown_until: { type: string, format: date-time, nullable: true }
+
+  /operational/audit-log:
+    get:
+      tags: [Operational Hardening]
+      summary: Audit log
+      description: |
+        Returns the operational audit log with paginated entries covering
+        mode changes, kill switch activations, order events, and reconciliation.
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: per_page
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: event_type
+          in: query
+          schema: { type: string }
+          description: Filter by event type
+      responses:
+        "200":
+          description: Paginated audit log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        event_type: { type: string }
+                        actor: { type: string }
+                        details: { type: object }
+                        timestamp: { type: string, format: date-time }
+                  total: { type: integer }
+                  page: { type: integer }
+                  per_page: { type: integer }
+
+  /operational/audit-log/summary:
+    get:
+      tags: [Operational Hardening]
+      summary: Audit summary
+      description: |
+        Returns a summary of audit events grouped by type and time period.
+      parameters:
+        - name: hours
+          in: query
+          schema: { type: integer, default: 24 }
+          description: Lookback period in hours
+      responses:
+        "200":
+          description: Audit summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_events: { type: integer }
+                  by_type:
+                    type: object
+                    additionalProperties: { type: integer }
+                  by_severity:
+                    type: object
+                    additionalProperties: { type: integer }
+                  period_hours: { type: integer }
+
+  /operational/audit-log/export:
+    get:
+      tags: [Operational Hardening]
+      summary: Export audit log
+      description: |
+        Exports the full audit log as a downloadable file (JSON or CSV).
+        **Admin-only endpoint.**
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+          description: Export format
+        - name: hours
+          in: query
+          schema: { type: integer, default: 168 }
+          description: Lookback period in hours (default 7 days)
+      responses:
+        "200":
+          description: Audit log export
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+            text/csv:
+              schema:
+                type: string
+                description: CSV export of audit log entries
+
+  /operational/reconcile/run:
+    post:
+      tags: [Operational Hardening]
+      summary: Run reconciliation
+      description: |
+        Triggers a full position and order reconciliation against the
+        execution venue. Compares local state with broker state.
+        **Admin-only endpoint.**
+      responses:
+        "200":
+          description: Reconciliation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: running }
+                  started_at: { type: string, format: date-time }
+                  positions_checked: { type: integer }
+                  orders_checked: { type: integer }
+
+  /operational/reconcile/status:
+    get:
+      tags: [Operational Hardening]
+      summary: Reconciliation status
+      description: |
+        Returns the status of the most recent reconciliation run, including
+        any discrepancies found.
+      responses:
+        "200":
+          description: Reconciliation status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [idle, running, completed, failed] }
+                  last_run_at: { type: string, format: date-time, nullable: true }
+                  discrepancies: { type: integer }
+                  positions_reconciled: { type: integer }
+                  orders_reconciled: { type: integer }
+
+  /operational/reconcile/order:
+    post:
+      tags: [Operational Hardening]
+      summary: Reconcile single order
+      description: |
+        Reconciles a single order against the execution venue. Returns
+        the local and broker state for comparison.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id:
+                  type: string
+                  description: Order ID to reconcile
+      responses:
+        "200":
+          description: Order reconciliation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id: { type: string }
+                  local_status: { type: string }
+                  broker_status: { type: string }
+                  match: { type: boolean }
+                  discrepancy: { type: string, nullable: true }
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /operational/reconcile/positions:
+    get:
+      tags: [Operational Hardening]
+      summary: Get reconciled positions
+      description: |
+        Returns the current reconciled position state, comparing local
+        tracked positions with broker-reported positions.
+      responses:
+        "200":
+          description: Reconciled positions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  positions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        symbol: { type: string }
+                        local_qty: { type: number }
+                        broker_qty: { type: number }
+                        discrepancy: { type: number }
+                        last_reconciled: { type: string, format: date-time }
+                  last_reconciled_at: { type: string, format: date-time, nullable: true }
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  PNL DASHBOARD
+  # ══════════════════════════════════════════════════════════════════════════
+
+  /pnl/history:
+    get:
+      tags: [PnL Dashboard]
+      summary: PnL history
+      description: |
+        Returns historical PnL data with optional date range filtering.
+        Includes realised and unrealised PnL per period.
+      parameters:
+        - name: start_date
+          in: query
+          schema: { type: string, format: date }
+          description: Start date for history
+        - name: end_date
+          in: query
+          schema: { type: string, format: date }
+          description: End date for history
+        - name: symbol
+          in: query
+          schema: { type: string }
+          description: Filter by symbol
+      responses:
+        "200":
+          description: PnL history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    date: { type: string, format: date }
+                    symbol: { type: string }
+                    realised_pnl: { type: number }
+                    unrealised_pnl: { type: number }
+                    total_pnl: { type: number }
+                    trades: { type: integer }
+
+  /pnl/intraday:
+    get:
+      tags: [PnL Dashboard]
+      summary: Intraday PnL
+      description: |
+        Returns intraday PnL data broken down by time period with
+        running totals.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string }
+          description: Filter by symbol
+      responses:
+        "200":
+          description: Intraday PnL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date: { type: string, format: date }
+                  realised_pnl: { type: number }
+                  unrealised_pnl: { type: number }
+                  total_pnl: { type: number }
+                  open_positions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        symbol: { type: string }
+                        side: { type: string }
+                        qty: { type: number }
+                        avg_entry: { type: number }
+                        current_price: { type: number }
+                        unrealised_pnl: { type: number }
+
+  /pnl/export:
+    get:
+      tags: [PnL Dashboard]
+      summary: Export PnL data
+      description: |
+        Exports PnL data as CSV or JSON for external analysis.
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [csv, json], default: json }
+          description: Export format
+        - name: start_date
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: PnL export
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+            text/csv:
+              schema:
+                type: string
+                description: CSV export of PnL data
+
+  /pnl/alerts:
+    get:
+      tags: [PnL Dashboard]
+      summary: List PnL alerts
+      description: |
+        Returns all configured PnL threshold alerts.
+      responses:
+        "200":
+          description: PnL alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    threshold_id: { type: string }
+                    name: { type: string }
+                    metric: { type: string, enum: [daily_pnl, drawdown, win_rate, sharpe] }
+                    threshold: { type: number }
+                    comparison: { type: string, enum: [gt, lt, gte, lte] }
+                    enabled: { type: boolean }
+                    last_triggered: { type: string, format: date-time, nullable: true }
+    post:
+      tags: [PnL Dashboard]
+      summary: Create PnL alert
+      description: |
+        Creates a new PnL threshold alert. Triggers a notification when
+        the specified metric crosses the threshold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, metric, threshold, comparison]
+              properties:
+                name:
+                  type: string
+                  description: Alert name
+                metric:
+                  type: string
+                  enum: [daily_pnl, drawdown, win_rate, sharpe]
+                  description: Metric to monitor
+                threshold:
+                  type: number
+                  description: Threshold value
+                comparison:
+                  type: string
+                  enum: [gt, lt, gte, lte]
+                  description: Comparison operator
+                enabled:
+                  type: boolean
+                  default: true
+      responses:
+        "200":
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: created }
+                  threshold_id: { type: string }
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /pnl/alerts/check:
+    post:
+      tags: [PnL Dashboard]
+      summary: Check alert thresholds
+      description: |
+        Manually triggers a check of all enabled PnL alert thresholds
+        against current values. Returns any alerts that are triggered.
+      responses:
+        "200":
+          description: Alert check results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checked: { type: integer }
+                  triggered:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        threshold_id: { type: string }
+                        name: { type: string }
+                        metric: { type: string }
+                        current_value: { type: number }
+                        threshold: { type: number }
+
+  /pnl/alerts/{threshold_id}:
+    delete:
+      tags: [PnL Dashboard]
+      summary: Delete PnL alert
+      description: Deletes a PnL threshold alert by ID.
+      parameters:
+        - name: threshold_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Alert deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deleted }
+                  threshold_id: { type: string }
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── RISK DASHBOARD ─────────────────────────────────────────────────────────
+
+  /risk/dashboard:
+    get:
+      tags: [Risk Analysis, PnL Dashboard]
+      summary: Get risk dashboard summary
+      description: |
+        Returns a comprehensive risk dashboard summary including current
+        portfolio risk metrics, position exposure, VaR limits, regime
+        context, and active risk alerts.
+      responses:
+        "200":
+          description: Risk dashboard summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  portfolio_var95: { type: number }
+                  portfolio_cvar95: { type: number }
+                  max_drawdown: { type: number }
+                  total_exposure: { type: number }
+                  regime_label: { type: string }
+                  risk_multiplier: { type: number }
+                  active_positions: { type: integer }
+                  active_alerts:
+                    type: array
+                    items: { type: string }
+                  daily_pnl: { type: number }
+                  sharpe_ratio: { type: number }
+                  timestamp: { type: string, format: date-time }
+
+  # ── AUTH DEBUG ─────────────────────────────────────────────────────────────
+
+  /auth/debug/clerk-flow:
+    get:
+      tags: [Health]
+      summary: Debug Clerk auth flow
+      description: |
+        Returns diagnostic information about the Clerk JWT authentication
+        flow, including token validation status, claims, and role extraction.
+        Intended for development debugging only.
+      responses:
+        "200":
+          description: Clerk auth debug info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token_valid: { type: boolean }
+                  claims:
+                    type: object
+                    nullable: true
+                    description: Decoded JWT claims
+                  role: { type: string, nullable: true }
+                  user_id: { type: string, nullable: true }
+                  session_id: { type: string, nullable: true }
+                  error: { type: string, nullable: true }
+
+  # ── SSE PNL STREAMING ─────────────────────────────────────────────────────
+
+  /sse/pnl:
+    get:
+      tags: [Real-Time Streaming, PnL Dashboard]
+      summary: SSE stream for PnL updates
+      description: |
+        Server-Sent Events stream that pushes PnL updates in real time.
+        Emits events on trade closes, position mark-to-market changes,
+        and threshold alert triggers.
+
+        Connect with: `new EventSource('/sse/pnl')`
+      responses:
+        "200":
+          description: SSE PnL event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Each `data:` line is a JSON-serialised PnL update.
+                  First event: `{"type": "connected", "scope": "pnl"}`
+
+  /sse/pnl/status:
+    get:
+      tags: [Real-Time Streaming, PnL Dashboard]
+      summary: SSE PnL status
+      description: |
+        Returns the current status of the PnL SSE stream, including
+        connection count and last update timestamp.
+      responses:
+        "200":
+          description: PnL SSE status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: boolean }
+                  connections: { type: integer }
+                  last_update: { type: string, format: date-time, nullable: true }
+                  last_pnl: { type: number, nullable: true }
+
 # ─────────────────────────────────────────────────────────────────────────────
 components:
 
@@ -1649,7 +2702,18 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Clerk JWT token
+      description: |
+        Unified JWT authentication. Supports:
+        - Clerk JWT (preferred, RS256, verified via JWKS from issuer)
+        - Local JWT (HS256, issued by /auth/token)
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key authentication. Supports:
+        - SaaS API keys (`nt_live_*` prefix, looked up in Supabase `api_keys` via SHA-256 hash)
+        - Static API keys (matched against `API_KEYS` env var, comma-separated)
 
   responses:
     ValidationError:

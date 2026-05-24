@@ -1,3 +1,47 @@
+## [7.0.1] — 2026-05-24
+
+### Fixed — Renko Endpoint 500s + Supabase Env Var Clarification
+
+#### Root Cause: Missing Supabase env vars on Render
+- Renko GET endpoints (`/renko/signals`, `/renko/state`, `/renko/bricks`) returned HTTP 500 because `runtime_config` could not initialise — `SUPABASE_URL` and `SUPABASE_KEY` were not configured in the Render deployment environment
+- `_get_pipeline_async()` calls `RenkoConfig.from_runtime_config()` which requires Supabase connectivity to load the 148-key `system_config` table
+- Without Supabase, the pipeline initialisation fails with an unhandled exception, surfacing as HTTP 500
+
+#### Fix: Render environment variables configured
+- `SUPABASE_URL` — set to `https://pcvscowltlrxzgxjurcr.supabase.co`
+- `SUPABASE_KEY` — set to the Supabase **service_role** key (NOT the anon/publishable key)
+- All 3 Renko endpoints now return 401 (correct auth challenge) instead of 500
+
+#### Important clarification: No `SUPABASE_PUBLISHABLE_KEY` variable exists on the backend
+- The backend uses `SUPABASE_KEY` which must be the **service_role** key for full DB access
+- The anon/publishable key (`NEXT_PUBLIC_SUPABASE_ANON_KEY`) is for the **frontend only** (Next.js/Vercel)
+- Backend requires service_role for `system_config`, `ta_renko_snapshot`, `api_keys`, `system_config_audit`, and `rate_limit_violations` tables
+
+#### Diagnostic endpoint available
+- `GET /renko/health` (no auth required) now tests: runtime_config, config_creation, pipeline_creation, supabase_snapshot, and pipeline_async connectivity
+- Use this to verify Supabase env vars are correctly configured on any deployment
+
+### Changed — Documentation Updates
+
+#### `docs/deployment.md`
+- Expanded Supabase section with critical Render deployment warning
+- Added cross-stack key summary table (backend vs frontend key names and types)
+- Added `/renko/health` diagnostic reference
+
+#### `docs/openapi.yaml`
+- Added 39 missing endpoint paths across 7 sections: Admin Config (9), Operational Hardening (18), PnL Dashboard (7), Risk Dashboard (1), Auth Debug (1), SSE PnL (2), and previously missing stream/feed endpoints
+- Added 4 new tags: Admin Config, Operational Hardening, PnL Dashboard, Live Stream REST
+- Total documented paths: 94 unique paths
+
+#### `docs/API.md`
+- Bumped to v7.0.0 (was v6.0.0)
+- Updated endpoint count from 57 to 104
+- Added Operational Hardening section (18 endpoints with full descriptions)
+- Added Admin Config API, PnL Dashboard, Live Stream REST, SSE Streaming sections
+- Added Deployment section to table of contents
+
+---
+
 ## [7.0.0] — 2026-05-24
 
 ### Added — Runtime Configuration Engine + Admin API

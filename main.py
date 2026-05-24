@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v6.0.0       ║
+║     Dynamic Regime Risk Management Platform — FastAPI Service  v7.1.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -125,7 +125,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v6.0.0 ...")
+    log.info("Starting up v7.1.0 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -301,7 +301,7 @@ Endpoints:
 - `POST /size/masaniello/batch` — batch Masaniello sizing
 - `POST /optimise/masaniello` — full two-stage pipeline
         """,
-        version="6.0.0",
+        version="7.1.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -471,7 +471,7 @@ Excluded from MCP (use REST API directly):
         return JSONResponse(
             {
                 "service": "Noble Trader Dynamic Regime Risk Management Platform",
-                "version": "6.0.0",
+                "version": "7.1.0",
                 "docs": "/docs",
                 "mcp": "/mcp" if MCP_AVAILABLE else "not installed",
                 "gpu": caps,
@@ -581,7 +581,7 @@ Excluded from MCP (use REST API directly):
 
         return {
             "status": "ok",
-            "version": "6.0.0",
+            "version": "7.1.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
             "operational": operational_status,

@@ -42,8 +42,8 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `GET` | `/renko/signals` | Pattern signals | Any |
 | `GET` | `/renko/trades` | Trade journal entries | Any |
 | `GET` | `/renko/swing-points` | Detected swing points | Any |
-| `POST` | `/renko/regime` | Update HMM regime for gate filter | Write |
-| `POST` | `/renko/equity` | Update account equity | Write |
+| `POST` | `/renko/regime` | Update HMM regime for gate filter | Admin |
+| `POST` | `/renko/equity` | Update account equity | Admin |
 | `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
 | `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
 | `GET` | `/renko/backtest/stats` | Backtest/trading statistics | Any |
@@ -55,7 +55,7 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
 | `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
-| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Admin/Trader |
 
 ### Backtest Endpoints (Isolated — Never Affect Live Pipeline)
 
@@ -364,11 +364,17 @@ When these variables are not configured, the `/renko/health` endpoint will repor
 - `supabase_snapshot.ok: false, note: "SUPABASE_URL/KEY not configured"`
 - The pipeline still works with hardcoded defaults, but runtime config changes are not persisted
 
+> **Render Deployment Note**: Missing or misconfigured `SUPABASE_URL` / `SUPABASE_KEY` on Render
+> causes HTTP 500 on all `/renko/*` GET endpoints because `runtime_config.get_str()` cannot connect
+> to Supabase to resolve config values. Ensure both variables are set in Render Environment settings.
+> The `/renko/health` endpoint (no auth required) can be used to verify connectivity.
+
 ## Bug Fix History
 
 | Issue | Root Cause | Fix |
 |-------|-----------|-----|
-| HTTP 500 on all `/renko/*` GET endpoints | `runtime_config.get_str()` called `str()` on `BrickSizeMode.FIXED` enum default, producing `'BrickSizeMode.FIXED'` instead of `'fixed'`. `BrickSizeMode()` constructor then raised `ValueError` | `get_str()` now checks for Enum and returns `.value`; `from_runtime_config()` strips `ClassName.` prefix from enum strings (commit `0735a6d`) |
+| HTTP 500 on all `/renko/*` GET endpoints (Supabase config) | `SUPABASE_URL` / `SUPABASE_KEY` not configured on Render, causing `runtime_config` to fail when reading config from Supabase `system_config` table | Set both `SUPABASE_URL` and `SUPABASE_KEY` (service role) in Render Environment settings; verify with `GET /renko/health` |
+| HTTP 500 on all `/renko/*` GET endpoints (Enum bug) | `runtime_config.get_str()` called `str()` on `BrickSizeMode.FIXED` enum default, producing `'BrickSizeMode.FIXED'` instead of `'fixed'`. `BrickSizeMode()` constructor then raised `ValueError` | `get_str()` now checks for Enum and returns `.value`; `from_runtime_config()` strips `ClassName.` prefix from enum strings (commit `0735a6d`) |
 | No bricks on frontend | Tick button sent random prices, direction case mismatch, no warm-up | Real price fetch + `.toUpperCase()` + Warm Up button |
 | Symbol switching shows no data | `fetchAllData()` used stale `symbol` from React closure | Added `symbolOverride` parameter |
 | All symbols feed SPY pipeline | Backend `/tick/batch` hardcoded `_get_pipeline("SPY")` | Added `symbol` field to `BatchTickInput` |

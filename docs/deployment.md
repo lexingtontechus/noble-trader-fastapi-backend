@@ -68,11 +68,24 @@ docker run -p 8000:8000 regime-platform
 | `SUPABASE_URL` | `""` | Supabase project URL (e.g. `https://pcvscowltlrxzgxjurcr.supabase.co`) |
 | `SUPABASE_KEY` | `""` | Supabase **service_role** key (NOT the anon/publishable key) |
 
-> **IMPORTANT**: The backend uses `SUPABASE_KEY` which must be the **service role** key.
-> There is no `SUPABASE_PUBLISHABLE_KEY` variable. The service role key is required because
-> the backend needs full database access for `system_config`, `ta_renko_snapshot`, `api_keys`,
-> `system_config_audit`, and `rate_limit_violations` tables. The anon/publishable key is for
-> frontend use only and does NOT have sufficient permissions.
+> **CRITICAL — Required on Render**: Both `SUPABASE_URL` and `SUPABASE_KEY` must be set
+> in the Render environment. If either is missing, the Renko pipeline endpoints will return
+> HTTP 500 because `runtime_config` cannot initialise and `RenkoConfig.from_runtime_config()`
+> will fail. The `/renko/health` diagnostic endpoint can be used to verify connectivity.
+>
+> **There is NO `SUPABASE_PUBLISHABLE_KEY` variable on the backend.** The backend requires
+> the **service_role** key because it needs full database access for `system_config`,
+> `ta_renko_snapshot`, `api_keys`, `system_config_audit`, and `rate_limit_violations` tables.
+> The anon/publishable key (`NEXT_PUBLIC_SUPABASE_ANON_KEY`) is for the **frontend only**
+> (Next.js on Vercel) and does NOT have sufficient permissions for backend operations.
+>
+> **Summary of Supabase keys across the stack:**
+>
+> | Component | Env Var | Key Type | Purpose |
+> |-----------|---------|----------|--------|
+> | Backend (Render) | `SUPABASE_KEY` | service_role | Full DB access for config, snapshots, auth |
+> | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_URL` | — | Supabase URL |
+> | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon/public | Client-side RLS-protected access |
 
 ### Trading
 

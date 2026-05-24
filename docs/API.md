@@ -1,6 +1,6 @@
 # Noble Trader Dynamic Regime Risk Management Platform — API Reference
 
-**Version:** 6.0.0  
+**Version:** 7.0.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
@@ -30,9 +30,13 @@
 - [Renko Backtest Endpoints](#renko-backtest-endpoints)
 - [Statistical Rigor Endpoints (Phase 6)](#statistical-rigor-endpoints-phase-6)
 - [Execution Modeling Endpoints (Phase 7)](#execution-modeling-endpoints-phase-7)
+- [Admin Config API](#admin-config-api)
 - [P&L Dashboard](#pl-dashboard)
 - [Operational Hardening](#operational-hardening)
+- [Live Stream REST](#live-stream-rest)
+- [SSE Streaming](#sse-streaming)
 - [Health](#health)
+- [Deployment](#deployment)
 - [Recommended Workflows](#recommended-workflows)
 
 ---
@@ -91,14 +95,14 @@ When the JWT lacks email/name/username claims, `_enrich_from_clerk_api()` in `cl
 
 ### Auth Level Summary
 
-All 57 endpoints now require authentication. Auth levels:
+All 104 endpoints now require authentication. Auth levels:
 
 | Level | Dependency | Description |
 |-------|-----------|-------------|
 | Public | None | `/`, `/health`, `/auth/token`, `/auth/clerk/verify`, `/auth/clerk/config` |
-| Any authenticated role | `get_authed_user` | Read-only GET endpoints (27 endpoints) |
-| Write (admin/trader) | `require_write` | Mutations, tick ingestion, backtests, regime updates (22 endpoints) |
-| Admin only | `require_admin` | Destructive ops — config, reset, kill-switch (4 endpoints) |
+| Any authenticated role | `get_authed_user` | Read-only GET endpoints (48 endpoints) |
+| Write (admin/trader) | `require_write` | Mutations, tick ingestion, backtests, regime updates, mode changes (38 endpoints) |
+| Admin only | `require_admin` | Destructive ops — config, reset, kill-switch, config overrides (10 endpoints) |
 
 ### Roles
 
@@ -1776,7 +1780,7 @@ Returns running state and per-symbol bar counts for all active feed adapters.
 
 ## Renko HFT Pipeline
 
-The Renko HFT pipeline processes price ticks through a 6-layer architecture for high-frequency trading signals.
+The Renko HFT pipeline processes price ticks through a 6-layer architecture for high-frequency trading signals. The route prefix is `/renko` (NOT `/api/renko`). All GET endpoints now use `_get_pipeline_async`, which reads pipeline configuration from `runtime_config` — a Supabase-backed hot-reloadable configuration store. This means GET endpoints reflect the latest runtime configuration without requiring a server restart, and any admin configuration changes via `POST /renko/config` or the Admin Config API are immediately visible.
 
 ### 6-Layer Pipeline Architecture
 
@@ -2609,6 +2613,349 @@ Both channels are fire-and-forget — failures are logged but never crash the al
 
 ---
 
+## Admin Config API
+
+Hot-reloadable configuration engine backed by Supabase with in-memory TTL cache. The system manages 148 configuration keys across 8 categories (renko, execution, alpaca, risk, sizing, stream, auth, regime). All configuration changes take effect within the cache TTL (default 30 seconds) without requiring a server restart. Admin users can view, modify, and reset individual keys as well as reload the entire configuration from the database. The `runtime_config` object is the single source of truth consumed by all pipeline components, including the Renko HFT pipeline's `_get_pipeline_async` function, signal filters, risk managers, and execution modules. Configuration keys are strongly typed (string, int, float, bool, json) and validated on write. Audit trails track every configuration change with the user, timestamp, old value, and new value.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/config/` | List all configuration keys and values | Admin |
+| GET | `/config/categories` | List configuration categories | Admin |
+| GET | `/config/{category}` | Get all keys in a category | Admin |
+| GET | `/config/schema` | Get full configuration schema with types and defaults | Admin |
+| GET | `/config/audit` | Get configuration change audit trail | Admin |
+| GET | `/config/key/{key}` | Get a single configuration key value | Admin |
+| PATCH | `/config/key/{key}` | Update a single configuration key value | Admin |
+| POST | `/config/key/{key}/reset` | Reset a key to its default value | Admin |
+| GET | `/config/reload` | Force reload all config from Supabase | Admin |
+
+### GET /config/
+
+Returns all configuration keys and their current values across all categories. Response includes the key name, current value, type, category, and whether the value has been modified from its default.
+
+### GET /config/categories
+
+Returns the list of all configuration categories with key counts and descriptions.
+
+**Response:**
+
+```json
+{
+  "categories": [
+    {"name": "renko", "key_count": 22, "description": "Renko pipeline configuration"},
+    {"name": "execution", "key_count": 15, "description": "Order execution parameters"},
+    {"name": "alpaca", "key_count": 12, "description": "Alpaca API connection settings"},
+    {"name": "risk", "key_count": 25, "description": "Risk management parameters"},
+    {"name": "sizing", "key_count": 18, "description": "Position sizing configuration"},
+    {"name": "stream", "key_count": 20, "description": "Streaming and feed settings"},
+    {"name": "auth", "key_count": 16, "description": "Authentication configuration"},
+    {"name": "regime", "key_count": 20, "description": "Regime detection parameters"}
+  ],
+  "total_keys": 148,
+  "cache_ttl_seconds": 30
+}
+```
+
+### GET /config/{category}
+
+Returns all keys within a specific category. Replace `{category}` with one of: `renko`, `execution`, `alpaca`, `risk`, `sizing`, `stream`, `auth`, `regime`.
+
+### GET /config/schema
+
+Returns the full configuration schema including all keys, their types, default values, allowed ranges, and descriptions. Useful for building admin UI configuration panels.
+
+### GET /config/audit
+
+Returns a paginated audit trail of configuration changes. Each entry includes the key changed, old value, new value, user who made the change, and timestamp.
+
+### GET /config/key/{key}
+
+Returns the current value, type, default, and metadata for a single configuration key.
+
+### PATCH /config/key/{key}
+
+Update a single configuration key. The value is validated against the key's type and constraints before being written to Supabase and updating the in-memory cache.
+
+**Request:**
+
+```json
+{
+  "value": 0.75
+}
+```
+
+### POST /config/key/{key}/reset
+
+Reset a configuration key to its default value. The reset is recorded in the audit trail.
+
+### GET /config/reload
+
+Force a full reload of all configuration from Supabase, bypassing the TTL cache. Returns the number of keys reloaded and the time taken.
+
+---
+
+## Operational Hardening
+
+Operational safety layer providing kill switch, operating mode control, throttle monitoring, audit logging, and position reconciliation. The kill switch immediately halts all trading activity when activated — it cancels open orders, closes positions, and prevents new order submissions until explicitly deactivated. Operating modes (paper, live, maintenance) gate write access to the system and require two-step confirmation (request → confirm) for safety. The audit log tracks all configuration changes, mode transitions, and kill switch events with full attribution. Reconciliation compares the system's view of positions against the broker's reported state and flags discrepancies for manual review.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/operational/mode` | Current operating mode | Any |
+| POST | `/operational/mode/request` | Request mode change | Admin |
+| POST | `/operational/mode/confirm` | Confirm pending mode change | Admin |
+| GET | `/operational/mode/health` | Mode subsystem health check | Any |
+| GET | `/operational/kill-switch/status` | Kill switch status | Any |
+| POST | `/operational/kill-switch/activate` | Activate kill switch (halt all trading) | Admin |
+| POST | `/operational/kill-switch/deactivate` | Deactivate kill switch | Admin |
+| POST | `/operational/kill-switch/cancel-all` | Cancel all open orders | Admin |
+| POST | `/operational/kill-switch/close-all` | Close all open positions | Admin |
+| GET | `/operational/executor/status` | Order executor status | Any |
+| GET | `/operational/throttle/status` | Rate throttle status | Any |
+| GET | `/operational/audit-log` | Paginated audit log entries | Any |
+| GET | `/operational/audit-log/summary` | Audit log summary statistics | Any |
+| GET | `/operational/audit-log/export` | Export audit log as CSV/JSON | Any |
+| POST | `/operational/reconcile/run` | Run position reconciliation | Admin |
+| GET | `/operational/reconcile/status` | Reconciliation run status | Any |
+| POST | `/operational/reconcile/order` | Reconcile a single order | Admin |
+| GET | `/operational/reconcile/positions` | Get reconciled positions | Any |
+
+### GET /operational/mode
+
+Returns the current operating mode, any pending mode change request, and mode subsystem health. Modes control which operations are permitted: `paper` allows simulation only, `live` enables real order execution, and `maintenance` blocks all write operations.
+
+**Response:**
+
+```json
+{
+  "current_mode": "paper",
+  "pending_request": null,
+  "mode_health": "ok",
+  "allowed_operations": ["read", "simulate", "paper_trade"],
+  "since": "2026-05-24T10:00:00Z"
+}
+```
+
+### POST /operational/mode/request
+
+Initiates a two-step mode change. The request is stored as pending until confirmed via `/operational/mode/confirm`. This prevents accidental mode switches, especially from paper to live trading.
+
+**Request:**
+
+```json
+{
+  "target_mode": "live",
+  "reason": "Market open — switching to live execution"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "pending",
+  "requested_mode": "live",
+  "confirm_by": "2026-05-24T10:05:00Z",
+  "message": "Confirm with POST /operational/mode/confirm within 5 minutes"
+}
+```
+
+### POST /operational/kill-switch/activate
+
+Emergency halt — immediately cancels all open orders and prevents new order submissions. All Renko pipeline tick processing continues (signals are still generated), but no orders are routed to the broker. This is the fastest way to stop all trading activity in an emergency.
+
+**Response:**
+
+```json
+{
+  "status": "activated",
+  "orders_cancelled": 3,
+  "timestamp": "2026-05-24T10:15:00Z"
+}
+```
+
+### GET /operational/audit-log
+
+Returns paginated audit log entries tracking configuration changes, mode transitions, kill switch events, and other operational actions. Each entry includes the actor, action, old/new values, and timestamp.
+
+**Query Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `page` | `int` | `1` | Page number |
+| `per_page` | `int` | `50` | Entries per page (1-200) |
+| `action_type` | `string` | `null` | Filter by action type |
+| `actor` | `string` | `null` | Filter by actor |
+
+---
+
+## Live Stream REST
+
+REST tick ingestion and session management endpoints for real-time streaming. These endpoints complement the SSE streaming layer by providing a synchronous REST interface for seeding sessions, ingesting ticks individually or in batches, and managing session lifecycle. Sessions maintain an in-memory price buffer and HMM model state, allowing real-time regime detection on every tick without re-fitting the model from scratch. The seed endpoint must be called before ticks can be ingested — it initializes the session with enough historical data to fit the HMM. Ticks are processed synchronously on POST and return the updated regime snapshot immediately.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/stream/seed` | Seed a symbol session with historical prices | Write |
+| GET | `/stream/sessions` | List all active streaming sessions | Any |
+| GET | `/stream/session/{symbol}` | Get session status for a symbol | Any |
+| DELETE | `/stream/session/{symbol}` | Remove a streaming session | Write |
+| POST | `/stream/tick` | Ingest one price tick and receive regime snapshot | Write |
+| POST | `/stream/ticks` | Ingest a batch of price ticks | Write |
+
+### POST /stream/seed
+
+Creates (or resets) a streaming session for a symbol and pre-loads historical prices so the HMM can be fitted immediately. **Must be called before streaming ticks.**
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `string` | *required* | Ticker symbol |
+| `prices` | `list[float]` | *required* | Historical prices (min 81 bars) |
+| `window` | `int` | `500` | Window length (81–5000) |
+| `kelly_fraction` | `float` | `0.5` | Fractional Kelly (0.1–1.0) |
+| `target_vol` | `float` | `0.15` | Annualised target vol (0–1.0) |
+| `base_risk_limit` | `float` | `0.02` | Max daily loss (0–0.5) |
+| `refit_every` | `int` | `50` | Refit interval (5–500) |
+
+**Response:**
+
+```json
+{
+  "symbol": "SPY",
+  "ready": true,
+  "n_bars": 500,
+  "refit_count": 1,
+  "tick_count": 0,
+  "last_regime": "low_vol_bull"
+}
+```
+
+### GET /stream/sessions
+
+Lists all active streaming sessions with statistics including symbol, bar count, tick count, and last regime.
+
+### GET /stream/session/{symbol}
+
+Returns session status for a specific symbol including readiness, bar count, and current regime.
+
+### DELETE /stream/session/{symbol}
+
+Removes a streaming session, clearing all in-memory state for the symbol.
+
+### POST /stream/tick
+
+Push a single price tick. Returns a full regime snapshot once the session has enough bars; returns `{"status": "buffering", "n_bars": N}` while warming up.
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `string` | *required* | Ticker symbol |
+| `price` | `float` | *required* | Latest price (>0) |
+| `ts` | `float` | `null` | Unix timestamp (auto-filled if omitted) |
+
+### POST /stream/ticks
+
+Replay or batch-ingest multiple ticks. Returns a snapshot for each tick (or a buffering stub).
+
+**Request:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `string` | *required* | Ticker symbol |
+| `prices` | `list[float]` | *required* | Price series |
+| `timestamps` | `list[float]` | `null` | Optional timestamps |
+
+---
+
+## SSE Streaming
+
+Server-Sent Events endpoints for real-time push notifications. These endpoints establish long-lived HTTP connections that push JSON events to subscribers without polling. The SSE layer sits on top of the streaming session infrastructure — ticks ingested via `POST /stream/tick` are automatically broadcast to any connected SSE subscribers for that symbol. Regime change alerts are fired only when the detected regime transitions to a different state, preventing alert fatigue from repeated identical states. PnL SSE streams push equity updates at configurable intervals. All SSE connections require JWT authentication and support automatic reconnection via the `Last-Event-ID` header.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| GET | `/sse/{symbol}` | Real-time regime tick stream for a symbol | Clerk/JWT |
+| GET | `/sse/alerts` | Global regime-change alert stream for all symbols | Clerk/JWT |
+| GET | `/sse/pnl` | Real-time PnL equity update stream | Clerk/JWT |
+| GET | `/sse/pnl/status` | PnL SSE connection status and subscriber count | Clerk/JWT |
+
+### GET /sse/{symbol}
+
+Server-Sent Events stream that pushes a JSON regime snapshot on every tick received for `symbol`. Subscribe from any browser with `EventSource`.
+
+```javascript
+const es = new EventSource('/sse/SPY');
+es.onmessage = e => console.log(JSON.parse(e.data));
+```
+
+**Event format:**
+
+```json
+{
+  "event": "tick",
+  "symbol": "SPY",
+  "ts": 1710000000.0,
+  "price": 452.30,
+  "regime_label": "low_vol_bull",
+  "risk_multiplier": 1.50,
+  "confidence": 0.78,
+  "regime_changed": false
+}
+```
+
+### GET /sse/alerts
+
+Broadcasts regime-change alerts for **all symbols** to connected listeners. Only fires on regime state transitions (not every tick). Severity levels: `info` | `warning` | `critical`.
+
+**Event format:**
+
+```json
+{
+  "event": "regime_change",
+  "symbol": "SPY",
+  "old_regime": "low_vol_bull",
+  "new_regime": "high_vol_bear",
+  "severity": "critical",
+  "risk_multiplier": 0.25,
+  "ts": 1710000000.0
+}
+```
+
+### GET /sse/pnl
+
+Real-time SSE stream pushing PnL equity updates at configurable intervals. Includes realized and unrealized PnL, current drawdown, and portfolio-level metrics.
+
+**Event format:**
+
+```json
+{
+  "event": "pnl_update",
+  "equity": 125432.50,
+  "day_pnl": 432.50,
+  "unrealized_pnl": 180.00,
+  "drawdown_pct": -0.35,
+  "ts": 1710000000.0
+}
+```
+
+### GET /sse/pnl/status
+
+Returns current PnL SSE connection status including subscriber count, last push timestamp, and connection health.
+
+**Response:**
+
+```json
+{
+  "connected": true,
+  "subscribers": 3,
+  "last_push_ts": 1710000000.0,
+  "push_interval_seconds": 15,
+  "errors_last_hour": 0
+}
+```
+
+---
+
 ## Health
 
 | Method | Endpoint | Description | Auth |
@@ -2622,7 +2969,7 @@ Both channels are fire-and-forget — failures are logged but never crash the al
 ```json
 {
   "status": "ok",
-  "version": "5.1.0",
+  "version": "7.0.0",
   "sessions": 3,
   "redis": true,
   "gpu_backend": "RegimeHMM (hmmlearn)",
@@ -2718,107 +3065,3 @@ POST /gpu/benchmark      →  measure speedup
 ```
 
 Best for: Enabling 10-50× HMM speedup with pomegranate on CUDA/MPS hardware.
-
----
-
-## P&L Dashboard
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| `GET` | `/pnl/intraday` | Intraday P&L with realized/unrealized breakdown | Any |
-| `GET` | `/pnl/history` | Historical P&L time series | Any |
-| `GET` | `/pnl/export` | Export P&L data as CSV | Any |
-| `GET` | `/pnl/alerts` | List P&L alert thresholds | Any |
-| `POST` | `/pnl/alerts` | Create P&L alert threshold | Any |
-| `DELETE` | `/pnl/alerts/{threshold_id}` | Delete P&L alert threshold | Any |
-| `POST` | `/pnl/alerts/check` | Evaluate P&L alert thresholds | Any |
-
-### GET /pnl/intraday
-
-Returns intraday P&L breakdown including realized P&L, unrealized P&L, total P&L, and per-position details. Data is sourced from Alpaca positions and account snapshot.
-
-### GET /pnl/history
-
-Returns historical P&L time series for charting. Accepts `period` query parameter (1D, 1W, 1M, 3M, 1A, ALL).
-
-### GET /pnl/export
-
-Streams P&L data as a CSV file download with Content-Disposition header.
-
-### GET /pnl/alerts
-
-Returns all configured P&L alert thresholds for the authenticated user, persisted in Supabase.
-
-### POST /pnl/alerts
-
-Create a new P&L alert threshold. Supports daily loss, drawdown, and profit target alert types.
-
-### DELETE /pnl/alerts/{threshold_id}
-
-Delete a P&L alert threshold by ID.
-
-### POST /pnl/alerts/check
-
-Evaluate all alert thresholds against current P&L data. Returns triggered alerts with current values.
-
-### SSE P&L Streaming
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| `GET` | `/sse/pnl` | Real-time SSE stream for P&L updates (JWT-authenticated) | Any |
-| `GET` | `/sse/pnl/status` | P&L SSE connection status | Any |
-
-### Risk Dashboard
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| `GET` | `/risk/dashboard` | Full risk dashboard with 12 key metrics (VaR, CVaR, Sharpe, Sortino, etc.) | Any |
-
----
-
-## Operational Hardening
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| `GET` | `/operational/kill-switch/status` | Current kill switch status | Any |
-| `POST` | `/operational/kill-switch/activate` | Activate kill switch (halts all trading) | Admin |
-| `POST` | `/operational/kill-switch/deactivate` | Deactivate kill switch | Admin |
-| `POST` | `/operational/kill-switch/cancel-all` | Cancel all open orders | Admin |
-| `POST` | `/operational/kill-switch/close-all` | Close all positions | Admin |
-| `GET` | `/operational/audit-log` | Paginated audit log entries | Any |
-| `GET` | `/operational/audit-log/summary` | Audit log summary stats | Any |
-| `GET` | `/operational/audit-log/export` | Export audit log as CSV | Any |
-| `GET` | `/operational/mode` | Current trading mode (paper/live) | Any |
-| `POST` | `/operational/mode/request` | Request trading mode change | Write |
-| `POST` | `/operational/mode/confirm` | Confirm trading mode change (2-step safety) | Write |
-| `GET` | `/operational/reconcile/status` | Reconciliation status | Any |
-| `POST` | `/operational/reconcile/run` | Run reconciliation | Write |
-| `POST` | `/operational/reconcile/order` | Reconcile a single order | Any |
-| `GET` | `/operational/reconcile/positions` | Reconcile all positions | Any |
-| `GET` | `/operational/mode/health` | Trading mode health check | Any |
-| `GET` | `/operational/executor/status` | Alpaca executor status | Any |
-| `GET` | `/operational/throttle/status` | Rate throttle status (200 req/min per API key) | Any |
-
-### Kill Switch
-
-The kill switch is an emergency circuit breaker that immediately halts all order execution. When activated:
-- All incoming order requests are blocked by the `KillSwitchGateMiddleware`
-- Optionally cancels all open Alpaca orders
-- Optionally closes all open Alpaca positions
-- Audit log records the activation with timestamp and user
-
-### Audit Log
-
-Every trading action (order submission, kill switch activation, mode changes, reconciliation runs) is recorded in the audit log with timestamp, user ID, action type, and details. The log is queryable and exportable as CSV for compliance.
-
-### Paper/Live Mode Toggle
-
-Trading mode switching uses a two-step confirmation process:
-1. `POST /operational/mode/request` — Initiate mode change (requires trader+ role)
-2. `POST /operational/mode/confirm` — Confirm mode change within 60 seconds
-
-This prevents accidental switches between paper and live trading.
-
-### Fill Reconciliation
-
-The reconciliation system compares expected fills (from signal records) against actual Alpaca fills. It runs automatically every 15 minutes and can be triggered manually. Critical mismatches (MISSING_FILL, ERROR) are logged for investigation.

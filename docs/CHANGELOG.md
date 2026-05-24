@@ -1,3 +1,28 @@
+## [7.1.0] — 2026-05-24
+
+### Fixed — Supabase Environment Variable Configuration
+
+- **HTTP 500 on all `/renko/*` GET endpoints** — Root cause: `SUPABASE_URL` and `SUPABASE_KEY` were not configured on Render, causing `runtime_config` to fail when reading config values from Supabase `system_config` table. All Renko GET endpoints (`/renko/signals`, `/renko/state`, `/renko/bricks`, etc.) use `_get_pipeline_async()` which calls `RenkoConfig.from_runtime_config()`, requiring Supabase connectivity. Now returns proper 401 (not 500) after env vars are correctly set.
+
+### Changed — Documentation & OpenAPI Spec Updates
+
+- **OpenAPI spec v7.1.0** — Updated authentication description to reflect unified auth (Clerk JWT, Local JWT, SaaS API Key, Static API Key) instead of Clerk-only
+- **OpenAPI spec** — Added `ApiKeyAuth` security scheme (`X-API-Key` header)
+- **OpenAPI spec** — Corrected auth levels for `/renko/regime` and `/renko/equity` from "Write" to "Admin" (matching router code `require_admin`)
+- **OpenAPI spec** — Added 401/403 response documentation for admin-only endpoints
+- **OpenAPI spec** — Updated `/renko/snapshot/restore` to indicate "Write" access requirement
+- **Renko README** — Corrected auth levels in endpoint table (`/renko/regime` and `/renko/equity` are Admin, not Write)
+- **Renko README** — Added Render deployment note about Supabase env var configuration
+- **Renko README** — Added Supabase config 500 error to bug fix history table
+
+### Deployment Notes
+
+- Required Render environment variables: `SUPABASE_URL` + `SUPABASE_KEY` (service role key)
+- There is NO `SUPABASE_PUBLISHABLE_KEY` variable — the backend needs the service role key for full database access
+- Verify connectivity with `GET /renko/health` (no auth required)
+
+---
+
 ## [5.1.0] — 2026-05-20
 
 ### Phase 6+7: Frontend UI
