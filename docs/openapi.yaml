@@ -442,6 +442,62 @@ paths:
                 properties:
                   status: { type: string, example: ok }
 
+  /renko/health:
+    get:
+      tags: [Renko HFT Pipeline, Health]
+      summary: Renko pipeline diagnostic health check
+      description: |
+        Tests pipeline creation, runtime_config, and Supabase connectivity.
+        No authentication required. Returns status of each subsystem:
+        runtime_config, config_creation, pipeline_creation, supabase_snapshot,
+        and pipeline_async.
+      security: []
+      responses:
+        "200":
+          description: Health check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded, broken]
+                    description: Overall health status
+                  errors:
+                    type: array
+                    items: { type: string }
+                  runtime_config:
+                    type: object
+                    properties:
+                      available: { type: boolean }
+                      cache_entries: { type: integer }
+                      db_available: { type: boolean }
+                  config_creation:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      brick_size: { type: number }
+                      symbol: { type: string }
+                      brick_size_mode: { type: string }
+                  pipeline_creation:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      brick_count: { type: integer }
+                  supabase_snapshot:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      status_code: { type: integer }
+                      note: { type: string }
+                  pipeline_async:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      brick_count: { type: integer }
+                      symbol: { type: string }
+
   /renko/backtest/stats:
     get:
       tags: [Renko HFT Pipeline]
@@ -458,6 +514,221 @@ paths:
               schema:
                 type: object
                 description: Journal statistics including win rate, PnL, trade count
+
+  /renko/backtest/run:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Run full backtest with Phase 2-7 analytics
+      description: |
+        Runs a complete Renko backtest with transaction cost modeling (Phase 2),
+        execution realism (Phase 3), statistical rigor (Phase 6), and execution
+        modeling (Phase 7). Uses runtime config as the base, then applies the
+        explicit overrides from the request body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RenkoBacktestRequest' }
+      responses:
+        "200":
+          description: Backtest result with analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Full backtest result with Phase 2-7 analytics
+        "422":
+          $ref: '#/components/responses/ValidationError'
+
+  /renko/backtest/run/stream:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: SSE streaming backtest
+      description: |
+        Runs a Renko backtest with Server-Sent Events streaming. Emits chunk
+        results as they are computed, allowing real-time progress display.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RenkoBacktestStreamRequest' }
+      responses:
+        "200":
+          description: SSE stream of backtest chunks
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE events with JSON-encoded backtest chunks
+
+  /renko/backtest/optimize:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Parameter sweep optimization with statistical rigor
+      description: |
+        Runs a grid-search parameter sweep over brick_sizes × sl_bricks × tp_bricks
+        combinations. Applies multiple testing corrections (Bonferroni, Holm-Bonferroni,
+        Benjamini-Hochberg) and computes the Deflated Sharpe Ratio for the best strategy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RenkoOptimizationRequest' }
+      responses:
+        "200":
+          description: Optimization results with statistical rigor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  n_combinations: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        brick_size: { type: number }
+                        sl_bricks: { type: integer }
+                        tp_bricks: { type: integer }
+                        total_trades: { type: integer }
+                        win_rate: { type: number }
+                        sharpe: { type: number }
+                        profit_factor: { type: number }
+                  multiple_testing: { type: object }
+                  deflated_sharpe: { type: object }
+                  best: { type: object }
+
+  /renko/statistics/rigor:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Statistical rigor tests (Phase 6)
+      description: |
+        Runs bootstrap confidence intervals, Deflated Sharpe Ratio, and
+        significance tests on trade results. Validates that observed
+        performance is statistically significant and not due to data snooping.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatisticalRigorRequest' }
+      responses:
+        "200":
+          description: Statistical rigor test results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bootstrap_ci: { type: object }
+                  deflated_sharpe: { type: object }
+                  significance_tests: { type: object }
+
+  /renko/execution/model:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Execution modeling costs (Phase 7)
+      description: |
+        Computes execution modeling costs including market impact (Almgren-Chriss),
+        fill probability, and financing costs (borrow, margin, dividends).
+        Uses runtime_config as the source of defaults.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExecutionModelRequest' }
+      responses:
+        "200":
+          description: Execution modeling cost breakdown
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  market_impact: { type: object }
+                  fill_probability: { type: object }
+                  financing_costs: { type: object }
+
+  /renko/live/status:
+    get:
+      tags: [Renko HFT Pipeline]
+      summary: Live execution status
+      description: |
+        Returns the current live execution status for a pipeline, including
+        whether it is in dry_run or live mode, the execution mode, and
+        whether a position is currently open.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Live execution status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol: { type: string }
+                  dry_run: { type: boolean }
+                  live_enabled: { type: boolean }
+                  execution_mode: { type: string, enum: [simulation, paper, live] }
+                  has_position: { type: boolean }
+
+  /renko/live/toggle:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Toggle live execution (admin only)
+      description: |
+        Toggle live execution for a pipeline. When enabled=False, sets
+        dry_run=True (safe mode). When enabled=True, sets dry_run=False
+        and live_enabled=True. **Admin-only endpoint.**
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: enabled
+          in: query
+          schema: { type: boolean, default: true }
+          description: Enable or disable live execution
+      responses:
+        "200":
+          description: Execution mode updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  symbol: { type: string }
+                  dry_run: { type: boolean }
+                  live_enabled: { type: boolean }
+
+  /renko/snapshot/restore:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Restore pipeline from Supabase snapshot
+      description: |
+        Attempts to restore a pipeline from a previously saved Supabase
+        snapshot. If no snapshot exists, returns restored=false. The
+        snapshot includes pipeline state (bricks, trades, regime) but
+        not the full trade history.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Snapshot restore result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  symbol: { type: string }
+                  restored: { type: boolean }
+                  message: { type: string }
 
   # ══════════════════════════════════════════════════════════════════════════
   #  REGIME PLATFORM
@@ -1539,6 +1810,283 @@ components:
         equity:
           type: number
           description: Current account equity
+
+    RenkoBacktestRequest:
+      type: object
+      required: [prices]
+      description: Full backtest request with Phase 2-7 parameters
+      properties:
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+          minItems: 50
+          description: Historical price series
+        timestamps:
+          type: array
+          items: { type: number }
+          nullable: true
+        regimes:
+          type: array
+          items: { type: string }
+          nullable: true
+        symbol:
+          type: string
+          nullable: true
+        brick_size:
+          type: number
+          default: 0.50
+        slippage_bps:
+          type: number
+          default: 2.0
+          description: Slippage in basis points
+        commission_bps:
+          type: number
+          default: 5.0
+        spread_bps:
+          type: number
+          default: 1.0
+        sl_bricks:
+          type: integer
+          default: 3
+        tp_bricks:
+          type: integer
+          default: 5
+        oco_priority:
+          type: string
+          enum: [sl_first, tp_first]
+          default: sl_first
+        market_impact_mode:
+          type: string
+          enum: [none, almgren_chriss]
+          default: none
+        adv_shares:
+          type: number
+          default: 10000000
+        fill_probability_mode:
+          type: string
+          enum: [always_fill, realistic]
+          default: always_fill
+        borrow_rate_bps:
+          type: number
+          default: 50.0
+        margin_rate_bps:
+          type: number
+          default: 150.0
+        is_hard_to_borrow:
+          type: boolean
+          default: false
+        dividend_yield_bps:
+          type: number
+          default: 200.0
+        initial_capital:
+          type: number
+          default: 100000.0
+        n_trials:
+          type: integer
+          default: 1
+          description: Number of strategy trials (for Deflated Sharpe Ratio)
+        confidence_level:
+          type: number
+          default: 0.95
+
+    RenkoBacktestStreamRequest:
+      type: object
+      required: [prices]
+      description: SSE streaming backtest request
+      properties:
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+        timestamps:
+          type: array
+          items: { type: number }
+          nullable: true
+        regimes:
+          type: array
+          items: { type: string }
+          nullable: true
+        symbol:
+          type: string
+          nullable: true
+        chunk_size:
+          type: integer
+          default: 150
+          description: Ticks per SSE chunk
+        brick_size:
+          type: number
+          default: 0.50
+        sl_bricks:
+          type: integer
+          default: 3
+        tp_bricks:
+          type: integer
+          default: 5
+        slippage_bps:
+          type: number
+          default: 2.0
+        commission_bps:
+          type: number
+          default: 5.0
+        spread_bps:
+          type: number
+          default: 1.0
+        oco_priority:
+          type: string
+          default: sl_first
+        market_impact_mode:
+          type: string
+          default: none
+        adv_shares:
+          type: number
+          default: 10000000
+        fill_probability_mode:
+          type: string
+          default: always_fill
+        borrow_rate_bps:
+          type: number
+          default: 50.0
+        margin_rate_bps:
+          type: number
+          default: 150.0
+
+    RenkoOptimizationRequest:
+      type: object
+      required: [prices]
+      description: Parameter sweep optimization with statistical rigor
+      properties:
+        prices:
+          type: array
+          items: { type: number, exclusiveMinimum: 0 }
+        timestamps:
+          type: array
+          items: { type: number }
+          nullable: true
+        regimes:
+          type: array
+          items: { type: string }
+          nullable: true
+        symbol:
+          type: string
+          nullable: true
+        brick_sizes:
+          type: array
+          items: { type: number }
+          default: [0.25, 0.50, 1.00]
+        sl_bricks_range:
+          type: array
+          items: { type: integer }
+          default: [2, 3, 4]
+        tp_bricks_range:
+          type: array
+          items: { type: integer }
+          default: [4, 5, 6]
+        slippage_bps:
+          type: number
+          default: 2.0
+        commission_bps:
+          type: number
+          default: 5.0
+        spread_bps:
+          type: number
+          default: 1.0
+        market_impact_mode:
+          type: string
+          default: none
+        adv_shares:
+          type: number
+          default: 10000000
+        fill_probability_mode:
+          type: string
+          default: always_fill
+        borrow_rate_bps:
+          type: number
+          default: 50.0
+        margin_rate_bps:
+          type: number
+          default: 150.0
+        confidence_level:
+          type: number
+          default: 0.95
+        multiple_testing_alpha:
+          type: number
+          default: 0.05
+          description: Alpha for multiple testing correction
+
+    StatisticalRigorRequest:
+      type: object
+      required: [trade_pnls, observed_sharpe]
+      description: Statistical rigor tests on trade results
+      properties:
+        trade_pnls:
+          type: array
+          items: { type: number }
+          description: Trade P&L series
+        observed_sharpe:
+          type: number
+          description: Observed Sharpe ratio
+        n_trials:
+          type: integer
+          default: 1
+        confidence_level:
+          type: number
+          default: 0.95
+        strategy_returns:
+          type: array
+          items:
+            type: array
+            items: { type: number }
+          nullable: true
+        benchmark_returns:
+          type: array
+          items: { type: number }
+          nullable: true
+
+    ExecutionModelRequest:
+      type: object
+      required: [order_shares, avg_price]
+      description: Execution modeling costs for a trade
+      properties:
+        order_shares:
+          type: number
+          description: Number of shares
+        avg_price:
+          type: number
+          description: Average share price
+        adv_shares:
+          type: number
+          default: 10000000
+        sigma_daily:
+          type: number
+          default: 0.02
+        order_type:
+          type: string
+          enum: [limit, market]
+          default: limit
+        distance_from_mid_pct:
+          type: number
+          default: 0.0
+        position_notional:
+          type: number
+          default: 0.0
+        holding_days:
+          type: number
+          default: 10.0
+        direction:
+          type: string
+          enum: [long, short]
+          default: long
+        is_hard_to_borrow:
+          type: boolean
+          default: false
+        borrow_rate_bps:
+          type: number
+          default: 50.0
+        margin_rate_bps:
+          type: number
+          default: 150.0
+        dividend_yield_bps:
+          type: number
+          default: 200.0
 
     # ══════════════════════════════════════════════════════════════════════════
     #  SHARED REGIME PLATFORM SCHEMAS

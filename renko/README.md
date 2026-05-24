@@ -32,6 +32,7 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
+| `GET` | `/renko/health` | Diagnostic health check (no auth required) | None |
 | `POST` | `/renko/tick` | Process single tick through pipeline | Write |
 | `POST` | `/renko/tick/batch` | Batch tick processing (warm-up/backtest) | Write |
 | `GET` | `/renko/state` | Current pipeline state snapshot | Any |
@@ -46,10 +47,10 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `POST` | `/renko/config` | Update pipeline configuration (resets pipeline) | Admin |
 | `POST` | `/renko/reset` | Reset pipeline for a symbol | Admin |
 | `GET` | `/renko/backtest/stats` | Backtest/trading statistics | Any |
-| `POST` | `/renko/backtest/run` | Run full Renko pipeline backtest on historical prices | Write |
+| `POST` | `/renko/backtest/run` | Full backtest with Phase 2-7 analytics | Write |
 | `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
-| `POST` | `/renko/backtest/compare` | Compare 2–10 Renko configs side-by-side | Any |
-| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep (max 50 combos) | Write |
+| `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep with statistical rigor (max 50 combos) | Write |
+| `POST` | `/renko/backtest/compare` | Compare 2-10 Renko configs side-by-side | Any |
 | `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
 | `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
@@ -338,10 +339,36 @@ Default pipeline parameters (can be changed via the Config panel or `/renko/conf
 - **Database**: Supabase (PostgreSQL) — `ta_renko_snapshot` table
 - **GitHub**: `lexingtontechus/noble-trader-fastapi-backend` and `lexingtontechus/noble-trader-agent-frontend`
 
+## Required Environment Variables (Render)
+
+The backend requires two Supabase environment variables on Render for full functionality:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SUPABASE_URL` | Supabase project URL | `https://pcvscowltlrxzgxjurcr.supabase.co` |
+| `SUPABASE_KEY` | Supabase **service_role** key (NOT the anon/publishable key) | `eyJhbG...` |
+
+> **IMPORTANT**: There is no `SUPABASE_PUBLISHABLE_KEY` variable. The backend uses `SUPABASE_KEY`
+> which must be the **service role** key because it needs full database access for:
+> - Reading/writing `system_config` table (runtime config)
+> - Reading/writing `ta_renko_snapshot` table (pipeline persistence)
+> - Looking up `api_keys` table (SaaS API key authentication)
+> - Writing to `system_config_audit` table (config change logs)
+> - Writing to `rate_limit_violations` table
+>
+> The anon/publishable key is for frontend use only (`NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+> and does NOT have sufficient permissions for backend operations.
+
+When these variables are not configured, the `/renko/health` endpoint will report:
+- `runtime_config.db_available: false` — Supabase DB not connected
+- `supabase_snapshot.ok: false, note: "SUPABASE_URL/KEY not configured"`
+- The pipeline still works with hardcoded defaults, but runtime config changes are not persisted
+
 ## Bug Fix History
 
 | Issue | Root Cause | Fix |
 |-------|-----------|-----|
+| HTTP 500 on all `/renko/*` GET endpoints | `runtime_config.get_str()` called `str()` on `BrickSizeMode.FIXED` enum default, producing `'BrickSizeMode.FIXED'` instead of `'fixed'`. `BrickSizeMode()` constructor then raised `ValueError` | `get_str()` now checks for Enum and returns `.value`; `from_runtime_config()` strips `ClassName.` prefix from enum strings (commit `0735a6d`) |
 | No bricks on frontend | Tick button sent random prices, direction case mismatch, no warm-up | Real price fetch + `.toUpperCase()` + Warm Up button |
 | Symbol switching shows no data | `fetchAllData()` used stale `symbol` from React closure | Added `symbolOverride` parameter |
 | All symbols feed SPY pipeline | Backend `/tick/batch` hardcoded `_get_pipeline("SPY")` | Added `symbol` field to `BatchTickInput` |

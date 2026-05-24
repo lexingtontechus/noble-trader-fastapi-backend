@@ -42,11 +42,62 @@ docker run -p 8000:8000 regime-platform
 
 ## Environment Variables
 
+### Server
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8000` | Listening port |
 | `WORKERS` | `1` | Uvicorn worker count |
 | `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
+
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_ENABLED` | `true` | Enable authentication |
+| `JWT_SECRET_KEY` | `""` | Secret for JWT signing (required for auth) |
+| `API_KEYS` | `""` | Comma-separated static API keys |
+| `CLERK_PUBLISHABLE_KEY` | `""` | Clerk publishable key (frontend-only, not used by backend) |
+| `CLERK_SECRET_KEY` | `""` | Clerk secret key (required for Clerk JWT verification) |
+| `CLERK_JWKS_URL` | `""` | Clerk JWKS URL (auto-resolved from JWT issuer if empty) |
+
+### Supabase (REQUIRED for runtime_config + pipeline persistence)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUPABASE_URL` | `""` | Supabase project URL (e.g. `https://pcvscowltlrxzgxjurcr.supabase.co`) |
+| `SUPABASE_KEY` | `""` | Supabase **service_role** key (NOT the anon/publishable key) |
+
+> **IMPORTANT**: The backend uses `SUPABASE_KEY` which must be the **service role** key.
+> There is no `SUPABASE_PUBLISHABLE_KEY` variable. The service role key is required because
+> the backend needs full database access for `system_config`, `ta_renko_snapshot`, `api_keys`,
+> `system_config_audit`, and `rate_limit_violations` tables. The anon/publishable key is for
+> frontend use only and does NOT have sufficient permissions.
+
+### Trading
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALPACA_API_KEY` | `""` | Alpaca paper/live API key |
+| `ALPACA_SECRET_KEY` | `""` | Alpaca secret key |
+| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` | Alpaca base URL |
+
+### Notifications
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCORD_WEBHOOK_SIGNALS` | `""` | Discord webhook for trade signals |
+| `DISCORD_WEBHOOK_EXECUTIONS` | `""` | Discord webhook for trade executions |
+| `DISCORD_WEBHOOK_STATUS` | `""` | Discord webhook for status updates |
+| `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | `""` | Telegram chat ID |
+
+### Caching
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_URL` | `""` | Redis URL for pipeline state persistence |
+| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 
 ---
 
@@ -65,8 +116,13 @@ docker run -p 8000:8000 regime-platform
 ## Health Check
 
 ```bash
+# Main health check
 curl http://localhost:8000/health
-# {"status": "ok", "version": "6.0.0"}
+# {"status": "ok", "version": "7.0.0"}
+
+# Renko pipeline health check (no auth required)
+curl http://localhost:8000/renko/health
+# {"status": "ok", "runtime_config": {"db_available": true}, ...}
 ```
 
 ---
