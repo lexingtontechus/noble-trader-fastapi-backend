@@ -75,7 +75,20 @@ class ModeManager:
         self._cached_state: Optional[ModeState] = None
 
     async def _get_client(self):
-        """Lazy Redis connection."""
+        """Lazy Redis connection with automatic reconnection on drop."""
+        # If we had a client but it's no longer usable, discard it so
+        # we reconnect on the next call instead of reusing a dead socket.
+        if self._redis is not None:
+            try:
+                await self._redis.ping()
+            except Exception:
+                logger.warning("ModeManager: Redis connection lost, reconnecting")
+                try:
+                    await self._redis.aclose()
+                except Exception:
+                    pass
+                self._redis = None
+
         if self._redis is None:
             try:
                 import redis.asyncio as aioredis
@@ -86,6 +99,8 @@ class ModeManager:
                         decode_responses=True,
                         socket_timeout=5,
                         socket_connect_timeout=5,
+                        socket_keepalive=True,
+                        retry_on_timeout=True,
                     )
                     logger.info("ModeManager: Redis client connected")
                 else:

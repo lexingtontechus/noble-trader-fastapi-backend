@@ -280,6 +280,16 @@ class RuntimeConfig:
                     "Populated config cache from sync defaults (%d keys) — DB unavailable",
                     len(self._cache),
                 )
+            else:
+                # Warm cache but DB fetch returned empty (timeout / transient error).
+                # Extend TTL to prevent thundering herd — every request would otherwise
+                # queue on the lock and retry the 5-second HTTP timeout.
+                self._cache_time = now
+                log.warning(
+                    "Config DB fetch returned no data; keeping %d cached entries "
+                    "and extending TTL to prevent thundering herd",
+                    len(self._cache),
+                )
 
     async def reload(self) -> int:
         """Force a full reload from DB, ignoring TTL. Returns count of entries."""
@@ -514,6 +524,32 @@ class RuntimeConfig:
     # ── Conversion helpers ──────────────────────────────────────────────────
 
     @staticmethod
+    def _parse_timestamp(raw: Any) -> float:
+        """Parse a timestamp from DB into a Unix epoch float.
+
+        PostgREST returns TIMESTAMPTZ columns as ISO 8601 strings
+        (e.g. ``"2024-01-15T10:30:00+00:00"``).  Converting to a
+        Unix-epoch ``float`` ensures Pydantic's ``updated_at: float``
+        field validates cleanly instead of raising ``ValidationError``.
+        """
+        if raw is None:
+            return 0.0
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if isinstance(raw, str):
+            try:
+                from datetime import datetime, timezone
+                # ISO 8601 → datetime → epoch float
+                dt = datetime.fromisoformat(raw)
+                return dt.timestamp()
+            except (ValueError, TypeError):
+                try:
+                    return float(raw)
+                except (ValueError, TypeError):
+                    return 0.0
+        return 0.0
+
+    @staticmethod
     def _row_to_entry(row: dict) -> ConfigEntry:
         """Convert a Supabase row dict to a ConfigEntry."""
         value_type = ValueType(row.get("value_type", "float"))
@@ -536,7 +572,7 @@ class RuntimeConfig:
             is_sensitive=row.get("is_sensitive", False),
             requires_restart=row.get("requires_restart", False),
             updated_by=row.get("updated_by", "system"),
-            updated_at=row.get("updated_at", 0),
+            updated_at=RuntimeConfig._parse_timestamp(row.get("updated_at")),
         )
 
     @staticmethod

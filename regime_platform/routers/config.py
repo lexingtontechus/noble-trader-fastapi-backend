@@ -170,7 +170,11 @@ async def list_categories(
     user: TokenData = Depends(get_authed_user),
 ):
     """List all configuration categories."""
-    return await runtime_config.get_categories()
+    try:
+        return await runtime_config.get_categories()
+    except Exception as exc:
+        log.error("Failed to list config categories: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
 
 
 @config_router.get("/schema", response_model=Dict[str, ConfigEntryResponse])
@@ -199,7 +203,11 @@ async def get_audit_log(
     """Get config change audit log. Admin only."""
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required for audit log.")
-    return await runtime_config.get_audit_log(key=key, limit=limit)
+    try:
+        return await runtime_config.get_audit_log(key=key, limit=limit)
+    except Exception as exc:
+        log.error("Failed to load audit log: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Config service unavailable: {exc}")
 
 
 @config_router.get("/reload", response_model=ConfigReloadResponse)
@@ -207,7 +215,11 @@ async def reload_config(
     user: TokenData = Depends(require_admin),
 ):
     """Force reload of all config from DB. Admin only."""
-    count = await runtime_config.reload()
+    try:
+        count = await runtime_config.reload()
+    except Exception as exc:
+        log.error("Failed to reload config: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Config reload failed: {exc}")
     return ConfigReloadResponse(
         entries_loaded=count,
         message=f"Reloaded {count} config entries from database.",
@@ -263,22 +275,32 @@ async def get_config_key(
 
     # Fallback: check sync_config defaults (covers keys not yet seeded in DB)
     from regime_platform.core.runtime_config import sync_config as _sync
-    if key in _SyncProxy._defaults:
-        from regime_platform.core.runtime_config import ConfigEntry as _CE, ValueType as _VT
-        default_val = _SyncProxy._defaults[key]
-        value_type = _VT.FLOAT if isinstance(default_val, float) else (_VT.INT if isinstance(default_val, int) else (_VT.BOOL if isinstance(default_val, bool) else _VT.STR))
-        category = key.split(".")[0] if "." in key else "general"
-        entry = _CE(
-            key=key,
-            value=default_val,
-            value_type=value_type,
-            category=category,
-            description=f"Default for {key} (not yet in DB)",
-            default_value=default_val,
-        )
-        return _entry_to_response(entry, is_admin)
 
-    raise HTTPException(status_code=404, detail=f"Config key '{key}' not found.")
+    # Key alias resolution: bare keys like "quality_floor" may exist as
+    # "sizing.quality_floor" or "renko.quality_floor" in defaults.  Try
+    # common category prefixes so MCP tools don't need the exact dotted key.
+    candidate_keys = [key]
+    if "." not in key:
+        for prefix in ("sizing", "renko", "risk", "exec", "stream", "alpaca", "regime"):
+            candidate_keys.append(f"{prefix}.{key}")
+
+    for candidate in candidate_keys:
+        if candidate in _SyncProxy._defaults:
+            from regime_platform.core.runtime_config import ConfigEntry as _CE, ValueType as _VT
+            default_val = _SyncProxy._defaults[candidate]
+            value_type = _VT.FLOAT if isinstance(default_val, float) else (_VT.INT if isinstance(default_val, int) else (_VT.BOOL if isinstance(default_val, bool) else _VT.STR))
+            category = candidate.split(".")[0] if "." in candidate else "general"
+            entry = _CE(
+                key=candidate,
+                value=default_val,
+                value_type=value_type,
+                category=category,
+                description=f"Default for {candidate} (resolved from alias '{key}')",
+                default_value=default_val,
+            )
+            return _entry_to_response(entry, is_admin)
+
+    raise HTTPException(status_code=404, detail=f"Config key '{key}' not found (also tried prefixed aliases).")
 
 
 @config_router.patch("/key/{key:path}", response_model=ConfigEntryResponse)
