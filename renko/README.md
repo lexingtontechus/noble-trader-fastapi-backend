@@ -6,7 +6,7 @@ A 6-layer Renko-based high-frequency trading pipeline that processes price ticks
 
 ```
 Tick → Brick Engine → Swing Classifier → Pattern Detector
-     → Signal Filter → Risk Manager → Executor → Trade Journal
+     → Signal Filter (Kelly ─or─ Masaniello) → Risk Manager → Executor → Trade Journal
 ```
 
 | Layer | Module | Purpose |
@@ -14,15 +14,17 @@ Tick → Brick Engine → Swing Classifier → Pattern Detector
 | 1 | `brick_engine.py` | Renko brick construction with 2-brick reversal rule |
 | 2 | `swing_classifier.py` | Labels bricks HH/HL/LH/LL, detects swing points |
 | 3 | `pattern_detector.py` | Detects bull_run, bear_run, reversal, double_top, double_bottom, consolidation_break |
-| 4 | `signal_filter.py` | 7-layer risk governance: session window, max trades, daily loss, consecutive losses, cooldown, velocity, HMM regime gate |
+| 4 | `signal_filter.py` | 7-layer risk governance + **position sizing** (Kelly or Dynamic Masaniello) |
 | 5 | `risk_manager.py` | Brick-denominated SL/TP/trailing stop/time-stop/partial-exit |
 | 6 | `executor.py` | Alpaca order executor with bracket orders (dry-run simulation mode when no API keys) |
+
+The Signal Filter layer includes a pluggable position-sizing sub-layer. When `sizing_mode=kelly` (default), it computes a simple equity-fraction size. When `sizing_mode=masaniello`, it routes through the `DynamicMasanielloSizer` from `regime_platform/core/position_sizer.py`, which produces a stateful, adaptive size based on batch progress, regime quality, drawdown, and volatility. If Masaniello gates reject a trade (e.g. win probability below threshold), the filter falls back to Kelly sizing.
 
 Supporting modules:
 - `pipeline.py` — Orchestrates the full pipeline flow
 - `trade_journal.py` — Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
 - `config.py` — `RenkoConfig` dataclass with 30+ tunable parameters
-- `router.py` — 22 FastAPI REST endpoints
+- `router.py` — 24 FastAPI REST endpoints
 - `integration.py` — Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
 - `backtest.py` / `tests.py` — Backtesting and unit tests
 
@@ -56,6 +58,8 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
 | `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
 | `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Admin/Trader |
+| `GET` | `/renko/sizing/model` | Get current position sizing model and parameters | Any |
+| `POST` | `/renko/sizing/model` | Set position sizing model (Kelly ↔ Masaniello) | Admin |
 
 ### Backtest Endpoints (Isolated — Never Affect Live Pipeline)
 
@@ -331,6 +335,285 @@ Default pipeline parameters (can be changed via the Config panel or `/renko/conf
 | `max_consecutive_losses` | 3 | Pause after N consecutive losses |
 | `cooldown_seconds` | 30.0 | Minimum seconds between trades |
 | `regime_gate` | true | Only trade with HMM regime alignment |
+| `sizing_mode` | `kelly` | Position sizing model: `kelly` or `masaniello` |
+| `kelly_fraction` | 0.50 | Half-Kelly multiplier (Kelly mode) |
+| `max_position_pct` | 0.10 | Max 10% of equity per trade (Kelly mode) |
+| `min_position_usd` | 50.0 | Minimum order value |
+| `default_win_rate` | 0.55 | Fallback win rate for Kelly when no history |
+
+## Position Sizing Models
+
+The pipeline supports two position sizing modes, selected via the `sizing_mode` parameter on `RenkoConfig`.
+
+### Kelly (Default)
+
+```
+position_usd = equity × min(kelly_fraction, 0.10)
+```
+
+- **Simple and stateless** — each trade's size depends only on current equity and the Kelly fraction.
+- The Kelly fraction is derived from the trade journal's historical win rate and profit factor, or falls back to `default_win_rate` (0.55) when no history exists.
+- Hard cap at `max_position_pct` (10% of equity) prevents over-concentration.
+- Best suited for strategies with stable edge and no need for adaptive sizing.
+
+### Dynamic Masaniello
+
+```
+f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
+```
+
+- **Stateful and adaptive** — sizing changes across trades within a batch based on cumulative results.
+- The formula decomposes into four independent factors:
+
+| Factor | Symbol | Formula | Range | Purpose |
+|--------|--------|---------|-------|---------|
+| Base risk | β | config value | 0.25%–1.00% | Starting risk fraction |
+| Masaniello progress | M_i | `(W - w) / (N - i + 1)` | [0.0, 1.5] | Urgency: wins needed vs trades remaining |
+| Model quality | Q_i | `prob_factor × regime_factor × conf_factor` | [0.0, 2.25] | Edge quality gate (probability × regime × confidence) |
+| Drawdown scaling | DD_i | `clip(1 - dd/max_dd, 0.25, 1.0)` | [0.25, 1.0] | Shrink size as drawdown grows |
+| Volatility adjustment | V_i | `clip(ATR_baseline / ATR_current, 0.5, 1.5)` | [0.5, 1.5] | Shrink in high vol, expand in low vol |
+
+- The `(0.5 + M_i)` term guarantees a minimum 0.5× multiplier even when the batch target is already met.
+- Pre-flight gates block trades entirely when win probability, reward/risk, or regime quality fall below their minimums.
+- Optional Kelly overlay caps the Masaniello fraction at the fractional Kelly bound.
+- Batch state (wins, losses, drawdown, peak equity) is tracked automatically within the `SignalFilter`.
+- Best suited for strategies that benefit from adaptive sizing — e.g. pressing when behind in a batch, pulling back during drawdowns, or scaling with regime confidence.
+
+## Sizing Mode Configuration
+
+The sizing mode can be set in four ways (highest priority wins):
+
+### 1. RenkoConfig Constructor
+
+```python
+from renko.config import RenkoConfig, SizingMode
+
+config = RenkoConfig(
+    sizing_mode=SizingMode.MASANIELLO,
+    masaniello_base_risk=0.005,
+    masaniello_batch_size=5,
+    masaniello_target_wins=3,
+)
+```
+
+### 2. POST /renko/sizing/model (Admin)
+
+Switch the live pipeline's sizing model at runtime:
+
+```bash
+curl -X POST https://backend/renko/sizing/model?symbol=SPY \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"sizing_mode": "masaniello", "base_risk": 0.005, "batch_size": 5}'
+```
+
+### 3. Runtime Config Key
+
+Set `renko.sizing_mode` in the `system_config` Supabase table (or via `POST /renko/config`):
+
+```bash
+curl -X POST https://backend/renko/config \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"sizing_mode": "masaniello"}'
+```
+
+### 4. POST /renko/config with sizing_mode in body
+
+Same as #3 — include `sizing_mode` and any `masaniello_*` overrides in the config body. This triggers a full pipeline reset.
+
+## Masaniello Parameters
+
+All parameters live on `RenkoConfig` with the `masaniello_` prefix. They are only used when `sizing_mode=masaniello`.
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `masaniello_base_risk` | 0.005 | (0, 1) | **β** — base risk fraction of equity (0.50%) |
+| `masaniello_min_risk` | 0.0025 | (0, 1) | Hard floor for risk fraction after clamping (0.25%) |
+| `masaniello_max_risk` | 0.010 | (0, 1) | Hard cap for risk fraction after clamping (1.00%) |
+| `masaniello_min_prob` | 0.50 | [0, 1] | Minimum win probability to allow a trade |
+| `masaniello_min_rr` | 2.50 | > 0 | Minimum reward/risk ratio to allow a trade |
+| `masaniello_max_drawdown` | 0.10 | (0, 1) | Max strategy drawdown for DD_i linear scaling (10%) |
+| `masaniello_regime_floor` | 0.50 | [0, 1] | Minimum regime quality (risk_multiplier) to allow a trade |
+| `masaniello_use_kelly_overlay` | false | — | When true, cap Masaniello fraction at fractional Kelly bound |
+| `masaniello_batch_size` | 5 | ≥ 1 | **N** — number of trades per batch |
+| `masaniello_target_wins` | 3 | ≥ 0 | **W** — target wins per batch for M_i urgency factor |
+
+All parameters can be overridden via runtime config keys `renko.masaniello_*` (e.g. `renko.masaniello_base_risk`).
+
+## Sizing Model Endpoints
+
+### GET /renko/sizing/model
+
+Returns the active sizing model and its parameters for a given pipeline.
+
+**Request:**
+
+```bash
+curl https://backend/renko/sizing/model?symbol=SPY \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (Kelly mode):**
+
+```json
+{
+  "symbol": "SPY",
+  "sizing_mode": "kelly",
+  "kelly": {
+    "kelly_fraction": 0.5,
+    "max_position_pct": 0.10,
+    "min_position_usd": 50.0,
+    "default_win_rate": 0.55
+  }
+}
+```
+
+**Response (Masaniello mode):**
+
+```json
+{
+  "symbol": "SPY",
+  "sizing_mode": "masaniello",
+  "kelly": {
+    "kelly_fraction": 0.5,
+    "max_position_pct": 0.10,
+    "min_position_usd": 50.0,
+    "default_win_rate": 0.55
+  },
+  "masaniello": {
+    "base_risk": 0.005,
+    "min_risk": 0.0025,
+    "max_risk": 0.01,
+    "min_prob": 0.5,
+    "min_rr": 2.5,
+    "max_drawdown": 0.1,
+    "regime_floor": 0.5,
+    "use_kelly_overlay": false,
+    "batch_size": 5,
+    "target_wins": 3,
+    "batch_state": {
+      "wins": 2,
+      "losses": 1,
+      "trade_index": 4,
+      "initial_equity": 100000.0,
+      "peak_equity": 100500.0,
+      "pnl": 350.0
+    }
+  }
+}
+```
+
+### POST /renko/sizing/model
+
+Switch the sizing model for a live pipeline. **Admin only.** Rebuilds the pipeline with the new configuration.
+
+**Request body (`SizingModelRequest`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `sizing_mode` | `string` | `"kelly"` | `"kelly"` or `"masaniello"` |
+| `base_risk` | `float?` | `null` | Override β (default 0.005) |
+| `min_risk` | `float?` | `null` | Override floor (default 0.0025) |
+| `max_risk` | `float?` | `null` | Override cap (default 0.010) |
+| `min_prob` | `float?` | `null` | Override min win prob (default 0.50) |
+| `min_rr` | `float?` | `null` | Override min R:R (default 2.50) |
+| `max_drawdown` | `float?` | `null` | Override max DD (default 0.10) |
+| `regime_floor` | `float?` | `null` | Override regime floor (default 0.50) |
+| `use_kelly_overlay` | `bool?` | `null` | Enable Kelly cap |
+| `batch_size` | `int?` | `null` | Override batch size N (default 5) |
+| `target_wins` | `int?` | `null` | Override target wins W (default 3) |
+
+Only `sizing_mode` is required. All Masaniello-specific fields are optional overrides; omitted fields fall back to runtime config or hardcoded defaults.
+
+**Example — switch to Masaniello with custom batch params:**
+
+```bash
+curl -X POST "https://backend/renko/sizing/model?symbol=SPY" \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sizing_mode": "masaniello",
+    "base_risk": 0.007,
+    "batch_size": 7,
+    "target_wins": 4
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "symbol": "SPY",
+  "sizing_mode": "masaniello",
+  "config": { "...full RenkoConfig dict..." }
+}
+```
+
+## Masaniello in Backtests
+
+### Using /renko/backtest/run with Masaniello
+
+Include `sizing_mode` and any `masaniello_*` overrides in the backtest request body:
+
+```bash
+curl -X POST https://backend/renko/backtest/run \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prices": [450.10, 450.55, ...],
+    "symbol": "SPY",
+    "sizing_mode": "masaniello",
+    "masaniello_base_risk": 0.005,
+    "masaniello_batch_size": 5,
+    "masaniello_target_wins": 3
+  }'
+```
+
+Omitted Masaniello parameters fall back to `RenkoConfig` defaults.
+
+### Comparing Kelly vs Masaniello
+
+Use `/renko/backtest/compare` to run the same price series with both sizing models side-by-side:
+
+```bash
+curl -X POST https://backend/renko/backtest/compare \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prices": [450.10, 450.55, ...],
+    "symbol": "SPY",
+    "configs": [
+      {"label": "Kelly Default", "brick_size": 0.50},
+      {"label": "Masaniello β=0.5%", "brick_size": 0.50}
+    ]
+  }'
+```
+
+The response includes a `diff` object comparing key metrics (total PnL, Sharpe, drawdown, win rate) across both sizing models.
+
+### Optimizing Masaniello Parameters
+
+Use `/renko/backtest/optimize` to sweep Masaniello parameters:
+
+```bash
+curl -X POST https://backend/renko/backtest/optimize \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prices": [450.10, 450.55, ...],
+    "symbol": "SPY",
+    "sizing_mode": "masaniello",
+    "param_grid": {
+      "masaniello_base_risk": [0.003, 0.005, 0.007],
+      "masaniello_batch_size": [3, 5, 7],
+      "masaniello_target_wins": [2, 3, 4]
+    }
+  }'
+```
+
+The optimizer returns results for each combination plus `best_by_sharpe` and `best_by_return` summaries. Maximum 50 combinations per request.
 
 ## Deployment
 

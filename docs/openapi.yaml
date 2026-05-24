@@ -153,6 +153,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Process single tick through 6-layer pipeline
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Pushes a single price tick through the full Renko HFT pipeline:
         Brick Engine → Swing Classifier → Pattern Detector → Signal Filter →
@@ -178,6 +181,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Batch tick processing (backtest/warmup)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Processes a batch of ticks through the Renko pipeline for backtesting
         or warm-up. Supports pre-computed regime labels for regime-gated backtests.
@@ -205,6 +211,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Current pipeline state snapshot
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -222,6 +231,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Comprehensive pipeline statistics
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -239,6 +251,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Recent Renko bricks
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -262,6 +277,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Bricks with swing labels
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Returns recent bricks with swing classification labels (HH, HL, LH, LL)
         applied by the Swing Classifier layer.
@@ -287,6 +305,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Pattern signals history
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -309,6 +330,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Trade journal records
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -331,6 +355,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Detected swing points
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -353,6 +380,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Update HMM regime for gate filter (admin only)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Updates the current HMM regime label used by the Signal Filter's
         regime gate. Only trades aligned with the current regime are allowed.
@@ -387,6 +417,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Update account equity (admin only)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Updates the current account equity used for position sizing
         calculations in the Risk Manager layer.
@@ -421,6 +454,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Update pipeline configuration (resets pipeline)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Replaces the entire pipeline configuration and resets the pipeline
         for the symbol. **Admin-only endpoint.**
@@ -452,6 +488,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Reset pipeline for a symbol
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Resets the pipeline state (bricks, trades, signals) for a symbol
         without changing configuration. **Admin-only endpoint.**
@@ -529,6 +568,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Backtest statistics from journal
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       parameters:
         - name: symbol
           in: query
@@ -546,6 +588,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Run full backtest with Phase 2-7 analytics
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Runs a complete Renko backtest with transaction cost modeling (Phase 2),
         execution realism (Phase 3), statistical rigor (Phase 6), and execution
@@ -571,6 +616,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: SSE streaming backtest
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Runs a Renko backtest with Server-Sent Events streaming. Emits chunk
         results as they are computed, allowing real-time progress display.
@@ -592,6 +640,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Parameter sweep optimization with statistical rigor
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Runs a grid-search parameter sweep over brick_sizes × sl_bricks × tp_bricks
         combinations. Applies multiple testing corrections (Bonferroni, Holm-Bonferroni,
@@ -630,6 +681,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Statistical rigor tests (Phase 6)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Runs bootstrap confidence intervals, Deflated Sharpe Ratio, and
         significance tests on trade results. Validates that observed
@@ -655,6 +709,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Execution modeling costs (Phase 7)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Computes execution modeling costs including market impact (Almgren-Chriss),
         fill probability, and financing costs (borrow, margin, dividends).
@@ -680,6 +737,9 @@ paths:
     get:
       tags: [Renko HFT Pipeline]
       summary: Live execution status
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Returns the current live execution status for a pipeline, including
         whether it is in dry_run or live mode, the execution mode, and
@@ -706,6 +766,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Toggle live execution (admin only)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Toggle live execution for a pipeline. When enabled=False, sets
         dry_run=True (safe mode). When enabled=True, sets dry_run=False
@@ -735,6 +798,9 @@ paths:
     post:
       tags: [Renko HFT Pipeline]
       summary: Restore pipeline from Supabase snapshot (write access)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       description: |
         Attempts to restore a pipeline from a previously saved Supabase
         snapshot. If no snapshot exists, returns restored=false. The
@@ -764,6 +830,107 @@ paths:
           description: Not authenticated
         "403":
           description: Forbidden — write role required
+
+  /renko/sizing/model:
+    get:
+      tags: [Renko HFT Pipeline, Position Sizing]
+      summary: Get current position sizing model and parameters
+      description: |
+        Returns the current position sizing model (kelly or masaniello) and its
+        parameters for a given symbol. Includes Kelly parameters always, and
+        Masaniello parameters when the sizing mode is `masaniello`.
+        Also returns the current batch state for Masaniello tracking.
+        **Any authenticated user** — requires `get_authed_user`.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Current sizing model and parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sizing_mode:
+                    type: string
+                    enum: [kelly, masaniello]
+                    description: Active position sizing model
+                  kelly:
+                    type: object
+                    description: Kelly criterion parameters
+                    properties:
+                      base_risk: { type: number, description: Base risk fraction (e.g. 0.005) }
+                      min_risk: { type: number, description: Minimum risk fraction }
+                      max_risk: { type: number, description: Maximum risk fraction }
+                      min_prob: { type: number, description: Minimum win probability threshold }
+                      min_rr: { type: number, description: Minimum risk-reward ratio }
+                  masaniello:
+                    type: object
+                    nullable: true
+                    description: Masaniello parameters (present only when sizing_mode=masaniello)
+                    properties:
+                      max_drawdown: { type: number, description: Maximum allowed drawdown fraction }
+                      regime_floor: { type: number, description: Regime probability floor for sizing }
+                      use_kelly_overlay: { type: boolean, description: Whether Kelly overlays Masaniello sizing }
+                      batch_size: { type: integer, description: Number of trades per Masaniello batch }
+                      target_wins: { type: integer, description: Target wins per batch }
+                  batch_state:
+                    type: object
+                    nullable: true
+                    description: Current Masaniello batch tracking state
+                    properties:
+                      batch_id: { type: string }
+                      trades_in_batch: { type: integer }
+                      wins_in_batch: { type: integer }
+                      current_size_fraction: { type: number }
+        "401":
+          description: Not authenticated
+
+    post:
+      tags: [Renko HFT Pipeline, Position Sizing]
+      summary: Set position sizing model (admin only)
+      description: |
+        Sets the position sizing model and its parameters for a given symbol.
+        Switches between Kelly Criterion and Masaniello sizing modes, and
+        updates all associated parameters.
+        **Admin-only endpoint** — requires the `admin` role.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SizingModelRequest' }
+      responses:
+        "200":
+          description: Sizing model updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  symbol: { type: string }
+                  sizing_mode: { type: string, enum: [kelly, masaniello] }
+                  config:
+                    type: object
+                    description: Applied sizing configuration dict
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — admin role required
+        "422":
+          $ref: '#/components/responses/ValidationError'
 
   # ══════════════════════════════════════════════════════════════════════════
   #  REGIME PLATFORM
@@ -2788,6 +2955,56 @@ components:
           type: string
           nullable: true
           description: Override symbol (defaults to query param)
+
+    SizingModelRequest:
+      type: object
+      description: Position sizing model configuration request
+      properties:
+        sizing_mode:
+          type: string
+          enum: [kelly, masaniello]
+          default: kelly
+          description: Position sizing model to use
+        base_risk:
+          type: number
+          default: 0.005
+          description: Base risk fraction per trade
+        min_risk:
+          type: number
+          default: 0.0025
+          description: Minimum risk fraction per trade
+        max_risk:
+          type: number
+          default: 0.010
+          description: Maximum risk fraction per trade
+        min_prob:
+          type: number
+          default: 0.50
+          description: Minimum win probability threshold for signal acceptance
+        min_rr:
+          type: number
+          default: 2.50
+          description: Minimum risk-reward ratio for signal acceptance
+        max_drawdown:
+          type: number
+          default: 0.10
+          description: Maximum allowed drawdown fraction (Masaniello mode)
+        regime_floor:
+          type: number
+          default: 0.50
+          description: Regime probability floor for position sizing (Masaniello mode)
+        use_kelly_overlay:
+          type: boolean
+          default: false
+          description: Whether to overlay Kelly criterion on Masaniello sizing
+        batch_size:
+          type: integer
+          default: 5
+          description: Number of trades per Masaniello batch
+        target_wins:
+          type: integer
+          default: 3
+          description: Target number of wins per Masaniello batch
 
     ConfigInput:
       type: object
