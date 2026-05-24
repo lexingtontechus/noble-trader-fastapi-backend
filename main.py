@@ -58,6 +58,7 @@
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 # Load .env file before any other imports that read env vars
