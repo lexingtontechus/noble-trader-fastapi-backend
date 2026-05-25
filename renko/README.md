@@ -24,7 +24,8 @@ Supporting modules:
 - `pipeline.py` — Orchestrates the full pipeline flow
 - `trade_journal.py` — Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
 - `config.py` — `RenkoConfig` dataclass with 30+ tunable parameters
-- `router.py` — 24 FastAPI REST endpoints
+- `redis_cache.py` — Redis L1 cache for sub-5ms snapshot restores
+- `router.py` — 27 FastAPI REST endpoints
 - `integration.py` — Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
 - `backtest.py` / `tests.py` — Backtesting and unit tests
 
@@ -52,7 +53,6 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `POST` | `/renko/backtest/run` | Full backtest with Phase 2-7 analytics | Write |
 | `POST` | `/renko/backtest/run/stream` | SSE streaming backtest with progressive results | Write |
 | `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep with statistical rigor (max 50 combos) | Write |
-| `POST` | `/renko/backtest/compare` | Compare 2-10 Renko configs side-by-side | Any |
 | `POST` | `/renko/statistics/rigor` | Statistical rigor analysis (bootstrap, Monte Carlo) | Any |
 | `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
@@ -70,7 +70,6 @@ These endpoints create standalone `RenkoPipeline` instances for each request. Th
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | `POST` | `/renko/backtest/run` | Run a full Renko pipeline backtest on historical prices | Any role |
-| `POST` | `/renko/backtest/compare` | Compare 2–10 Renko configs side-by-side on the same price data | Any role |
 | `POST` | `/renko/backtest/optimize` | Grid-search parameter sweep for Renko pipeline optimisation (max 50 combos) | Any role |
 
 All three endpoints are rate-limited under `RATE_LIMIT_WRITE` and executed in thread pools via `asyncio.to_thread` to avoid blocking the event loop.
@@ -123,39 +122,6 @@ Run a complete backtest through the full 6-layer pipeline on historical prices. 
     "...": "per-pattern, per-regime, Kelly inputs"
   },
   "trades": ["...full trade records..."]
-}
-```
-
-#### POST /renko/backtest/compare
-
-Run multiple labelled configs on the same price data and compare results. Returns a diff summary of key metrics (first config vs best by Sharpe estimate).
-
-**Request body (`RenkoBacktestCompareRequest`):**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
-| `symbol` | `string` | `"SPY"` | Trading symbol |
-| `configs` | `list[RenkoCompareConfig]` | *required* | 2–10 labelled configs |
-| `timestamps` | `list[float]` | `null` | Matching timestamps |
-| `regimes` | `list[str]` | `null` | Pre-computed regime labels |
-
-Each `RenkoCompareConfig` has a required `label` field plus standard pipeline params (brick_size, sl_bricks, tp_bricks, trailing_stop, trail_after_bricks, trail_distance_bricks, bull_trigger_n, bear_trigger_n, regime_gate, max_trades_per_session, max_daily_loss_bricks, max_consecutive_losses).
-
-**Response (`RenkoBacktestCompareResponse`):**
-
-```json
-{
-  "comparisons": ["...RenkoBacktestResponse per config..."],
-  "diff": {
-    "total_trades": { "first": 28, "best": 28, "delta": 0 },
-    "win_rate": { "first": 0.65, "best": 0.65, "delta": 0.0 },
-    "profit_factor": { "first": 2.85, "best": 2.85, "delta": 0.0 },
-    "total_pnl_bricks": { "first": 14.5, "best": 14.5, "delta": 0.0 },
-    "avg_pnl_bricks": { "first": 0.52, "best": 0.52, "delta": 0.0 },
-    "max_drawdown_bricks": { "first": 4.0, "best": 4.0, "delta": 0.0 },
-    "sharpe_estimate": { "first": 1.52, "best": 1.52, "delta": 0.0 }
-  }
 }
 ```
 
@@ -238,44 +204,47 @@ The Redis L1 cache stores gzip-compressed v3.1 snapshots for sub-5ms restores. A
 
 Staleness is calculated as `age = now - updated_at`. Data older than 4 hours is considered **stale**.
 
-### Data Flow Decision Tree
+### Snapshot Pruning (Housekeeping)
+
+When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supabase snapshot rows older than 24 hours. This prevents unbounded table growth while keeping recent snapshots available for fast restore.
+
+- **Prune trigger**: `POST /renko/warmup` after successful Yahoo fetch
+- **Default TTL**: 24 hours (rows older than this are deleted)
+- **Safety**: Only rows for the requested symbol are pruned; other symbols are unaffected
+- **Response field**: `pruned_snapshots` indicates how many rows were removed
+
+### Data Flow Decision Tree (v7.2 — 3-Tier)
 
 ```
 +---------------------------------------------------+
-|              Load Renko Data                       |
-|  (Page load / Symbol switch / Manual Warm Up)     |
+|           MCP Agent: Cold Start                    |
+|  (GET /renko/state → brick_count == 0)            |
 +------------------------+--------------------------+
                          |
                          v
               +----------------------+
-              | Supabase Cache Check |
-              | GET /api/renko/warmup|
+              |  Tiered Restore      |
+              |  _restore_snapshot() |
               +----------+-----------+
                          |
               +----------+----------+
               |         |           |
               v         v           v
-           FRESH       STALE     MISSING
-           (<4h)       (>4h)     (no row)
+          L1: REDIS  L2: SUPA   L3: YAHOO
+          (<5ms)    (~100ms)   (5-30s)
               |         |           |
               v         v           v
-        Show instantly  Show old    Backend fetch
-        DONE            data NOW   /renko/state
-                        + fire         |
-                        background     v
-                        warmup    +-----------+
-                       (non-      | Has data? |
-                        blocking) +-----+-----+
-                                        |
-                                 +------+------+
-                                 v             v
-                                YES           NO
-                                 |             |
-                                 v             v
-                           Show from      Auto-warmup
-                           pipeline       (Yahoo Finance
-                           DONE           -> feed pipeline
-                                          -> save Supabase)
+          Hydrate   Hydrate +   Full warmup
+          DONE      backfill    + prune +
+                    L1 cache    dual-write
+                                DONE
+
++---------------------------------------------------+
+|           Auto-Save Triggers (7 events)            |
+|  Position open/close, regime, equity, sizing,      |
+|  live toggle, periodic (every 100th tick)           |
+|  → dual-write: Redis L1 + Supabase L2             |
++---------------------------------------------------+
 ```
 
 ### Trigger Behavior Matrix
@@ -711,23 +680,34 @@ Omitted Masaniello parameters fall back to `RenkoConfig` defaults.
 
 ### Comparing Kelly vs Masaniello
 
-Use `/renko/backtest/compare` to run the same price series with both sizing models side-by-side:
+Run two separate backtests — one with `sizing_mode=kelly` and one with `sizing_mode=masaniello` — and compare results manually:
 
 ```bash
-curl -X POST https://backend/renko/backtest/compare \
+# Kelly backtest
+curl -X POST https://backend/renko/backtest/run \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
     "prices": [450.10, 450.55, ...],
     "symbol": "SPY",
-    "configs": [
-      {"label": "Kelly Default", "brick_size": 0.50},
-      {"label": "Masaniello β=0.5%", "brick_size": 0.50}
-    ]
+    "sizing_mode": "kelly"
+  }'
+
+# Masaniello backtest
+curl -X POST https://backend/renko/backtest/run \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prices": [450.10, 450.55, ...],
+    "symbol": "SPY",
+    "sizing_mode": "masaniello",
+    "masaniello_base_risk": 0.005,
+    "masaniello_batch_size": 5,
+    "masaniello_target_wins": 3
   }'
 ```
 
-The response includes a `diff` object comparing key metrics (total PnL, Sharpe, drawdown, win rate) across both sizing models.
+Compare key metrics (total PnL, Sharpe, drawdown, win rate) across both runs to determine which sizing model performs better for your data.
 
 ### Optimizing Masaniello Parameters
 

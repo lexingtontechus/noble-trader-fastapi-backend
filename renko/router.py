@@ -227,46 +227,110 @@ class SizingModelRequest(BaseModel):
 
 # ── Pipeline registry ─────────────────────────────────────────────
 
-# In-memory registry of active pipelines (one per symbol)
+# In-memory registry of active pipelines — keyed by composite user_id:symbol
+# For MCP agent use (single admin), key is just "symbol" (no user_id).
+# For multi-user, key is "user_id:symbol" for isolation.
 _pipelines: Dict[str, RenkoPipeline] = {}
+
+
+def _pipeline_key(symbol: str, user_id: Optional[str] = None) -> str:
+    """Build a stable registry key for a pipeline.
+
+    Session Key Stability: uses ``user_id:symbol`` when user_id is
+    available, falling back to just ``symbol`` for MCP agent use
+    (single-admin mode). This prevents cross-user state leakage
+    and ensures session continuity across restarts.
+
+    Parameters
+    ----------
+    symbol : str
+        Trading symbol (e.g. "SPY")
+    user_id : str, optional
+        Clerk user ID from auth token. None for MCP agent / admin.
+    """
+    if user_id:
+        return f"{user_id}:{symbol}"
+    return symbol
 
 
 def _get_pipeline(symbol: str = "SPY", config: Optional[RenkoConfig] = None) -> RenkoPipeline:
     """Get or create a pipeline for a symbol. Uses hardcoded defaults (sync)."""
-    if symbol not in _pipelines:
+    key = _pipeline_key(symbol)
+    if key not in _pipelines:
         if config is None:
             config = RenkoConfig(symbol=symbol)
-        _pipelines[symbol] = RenkoPipeline(config)
-    return _pipelines[symbol]
+        _pipelines[key] = RenkoPipeline(config)
+    return _pipelines[key]
 
 
-async def _get_pipeline_async(symbol: str = "SPY", config_overrides: Optional[dict] = None) -> RenkoPipeline:
+async def _get_pipeline_async(
+    symbol: str = "SPY",
+    config_overrides: Optional[dict] = None,
+    user_id: Optional[str] = None,
+) -> RenkoPipeline:
     """Get or create a pipeline for a symbol. Uses runtime config (async).
 
-    Attempts Supabase snapshot restore on first access so MCP agents
-    never see a void state. If restore fails, falls back to a fresh
-    pipeline from runtime config.
+    HydrateOnRequest: attempts Supabase snapshot restore whenever the
+    pipeline is empty (brick_count == 0), not just on first access.
+    This ensures MCP agents NEVER see a void state — even after a
+    server restart that leaves an empty entry in _pipelines.
+
+    Restore hierarchy:
+      1. If pipeline exists and has bricks → return immediately
+      2. If pipeline is empty or missing → try Supabase restore
+      3. If restore fails → create fresh pipeline from runtime config
+
+    Session Key Stability: uses ``user_id:symbol`` composite key
+    when user_id is provided, ensuring user isolation.
     """
-    if symbol not in _pipelines:
-        # Try to restore from Supabase snapshot first (MCP auto-restore)
-        restored = await _restore_pipeline_snapshot(symbol)
-        if restored:
-            _pipelines[symbol] = restored
-        else:
-            config = await RenkoConfig.from_runtime_config(
-                overrides={"symbol": symbol, **(config_overrides or {})}
+    key = _pipeline_key(symbol, user_id)
+
+    if key in _pipelines:
+        pipeline = _pipelines[key]
+        # ── HydrateOnRequest: re-attempt restore if pipeline is empty ──
+        if pipeline.brick_engine.brick_count > 0:
+            return pipeline
+        # Pipeline exists but has 0 bricks — try to hydrate from Supabase
+        log.info(
+            "HydrateOnRequest: pipeline %s is empty (brick_count=0), "
+            "attempting Supabase restore...",
+            key,
+        )
+        restored = await _restore_pipeline_snapshot(symbol, user_id=user_id)
+        if restored and restored.brick_engine.brick_count > 0:
+            _pipelines[key] = restored
+            log.info(
+                "HydrateOnRequest: restored %d bricks for %s",
+                restored.brick_engine.brick_count, key,
             )
-            _pipelines[symbol] = RenkoPipeline(config)
-    return _pipelines[symbol]
+            return restored
+        # Restore failed or returned empty — return the existing empty pipeline
+        return pipeline
+
+    # First access for this key — try Supabase restore
+    restored = await _restore_pipeline_snapshot(symbol, user_id=user_id)
+    if restored:
+        _pipelines[key] = restored
+        return restored
+
+    # No snapshot available — create fresh pipeline from runtime config
+    config = await RenkoConfig.from_runtime_config(
+        overrides={"symbol": symbol, **(config_overrides or {})}
+    )
+    _pipelines[key] = RenkoPipeline(config)
+    return _pipelines[key]
 
 
-async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
+async def _get_pipeline_with_restore(
+    symbol: str = "SPY",
+    user_id: Optional[str] = None,
+) -> RenkoPipeline:
     """Get or create a pipeline for a symbol, restoring from Supabase snapshot if available.
 
-    Alias for ``_get_pipeline_async`` which now auto-restores on first access.
+    Alias for ``_get_pipeline_async`` which now auto-restores on empty state.
     Kept for readability on write-path endpoints.
     """
-    return await _get_pipeline_async(symbol)
+    return await _get_pipeline_async(symbol, user_id=user_id)
 
 
 async def _on_config_changed(key: str, entry) -> None:
@@ -451,10 +515,16 @@ if FASTAPI_AVAILABLE:
     @renko_router.post("/tick/batch")
     @limiter.limit(RATE_LIMIT_WRITE)
     async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user=Depends(require_write)) -> Dict[str, Any]:
-        """Process a batch of ticks (backtest / warm-up)."""
+        """Process a batch of ticks (backtest / warm-up).
+
+        Atomic Commit: uses confirmed save (awaited) instead of
+        fire-and-forget, ensuring MCP agents can rely on state
+        being persisted before the response returns.
+        """
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
-        pipeline = await _get_pipeline_with_restore(active_symbol)
+        user_id = getattr(user, 'sub', None) if user else None
+        pipeline = await _get_pipeline_with_restore(active_symbol, user_id=user_id)
         result = pipeline.backtest(
             prices=body.prices,
             timestamps=body.timestamps,
@@ -464,8 +534,13 @@ if FASTAPI_AVAILABLE:
         # ── Fire Discord status notification for batch completion ─
         _notify_batch_complete(active_symbol, result)
 
-        # ── Save pipeline snapshot after batch processing ─────────────
-        asyncio.create_task(_save_pipeline_snapshot(active_symbol, pipeline))
+        # ── Atomic Commit: confirmed save (awaited, not fire-and-forget) ──
+        # MCP agents need to know state is durable before proceeding
+        saved = await _save_pipeline_snapshot_confirmed(active_symbol, pipeline)
+        result["_persistence"] = {
+            "saved": saved,
+            "store": "L1+L2" if renko_cache.enabled else "L2-only",
+        }
 
         return result
 
@@ -601,7 +676,8 @@ if FASTAPI_AVAILABLE:
         }
         config = await RenkoConfig.from_runtime_config(overrides=overrides)
         pipeline = RenkoPipeline(config)
-        _pipelines[symbol] = pipeline
+        key = _pipeline_key(body.symbol)
+        _pipelines[key] = pipeline
         return {"status": "ok", "config": config.to_dict()}
 
     @renko_router.post("/reset")
@@ -629,8 +705,13 @@ if FASTAPI_AVAILABLE:
         Uses runtime config as the base, then applies the explicit overrides
         from the request body. This ensures admin-adjusted defaults via /config
         API are respected even when per-backtest overrides are provided.
+
+        Atomic Commit (MCP agent): when the persistent pipeline for this
+        symbol is cold (brick_count == 0), the backtest uses the persistent
+        pipeline directly so bricks are committed and auto-saved.
         """
         symbol = body.symbol or "SPY"
+        user_id = getattr(user, 'sub', None) if user else None
         overrides = {
             "symbol": symbol,
             "brick_size": body.brick_size,
@@ -649,8 +730,22 @@ if FASTAPI_AVAILABLE:
             "dividend_yield_bps": body.dividend_yield_bps,
             "initial_capital": body.initial_capital,
         }
-        config = await RenkoConfig.from_runtime_config(overrides=overrides)
-        pipeline = RenkoPipeline(config)
+
+        # ── Hydrate-on-Cold: use persistent pipeline when it's empty ──
+        key = _pipeline_key(symbol, user_id)
+        use_persistent = (
+            key in _pipelines and _pipelines[key].brick_engine.brick_count == 0
+        )
+
+        if use_persistent:
+            pipeline = _pipelines[key]
+            log.info(
+                "backtest/run: using persistent pipeline for %s (cold → warmup)",
+                key,
+            )
+        else:
+            config = await RenkoConfig.from_runtime_config(overrides=overrides)
+            pipeline = RenkoPipeline(config)
         result = pipeline.backtest_with_analytics(
             prices=body.prices,
             timestamps=body.timestamps,
@@ -658,15 +753,34 @@ if FASTAPI_AVAILABLE:
             n_trials=body.n_trials,
             confidence_level=body.confidence_level,
         )
+
+        # ── Atomic Commit: persist bricks to Supabase if using persistent pipeline ──
+        if use_persistent:
+            _pipelines[key] = pipeline
+            saved = await _save_pipeline_snapshot_confirmed(symbol, pipeline)
+            result["_persistence"] = {
+                "saved": saved,
+                "store": "L1+L2" if renko_cache.enabled else "L2-only",
+                "mode": "cold_warmup",
+            }
+
         return result
 
     @renko_router.post("/backtest/run/stream")
     async def run_backtest_stream(request: Request, body: BacktestStreamRequest, user: TokenData = Depends(require_write)):
-        """Run a backtest with SSE streaming (Phase 1)."""
+        """Run a backtest with SSE streaming (Phase 1).
+
+        Atomic Commit (MCP agent): when the persistent pipeline for this
+        symbol is cold (brick_count == 0), the stream uses the persistent
+        pipeline directly so bricks are committed to ``_pipelines`` and
+        auto-saved to Supabase. When warm, a transient pipeline is used
+        for isolated parameter testing without disrupting live state.
+        """
         from fastapi.responses import StreamingResponse
         import json
 
         symbol = body.symbol or "SPY"
+        user_id = getattr(user, 'sub', None) if user else None
         overrides = {
             "symbol": symbol,
             "brick_size": body.brick_size,
@@ -682,8 +796,26 @@ if FASTAPI_AVAILABLE:
             "borrow_rate_bps": body.borrow_rate_bps,
             "margin_rate_bps": body.margin_rate_bps,
         }
-        config = await RenkoConfig.from_runtime_config(overrides=overrides)
-        pipeline = RenkoPipeline(config)
+
+        # ── Hydrate-on-Cold: use persistent pipeline when it's empty ──
+        # This fixes the "Injection Test" failure where backtest_stream
+        # processes 105 ticks but brick_count stays 0 on GET /renko/state.
+        key = _pipeline_key(symbol, user_id)
+        use_persistent = (
+            key in _pipelines and _pipelines[key].brick_engine.brick_count == 0
+        )
+
+        if use_persistent:
+            # Cold pipeline — warm it up via stream (MCP agent use case)
+            pipeline = _pipelines[key]
+            log.info(
+                "backtest/stream: using persistent pipeline for %s (cold → warmup)",
+                key,
+            )
+        else:
+            # Warm pipeline or new — create transient for isolation
+            config = await RenkoConfig.from_runtime_config(overrides=overrides)
+            pipeline = RenkoPipeline(config)
 
         def event_generator():
             for chunk in pipeline.backtest_chunked(
@@ -693,6 +825,13 @@ if FASTAPI_AVAILABLE:
                 chunk_size=body.chunk_size,
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
+
+        # If we used the persistent pipeline, commit state after streaming
+        if use_persistent:
+            # Store back to registry and persist
+            _pipelines[key] = pipeline
+            # Fire-and-forget save (streaming already returned data)
+            asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -990,7 +1129,8 @@ if FASTAPI_AVAILABLE:
         # Rebuild pipeline with new sizing config
         config = await RenkoConfig.from_runtime_config(overrides=overrides)
         new_pipeline = RenkoPipeline(config)
-        _pipelines[symbol] = new_pipeline
+        key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+        _pipelines[key] = new_pipeline
 
         log.warning(f"Pipeline {symbol} sizing mode changed to {mode} by user {user.sub}")
 
@@ -1059,7 +1199,8 @@ if FASTAPI_AVAILABLE:
         """Restore a pipeline from a Supabase snapshot (if available)."""
         restored = await _restore_pipeline_snapshot(symbol)
         if restored:
-            _pipelines[symbol] = restored
+            key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+            _pipelines[key] = restored
             return {"status": "ok", "symbol": symbol, "restored": True, "state": restored.get_state().to_dict()}
         return {"status": "ok", "symbol": symbol, "restored": False, "message": "No snapshot available"}
 
@@ -1129,7 +1270,8 @@ if FASTAPI_AVAILABLE:
                                 # Fresh snapshot — restore it directly
                                 data = rows[0]["stats"]
                                 pipeline = RenkoPipeline.from_snapshot(data)
-                                _pipelines[symbol] = pipeline
+                                key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+                                _pipelines[key] = pipeline
                                 log.info(
                                     f"Warmup: restored fresh snapshot for {symbol} "
                                     f"(age={age_seconds:.0f}s)"
@@ -1154,7 +1296,8 @@ if FASTAPI_AVAILABLE:
             log.warning(f"Yahoo fetch failed for {symbol}: {e} — trying stale snapshot")
             restored = await _restore_pipeline_snapshot(symbol)
             if restored:
-                _pipelines[symbol] = restored
+                key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+                _pipelines[key] = restored
                 return {
                     "status": "ok",
                     "symbol": symbol,
@@ -1190,8 +1333,12 @@ if FASTAPI_AVAILABLE:
         )
 
         # ── Step 6: Save snapshot ──
-        _pipelines[symbol] = pipeline
+        key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+        _pipelines[key] = pipeline
         await _save_pipeline_snapshot(symbol, pipeline)
+
+        # ── Step 6.5: Prune stale snapshots (housekeeping) ──
+        prune_count = await _prune_stale_snapshots(symbol, max_age_hours=24.0)
 
         elapsed = _time.time() - warmup_start
         total_bricks = pipeline.brick_engine.brick_count
@@ -1227,6 +1374,7 @@ if FASTAPI_AVAILABLE:
             "brick_count": total_bricks,
             "total_trades": journal_stats.get("total_trades", 0),
             "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
+            "pruned_snapshots": prune_count,
             "state": pipeline.get_state().to_dict(),
             "elapsed_ms": round(elapsed * 1000),
         }
@@ -1416,7 +1564,7 @@ def _notify_reset(symbol: str) -> None:
 # ── Pipeline State Persistence ────────────────────────────────────────────
 
 
-async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline) -> bool:
+async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> bool:
     """Save pipeline state snapshot to Redis L1 + Supabase L2 — awaited, returns success boolean.
 
     Unlike ``_save_pipeline_snapshot`` (fire-and-forget), this function is
@@ -1425,6 +1573,9 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
 
     Dual-write: Redis L1 first (fast), then Supabase L2 (durable).
     Returns True if Supabase write succeeded (durable store is authoritative).
+
+    Session Key Stability: includes ``user_id`` in the Supabase row for
+    multi-user isolation. MCP agents pass user_id=None (admin namespace).
     """
     try:
         snap = pipeline.snapshot()
@@ -1460,6 +1611,9 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
             "prices_fed": 0,
             "period": "pipeline-persist",
         }
+        # Session Key Stability: include user_id for multi-user isolation
+        if user_id:
+            row["user_id"] = user_id
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=row)
             if resp.status_code in (200, 201, 204):
@@ -1470,7 +1624,7 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
                 log.info(
                     f"Confirmed snapshot save ({l1_status}) for {symbol}: "
                     f"{n_bricks} bricks, {n_trades} trades, "
-                    f"active_position={has_pos}"
+                    f"active_position={has_pos}, user_id={user_id}"
                 )
                 return True
             else:
@@ -1484,7 +1638,7 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
         return False
 
 
-async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
+async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> None:
     """Save pipeline state snapshot to Redis L1 + Supabase L2 (fire-and-forget, non-critical).
 
     Dual-write strategy:
@@ -1493,6 +1647,8 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
 
     Both writes are fire-and-forget. For confirmed saves (MCP agent critical
     operations), use ``_save_pipeline_snapshot_confirmed()`` instead.
+
+    Session Key Stability: includes ``user_id`` in the Supabase row.
     """
     try:
         snap = pipeline.snapshot()
@@ -1529,6 +1685,9 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
             "prices_fed": 0,
             "period": "pipeline-persist",
         }
+        # Session Key Stability: include user_id for multi-user isolation
+        if user_id:
+            row["user_id"] = user_id
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=row)
             if resp.status_code in (200, 201, 204):
@@ -1544,7 +1703,7 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
         log.debug(f"Pipeline snapshot save error for {symbol}: {e}")
 
 
-async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
+async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None) -> Optional[RenkoPipeline]:
     """Restore a pipeline from the best available cache tier. Returns None on failure.
 
     Tiered restore (MCP agent perspective):
@@ -1554,6 +1713,10 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
     v2+ snapshots include ``bricks``, ``classified``, and ``trades`` arrays
     inside the ``stats`` JSONB column, allowing full pipeline hydration
     without a warmup cycle. v3 adds ``active_position`` and ``signal_filter_state``.
+
+    Session Key Stability: when user_id is provided, queries Supabase with
+    user_id filter for user-scoped restore. Falls back to admin (user_id=NULL)
+    namespace if no user-scoped snapshot exists.
     """
     # ── Tier 1: Redis L1 cache (<5ms) ──
     if renko_cache.enabled:
@@ -1584,34 +1747,56 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
         }
-        params = {
+
+        # Session Key Stability: try user-scoped snapshot first, then admin namespace
+        params_list = []
+        if user_id:
+            # User-scoped lookup (user_id = specific user)
+            params_list.append({
+                "symbol": f"eq.{symbol}",
+                "user_id": f"eq.{user_id}",
+                "select": "stats",
+                "order": "updated_at.desc",
+                "limit": "1",
+            })
+        # Admin namespace fallback (user_id = null)
+        params_list.append({
             "symbol": f"eq.{symbol}",
             "select": "stats",
             "order": "updated_at.desc",
             "limit": "1",
-        }
+        })
+
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            if resp.status_code == 200:
-                rows = resp.json()
-                if rows and rows[0].get("stats"):
-                    data = rows[0]["stats"]
-                    if isinstance(data, str):
-                        import json
-                        data = json.loads(data)
-                    pipeline = RenkoPipeline.from_snapshot(data)
-                    n_bricks = len(data.get("bricks", []))
-                    n_trades = len(data.get("trades", []))
-                    n_classified = len(data.get("classified", []))
-                    log.info(
-                        f"Restored pipeline from Supabase L2 for {symbol}: "
-                        f"{n_bricks} bricks, {n_classified} classified, {n_trades} trades, "
-                        f"regime={data.get('regime')}, equity={data.get('equity')}"
-                    )
-                    # Backfill Redis L1 so next restore is faster
-                    brick_size = data.get("config", {}).get("brick_size", 0.50)
-                    asyncio.create_task(renko_cache.save(symbol, brick_size, data))
-                    return pipeline
+            for params in params_list:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows and rows[0].get("stats"):
+                        data = rows[0]["stats"]
+                        if isinstance(data, str):
+                            import json
+                            data = json.loads(data)
+                        # Skip empty snapshots (brick_count=0)
+                        if data.get("brick_count", 0) == 0 and not data.get("bricks"):
+                            log.debug(
+                                f"Skipping empty snapshot for {symbol} "
+                                f"(user_id={params.get('user_id', 'null')})"
+                            )
+                            continue
+                        pipeline = RenkoPipeline.from_snapshot(data)
+                        n_bricks = len(data.get("bricks", []))
+                        n_trades = len(data.get("trades", []))
+                        n_classified = len(data.get("classified", []))
+                        log.info(
+                            f"Restored pipeline from Supabase L2 for {symbol}: "
+                            f"{n_bricks} bricks, {n_classified} classified, {n_trades} trades, "
+                            f"regime={data.get('regime')}, equity={data.get('equity')}"
+                        )
+                        # Backfill Redis L1 so next restore is faster
+                        brick_size = data.get("config", {}).get("brick_size", 0.50)
+                        asyncio.create_task(renko_cache.save(symbol, brick_size, data))
+                        return pipeline
     except Exception as e:
         log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")
 
@@ -1681,6 +1866,73 @@ async def _fetch_yahoo_prices(symbol: str, period: str = "6mo") -> tuple:
 
     log.info(f"Yahoo chart API: fetched {len(prices)} prices for {symbol}")
     return prices, clean_ts
+
+
+async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> int:
+    """Delete stale Supabase snapshot rows older than max_age_hours.
+
+    Prevents unbounded table growth by pruning rows that are too old to be
+    useful for restore (superseded by newer snapshots or warmup runs).
+
+    Returns the number of rows deleted, or 0 if pruning was skipped.
+    This is a housekeeping operation — failures are logged but never raised.
+
+    MCP agent perspective: stale data wastes L2 roundtrips. By pruning on
+    warmup, we ensure only useful snapshots exist, keeping restore fast.
+    """
+    try:
+        from regime_platform.core.settings import settings
+        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+            return 0
+
+        import httpx
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        cutoff_iso = cutoff.isoformat()
+
+        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        }
+        params = {
+            "symbol": f"eq.{symbol}",
+            "select": "id,updated_at",
+            "updated_at": f"lt.{cutoff_iso}",
+        }
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # First, count stale rows
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code != 200:
+                return 0
+
+            stale_rows = resp.json()
+            if not stale_rows:
+                return 0
+
+            stale_ids = [str(r["id"]) for r in stale_rows]
+            n_stale = len(stale_rows)
+
+            # Delete stale rows
+            delete_params = {"id": f"in.({','.join(stale_ids)})"}
+            resp = await client.delete(url, headers=headers, params=delete_params)
+            if resp.status_code in (200, 204):
+                log.info(
+                    f"Pruned {n_stale} stale snapshot(s) for {symbol} "
+                    f"(older than {max_age_hours}h)"
+                )
+                return n_stale
+            else:
+                log.debug(
+                    f"Snapshot prune failed for {symbol}: HTTP {resp.status_code}"
+                )
+                return 0
+
+    except Exception as e:
+        log.debug(f"Snapshot prune error for {symbol}: {e}")
+        return 0
 
 
 # ── Execution Bridge (async — called from router) ────────────────────

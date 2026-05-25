@@ -2,7 +2,7 @@ openapi: "3.1.0"
 
 info:
   title: Noble Trader Agent — FastAPI Backend
-  version: "7.1.0"
+  version: "7.2.0"
   description: |
     A production-grade quantitative trading platform combining two major subsystems:
 
@@ -117,7 +117,7 @@ paths:
                     example: ok
                   version:
                     type: string
-                    example: "7.0.0"
+                    example: "7.2.0"
                   sessions:
                     type: integer
                     description: Number of active streaming sessions
@@ -210,7 +210,7 @@ paths:
   /renko/state:
     get:
       tags: [Renko HFT Pipeline]
-      summary: Current pipeline state snapshot
+      summary: Current pipeline state with readiness assessment
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -225,7 +225,14 @@ paths:
             application/json:
               schema:
                 type: object
-                description: Complete pipeline state snapshot
+                description: |
+                  Complete pipeline state snapshot including readiness assessment.
+                  The `readiness` field tells MCP agents whether to trade:
+                    - cold: needs warmup (brick_count == 0)
+                    - warming: insufficient data (brick_count < 50)
+                    - warm: signals active but limited history
+                    - hot: full detection + journal, position already open
+                    - live_ready: ready for new entries
 
   /renko/stats:
     get:
@@ -557,6 +564,13 @@ paths:
                       ok: { type: boolean }
                       status_code: { type: integer }
                       note: { type: string }
+                  redis_l1_cache:
+                    type: object
+                    properties:
+                      enabled: { type: boolean, description: Whether Redis L1 cache is configured }
+                      cached_symbols: { type: integer, description: Number of symbols with cached snapshots }
+                      symbols: { type: array, items: { type: string }, description: Cached symbol list (first 5) }
+                      error: { type: string }
                   pipeline_async:
                     type: object
                     properties:
@@ -794,18 +808,131 @@ paths:
                   dry_run: { type: boolean }
                   live_enabled: { type: boolean }
 
-  /renko/snapshot/restore:
+  /renko/warmup:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Restore pipeline from Supabase snapshot (write access)
+      summary: Backend-native pipeline warmup (Yahoo fetch + snapshot save)
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
       description: |
-        Attempts to restore a pipeline from a previously saved Supabase
-        snapshot. If no snapshot exists, returns restored=false. The
-        snapshot includes pipeline state (bricks, trades, regime) but
-        not the full trade history.
+        Warm up a Renko pipeline with historical prices from Yahoo Finance.
+        This endpoint replaces the BFF (Next.js frontend) warmup, enabling
+        MCP agents to fully operate the pipeline without any frontend dependency.
+
+        Flow:
+          1. Check Supabase for a fresh snapshot (<4h) — if found, restore it (instant)
+          2. Fetch historical prices from Yahoo Finance (via yfinance or Yahoo v8 API)
+          3. Create a fresh pipeline with runtime config
+          4. Set regime to `low_vol_bull` (enables signal generation during warmup)
+          5. Feed prices through the pipeline via backtest (warmup mode)
+          6. Save snapshot to Redis L1 + Supabase L2 (dual-write)
+          7. Prune stale snapshots older than 24h (housekeeping)
+
+        **Write access** — requires `admin` or `trader` role.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+        - name: period
+          in: query
+          schema: { type: string, default: 6mo }
+          description: Yahoo Finance period (1mo, 3mo, 6mo, 1y, 2y, 5y, max)
+        - name: chunk_size
+          in: query
+          schema: { type: integer, default: 150 }
+      responses:
+        "200":
+          description: Warmup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  symbol: { type: string }
+                  source: { type: string, enum: [snapshot_restore, yahoo_fetch, stale_snapshot_restore] }
+                  age_seconds: { type: integer, description: Age of restored snapshot in seconds (snapshot_restore only) }
+                  prices_fed: { type: integer, description: Number of prices processed (yahoo_fetch only) }
+                  brick_count: { type: integer }
+                  total_trades: { type: integer }
+                  total_pnl_bricks: { type: number }
+                  pruned_snapshots: { type: integer, description: Number of stale snapshots pruned (yahoo_fetch only) }
+                  state: { type: object, description: Pipeline state dict }
+                  elapsed_ms: { type: integer }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — write role required
+        "502":
+          description: Yahoo Finance fetch failed and no snapshot available
+
+  /renko/snapshot/save:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Save pipeline state to Redis L1 + Supabase L2 (confirmed)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      description: |
+        Explicitly saves the current pipeline state to Redis L1 + Supabase L2
+        (awaited, confirmed dual-write). Unlike automatic periodic saves
+        (fire-and-forget), this endpoint awaits the upsert and returns
+        confirmation including snapshot version, brick/trade counts,
+        active position status, and pipeline readiness.
+
+        MCP agents should use this after critical state changes (regime,
+        equity, position open) where persistence must be guaranteed before
+        proceeding.
+
+        **Write access** — requires `admin` or `trader` role.
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string, default: SPY }
+      responses:
+        "200":
+          description: Snapshot save confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, failed] }
+                  symbol: { type: string }
+                  snapshot_version: { type: integer, description: Snapshot format version (3) }
+                  brick_count: { type: integer }
+                  total_trades: { type: integer }
+                  has_active_position: { type: boolean }
+                  snapshot_ts: { type: number, description: Unix timestamp of snapshot }
+                  bricks_serialized: { type: integer }
+                  trades_serialized: { type: integer }
+                  classified_serialized: { type: integer }
+                  readiness: { type: object, description: Pipeline readiness assessment }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden — write role required
+
+  /renko/snapshot/restore:
+    post:
+      tags: [Renko HFT Pipeline]
+      summary: Restore pipeline from Redis L1 / Supabase L2 snapshot (write access)
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      description: |
+        Attempts to restore a pipeline from the best available cache tier.
+
+        Restore hierarchy (MCP agent perspective):
+          1. Redis L1 hit → sub-5ms, instant hydration
+          2. Supabase L2 hit → ~100ms, backfill Redis L1 for next time
+
+        If no snapshot exists in either tier, returns restored=false.
+        v3 snapshots include full brick history, classified bricks, trade
+        journal, active position with trailing stop state, and signal filter
+        state — enabling complete pipeline hydration without warmup.
+
         **Write access** — requires `admin` or `trader` role.
       parameters:
         - name: symbol
@@ -864,11 +991,10 @@ paths:
                     type: object
                     description: Kelly criterion parameters
                     properties:
-                      base_risk: { type: number, description: Base risk fraction (e.g. 0.005) }
-                      min_risk: { type: number, description: Minimum risk fraction }
-                      max_risk: { type: number, description: Maximum risk fraction }
-                      min_prob: { type: number, description: Minimum win probability threshold }
-                      min_rr: { type: number, description: Minimum risk-reward ratio }
+                      kelly_fraction: { type: number, description: Kelly fraction (e.g. 0.5) }
+                      max_position_pct: { type: number, description: Max position as fraction of equity (e.g. 0.10) }
+                      min_position_usd: { type: number, description: Minimum order value in USD }
+                      default_win_rate: { type: number, description: Fallback win rate when no journal history }
                   masaniello:
                     type: object
                     nullable: true
@@ -884,10 +1010,12 @@ paths:
                     nullable: true
                     description: Current Masaniello batch tracking state
                     properties:
-                      batch_id: { type: string }
-                      trades_in_batch: { type: integer }
-                      wins_in_batch: { type: integer }
-                      current_size_fraction: { type: number }
+                      wins: { type: integer, description: Wins in current batch }
+                      losses: { type: integer, description: Losses in current batch }
+                      trade_index: { type: integer, description: Current trade index within batch }
+                      initial_equity: { type: number, description: Equity at batch start }
+                      peak_equity: { type: number, description: Peak equity in batch }
+                      pnl: { type: number, description: Cumulative P&L in batch }
         "401":
           description: Not authenticated
 
