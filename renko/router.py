@@ -46,6 +46,7 @@ from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
+from renko.redis_cache import renko_cache
 
 # Discord notifications (graceful import — not required for pipeline to work)
 try:
@@ -382,7 +383,19 @@ if FASTAPI_AVAILABLE:
             checks["supabase_snapshot"] = {"ok": False, "error": str(e)}
             checks["errors"].append(f"supabase_snapshot: {e}")
 
-        # 5. Test _get_pipeline_async (the actual call path for GET endpoints)
+        # 5. Test Redis L1 cache
+        try:
+            checks["redis_l1_cache"] = {
+                "enabled": renko_cache.enabled,
+            }
+            if renko_cache.enabled:
+                symbols = await renko_cache.list_symbols()
+                checks["redis_l1_cache"]["cached_symbols"] = len(symbols)
+                checks["redis_l1_cache"]["symbols"] = symbols[:5]  # Show first 5
+        except Exception as e:
+            checks["redis_l1_cache"] = {"enabled": renko_cache.enabled, "error": str(e)}
+
+        # 6. Test _get_pipeline_async (the actual call path for GET endpoints)
         try:
             pipeline = await _get_pipeline_async("SPY")
             checks["pipeline_async"] = {
@@ -422,8 +435,15 @@ if FASTAPI_AVAILABLE:
         # ── Fire Discord notifications (non-blocking) ────────────
         _notify_tick_result(symbol, result, pipeline)
 
-        # ── Save pipeline snapshot periodically (every 100th tick) ───
-        if pipeline.brick_engine.brick_count % 100 == 0:
+        # ── Auto-save on critical events (MCP agent safety) ────────
+        # Save immediately when:
+        #   1. A position was opened or closed (avoids orphaned trades on restart)
+        #   2. Every 100th tick (periodic checkpoint)
+        has_position_event = (
+            result.get("filtered") is not None
+            or result.get("trade_result") is not None
+        )
+        if has_position_event or pipeline.brick_engine.brick_count % 100 == 0:
             asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         return result
@@ -539,6 +559,8 @@ if FASTAPI_AVAILABLE:
         """Update the current HMM regime."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.set_regime(body.regime)
+        # Auto-save after regime change (critical for MCP agent state sync)
+        asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
         return {"status": "ok", "regime": body.regime}
 
     @renko_router.post("/equity")
@@ -546,6 +568,8 @@ if FASTAPI_AVAILABLE:
         """Update the current account equity."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.set_equity(body.equity)
+        # Auto-save after equity change (critical for MCP agent state sync)
+        asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
         return {"status": "ok", "equity": body.equity}
 
     @renko_router.post("/config")
@@ -970,6 +994,9 @@ if FASTAPI_AVAILABLE:
 
         log.warning(f"Pipeline {symbol} sizing mode changed to {mode} by user {user.sub}")
 
+        # Auto-save after critical config change (MCP agent safety)
+        asyncio.create_task(_save_pipeline_snapshot(symbol, new_pipeline))
+
         return {
             "status": "ok",
             "symbol": symbol,
@@ -1007,6 +1034,9 @@ if FASTAPI_AVAILABLE:
 
         mode = "LIVE" if enabled else "DRY_RUN"
         log.warning(f"Pipeline {symbol} execution mode set to {mode} by user {user.sub}")
+
+        # Auto-save after critical config change (MCP agent safety)
+        asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         # Discord notification
         if DISCORD_AVAILABLE:
@@ -1387,20 +1417,30 @@ def _notify_reset(symbol: str) -> None:
 
 
 async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline) -> bool:
-    """Save pipeline state snapshot to Supabase — awaited, returns success boolean.
+    """Save pipeline state snapshot to Redis L1 + Supabase L2 — awaited, returns success boolean.
 
     Unlike ``_save_pipeline_snapshot`` (fire-and-forget), this function is
     designed for MCP agents that need confirmation that state was persisted
     before proceeding with critical operations.
+
+    Dual-write: Redis L1 first (fast), then Supabase L2 (durable).
+    Returns True if Supabase write succeeded (durable store is authoritative).
     """
     try:
+        snap = pipeline.snapshot()
+        brick_size = snap["config"].get("brick_size", 0.50)
+
+        # ── Dual-write: Redis L1 (fast, non-blocking even in confirmed mode) ──
+        if renko_cache.enabled:
+            asyncio.create_task(renko_cache.save(symbol, brick_size, snap))
+
+        # ── Dual-write: Supabase L2 (durable, awaited) ──
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
             return False
 
         import httpx
 
-        snap = pipeline.snapshot()
         url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -1411,7 +1451,7 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
         journal_stats = snap.get("journal_stats", {})
         row = {
             "symbol": symbol,
-            "brick_size": snap["config"].get("brick_size", 0.50),
+            "brick_size": brick_size,
             "total_bricks": snap.get("brick_count", 0),
             "total_trades": journal_stats.get("total_trades", 0),
             "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
@@ -1426,8 +1466,9 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
                 n_bricks = len(snap.get("bricks", []))
                 n_trades = len(snap.get("trades", []))
                 has_pos = snap.get("active_position") is not None
+                l1_status = "L1+L2" if renko_cache.enabled else "L2-only"
                 log.info(
-                    f"Confirmed snapshot save for {symbol}: "
+                    f"Confirmed snapshot save ({l1_status}) for {symbol}: "
                     f"{n_bricks} bricks, {n_trades} trades, "
                     f"active_position={has_pos}"
                 )
@@ -1444,13 +1485,24 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
 
 
 async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
-    """Save pipeline state snapshot to Supabase (fire-and-forget, non-critical).
+    """Save pipeline state snapshot to Redis L1 + Supabase L2 (fire-and-forget, non-critical).
 
-    Stores brick history, classified bricks, and trade records in dedicated
-    JSONB columns so that ``from_snapshot()`` can fully hydrate the pipeline
-    without requiring a warmup cycle on restart.
+    Dual-write strategy:
+      1. Redis L1 — fast write (<5ms), gzip-compressed, 4h TTL
+      2. Supabase L2 — durable write (~100ms), full JSONB
+
+    Both writes are fire-and-forget. For confirmed saves (MCP agent critical
+    operations), use ``_save_pipeline_snapshot_confirmed()`` instead.
     """
     try:
+        snap = pipeline.snapshot()
+        brick_size = snap["config"].get("brick_size", 0.50)
+
+        # ── Dual-write: Redis L1 (fast, non-blocking) ──
+        if renko_cache.enabled:
+            asyncio.create_task(renko_cache.save(symbol, brick_size, snap))
+
+        # ── Dual-write: Supabase L2 (durable) ──
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
             return
@@ -1458,7 +1510,6 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
         import httpx
         import json
 
-        snap = pipeline.snapshot()
         url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -1469,7 +1520,7 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
         journal_stats = snap.get("journal_stats", {})
         row = {
             "symbol": symbol,
-            "brick_size": snap["config"].get("brick_size", 0.50),
+            "brick_size": brick_size,
             "total_bricks": snap.get("brick_count", 0),
             "total_trades": journal_stats.get("total_trades", 0),
             "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
@@ -1494,12 +1545,33 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
 
 
 async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
-    """Restore a pipeline from a Supabase snapshot (if available). Returns None on failure.
+    """Restore a pipeline from the best available cache tier. Returns None on failure.
 
-    v2 snapshots include ``bricks``, ``classified``, and ``trades`` arrays
+    Tiered restore (MCP agent perspective):
+      L1: Redis    — sub-5ms, compressed JSON, 4h TTL
+      L2: Supabase — ~100ms, durable, full history
+
+    v2+ snapshots include ``bricks``, ``classified``, and ``trades`` arrays
     inside the ``stats`` JSONB column, allowing full pipeline hydration
-    without a warmup cycle.
+    without a warmup cycle. v3 adds ``active_position`` and ``signal_filter_state``.
     """
+    # ── Tier 1: Redis L1 cache (<5ms) ──
+    if renko_cache.enabled:
+        try:
+            data = await renko_cache.load(symbol)
+            if data:
+                pipeline = RenkoPipeline.from_snapshot(data)
+                n_bricks = len(data.get("bricks", []))
+                n_trades = len(data.get("trades", []))
+                log.info(
+                    f"Restored pipeline from Redis L1 for {symbol}: "
+                    f"{n_bricks} bricks, {n_trades} trades"
+                )
+                return pipeline
+        except Exception as e:
+            log.debug(f"Redis L1 restore failed for {symbol}: {e} — trying Supabase L2")
+
+    # ── Tier 2: Supabase L2 (~100ms) ──
     try:
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
@@ -1532,10 +1604,13 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
                     n_trades = len(data.get("trades", []))
                     n_classified = len(data.get("classified", []))
                     log.info(
-                        f"Restored pipeline snapshot for {symbol}: "
+                        f"Restored pipeline from Supabase L2 for {symbol}: "
                         f"{n_bricks} bricks, {n_classified} classified, {n_trades} trades, "
                         f"regime={data.get('regime')}, equity={data.get('equity')}"
                     )
+                    # Backfill Redis L1 so next restore is faster
+                    brick_size = data.get("config", {}).get("brick_size", 0.50)
+                    asyncio.create_task(renko_cache.save(symbol, brick_size, data))
                     return pipeline
     except Exception as e:
         log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")

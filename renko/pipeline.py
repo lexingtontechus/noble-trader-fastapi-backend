@@ -481,6 +481,12 @@ class RenkoPipeline:
             # v3: Active position + signal filter state (MCP agent safety)
             "active_position": pos_data,
             "signal_filter_state": signal_filter_state,
+            # v3.1: Pending signal context (trade journal continuity)
+            # When a position is open, _last_filtered provides the context
+            # needed to create a complete journal entry when the position closes.
+            # Without it, restored pipelines lose trade attribution on close.
+            "last_filtered": self._last_filtered.to_dict() if self._last_filtered else None,
+            "last_signal": self._last_signal.to_dict() if self._last_signal else None,
         }
 
     @classmethod
@@ -673,6 +679,55 @@ class RenkoPipeline:
                 "Hydrated signal filter: warmup=%s, session_trades=%d, consecutive_losses=%d",
                 sf._warmup_mode, sf._session_trades_taken, sf._consecutive_losses,
             )
+
+        # ── Hydrate pending signal context (v3.1 — trade journal continuity) ──
+        last_filtered_data = data.get("last_filtered")
+        if last_filtered_data and isinstance(last_filtered_data, dict):
+            try:
+                from renko.pattern_detector import PatternSignal, SignalDirection
+                sig_data = last_filtered_data.get("signal", {})
+                original_signal = PatternSignal(
+                    direction=SignalDirection(sig_data.get("direction", "long")),
+                    price=sig_data.get("price", 0.0),
+                    pattern_type=sig_data.get("pattern_type", "unknown"),
+                    timestamp=sig_data.get("timestamp", 0.0),
+                    strength=sig_data.get("strength", 0.5),
+                    brick_index=sig_data.get("brick_index", 0),
+                )
+                pipeline._last_filtered = FilteredSignal(
+                    original_signal=original_signal,
+                    passed_filters=last_filtered_data.get("passed_filters", []),
+                    regime_aligned=last_filtered_data.get("regime_aligned", False),
+                    kelly_fraction=last_filtered_data.get("kelly_fraction", 0.0),
+                    position_size_usd=last_filtered_data.get("position_size_usd", 0.0),
+                    brick_size=last_filtered_data.get("brick_size", 0.0),
+                    sizing_mode=last_filtered_data.get("sizing_mode", "kelly"),
+                    masaniello_factor=last_filtered_data.get("masaniello_factor", 0.0),
+                    quality_factor=last_filtered_data.get("quality_factor", 0.0),
+                    drawdown_factor=last_filtered_data.get("drawdown_factor", 0.0),
+                    volatility_factor=last_filtered_data.get("volatility_factor", 0.0),
+                    risk_fraction=last_filtered_data.get("risk_fraction", 0.0),
+                    contracts=last_filtered_data.get("contracts", 0),
+                )
+                logger.info("Hydrated last_filtered signal for journal continuity")
+            except Exception as e:
+                logger.debug(f"Could not hydrate last_filtered: {e}")
+
+        last_signal_data = data.get("last_signal")
+        if last_signal_data and isinstance(last_signal_data, dict):
+            try:
+                from renko.pattern_detector import PatternSignal, SignalDirection
+                pipeline._last_signal = PatternSignal(
+                    direction=SignalDirection(last_signal_data.get("direction", "long")),
+                    price=last_signal_data.get("price", 0.0),
+                    pattern_type=last_signal_data.get("pattern_type", "unknown"),
+                    timestamp=last_signal_data.get("timestamp", 0.0),
+                    strength=last_signal_data.get("strength", 0.5),
+                    brick_index=last_signal_data.get("brick_index", 0),
+                )
+                logger.debug("Hydrated last_signal for context continuity")
+            except Exception as e:
+                logger.debug(f"Could not hydrate last_signal: {e}")
 
         return pipeline
 

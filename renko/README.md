@@ -200,18 +200,39 @@ The backend maintains an in-memory pipeline registry: one `RenkoPipeline` instan
 
 ## Data Persistence & Freshness
 
-### Supabase Cache (`ta_renko_snapshot`)
+### Tiered Cache Architecture (v7.2)
+
+The Renko pipeline uses a two-tier cache for state persistence, optimized for MCP agent autonomy:
+
+| Tier | Store | Latency | TTL | Format |
+|------|-------|---------|-----|--------|
+| **L1** | Redis | <5ms | 4h | gzip-compressed JSON |
+| **L2** | Supabase | ~100ms | Durable | JSONB |
+
+**Restore hierarchy** (MCP agent cold-start path):
+1. **Redis L1 hit** → sub-5ms, instant hydration (ideal for MCP agents)
+2. **Supabase L2 hit** → ~100ms, backfill Redis L1 for next time
+3. **Yahoo Finance fetch** → 5-30s, full warmup cycle
+
+**Dual-write strategy**:
+- Every save writes to Redis L1 first (fire-and-forget), then Supabase L2
+- Confirmed saves (`POST /renko/snapshot/save`) await both writes
+- Periodic auto-saves (every 100th tick) are fire-and-forget
+
+### Supabase L2 Cache (`ta_renko_snapshot`)
 
 Warm-up results are saved to Supabase for instant loading on subsequent visits. Each row is keyed by `(symbol, brick_size)` and stores:
 
-- `bricks` (JSONB) — Renko brick array
-- `classified` (JSONB) — Bricks with swing labels
-- `signals` (JSONB) — Pattern signals
-- `trades` (JSONB) — Trade records
-- `stats` (JSONB) — Pipeline statistics
+- `stats` (JSONB) — Full v3.1 snapshot (bricks, classified, trades, active_position, signal_filter_state, last_filtered, last_signal)
 - `config` (JSONB) — Pipeline configuration
-- `price_range` (JSONB) — Min/max prices from warm-up data
+- `total_bricks`, `total_trades`, `total_pnl_bricks` — Quick-access columns
 - `updated_at` (TIMESTAMPTZ) — Last refresh timestamp
+
+### Redis L1 Cache (`renko:snapshot:{symbol}:{brick_size}`)
+
+The Redis L1 cache stores gzip-compressed v3.1 snapshots for sub-5ms restores. A lightweight metadata entry (`renko:snapshot:meta:{symbol}`) is also stored for quick readiness checks without deserializing the full snapshot.
+
+**Configuration**: Set `REDIS_URL` environment variable on Render. If not set, the L1 cache is a no-op and the system falls back to Supabase L2 directly (~100ms restores).
 
 ### Cache TTL: 4 Hours
 
@@ -329,9 +350,24 @@ v7.1 introduces a **backend-native warmup endpoint** that eliminates the need fo
 
 ### Snapshot Save Endpoint (`POST /renko/snapshot/save`)
 
-Explicitly saves the current pipeline state to Supabase. Useful for MCP agents that want to persist state after making changes (setting regime, equity, or after processing a series of ticks).
+Explicitly saves the current pipeline state to Redis L1 + Supabase L2 (confirmed, dual-write). Useful for MCP agents that want to persist state after making changes (setting regime, equity, or after processing a series of ticks).
 
-**Response includes:** `brick_count`, `total_trades`, `bricks_serialized`, `trades_serialized`, `classified_serialized`, `snapshot_ts`
+**Response includes:** `brick_count`, `total_trades`, `bricks_serialized`, `trades_serialized`, `classified_serialized`, `snapshot_ts`, `has_active_position`, `readiness`
+
+### Auto-Save Events (MCP Agent Safety)
+
+The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2) on the following critical events, ensuring MCP agents never lose state after a restart:
+
+| Event | Trigger | Why Critical |
+|-------|---------|-------------|
+| Position opened | Signal filtered → `_open_position()` | Open position must survive restart |
+| Position closed | Trade result → `_handle_trade_close()` | P&L journal must not be lost |
+| Regime changed | `POST /renko/regime` | Regime gate depends on correct regime |
+| Equity changed | `POST /renko/equity` | Position sizing depends on correct equity |
+| Sizing model changed | `POST /renko/sizing/model` | Sizing mode must survive restart |
+| Live toggle | `POST /renko/live/toggle` | Execution mode must persist |
+| Batch complete | `POST /renko/tick/batch` | Full pipeline state after warmup |
+| Periodic checkpoint | Every 100th tick | Safety net for long-running sessions |
 
 ## MCP Agent Workflow
 

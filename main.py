@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v7.1.0       ║
+║     Dynamic Regime Risk Management Platform — FastAPI Service  v7.2.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -125,7 +125,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v7.1.0 ...")
+    log.info("Starting up v7.2.0 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -218,6 +218,14 @@ async def lifespan(app: FastAPI):
 
     await persistence.close()
 
+    # Close Renko L1 Redis cache
+    try:
+        from renko.redis_cache import renko_cache
+        await renko_cache.close()
+        log.info("Renko L1 Redis cache closed")
+    except Exception as e:
+        log.warning(f"Renko L1 cache shutdown error: {e}")
+
     # Close runtime config HTTP client
     try:
         from regime_platform.core.runtime_config import runtime_config
@@ -301,7 +309,7 @@ Endpoints:
 - `POST /size/masaniello/batch` — batch Masaniello sizing
 - `POST /optimise/masaniello` — full two-stage pipeline
         """,
-        version="7.1.0",
+        version="7.2.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -457,17 +465,18 @@ Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
 - Snapshot management (save/restore pipeline state)
 
-Agent autonomy (v7.1):
+Agent autonomy (v7.2):
 - POST /renko/warmup — autonomous pipeline warmup (Yahoo fetch + snapshot save)
-- POST /renko/snapshot/save — persist pipeline state
-- POST /renko/snapshot/restore — recover from cold start
-- POST /renko/regime — update HMM regime
-- POST /renko/equity — update account equity
+- POST /renko/snapshot/save — persist pipeline state (Redis L1 + Supabase L2 dual-write)
+- POST /renko/snapshot/restore — recover from cold start (Redis L1 → Supabase L2 tiered restore)
+- POST /renko/regime — update HMM regime (auto-saves on change)
+- POST /renko/equity — update account equity (auto-saves on change)
 - POST /renko/tick/batch — batch tick processing (warmup/backtest)
-- POST /renko/sizing/model — switch Kelly ↔ Masaniello
-- POST /renko/live/toggle — toggle live execution
+- POST /renko/sizing/model — switch Kelly ↔ Masaniello (auto-saves on change)
+- POST /renko/live/toggle — toggle live execution (auto-saves on change)
 - POST /renko/backtest/run — run isolated backtests
 - POST /renko/backtest/optimize — parameter sweep
+- Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
 
 Excluded from MCP (use REST API directly):
 - Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update""",
@@ -493,7 +502,7 @@ Excluded from MCP (use REST API directly):
         return JSONResponse(
             {
                 "service": "Noble Trader Dynamic Regime Risk Management Platform",
-                "version": "7.1.0",
+                "version": "7.2.0",
                 "docs": "/docs",
                 "mcp": "/mcp" if MCP_AVAILABLE else "not installed",
                 "gpu": caps,
@@ -608,7 +617,7 @@ Excluded from MCP (use REST API directly):
 
         return {
             "status": "ok",
-            "version": "7.1.0",
+            "version": "7.2.0",
             "sessions": len(symbols),
             "redis": persistence.enabled,
             "operational": operational_status,
