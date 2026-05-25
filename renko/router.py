@@ -240,26 +240,32 @@ def _get_pipeline(symbol: str = "SPY", config: Optional[RenkoConfig] = None) -> 
 
 
 async def _get_pipeline_async(symbol: str = "SPY", config_overrides: Optional[dict] = None) -> RenkoPipeline:
-    """Get or create a pipeline for a symbol. Uses runtime config (async)."""
-    if symbol not in _pipelines:
-        config = await RenkoConfig.from_runtime_config(
-            overrides={"symbol": symbol, **(config_overrides or {})}
-        )
-        _pipelines[symbol] = RenkoPipeline(config)
-    return _pipelines[symbol]
+    """Get or create a pipeline for a symbol. Uses runtime config (async).
 
-
-async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
-    """Get or create a pipeline for a symbol, restoring from Supabase snapshot if available."""
+    Attempts Supabase snapshot restore on first access so MCP agents
+    never see a void state. If restore fails, falls back to a fresh
+    pipeline from runtime config.
+    """
     if symbol not in _pipelines:
-        # Try to restore from Supabase snapshot
+        # Try to restore from Supabase snapshot first (MCP auto-restore)
         restored = await _restore_pipeline_snapshot(symbol)
         if restored:
             _pipelines[symbol] = restored
         else:
-            config = await RenkoConfig.from_runtime_config(overrides={"symbol": symbol})
+            config = await RenkoConfig.from_runtime_config(
+                overrides={"symbol": symbol, **(config_overrides or {})}
+            )
             _pipelines[symbol] = RenkoPipeline(config)
     return _pipelines[symbol]
+
+
+async def _get_pipeline_with_restore(symbol: str = "SPY") -> RenkoPipeline:
+    """Get or create a pipeline for a symbol, restoring from Supabase snapshot if available.
+
+    Alias for ``_get_pipeline_async`` which now auto-restores on first access.
+    Kept for readability on write-path endpoints.
+    """
+    return await _get_pipeline_async(symbol)
 
 
 async def _on_config_changed(key: str, entry) -> None:
@@ -445,10 +451,20 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.get("/state")
     async def get_state(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
-        """Get current pipeline state."""
+        """Get current pipeline state with readiness assessment.
+
+        MCP agents should check ``readiness.level`` before trading:
+          - ``cold``: needs warmup (brick_count == 0)
+          - ``warming``: insufficient data (brick_count < 50)
+          - ``warm``: signals active but limited history
+          - ``hot``: full detection + journal, position already open
+          - ``live_ready``: ready for new entries
+        """
         try:
             pipeline = await _get_pipeline_async(symbol)
-            return pipeline.get_state().to_dict()
+            state = pipeline.get_state().to_dict()
+            state["readiness"] = pipeline.readiness
+            return state
         except Exception as e:
             log.error(f"get_state failed for {symbol}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
@@ -1192,37 +1208,37 @@ if FASTAPI_AVAILABLE:
         user: TokenData = Depends(require_write),
     ) -> Dict[str, Any]:
         """
-        Explicitly save the current pipeline state to Supabase.
+        Explicitly save the current pipeline state to Supabase (awaited, confirmed).
 
-        This is useful for MCP agents that want to persist pipeline state
-        after making changes (e.g., setting regime, equity, or after
-        processing a series of ticks). Returns the snapshot metadata.
+        Unlike the automatic periodic saves (fire-and-forget), this endpoint
+        awaits the Supabase upsert and returns confirmation. MCP agents should
+        use this after critical state changes (regime, equity, position open)
+        where persistence must be guaranteed before proceeding.
 
-        The saved snapshot includes full brick history, classified bricks,
-        and trade journal — enabling instant restore via
-        ``POST /renko/snapshot/restore`` without a warmup cycle.
+        The saved snapshot (v3) includes:
+          - Full brick history, classified bricks, trade journal
+          - Active position with trailing stop state
+          - Signal filter state (session counters, Masaniello batch)
+          - Pipeline readiness assessment
         """
         pipeline = await _get_pipeline_async(symbol)
         snap = pipeline.snapshot()
 
-        # Save to Supabase
-        try:
-            await _save_pipeline_snapshot(symbol, pipeline)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Snapshot save failed: {e}",
-            )
+        # Awaited, confirmed save — not fire-and-forget
+        saved = await _save_pipeline_snapshot_confirmed(symbol, pipeline)
 
         return {
-            "status": "ok",
+            "status": "ok" if saved else "failed",
             "symbol": symbol,
+            "snapshot_version": snap.get("snapshot_version", 2),
             "brick_count": snap.get("brick_count", 0),
             "total_trades": snap.get("journal_stats", {}).get("total_trades", 0),
+            "has_active_position": snap.get("active_position") is not None,
             "snapshot_ts": snap.get("snapshot_ts"),
             "bricks_serialized": len(snap.get("bricks", [])),
             "trades_serialized": len(snap.get("trades", [])),
             "classified_serialized": len(snap.get("classified", [])),
+            "readiness": pipeline.readiness,
         }
 
 else:
@@ -1368,6 +1384,63 @@ def _notify_reset(symbol: str) -> None:
 
 
 # ── Pipeline State Persistence ────────────────────────────────────────────
+
+
+async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline) -> bool:
+    """Save pipeline state snapshot to Supabase — awaited, returns success boolean.
+
+    Unlike ``_save_pipeline_snapshot`` (fire-and-forget), this function is
+    designed for MCP agents that need confirmation that state was persisted
+    before proceeding with critical operations.
+    """
+    try:
+        from regime_platform.core.settings import settings
+        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+            return False
+
+        import httpx
+
+        snap = pipeline.snapshot()
+        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates",
+        }
+        journal_stats = snap.get("journal_stats", {})
+        row = {
+            "symbol": symbol,
+            "brick_size": snap["config"].get("brick_size", 0.50),
+            "total_bricks": snap.get("brick_count", 0),
+            "total_trades": journal_stats.get("total_trades", 0),
+            "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
+            "config": snap.get("config", {}),
+            "stats": snap,
+            "prices_fed": 0,
+            "period": "pipeline-persist",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=row)
+            if resp.status_code in (200, 201, 204):
+                n_bricks = len(snap.get("bricks", []))
+                n_trades = len(snap.get("trades", []))
+                has_pos = snap.get("active_position") is not None
+                log.info(
+                    f"Confirmed snapshot save for {symbol}: "
+                    f"{n_bricks} bricks, {n_trades} trades, "
+                    f"active_position={has_pos}"
+                )
+                return True
+            else:
+                log.warning(
+                    f"Snapshot save FAILED for {symbol}: "
+                    f"HTTP {resp.status_code} — {resp.text[:200]}"
+                )
+                return False
+    except Exception as e:
+        log.warning(f"Snapshot save error for {symbol}: {e}")
+        return False
 
 
 async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:

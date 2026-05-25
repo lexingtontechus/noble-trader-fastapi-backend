@@ -333,6 +333,57 @@ class RenkoPipeline:
             total_pnl_bricks=journal_stats.get("total_pnl_bricks", 0.0),
         )
 
+    @property
+    def readiness(self) -> Dict[str, Any]:
+        """Pipeline readiness assessment for MCP agents.
+
+        Returns a dict indicating whether the pipeline has enough data
+        for signal generation and risk management. An MCP agent should
+        check readiness before making trading decisions.
+
+        Levels:
+          - ``cold``: brick_count == 0, pipeline needs warmup
+          - ``warming``: brick_count < 50, signals unreliable
+          - ``warm``: brick_count >= 50, signals active but limited history
+          - ``hot``: brick_count >= 200, full pattern detection + journal
+          - ``live_ready``: hot + no active position, ready for new entries
+        """
+        bc = self.brick_engine.brick_count
+        has_position = self.risk_manager.has_position
+
+        if bc == 0:
+            level = "cold"
+            can_trade = False
+            reason = "Pipeline is empty — call POST /renko/warmup first"
+        elif bc < 50:
+            level = "warming"
+            can_trade = False
+            reason = f"Insufficient bricks ({bc}/50) for reliable signals"
+        elif bc < 200:
+            level = "warm"
+            can_trade = True
+            reason = f"Signals active ({bc} bricks) but limited journal history"
+        else:
+            if has_position:
+                level = "hot"
+                can_trade = False  # Already in a position
+                reason = f"Hot pipeline ({bc} bricks) but position already open"
+            else:
+                level = "live_ready"
+                can_trade = True
+                reason = f"Fully ready ({bc} bricks, no open position)"
+
+        return {
+            "level": level,
+            "can_trade": can_trade,
+            "brick_count": bc,
+            "has_position": has_position,
+            "reason": reason,
+            "sizing_mode": self.config.sizing_mode.value,
+            "regime": self._current_regime,
+            "equity": self._current_equity,
+        }
+
     def get_stats(self) -> Dict:
         """Get comprehensive pipeline statistics."""
         return {
@@ -347,14 +398,69 @@ class RenkoPipeline:
     def snapshot(self) -> dict:
         """
         Capture a serializable snapshot of the pipeline state for persistence.
-        Includes: config, brick history, classified history, signal history,
-        trade journal, regime, equity, and filter stats.
 
-        Brick history, classified bricks, and trade records are serialized
-        so that ``from_snapshot()`` can fully hydrate the pipeline without
-        requiring a warmup.  This eliminates the 30s+ warmup on restart.
+        Includes: config, brick history, classified history, trade journal,
+        regime, equity, filter stats, **and active position state**.
+
+        v3 format adds ``active_position``, ``signal_filter_state``, and
+        ``snapshot_version`` so that ``from_snapshot()`` can fully hydrate
+        the pipeline — including restoring an open position with trailing
+        stop state — without requiring a warmup or losing trades.
+
+        This is critical for MCP agents: an orphaned position after restart
+        is a risk disaster. The agent must know its exact state on recovery.
         """
+        # Serialize active position (including trailing stop state)
+        pos_data = None
+        if self.risk_manager.has_position:
+            pos = self.risk_manager.active_position
+            pos_data = {
+                "entry_price": pos.entry_price,
+                "direction": pos.direction.value,
+                "brick_size": pos.brick_size,
+                "entry_ts": pos.entry_ts,
+                "entry_brick_idx": pos.entry_brick_idx,
+                "qty": pos.qty,
+                "sl_price": pos.sl_price,
+                "tp_price": pos.tp_price,
+                "peak_profit_bricks": pos.peak_profit_bricks,
+                "current_sl_price": pos.current_sl_price,
+                "bricks_open": pos.bricks_open,
+                "partial_closed": pos.partial_closed,
+                "remaining_qty": pos.remaining_qty,
+                "params": {
+                    "sl_bricks": pos.params.sl_bricks,
+                    "tp_bricks": pos.params.tp_bricks,
+                    "trailing_stop": pos.params.trailing_stop,
+                    "trail_after_bricks": pos.params.trail_after_bricks,
+                    "trail_distance_bricks": pos.params.trail_distance_bricks,
+                    "time_stop_bricks": pos.params.time_stop_bricks,
+                    "partial_exit_pct": pos.params.partial_exit_pct,
+                    "partial_exit_bricks": pos.params.partial_exit_bricks,
+                    "slippage_bps": pos.params.slippage_bps,
+                    "oco_priority": pos.params.oco_priority,
+                },
+            }
+
+        # Signal filter state (warmup mode, session counters)
+        sf = self.signal_filter
+        signal_filter_state = {
+            "warmup_mode": sf._warmup_mode,
+            "session_trades_taken": sf._session_trades_taken,
+            "session_daily_pnl_bricks": sf._session_daily_pnl_bricks,
+            "consecutive_losses": sf._consecutive_losses,
+            "last_trade_ts": sf._last_trade_ts,
+            # Masaniello batch state (if applicable)
+            "masaniello_batch_wins": getattr(sf, '_masaniello_batch_wins', 0),
+            "masaniello_batch_losses": getattr(sf, '_masaniello_batch_losses', 0),
+            "masaniello_trade_index": getattr(sf, '_masaniello_trade_index', 0),
+            "masaniello_initial_equity": getattr(sf, '_masaniello_initial_equity', 0.0),
+            "masaniello_peak_equity": getattr(sf, '_masaniello_peak_equity', 0.0),
+            "masaniello_pnl": getattr(sf, '_masaniello_pnl', 0.0),
+        }
+
         return {
+            "snapshot_version": 3,
             "config": self.config.to_dict(),
             "brick_count": self.brick_engine.brick_count,
             "current_direction": self.brick_engine.current_direction.value if self.brick_engine.current_direction else None,
@@ -372,6 +478,9 @@ class RenkoPipeline:
             "bricks": [b.to_dict() for b in self.brick_engine.history],
             "classified": [cb.to_dict() for cb in self.swing_classifier.classified_history],
             "trades": [t.to_dict() for t in self.journal.trades],
+            # v3: Active position + signal filter state (MCP agent safety)
+            "active_position": pos_data,
+            "signal_filter_state": signal_filter_state,
         }
 
     @classmethod
@@ -379,8 +488,12 @@ class RenkoPipeline:
         """
         Restore a pipeline from a persisted snapshot.
 
+        v3 snapshots additionally restore:
+          - ``active_position`` — open position with trailing stop state
+          - ``signal_filter_state`` — session counters, warmup mode, Masaniello batch
+
         When the snapshot includes ``bricks``, ``classified``, and ``trades``
-        arrays (v2 format), the pipeline is fully hydrated — the brick engine
+        arrays (v2+ format), the pipeline is fully hydrated — the brick engine
         has its complete history, the swing classifier has classified context,
         and the journal has all trade records.  This eliminates the need for
         a warmup cycle on restart.
@@ -397,7 +510,7 @@ class RenkoPipeline:
         pipeline._current_regime_confidence = data.get("regime_confidence", 0.75)
         pipeline._current_drawdown = data.get("current_drawdown", 0.0)
 
-        # ── Hydrate brick engine history (v2 snapshots) ──
+        # ── Hydrate brick engine history (v2+ snapshots) ──
         bricks_data = data.get("bricks")
         if bricks_data and isinstance(bricks_data, list):
             for bd in bricks_data:
@@ -426,7 +539,7 @@ class RenkoPipeline:
                     len(bricks_data), last.direction.value, last.close_price,
                 )
 
-        # ── Hydrate swing classifier classified history (v2 snapshots) ──
+        # ── Hydrate swing classifier classified history (v2+ snapshots) ──
         classified_data = data.get("classified")
         if classified_data and isinstance(classified_data, list):
             from renko.swing_classifier import SwingLabel, SwingPoint
@@ -457,7 +570,7 @@ class RenkoPipeline:
                 pipeline.swing_classifier.classified_history.append(cb)
             logger.info("Hydrated swing classifier with %d classified bricks", len(classified_data))
 
-        # ── Hydrate trade journal (v2 snapshots) ──
+        # ── Hydrate trade journal (v2+ snapshots) ──
         trades_data = data.get("trades")
         if trades_data and isinstance(trades_data, list):
             for td in trades_data:
@@ -497,6 +610,69 @@ class RenkoPipeline:
             # Sync the counter so new trade IDs don't collide
             pipeline.journal._trade_counter = len(trades_data)
             logger.info("Hydrated trade journal with %d trade records", len(trades_data))
+
+        # ── Hydrate active position (v3 snapshots — MCP agent safety) ──
+        pos_data = data.get("active_position")
+        if pos_data and isinstance(pos_data, dict):
+            from renko.risk_manager import ActivePosition, RiskParams
+            pos_params = RiskParams(
+                sl_bricks=pos_data.get("params", {}).get("sl_bricks", 3),
+                tp_bricks=pos_data.get("params", {}).get("tp_bricks", 5),
+                trailing_stop=pos_data.get("params", {}).get("trailing_stop", True),
+                trail_after_bricks=pos_data.get("params", {}).get("trail_after_bricks", 3),
+                trail_distance_bricks=pos_data.get("params", {}).get("trail_distance_bricks", 2),
+                time_stop_bricks=pos_data.get("params", {}).get("time_stop_bricks", 10),
+                partial_exit_pct=pos_data.get("params", {}).get("partial_exit_pct", 0.0),
+                partial_exit_bricks=pos_data.get("params", {}).get("partial_exit_bricks", 3),
+                slippage_bps=pos_data.get("params", {}).get("slippage_bps", 2.0),
+                oco_priority=pos_data.get("params", {}).get("oco_priority", "sl_first"),
+            )
+            pos = ActivePosition(
+                entry_price=pos_data["entry_price"],
+                direction=SignalDirection(pos_data["direction"]),
+                brick_size=pos_data["brick_size"],
+                entry_ts=pos_data["entry_ts"],
+                entry_brick_idx=pos_data["entry_brick_idx"],
+                qty=pos_data.get("qty", 1.0),
+                params=pos_params,
+            )
+            # Restore dynamic trailing stop state
+            pos.peak_profit_bricks = pos_data.get("peak_profit_bricks", 0.0)
+            pos.current_sl_price = pos_data.get("current_sl_price", pos.sl_price)
+            pos.bricks_open = pos_data.get("bricks_open", 0)
+            pos.partial_closed = pos_data.get("partial_closed", False)
+            pos.remaining_qty = pos_data.get("remaining_qty", 1.0)
+            pipeline.risk_manager.active_position = pos
+            logger.warning(
+                "Hydrated ACTIVE POSITION from snapshot: %s at %.2f, "
+                "SL=%.2f, TP=%.2f, trail_sl=%.2f, bricks_open=%d — "
+                "agent MUST verify position with broker",
+                pos.direction.value, pos.entry_price,
+                pos.sl_price, pos.tp_price, pos.current_sl_price,
+                pos.bricks_open,
+            )
+
+        # ── Hydrate signal filter state (v3 snapshots) ──
+        sf_data = data.get("signal_filter_state")
+        if sf_data and isinstance(sf_data, dict):
+            sf = pipeline.signal_filter
+            sf._warmup_mode = sf_data.get("warmup_mode", False)
+            sf._session_trades_taken = sf_data.get("session_trades_taken", 0)
+            sf._session_daily_pnl_bricks = sf_data.get("session_daily_pnl_bricks", 0.0)
+            sf._consecutive_losses = sf_data.get("consecutive_losses", 0)
+            sf._last_trade_ts = sf_data.get("last_trade_ts", 0.0)
+            # Masaniello batch state
+            if hasattr(sf, '_masaniello_batch_wins'):
+                sf._masaniello_batch_wins = sf_data.get("masaniello_batch_wins", 0)
+                sf._masaniello_batch_losses = sf_data.get("masaniello_batch_losses", 0)
+                sf._masaniello_trade_index = sf_data.get("masaniello_trade_index", 0)
+                sf._masaniello_initial_equity = sf_data.get("masaniello_initial_equity", 0.0)
+                sf._masaniello_peak_equity = sf_data.get("masaniello_peak_equity", 0.0)
+                sf._masaniello_pnl = sf_data.get("masaniello_pnl", 0.0)
+            logger.info(
+                "Hydrated signal filter: warmup=%s, session_trades=%d, consecutive_losses=%d",
+                sf._warmup_mode, sf._session_trades_taken, sf._consecutive_losses,
+            )
 
         return pipeline
 
