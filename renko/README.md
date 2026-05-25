@@ -57,7 +57,9 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `POST` | `/renko/execution/model` | Execution modeling (slippage, fill simulation) | Any |
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
 | `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
-| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Admin/Trader |
+| `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
+| `POST` | `/renko/snapshot/save` | Explicitly save pipeline state to Supabase | Write |
+| `POST` | `/renko/warmup` | Backend-native warmup (Yahoo fetch + snapshot save) | Write |
 | `GET` | `/renko/sizing/model` | Get current position sizing model and parameters | Any |
 | `POST` | `/renko/sizing/model` | Set position sizing model (Kelly ↔ Masaniello) | Admin |
 
@@ -300,6 +302,104 @@ Warm-up is automatically triggered when:
 - Page loads and Supabase cache is stale (>4h old)
 - User switches to a new symbol with no cached data and empty backend pipeline
 - User clicks the "Warm Up" button manually
+- **MCP agent calls** `POST /renko/warmup` (backend-native, no BFF dependency)
+
+### Backend Warm-up Endpoint (`POST /renko/warmup`)
+
+v7.1 introduces a **backend-native warmup endpoint** that eliminates the need for the Next.js BFF layer. MCP agents can now fully operate the pipeline without any frontend dependency.
+
+**Flow:**
+1. Check Supabase for a fresh snapshot (<4h) — if found, restore it directly (instant, <500ms)
+2. Fetch historical prices from Yahoo Finance (`yfinance` library or Yahoo v8 chart API fallback)
+3. Create a fresh pipeline with runtime config
+4. Set regime to `low_vol_bull` (enables signal generation during warmup)
+5. Feed prices through the pipeline via backtest (warmup mode)
+6. Save snapshot to Supabase (including full brick history, classified bricks, trades)
+7. Return the pipeline state
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `symbol` | `str` | `"SPY"` | Trading symbol |
+| `period` | `str` | `"6mo"` | Yahoo Finance period: 1mo, 3mo, 6mo, 1y, 2y, 5y, max |
+| `chunk_size` | `int` | `150` | Internal batch size for processing |
+
+**Response includes:** `source` (snapshot_restore / yahoo_fetch / stale_snapshot_restore), `brick_count`, `state`, `elapsed_ms`
+
+### Snapshot Save Endpoint (`POST /renko/snapshot/save`)
+
+Explicitly saves the current pipeline state to Supabase. Useful for MCP agents that want to persist state after making changes (setting regime, equity, or after processing a series of ticks).
+
+**Response includes:** `brick_count`, `total_trades`, `bricks_serialized`, `trades_serialized`, `classified_serialized`, `snapshot_ts`
+
+## MCP Agent Workflow
+
+MCP (Model Context Protocol) agents connect to `/mcp` and discover available tools automatically. As of v7.1, the Renko pipeline is fully autonomous via MCP — no frontend or BFF dependency required.
+
+### MCP Tool Categories
+
+| Category | Tools | Autonomy Level |
+|----------|-------|---------------|
+| **State & Health** | `renko_health`, `get_state`, `get_stats`, `get_live_status` | Read-only |
+| **Brick Data** | `get_bricks`, `get_classified`, `get_swing_points` | Read-only |
+| **Signals & Trades** | `get_signals`, `get_trades` | Read-only |
+| **Sizing** | `get_sizing_model`, `set_sizing_model` | Read + Write |
+| **Warmup & Persistence** | `warmup_pipeline`, `save_snapshot`, `restore_snapshot` | Write (stateful) |
+| **Pipeline Control** | `set_regime`, `set_equity`, `process_batch` | Write (sync) |
+| **Backtesting** | `run_backtest`, `optimize_backtest`, `backtest_stats`, `statistical_rigor` | Write (isolated) |
+| **Execution** | `execution_model`, `toggle_live_execution` | Write (critical) |
+| **Analysis** | `statistical_rigor`, `execution_model` | Read/Compute |
+
+### MCP Agent Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MCP AGENT RENKO WORKFLOW                         │
+│                                                                     │
+│  1. COLD START (no pipeline state)                                 │
+│     renko_health()        → verify backend is alive                │
+│     warmup_pipeline()     → fetch Yahoo data + hydrate pipeline    │
+│                             (or restore snapshot if <4h old)       │
+│                                                                     │
+│  2. MARKET HOURS MONITORING                                        │
+│     set_regime()          → feed HMM regime detection output       │
+│     set_equity()          → sync account equity from broker        │
+│     get_bricks()          → latest brick direction + velocity      │
+│     get_classified()      → pattern detection (impulse/correction) │
+│     get_signals()         → active entry/exit signals              │
+│     get_trades()          → recent trade performance               │
+│                                                                     │
+│  3. SIZING DECISION                                                │
+│     get_sizing_model()    → Kelly or Masaniello? Check params      │
+│     set_sizing_model()    → switch model if regime warrants it     │
+│                                                                     │
+│  4. BACKTEST & OPTIMIZATION                                        │
+│     run_backtest()        → test strategy on historical data       │
+│     optimize_backtest()   → parameter sweep for best config        │
+│     statistical_rigor()   → is the edge statistically significant? │
+│                                                                     │
+│  5. STATE PERSISTENCE                                              │
+│     save_snapshot()       → persist state after changes            │
+│     restore_snapshot()    → recover from cold start                │
+│                                                                     │
+│  6. EXECUTION CONTROL                                              │
+│     execution_model()     → compute slippage, fill, financing      │
+│     toggle_live_execution() → enable/disable real order submission │
+│     get_live_status()     → check if live execution is active      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Excluded from MCP (require direct REST API)
+
+These endpoints remain excluded from MCP for safety — they are destructive or could be used for manipulation:
+
+| Endpoint | Reason | Alternative |
+|----------|--------|-------------|
+| `POST /renko/tick` | Single tick injection — manipulation risk | Use `POST /renko/tick/batch` or `POST /renko/warmup` |
+| `POST /renko/reset` | Destructive — loses all brick history | Use `POST /renko/warmup` to rehydrate |
+| `POST /renko/config` | Destructive — rebuilds pipeline from scratch | Use runtime config API (`/config/`) |
+
 
 ## Frontend Components
 

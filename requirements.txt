@@ -27,3 +27,5 @@ websockets>=12.0
 # Feed adapters (install only the adapter you need)
 # alpaca-py>=0.20.0        # Alpaca Markets
 # ib_async>=0.9.0           # Interactive Brokers
+# Yahoo Finance (for backend warmup / cold-start — optional, falls back to HTTP API)
+yfinance>=0.2.31

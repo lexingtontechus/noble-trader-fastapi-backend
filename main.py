@@ -382,12 +382,22 @@ Endpoints:
     #      per-route Depends() auth is also enforced
     if MCP_AVAILABLE:
         # Operation IDs to EXCLUDE from MCP exposure
-        # Rationale:
-        #   - Auth endpoints: circular (MCP shouldn't issue/refresh tokens)
-        #   - Feed start/stop: infrastructure control (not for AI agents)
-        #   - Renko write ops: pipeline mutation (tick, batch, reset, config, equity, regime)
-        #   - Stream seed/tick: data injection endpoints
-        #   - Stream session delete: resource teardown
+        #
+        # v7.1 — Full agent autonomy: MCP agents can now warmup, restore,
+        # set regime, set equity, run backtests, switch sizing models,
+        # and toggle live execution. Only genuinely dangerous or
+        # infrastructure-only operations remain excluded.
+        #
+        # Promoted to MCP (v7.1):
+        #   - process_batch: agent needs warmup & backtest
+        #   - set_regime: agent needs HMM regime sync
+        #   - set_equity: agent needs portfolio sync
+        #   - warmup_pipeline: agent needs autonomous cold-start
+        #   - save_snapshot: agent needs to persist state
+        #   - restore_snapshot: agent needs cold-start recovery
+        #   - set_sizing_model: agent needs Kelly ↔ Masaniello switching
+        #   - toggle_live: agent needs execution mode control
+        #   - run_backtest / optimize: agent needs strategy testing
         _mcp_excluded_ops = [
             # ── Auth (circular — MCP clients should already have tokens) ──
             "clerk_config_auth_clerk_config_get",
@@ -399,19 +409,18 @@ Endpoints:
             # ── Feed adapters (infrastructure control) ──
             "start_feeds_feeds_start_post",
             "stop_feeds_feeds_stop_post",
-            # ── Renko write / mutation (pipeline manipulation) ──
+            # ── Single tick injection (manipulation risk — use batch/warmup instead) ──
             "process_tick_renko_tick_post",
-            "process_batch_renko_tick_batch_post",
-            "update_config_renko_config_post",
-            "set_equity_renko_equity_post",
-            "set_regime_renko_regime_post",
+            # ── Pipeline reset (destructive — loses all brick history & trades) ──
             "reset_pipeline_renko_reset_post",
+            # ── Config update (destructive — rebuilds pipeline from scratch) ──
+            "update_config_renko_config_post",
             # ── Stream data injection / teardown ──
             "seed_session_stream_seed_post",
             "ingest_tick_stream_tick_post",
             "ingest_ticks_stream_ticks_post",
             "remove_session_stream_session__symbol__delete",
-            # ── Backtest delete (destructive — MCP should run, read, compare, not delete) ──
+            # ── Backtest delete (destructive — MCP should run/read, not delete) ──
             "delete_backtest_result_backtest__backtest_id__delete",
         ]
 
@@ -431,7 +440,7 @@ Endpoints:
             name="Noble Trader MCP",
             description="""Noble Trader Dynamic Regime Risk Management Platform — MCP Server
 
-Exposes trading risk management endpoints as MCP tools (read-only / analysis):
+Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 - Regime detection (HMM-based vol + trend classification)
 - Position sizing (regime-gated fractional Kelly + Dynamic Masaniello)
 - Risk analysis (VaR, CVaR, drawdown, stop/TP suggestions)
@@ -445,10 +454,23 @@ Exposes trading risk management endpoints as MCP tools (read-only / analysis):
 - GPU HMM capabilities and benchmarks
 - Backtesting (walk-forward HMM with 30+ metrics), backtest history, comparison
 - Strategy signals, TDA features
-- Renko read-only: state, stats, bricks, signals, trades, swing-points
+- Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
+- Snapshot management (save/restore pipeline state)
+
+Agent autonomy (v7.1):
+- POST /renko/warmup — autonomous pipeline warmup (Yahoo fetch + snapshot save)
+- POST /renko/snapshot/save — persist pipeline state
+- POST /renko/snapshot/restore — recover from cold start
+- POST /renko/regime — update HMM regime
+- POST /renko/equity — update account equity
+- POST /renko/tick/batch — batch tick processing (warmup/backtest)
+- POST /renko/sizing/model — switch Kelly ↔ Masaniello
+- POST /renko/live/toggle — toggle live execution
+- POST /renko/backtest/run — run isolated backtests
+- POST /renko/backtest/optimize — parameter sweep
 
 Excluded from MCP (use REST API directly):
-- Auth endpoints, feed start/stop, Renko write ops, stream data injection, backtest delete""",
+- Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update""",
             exclude_operations=_mcp_excluded_ops,
             auth_config=_mcp_auth,
             headers=["authorization", "x-api-key"],
@@ -506,6 +528,11 @@ Excluded from MCP (use REST API directly):
                     "renko_signals": "GET /renko/signals",
                     "renko_trades": "GET /renko/trades",
                     "renko_config": "POST /renko/config",
+                    "renko_warmup": "POST /renko/warmup",
+                    "renko_snapshot_save": "POST /renko/snapshot/save",
+                    "renko_snapshot_restore": "POST /renko/snapshot/restore",
+                    "renko_sizing_model": "GET/POST /renko/sizing/model",
+                    "renko_live_toggle": "POST /renko/live/toggle",
                     "renko_backtest_run": "POST /renko/backtest/run",
                     "renko_backtest_compare": "POST /renko/backtest/compare",
                     "renko_backtest_optimize": "POST /renko/backtest/optimize",

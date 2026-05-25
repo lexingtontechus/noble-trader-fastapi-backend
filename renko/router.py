@@ -1017,6 +1017,214 @@ if FASTAPI_AVAILABLE:
             return {"status": "ok", "symbol": symbol, "restored": True, "state": restored.get_state().to_dict()}
         return {"status": "ok", "symbol": symbol, "restored": False, "message": "No snapshot available"}
 
+    # ── MCP Autonomy Endpoints ──────────────────────────────────────
+
+    @renko_router.post("/warmup")
+    @limiter.limit(RATE_LIMIT_WRITE)
+    async def warmup_pipeline(
+        request: Request,
+        symbol: str = "SPY",
+        period: str = "6mo",
+        chunk_size: int = 150,
+        user: TokenData = Depends(require_write),
+    ) -> Dict[str, Any]:
+        """
+        Warm up a Renko pipeline with historical prices — backend-native warmup.
+
+        This endpoint replaces the BFF (Next.js frontend) warmup, enabling
+        MCP agents to fully operate the pipeline without any frontend dependency.
+
+        Flow:
+          1. Check Supabase for a fresh snapshot (<4h) — if found, restore it
+          2. Fetch historical prices from Yahoo Finance (via yfinance)
+          3. Create a fresh pipeline (runtime config)
+          4. Set regime to ``low_vol_bull`` (enables signal generation during warmup)
+          5. Feed prices through the pipeline via backtest (warmup mode)
+          6. Save snapshot to Supabase
+          7. Return the pipeline state
+
+        Parameters
+        ----------
+        symbol : str
+            Trading symbol (default: SPY)
+        period : str
+            Yahoo Finance period string: 1mo, 3mo, 6mo, 1y, 2y, 5y, max
+        chunk_size : int
+            Internal batch size for processing (default: 150)
+        """
+        import time as _time
+
+        warmup_start = _time.time()
+
+        # ── Step 1: Check for fresh snapshot (<4h) ──
+        try:
+            from regime_platform.core.settings import settings
+            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+                import httpx
+                url = (
+                    f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+                    f"?symbol=eq.{symbol}&select=updated_at,stats&order=updated_at.desc&limit=1"
+                )
+                headers = {
+                    "apikey": settings.SUPABASE_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                }
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 200:
+                        rows = resp.json()
+                        if rows and rows[0].get("stats"):
+                            updated_at = rows[0].get("updated_at")
+                            # Parse timestamp — could be ISO or epoch
+                            from regime_platform.core.runtime_config import _parse_timestamp
+                            ts = _parse_timestamp(updated_at) if updated_at else 0
+                            age_seconds = _time.time() - ts if ts > 0 else float("inf")
+                            if age_seconds < 14400:  # 4 hours
+                                # Fresh snapshot — restore it directly
+                                data = rows[0]["stats"]
+                                pipeline = RenkoPipeline.from_snapshot(data)
+                                _pipelines[symbol] = pipeline
+                                log.info(
+                                    f"Warmup: restored fresh snapshot for {symbol} "
+                                    f"(age={age_seconds:.0f}s)"
+                                )
+                                return {
+                                    "status": "ok",
+                                    "symbol": symbol,
+                                    "source": "snapshot_restore",
+                                    "age_seconds": round(age_seconds),
+                                    "brick_count": pipeline.brick_engine.brick_count,
+                                    "state": pipeline.get_state().to_dict(),
+                                    "elapsed_ms": round((_time.time() - warmup_start) * 1000),
+                                }
+        except Exception as e:
+            log.debug(f"Warmup snapshot check failed (non-critical): {e}")
+
+        # ── Step 2: Fetch Yahoo Finance prices ──
+        try:
+            prices, timestamps = await _fetch_yahoo_prices(symbol, period)
+        except Exception as e:
+            # If Yahoo fetch fails, try restoring a stale snapshot
+            log.warning(f"Yahoo fetch failed for {symbol}: {e} — trying stale snapshot")
+            restored = await _restore_pipeline_snapshot(symbol)
+            if restored:
+                _pipelines[symbol] = restored
+                return {
+                    "status": "ok",
+                    "symbol": symbol,
+                    "source": "stale_snapshot_restore",
+                    "warning": f"Yahoo fetch failed: {e}",
+                    "brick_count": restored.brick_engine.brick_count,
+                    "state": restored.get_state().to_dict(),
+                    "elapsed_ms": round((_time.time() - warmup_start) * 1000),
+                }
+            raise HTTPException(
+                status_code=502,
+                detail=f"Yahoo Finance fetch failed and no snapshot available: {e}",
+            )
+
+        if not prices:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Yahoo Finance returned no price data for {symbol}",
+            )
+
+        # ── Step 3: Create fresh pipeline ──
+        config = await RenkoConfig.from_runtime_config(overrides={"symbol": symbol})
+        pipeline = RenkoPipeline(config)
+
+        # ── Step 4: Set regime for warmup (enables signals) ──
+        pipeline.set_regime("low_vol_bull")
+
+        # ── Step 5: Feed prices (warmup mode via backtest) ──
+        result = pipeline.backtest(
+            prices=prices,
+            timestamps=timestamps,
+            regimes=None,
+        )
+
+        # ── Step 6: Save snapshot ──
+        _pipelines[symbol] = pipeline
+        await _save_pipeline_snapshot(symbol, pipeline)
+
+        elapsed = _time.time() - warmup_start
+        total_bricks = pipeline.brick_engine.brick_count
+        journal_stats = result.get("stats", {}).get("journal", {})
+
+        # Discord notification
+        if DISCORD_AVAILABLE:
+            try:
+                asyncio.create_task(discord_notifier.send_status(
+                    message=f"Pipeline warmup complete: {symbol} — {total_bricks} bricks, {len(prices)} prices",
+                    symbol=symbol,
+                    level=AlertLevel.INFO,
+                    data={
+                        "source": "backend_warmup",
+                        "total_bricks": total_bricks,
+                        "total_prices": len(prices),
+                        "elapsed_seconds": round(elapsed, 1),
+                    },
+                ))
+            except Exception:
+                pass
+
+        log.info(
+            f"Warmup complete for {symbol}: {total_bricks} bricks from "
+            f"{len(prices)} prices in {elapsed:.1f}s"
+        )
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "source": "yahoo_fetch",
+            "prices_fed": len(prices),
+            "brick_count": total_bricks,
+            "total_trades": journal_stats.get("total_trades", 0),
+            "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
+            "state": pipeline.get_state().to_dict(),
+            "elapsed_ms": round(elapsed * 1000),
+        }
+
+    @renko_router.post("/snapshot/save")
+    async def save_snapshot(
+        request: Request,
+        symbol: str = "SPY",
+        user: TokenData = Depends(require_write),
+    ) -> Dict[str, Any]:
+        """
+        Explicitly save the current pipeline state to Supabase.
+
+        This is useful for MCP agents that want to persist pipeline state
+        after making changes (e.g., setting regime, equity, or after
+        processing a series of ticks). Returns the snapshot metadata.
+
+        The saved snapshot includes full brick history, classified bricks,
+        and trade journal — enabling instant restore via
+        ``POST /renko/snapshot/restore`` without a warmup cycle.
+        """
+        pipeline = await _get_pipeline_async(symbol)
+        snap = pipeline.snapshot()
+
+        # Save to Supabase
+        try:
+            await _save_pipeline_snapshot(symbol, pipeline)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Snapshot save failed: {e}",
+            )
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "brick_count": snap.get("brick_count", 0),
+            "total_trades": snap.get("journal_stats", {}).get("total_trades", 0),
+            "snapshot_ts": snap.get("snapshot_ts"),
+            "bricks_serialized": len(snap.get("bricks", [])),
+            "trades_serialized": len(snap.get("trades", [])),
+            "classified_serialized": len(snap.get("classified", [])),
+        }
+
 else:
     # Stub router for environments without FastAPI
     renko_router = None
@@ -1260,6 +1468,71 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
         log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")
 
     return None
+
+
+async def _fetch_yahoo_prices(symbol: str, period: str = "6mo") -> tuple:
+    """
+    Fetch historical closing prices from Yahoo Finance.
+
+    Uses the ``yfinance`` library (pure Python, no external deps).
+    Falls back to an HTTP scrape of Yahoo's chart API if yfinance is
+    not installed.
+
+    Returns
+    -------
+    (prices, timestamps) : tuple[list[float], list[float]]
+        Parallel arrays of closing prices and Unix timestamps.
+    """
+    # ── Primary: yfinance ──
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period, interval="1d")
+        if hist.empty:
+            raise ValueError(f"No data returned for {symbol}")
+        prices = hist["Close"].dropna().tolist()
+        timestamps = hist.index.astype("int64") // 10**9  # nanos → epoch seconds
+        timestamps = timestamps.tolist()
+        log.info(f"yfinance: fetched {len(prices)} prices for {symbol} (period={period})")
+        return prices, timestamps
+    except ImportError:
+        log.debug("yfinance not installed — falling back to Yahoo chart API")
+    except Exception as e:
+        log.warning(f"yfinance failed for {symbol}: {e} — trying Yahoo chart API")
+
+    # ── Fallback: Yahoo Finance v8 chart API (no deps) ──
+    import httpx
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"?range={period}&interval=1d"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            raise RuntimeError(f"Yahoo chart API returned {resp.status_code}")
+        data = resp.json()
+
+    result = data.get("chart", {}).get("result", [])
+    if not result:
+        raise RuntimeError(f"Yahoo chart API returned no results for {symbol}")
+
+    timestamps = result[0].get("timestamp", [])
+    quotes = result[0].get("indicators", {}).get("quote", [{}])
+    closes = quotes[0].get("close", []) if quotes else []
+
+    # Filter out None values (market holidays, missing data)
+    prices = []
+    clean_ts = []
+    for ts, price in zip(timestamps, closes):
+        if price is not None and ts is not None:
+            prices.append(float(price))
+            clean_ts.append(float(ts))
+
+    if not prices:
+        raise RuntimeError(f"No valid closing prices for {symbol}")
+
+    log.info(f"Yahoo chart API: fetched {len(prices)} prices for {symbol}")
+    return prices, clean_ts
 
 
 # ── Execution Bridge (async — called from router) ────────────────────
