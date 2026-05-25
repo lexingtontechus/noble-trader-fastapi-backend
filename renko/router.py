@@ -1163,7 +1163,12 @@ def _notify_reset(symbol: str) -> None:
 
 
 async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
-    """Save pipeline state snapshot to Supabase (fire-and-forget, non-critical)."""
+    """Save pipeline state snapshot to Supabase (fire-and-forget, non-critical).
+
+    Stores brick history, classified bricks, and trade records in dedicated
+    JSONB columns so that ``from_snapshot()`` can fully hydrate the pipeline
+    without requiring a warmup cycle on restart.
+    """
     try:
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
@@ -1192,10 +1197,15 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
             "prices_fed": 0,
             "period": "pipeline-persist",
         }
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=row)
             if resp.status_code in (200, 201, 204):
-                log.debug(f"Saved pipeline snapshot for {symbol}")
+                n_bricks = len(snap.get("bricks", []))
+                n_trades = len(snap.get("trades", []))
+                log.debug(
+                    f"Saved pipeline snapshot for {symbol}: "
+                    f"{n_bricks} bricks, {n_trades} trades"
+                )
             else:
                 log.debug(f"Pipeline snapshot save failed for {symbol}: {resp.status_code}")
     except Exception as e:
@@ -1203,7 +1213,12 @@ async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline) -> None:
 
 
 async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
-    """Restore a pipeline from a Supabase snapshot (if available). Returns None on failure."""
+    """Restore a pipeline from a Supabase snapshot (if available). Returns None on failure.
+
+    v2 snapshots include ``bricks``, ``classified``, and ``trades`` arrays
+    inside the ``stats`` JSONB column, allowing full pipeline hydration
+    without a warmup cycle.
+    """
     try:
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
@@ -1222,7 +1237,7 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
             "order": "updated_at.desc",
             "limit": "1",
         }
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)
             if resp.status_code == 200:
                 rows = resp.json()
@@ -1232,7 +1247,14 @@ async def _restore_pipeline_snapshot(symbol: str) -> Optional[RenkoPipeline]:
                         import json
                         data = json.loads(data)
                     pipeline = RenkoPipeline.from_snapshot(data)
-                    log.info(f"Restored pipeline snapshot for {symbol} (regime={data.get('regime')}, equity={data.get('equity')})")
+                    n_bricks = len(data.get("bricks", []))
+                    n_trades = len(data.get("trades", []))
+                    n_classified = len(data.get("classified", []))
+                    log.info(
+                        f"Restored pipeline snapshot for {symbol}: "
+                        f"{n_bricks} bricks, {n_classified} classified, {n_trades} trades, "
+                        f"regime={data.get('regime')}, equity={data.get('equity')}"
+                    )
                     return pipeline
     except Exception as e:
         log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")

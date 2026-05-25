@@ -349,6 +349,10 @@ class RenkoPipeline:
         Capture a serializable snapshot of the pipeline state for persistence.
         Includes: config, brick history, classified history, signal history,
         trade journal, regime, equity, and filter stats.
+
+        Brick history, classified bricks, and trade records are serialized
+        so that ``from_snapshot()`` can fully hydrate the pipeline without
+        requiring a warmup.  This eliminates the 30s+ warmup on restart.
         """
         return {
             "config": self.config.to_dict(),
@@ -357,19 +361,31 @@ class RenkoPipeline:
             "current_price": self.brick_engine.last_brick.close_price if self.brick_engine.last_brick else None,
             "regime": self._current_regime,
             "equity": self._current_equity,
+            "regime_quality": self._current_regime_quality,
+            "regime_confidence": self._current_regime_confidence,
+            "current_drawdown": self._current_drawdown,
             "brick_velocity": self._brick_velocity,
             "session_stats": self.signal_filter.session_stats,
             "journal_stats": self.journal.get_stats(),
             "snapshot_ts": time.time(),
+            # Full history arrays — enable instant restore without warmup
+            "bricks": [b.to_dict() for b in self.brick_engine.history],
+            "classified": [cb.to_dict() for cb in self.swing_classifier.classified_history],
+            "trades": [t.to_dict() for t in self.journal.trades],
         }
 
     @classmethod
     def from_snapshot(cls, data: dict) -> 'RenkoPipeline':
         """
         Restore a pipeline from a persisted snapshot.
-        Note: Full brick/trade history is NOT restored (only stats).
-        The pipeline will need re-warmup for full brick history,
-        but session stats and regime state are preserved.
+
+        When the snapshot includes ``bricks``, ``classified``, and ``trades``
+        arrays (v2 format), the pipeline is fully hydrated — the brick engine
+        has its complete history, the swing classifier has classified context,
+        and the journal has all trade records.  This eliminates the need for
+        a warmup cycle on restart.
+
+        Falls back gracefully when only v1 stats are available (no arrays).
         """
         config_data = data.get("config", {})
         config = RenkoConfig(**{k: v for k, v in config_data.items() if k in RenkoConfig.__dataclass_fields__})
@@ -377,6 +393,111 @@ class RenkoPipeline:
         pipeline._current_regime = data.get("regime")
         pipeline._current_equity = data.get("equity", 100000.0)
         pipeline._brick_velocity = data.get("brick_velocity", 0.0)
+        pipeline._current_regime_quality = data.get("regime_quality", 1.0)
+        pipeline._current_regime_confidence = data.get("regime_confidence", 0.75)
+        pipeline._current_drawdown = data.get("current_drawdown", 0.0)
+
+        # ── Hydrate brick engine history (v2 snapshots) ──
+        bricks_data = data.get("bricks")
+        if bricks_data and isinstance(bricks_data, list):
+            for bd in bricks_data:
+                brick = Brick(
+                    index=bd["index"],
+                    direction=BrickDirection(bd["direction"]),
+                    open_price=bd["open_price"],
+                    close_price=bd["close_price"],
+                    high=bd["high"],
+                    low=bd["low"],
+                    timestamp=bd["timestamp"],
+                    brick_size=bd["brick_size"],
+                )
+                pipeline.brick_engine.history.append(brick)
+            # Rebuild engine internal state from last brick so new ticks
+            # continue correctly (direction, reference levels, brick_count).
+            if pipeline.brick_engine.history:
+                last = pipeline.brick_engine.history[-1]
+                pipeline.brick_engine._state.direction = last.direction
+                pipeline.brick_engine._state.last_brick_high = last.high
+                pipeline.brick_engine._state.last_brick_low = last.low
+                pipeline.brick_engine._state.brick_count = last.index + 1
+                pipeline.brick_engine._initialized = True
+                logger.info(
+                    "Hydrated brick engine with %d bricks (last direction=%s, price=%.2f)",
+                    len(bricks_data), last.direction.value, last.close_price,
+                )
+
+        # ── Hydrate swing classifier classified history (v2 snapshots) ──
+        classified_data = data.get("classified")
+        if classified_data and isinstance(classified_data, list):
+            from renko.swing_classifier import SwingLabel, SwingPoint
+            for cd in classified_data:
+                brick_d = cd.get("brick", {})
+                brick = Brick(
+                    index=brick_d["index"],
+                    direction=BrickDirection(brick_d["direction"]),
+                    open_price=brick_d["open_price"],
+                    close_price=brick_d["close_price"],
+                    high=brick_d["high"],
+                    low=brick_d["low"],
+                    timestamp=brick_d["timestamp"],
+                    brick_size=brick_d["brick_size"],
+                )
+                label = SwingLabel(cd.get("label", "HH"))
+                sp_data = cd.get("swing_point")
+                swing_point = None
+                if sp_data:
+                    swing_point = SwingPoint(
+                        swing_type=SwingPoint.SwingType(sp_data.get("swing_type", "swing_high")),
+                        brick_index=sp_data["brick_index"],
+                        price=sp_data["price"],
+                        timestamp=sp_data["timestamp"],
+                        label=SwingLabel(sp_data.get("label", "HH")),
+                    )
+                cb = ClassifiedBrick(brick=brick, label=label, swing_point=swing_point)
+                pipeline.swing_classifier.classified_history.append(cb)
+            logger.info("Hydrated swing classifier with %d classified bricks", len(classified_data))
+
+        # ── Hydrate trade journal (v2 snapshots) ──
+        trades_data = data.get("trades")
+        if trades_data and isinstance(trades_data, list):
+            for td in trades_data:
+                record = TradeRecord(
+                    trade_id=td["trade_id"],
+                    symbol=td["symbol"],
+                    direction=SignalDirection(td["direction"]),
+                    pattern_type=PatternType(td["pattern_type"]),
+                    entry_price=td["entry_price"],
+                    exit_price=td["exit_price"],
+                    entry_ts=td["entry_ts"],
+                    exit_ts=td["exit_ts"],
+                    pnl_bricks=td["pnl_bricks"],
+                    pnl_dollars=td.get("pnl_dollars", 0.0),
+                    status=PositionStatus(td["status"]),
+                    bricks_held=td["bricks_held"],
+                    signal_strength=td.get("signal_strength", 0.5),
+                    regime=td.get("regime"),
+                    regime_aligned=td.get("regime_aligned", False),
+                    kelly_fraction=td.get("kelly_fraction", 0.0),
+                    velocity=td.get("velocity", 0.0),
+                    label_sequence=td.get("label_sequence", []),
+                    filters_passed=td.get("filters_passed", []),
+                    commission=td.get("commission", 0.0),
+                    slippage_cost=td.get("slippage_cost", 0.0),
+                    spread_cost=td.get("spread_cost", 0.0),
+                    total_cost=td.get("total_cost", 0.0),
+                    impact_cost=td.get("impact_cost", 0.0),
+                    borrow_cost=td.get("borrow_cost", 0.0),
+                    margin_cost=td.get("margin_cost", 0.0),
+                    dividend_cost=td.get("dividend_cost", 0.0),
+                    total_financing_cost=td.get("total_financing_cost", 0.0),
+                    fill_probability=td.get("fill_probability", 1.0),
+                    missed_fill=td.get("missed_fill", False),
+                )
+                pipeline.journal.trades.append(record)
+            # Sync the counter so new trade IDs don't collide
+            pipeline.journal._trade_counter = len(trades_data)
+            logger.info("Hydrated trade journal with %d trade records", len(trades_data))
+
         return pipeline
 
     def reset(self) -> None:
