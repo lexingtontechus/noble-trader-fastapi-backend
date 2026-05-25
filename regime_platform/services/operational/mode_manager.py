@@ -75,56 +75,61 @@ class ModeManager:
         self._cached_state: Optional[ModeState] = None
 
     async def _get_client(self):
-        """Lazy Redis connection with automatic reconnection on drop."""
-        # If we had a client but it's no longer usable, discard it so
-        # we reconnect on the next call instead of reusing a dead socket.
-        if self._redis is not None:
-            try:
-                await self._redis.ping()
-            except Exception:
-                logger.warning("ModeManager: Redis connection lost, reconnecting")
-                try:
-                    await self._redis.aclose()
-                except Exception:
-                    pass
-                self._redis = None
+        """Get Redis client from the shared connection pool.
 
+        v7.3: Uses the shared RedisConnectionManager instead of creating
+        a per-service TCP connection. Reduces from 6 connections to 1 pool.
+        """
         if self._redis is None:
             try:
-                import redis.asyncio as aioredis
-                from regime_platform.core.settings import settings
-                if settings.REDIS_URL:
-                    self._redis = aioredis.from_url(
-                        settings.REDIS_URL,
-                        decode_responses=True,
-                        socket_timeout=5,
-                        socket_connect_timeout=5,
-                        socket_keepalive=True,
-                        retry_on_timeout=True,
-                    )
-                    logger.info("ModeManager: Redis client connected")
+                from regime_platform.services.redis_pool import redis_pool
+                self._redis = await redis_pool.get_client()
+                if self._redis:
+                    logger.info("ModeManager: Using shared Redis pool")
                 else:
-                    logger.warning("ModeManager: No REDIS_URL, using in-memory only")
+                    logger.warning("ModeManager: No Redis available, using in-memory only")
             except Exception as e:
-                logger.error(f"ModeManager: Redis connection failed: {e}")
+                logger.error(f"ModeManager: Redis pool connection failed: {e}")
         return self._redis
 
     async def close(self):
-        """Close Redis connection."""
-        if self._redis:
-            try:
-                await self._redis.close()
-            except Exception:
-                pass
-            self._redis = None
+        """Release Redis client reference (pool manages the connection)."""
+        self._redis = None
 
     async def get_current_mode(self, org_id: Optional[str] = None) -> TradingMode:
-        """Get current trading mode. Defaults to PAPER if not set."""
-        # Check cache first
+        """Get current trading mode. Defaults to PAPER if not set.
+
+        v7.3: Reads from Supabase system_config first (durable source of truth),
+        then falls back to Redis (L1 cache), then Alpaca config inference.
+        """
+        # Check in-memory cache first (O(1), zero latency)
         if self._cached_state:
             return self._cached_state.current_mode
 
-        # Try Redis
+        # Try Supabase system_config (L2 — durable, authoritative)
+        try:
+            from regime_platform.core.settings import settings
+            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+                import httpx
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        f"{settings.SUPABASE_URL}/rest/v1/system_config",
+                        headers={
+                            "apikey": settings.SUPABASE_KEY,
+                            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                        },
+                        params={"key": "eq.noble:trading:mode", "select": "value"},
+                    )
+                    if resp.status_code == 200:
+                        rows = resp.json()
+                        if rows:
+                            state = ModeState.model_validate_json(rows[0]["value"])
+                            self._cached_state = state
+                            return state.current_mode
+        except Exception as e:
+            logger.debug(f"ModeManager: Supabase read failed, trying Redis: {e}")
+
+        # Try Redis (L1 cache)
         client = await self._get_client()
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         if client:
@@ -294,14 +299,41 @@ class ModeManager:
         # Update AlpacaExecutor base URL
         await self._switch_executor_mode(request.target_mode)
 
-        # Save new state to Redis (no TTL — persistent)
+        # Save new state to Redis (no TTL — persistent, acts as L1 cache)
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         try:
             await client.set(mode_key, new_state.model_dump_json())
             # Delete used token
             await client.delete(token_key)
         except Exception as e:
-            logger.error(f"ModeManager: Failed to persist mode change: {e}")
+            logger.error(f"ModeManager: Failed to persist mode change to Redis: {e}")
+
+        # v7.3: Write-through to Supabase system_config (L2 — durable)
+        try:
+            from regime_platform.core.settings import settings as _settings
+            if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
+                import httpx
+                async with httpx.AsyncClient(timeout=5.0) as sb_client:
+                    resp = await sb_client.post(
+                        f"{_settings.SUPABASE_URL}/rest/v1/system_config",
+                        headers={
+                            "apikey": _settings.SUPABASE_KEY,
+                            "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
+                            "Content-Type": "application/json",
+                            "Prefer": "resolution=merge-duplicates",
+                        },
+                        json={
+                            "key": "noble:trading:mode",
+                            "value": new_state.model_dump_json(),
+                            "category": "operational",
+                        },
+                    )
+                    if resp.status_code in (200, 201, 204):
+                        logger.info("ModeManager: Mode state written to Supabase system_config")
+                    else:
+                        logger.warning(f"ModeManager: Supabase write failed: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"ModeManager: Supabase write-through failed: {e}")
 
         # Update in-memory cache
         self._cached_state = new_state

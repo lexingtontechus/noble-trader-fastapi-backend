@@ -19,6 +19,11 @@ Write path (dual-write):
     - On confirmed save: await both writes
     - Redis TTL matches Supabase freshness threshold (4h default)
 
+v7.3 Changes:
+    - Uses shared Redis pool for binary client (gzip snapshots)
+    - Replaced KEYS with SCAN to avoid blocking Redis event loop
+    - Consolidated snapshot save paths to eliminate duplicate writes
+
 Key format:
     renko:snapshot:{symbol}:{brick_size}  → compressed snapshot JSON
     renko:snapshot:meta:{symbol}          → lightweight metadata (brick_count, has_position, etc.)
@@ -59,6 +64,8 @@ class RenkoRedisCache:
     If REDIS_URL is not configured or the redis package is unavailable,
     all methods become no-ops and `enabled` is False. This ensures the
     pipeline works perfectly without Redis — just slower on cold starts.
+
+    v7.3: Uses shared Redis pool for binary client. Replaced KEYS with SCAN.
     """
 
     def __init__(self, redis_url: str = "", ttl_seconds: int = DEFAULT_TTL_SECONDS):
@@ -79,7 +86,7 @@ class RenkoRedisCache:
             self._client_cls = aioredis.from_url
             self._url = _url
             self._enabled = True
-            log.info(f"Renko L1 cache configured: {_url} (TTL={ttl_seconds}s)")
+            log.info(f"Renko L1 cache configured (TTL={ttl_seconds}s)")
         except ImportError:
             log.warning("redis package not installed — Renko L1 cache disabled")
 
@@ -88,17 +95,40 @@ class RenkoRedisCache:
         return self._enabled
 
     async def _get_client(self):
-        """Lazy connection — created on first use."""
+        """Lazy connection — created on first use.
+
+        v7.3: Uses the shared Redis pool for the binary client.
+        """
         if self._redis is None and self._enabled:
-            import redis.asyncio as aioredis
-            self._redis = aioredis.from_url(
-                self._url,
-                decode_responses=False,  # Binary mode for gzip
-                socket_keepalive=True,
-                retry_on_timeout=True,
-                socket_connect_timeout=2,
-                socket_timeout=3,
-            )
+            try:
+                from regime_platform.services.redis_pool import redis_pool
+                self._redis = await redis_pool.get_binary_client()
+                if self._redis is None:
+                    # Fallback: create standalone binary client
+                    import redis.asyncio as aioredis
+                    self._redis = aioredis.from_url(
+                        self._url,
+                        decode_responses=False,  # Binary mode for gzip
+                        socket_keepalive=True,
+                        retry_on_timeout=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=3,
+                    )
+            except Exception as e:
+                log.warning(f"Renko L1: Failed to get binary client from pool: {e}")
+                # Fallback: create standalone binary client
+                try:
+                    import redis.asyncio as aioredis
+                    self._redis = aioredis.from_url(
+                        self._url,
+                        decode_responses=False,
+                        socket_keepalive=True,
+                        retry_on_timeout=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=3,
+                    )
+                except Exception as e2:
+                    log.error(f"Renko L1: Binary client creation failed: {e2}")
         return self._redis
 
     # ── Snapshot Operations ────────────────────────────────────────────
@@ -247,20 +277,27 @@ class RenkoRedisCache:
             return False
 
     async def list_symbols(self) -> List[str]:
-        """Return all symbols that have cached snapshots in Redis L1."""
+        """Return all symbols that have cached snapshots in Redis L1.
+
+        v7.3: Uses SCAN instead of KEYS to avoid blocking the Redis event loop.
+        """
         if not self._enabled:
             return []
         try:
             client = await self._get_client()
             pattern = f"{SNAPSHOT_PREFIX}*"
-            keys = await client.keys(pattern)
             symbols = set()
-            for k in keys:
-                key = k.decode("utf-8") if isinstance(k, bytes) else k
-                # Key format: renko:snapshot:{symbol}:{brick_size}
-                parts = key.replace(SNAPSHOT_PREFIX, "").split(":")
-                if parts:
-                    symbols.add(parts[0])
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match=pattern, count=100)
+                for k in keys:
+                    key = k.decode("utf-8") if isinstance(k, bytes) else k
+                    # Key format: renko:snapshot:{symbol}:{brick_size}
+                    parts = key.replace(SNAPSHOT_PREFIX, "").split(":")
+                    if parts:
+                        symbols.add(parts[0])
+                if cursor == 0:
+                    break
             return sorted(symbols)
         except Exception as exc:
             log.debug(f"Renko L1 list failed: {exc}")
@@ -288,6 +325,7 @@ class RenkoRedisCache:
                 await self._redis.aclose()
             except Exception:
                 pass
+            self._redis = None
 
 
 # Singleton — shared across all Renko endpoints

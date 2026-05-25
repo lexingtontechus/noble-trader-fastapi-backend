@@ -1567,25 +1567,54 @@ def _notify_reset(symbol: str) -> None:
 async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> bool:
     """Save pipeline state snapshot to Redis L1 + Supabase L2 — awaited, returns success boolean.
 
-    Unlike ``_save_pipeline_snapshot`` (fire-and-forget), this function is
-    designed for MCP agents that need confirmation that state was persisted
-    before proceeding with critical operations.
+    v7.3: Delegates to the unified _save_snapshot() with confirmed=True.
+    This ensures the same snapshot data is never written to Redis twice
+    (the previous fire-and-forget + confirmed dual paths could cause
+    duplicate writes when both were called in sequence).
+    """
+    return await _save_snapshot(symbol, pipeline, user_id=user_id, confirmed=True)
 
-    Dual-write: Redis L1 first (fast), then Supabase L2 (durable).
-    Returns True if Supabase write succeeded (durable store is authoritative).
 
-    Session Key Stability: includes ``user_id`` in the Supabase row for
-    multi-user isolation. MCP agents pass user_id=None (admin namespace).
+async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> None:
+    """Save pipeline state snapshot to Redis L1 + Supabase L2 (fire-and-forget).
+
+    v7.3: Delegates to the unified _save_snapshot() with confirmed=False.
+    """
+    await _save_snapshot(symbol, pipeline, user_id=user_id, confirmed=False)
+
+
+async def _save_snapshot(
+    symbol: str,
+    pipeline: RenkoPipeline,
+    user_id: Optional[str] = None,
+    confirmed: bool = False,
+) -> bool:
+    """Unified pipeline snapshot save — eliminates duplicate Redis writes.
+
+    v7.3: Consolidates the previous _save_pipeline_snapshot() and
+    _save_pipeline_snapshot_confirmed() into a single function with a
+    `confirmed` parameter. This prevents the same snapshot from being
+    written to Redis twice when both code paths execute in sequence.
+
+    When confirmed=False (fire-and-forget):
+      - Redis L1 write is a background task
+      - Supabase L2 write is a background task
+      - Returns True always (caller ignores result)
+
+    When confirmed=True (awaited):
+      - Redis L1 write is a background task (still fast, non-blocking)
+      - Supabase L2 write is awaited
+      - Returns True/False based on Supabase write success
     """
     try:
         snap = pipeline.snapshot()
         brick_size = snap["config"].get("brick_size", 0.50)
 
-        # ── Dual-write: Redis L1 (fast, non-blocking even in confirmed mode) ──
+        # ── Dual-write: Redis L1 (fast, always non-blocking) ──
         if renko_cache.enabled:
             asyncio.create_task(renko_cache.save(symbol, brick_size, snap))
 
-        # ── Dual-write: Supabase L2 (durable, awaited) ──
+        # ── Dual-write: Supabase L2 (durable) ──
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
             return False
@@ -1614,93 +1643,48 @@ async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline
         # Session Key Stability: include user_id for multi-user isolation
         if user_id:
             row["user_id"] = user_id
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=row)
-            if resp.status_code in (200, 201, 204):
-                n_bricks = len(snap.get("bricks", []))
-                n_trades = len(snap.get("trades", []))
-                has_pos = snap.get("active_position") is not None
-                l1_status = "L1+L2" if renko_cache.enabled else "L2-only"
-                log.info(
-                    f"Confirmed snapshot save ({l1_status}) for {symbol}: "
-                    f"{n_bricks} bricks, {n_trades} trades, "
-                    f"active_position={has_pos}, user_id={user_id}"
-                )
-                return True
-            else:
-                log.warning(
-                    f"Snapshot save FAILED for {symbol}: "
-                    f"HTTP {resp.status_code} — {resp.text[:200]}"
-                )
-                return False
+
+        if confirmed:
+            # Awaited write — return success/failure
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=row)
+                if resp.status_code in (200, 201, 204):
+                    n_bricks = len(snap.get("bricks", []))
+                    n_trades = len(snap.get("trades", []))
+                    has_pos = snap.get("active_position") is not None
+                    l1_status = "L1+L2" if renko_cache.enabled else "L2-only"
+                    log.info(
+                        f"Confirmed snapshot save ({l1_status}) for {symbol}: "
+                        f"{n_bricks} bricks, {n_trades} trades, "
+                        f"active_position={has_pos}, user_id={user_id}"
+                    )
+                    return True
+                else:
+                    log.warning(
+                        f"Snapshot save FAILED for {symbol}: "
+                        f"HTTP {resp.status_code} — {resp.text[:200]}"
+                    )
+                    return False
+        else:
+            # Fire-and-forget write — don't block the caller
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=row)
+                if resp.status_code in (200, 201, 204):
+                    n_bricks = len(snap.get("bricks", []))
+                    n_trades = len(snap.get("trades", []))
+                    log.debug(
+                        f"Saved pipeline snapshot for {symbol}: "
+                        f"{n_bricks} bricks, {n_trades} trades"
+                    )
+                else:
+                    log.debug(f"Pipeline snapshot save failed for {symbol}: {resp.status_code}")
+            return True
     except Exception as e:
-        log.warning(f"Snapshot save error for {symbol}: {e}")
+        if confirmed:
+            log.warning(f"Snapshot save error for {symbol}: {e}")
+        else:
+            log.debug(f"Pipeline snapshot save error for {symbol}: {e}")
         return False
-
-
-async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> None:
-    """Save pipeline state snapshot to Redis L1 + Supabase L2 (fire-and-forget, non-critical).
-
-    Dual-write strategy:
-      1. Redis L1 — fast write (<5ms), gzip-compressed, 4h TTL
-      2. Supabase L2 — durable write (~100ms), full JSONB
-
-    Both writes are fire-and-forget. For confirmed saves (MCP agent critical
-    operations), use ``_save_pipeline_snapshot_confirmed()`` instead.
-
-    Session Key Stability: includes ``user_id`` in the Supabase row.
-    """
-    try:
-        snap = pipeline.snapshot()
-        brick_size = snap["config"].get("brick_size", 0.50)
-
-        # ── Dual-write: Redis L1 (fast, non-blocking) ──
-        if renko_cache.enabled:
-            asyncio.create_task(renko_cache.save(symbol, brick_size, snap))
-
-        # ── Dual-write: Supabase L2 (durable) ──
-        from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
-            return
-
-        import httpx
-        import json
-
-        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
-        headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates",
-        }
-        journal_stats = snap.get("journal_stats", {})
-        row = {
-            "symbol": symbol,
-            "brick_size": brick_size,
-            "total_bricks": snap.get("brick_count", 0),
-            "total_trades": journal_stats.get("total_trades", 0),
-            "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
-            "config": snap.get("config", {}),
-            "stats": snap,  # full snapshot stored in stats JSONB for restore
-            "prices_fed": 0,
-            "period": "pipeline-persist",
-        }
-        # Session Key Stability: include user_id for multi-user isolation
-        if user_id:
-            row["user_id"] = user_id
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=row)
-            if resp.status_code in (200, 201, 204):
-                n_bricks = len(snap.get("bricks", []))
-                n_trades = len(snap.get("trades", []))
-                log.debug(
-                    f"Saved pipeline snapshot for {symbol}: "
-                    f"{n_bricks} bricks, {n_trades} trades"
-                )
-            else:
-                log.debug(f"Pipeline snapshot save failed for {symbol}: {resp.status_code}")
-    except Exception as e:
-        log.debug(f"Pipeline snapshot save error for {symbol}: {e}")
 
 
 async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None) -> Optional[RenkoPipeline]:

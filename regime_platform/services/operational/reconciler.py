@@ -70,6 +70,7 @@ class ReconciliationService:
 
     RESULTS_KEY = "noble:reconciliation:results"
     LAST_RUN_KEY = "noble:reconciliation:last_run"
+    RESULTS_TTL_SECONDS = 86400  # v7.3: 24h TTL for results (was no TTL)
 
     def __init__(
         self,
@@ -83,31 +84,24 @@ class ReconciliationService:
         self._last_position_reconciliation: Optional[PositionReconciliationResult] = None
 
     async def _get_client(self):
-        """Lazy Redis connection."""
+        """Get Redis client from the shared connection pool.
+
+        v7.3: Uses the shared RedisConnectionManager instead of creating
+        a per-service TCP connection.
+        """
         if self._redis is None:
             try:
-                import redis.asyncio as aioredis
-                from regime_platform.core.settings import settings
-                if settings.REDIS_URL:
-                    self._redis = aioredis.from_url(
-                        settings.REDIS_URL,
-                        decode_responses=True,
-                        socket_timeout=5,
-                        socket_connect_timeout=5,
-                    )
-                    logger.info("Reconciler: Redis client connected")
+                from regime_platform.services.redis_pool import redis_pool
+                self._redis = await redis_pool.get_client()
+                if self._redis:
+                    logger.info("Reconciler: Using shared Redis pool")
             except Exception as e:
-                logger.error(f"Reconciler: Redis connection failed: {e}")
+                logger.error(f"Reconciler: Redis pool connection failed: {e}")
         return self._redis
 
     async def close(self):
-        """Close Redis connection."""
-        if self._redis:
-            try:
-                await self._redis.close()
-            except Exception:
-                pass
-            self._redis = None
+        """Release Redis client reference (pool manages the connection)."""
+        self._redis = None
 
     @property
     def is_simulation(self) -> bool:
@@ -269,16 +263,39 @@ class ReconciliationService:
                 )
                 results.append(result)
 
-            # Update last run timestamp
+            # Update last run timestamp (Redis + Supabase write-through)
+            now_iso = datetime.now(timezone.utc).isoformat()
             client = await self._get_client()
             if client:
                 try:
-                    await client.set(
-                        self.LAST_RUN_KEY,
-                        datetime.now(timezone.utc).isoformat(),
-                    )
+                    await client.set(self.LAST_RUN_KEY, now_iso)
                 except Exception:
                     pass
+
+            # v7.3: Also persist last_run to Supabase system_config (durable)
+            try:
+                from regime_platform.core.settings import settings as _settings
+                if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=5.0) as sb_client:
+                        resp = await sb_client.post(
+                            f"{_settings.SUPABASE_URL}/rest/v1/system_config",
+                            headers={
+                                "apikey": _settings.SUPABASE_KEY,
+                                "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
+                                "Content-Type": "application/json",
+                                "Prefer": "resolution=merge-duplicates",
+                            },
+                            json={
+                                "key": "noble:reconciliation:last_run",
+                                "value": now_iso,
+                                "category": "operational",
+                            },
+                        )
+                        if resp.status_code not in (200, 201, 204):
+                            logger.debug(f"Reconciler: Supabase last_run write failed: {resp.status_code}")
+            except Exception as e:
+                logger.debug(f"Reconciler: Supabase write-through failed: {e}")
 
             self._last_results = results
             logger.info(f"Reconciler: Reconciled {len(results)} orders")

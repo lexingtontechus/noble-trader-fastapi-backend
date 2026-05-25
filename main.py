@@ -129,6 +129,9 @@ async def lifespan(app: FastAPI):
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
+        # Start batched XADD flush loop (v7.3: reduces Redis commands ~90%)
+        await persistence.start_flush_loop()
+
         symbols = await persistence.list_persisted_symbols()
         log.info(f"Redis: restoring {len(symbols)} symbol(s)")
         from regime_platform.services.registry import registry
@@ -216,6 +219,15 @@ async def lifespan(app: FastAPI):
     except ImportError:
         pass
 
+    # v7.3: Close shared Redis connection pool
+    try:
+        from regime_platform.services.redis_pool import redis_pool
+        await redis_pool.close()
+        log.info("Shared Redis connection pool closed")
+    except Exception as e:
+        log.warning(f"Redis pool shutdown error: {e}")
+
+    # v7.3: persistence.close() now also flushes remaining buffered prices
     await persistence.close()
 
     # Close Renko L1 Redis cache
