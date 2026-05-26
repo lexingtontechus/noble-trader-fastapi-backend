@@ -95,14 +95,27 @@ class KillSwitchService:
                 logger.error(f"KillSwitch: Redis pool connection failed: {e}")
         return self._redis
 
-    async def _get_pubsub_client(self):
+    async def _get_pubsub_client(self, *, force_new: bool = False):
         """Get or create a separate Redis client for pub/sub.
 
         redis-py requires a dedicated client for pub/sub because the
         client enters a subscription mode where it can only send
         SUBSCRIBE/UNSUBSCRIBE/PING commands. This client is NOT from the
         shared pool — it's a standalone connection.
+
+        Args:
+            force_new: If True, close and discard the existing client
+                and create a fresh one. Used during reconnection after
+                a connection drop.
         """
+        if force_new and self._pubsub_client is not None:
+            try:
+                await self._pubsub_client.aclose()
+            except Exception:
+                pass
+            self._pubsub_client = None
+            self._pubsub = None
+
         if self._pubsub_client is not None:
             return self._pubsub_client
         try:
@@ -193,17 +206,39 @@ class KillSwitchService:
         it PUBLISHes to the noble:halt:updates channel. This listener receives
         the notification and refreshes the in-memory cache instantly, instead
         of waiting for the next polling cycle.
+
+        v7.4: Robust reconnection — properly cleans up stale pub/sub objects
+        and creates fresh connections on error instead of reusing dead ones.
+        Exponential backoff prevents crash loops on persistent failures.
         """
+        consecutive_errors = 0
+
         while self._running:
             try:
-                pubsub_client = await self._get_pubsub_client()
+                # Force a fresh client on reconnect (after first attempt)
+                pubsub_client = await self._get_pubsub_client(
+                    force_new=(consecutive_errors > 0)
+                )
                 if not pubsub_client:
-                    await asyncio.sleep(5)
+                    await self._backoff(consecutive_errors)
+                    consecutive_errors += 1
                     continue
+
+                # Clean up previous pubsub object if any
+                if self._pubsub is not None:
+                    try:
+                        await self._pubsub.unsubscribe()
+                        await self._pubsub.close()
+                    except Exception:
+                        pass
+                    self._pubsub = None
 
                 self._pubsub = pubsub_client.pubsub()
                 await self._pubsub.subscribe(self.PUBSUB_CHANNEL)
                 logger.info(f"KillSwitch: Subscribed to {self.PUBSUB_CHANNEL}")
+
+                # Reset error counter on successful subscribe
+                consecutive_errors = 0
 
                 # Listen for messages
                 while self._running:
@@ -230,9 +265,40 @@ class KillSwitchService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"KillSwitch: Pub/sub listener error: {e}")
+                consecutive_errors += 1
+                logger.error(
+                    f"KillSwitch: Pub/sub listener error: {e} "
+                    f"(reconnect attempt #{consecutive_errors})"
+                )
+                # Clean up the broken pubsub before reconnecting
+                if self._pubsub is not None:
+                    try:
+                        await self._pubsub.unsubscribe()
+                        await self._pubsub.close()
+                    except Exception:
+                        pass
+                    self._pubsub = None
+
                 if self._running:
-                    await asyncio.sleep(5)  # Back off before reconnecting
+                    await self._backoff(consecutive_errors)
+
+        # Final cleanup on exit
+        if self._pubsub is not None:
+            try:
+                await self._pubsub.unsubscribe()
+                await self._pubsub.close()
+            except Exception:
+                pass
+            self._pubsub = None
+
+    async def _backoff(self, error_count: int):
+        """Exponential backoff with cap — prevents crash loops.
+
+        5s → 10s → 20s → 40s → 60s (max)
+        """
+        delay = min(5 * (2 ** min(error_count, 4)), 60)
+        logger.info(f"KillSwitch: Reconnecting in {delay}s")
+        await asyncio.sleep(delay)
 
     async def _fallback_poll_loop(self):
         """Fallback polling loop — refreshes cache every 60 seconds.
