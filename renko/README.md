@@ -61,7 +61,7 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `POST` | `/renko/snapshot/save` | Explicitly save pipeline state to Supabase | Write |
 | `POST` | `/renko/warmup` | Backend-native warmup (Yahoo fetch + snapshot save) | Write |
 | `GET` | `/renko/sizing/model` | Get current position sizing model and parameters | Any |
-| `POST` | `/renko/sizing/model` | Set position sizing model (Kelly ↔ Masaniello) | Admin |
+| `POST` | `/renko/sizing/model` | Set position sizing model (Kelly <-> Masaniello) | Admin |
 
 ### Backtest Endpoints (Isolated - Never Affect Live Pipeline)
 

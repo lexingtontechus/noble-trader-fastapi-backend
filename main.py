@@ -423,7 +423,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         #   - warmup_pipeline: agent needs autonomous cold-start
         #   - save_snapshot: agent needs to persist state
         #   - restore_snapshot: agent needs cold-start recovery
-        #   - set_sizing_model: agent needs Kelly ↔ Masaniello switching
+        #   - set_sizing_model: agent needs Kelly <-> Masaniello switching
         #   - toggle_live: agent needs execution mode control
         #   - run_backtest / optimize: agent needs strategy testing
         _mcp_excluded_ops = [
@@ -492,7 +492,7 @@ Agent autonomy (v7.2):
 - POST /renko/regime - update HMM regime (auto-saves on change)
 - POST /renko/equity - update account equity (auto-saves on change)
 - POST /renko/tick/batch - batch tick processing (warmup/backtest)
-- POST /renko/sizing/model - switch Kelly ↔ Masaniello (auto-saves on change)
+- POST /renko/sizing/model - switch Kelly <-> Masaniello (auto-saves on change)
 - POST /renko/live/toggle - toggle live execution (auto-saves on change)
 - POST /renko/backtest/run - run isolated backtests
 - POST /renko/backtest/optimize - parameter sweep
