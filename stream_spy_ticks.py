@@ -177,7 +177,7 @@ def print_tick(tick: dict, tick_num: int, prev_regime: Optional[str], raw_json: 
     if tick_num == 1 or regime_changed:
         print()
         if regime_changed and prev_regime:
-            print(C.bold(C.magenta(f"  ⚡ REGIME CHANGE  {prev_regime}  →  {regime_label}")))
+            print(C.bold(C.magenta(f"  ⚡ REGIME CHANGE  {prev_regime}  ->  {regime_label}")))
             if alert:
                 print(C.dim(f"     {alert}"))
         print(C.dim("  " + "─" * 72))
@@ -243,7 +243,7 @@ def print_summary(symbol: str, ticks: list[dict], latencies: list[float],
     regimes = [t["regime_label"] for t in ticks]
     unique  = list(dict.fromkeys(regimes))  # preserve order, deduplicate
     changes = sum(1 for t in ticks if t.get("regime_changed"))
-    print(f"  Regimes seen {len(set(regimes))}  →  {' → '.join(regime_colour(r) for r in unique)}")
+    print(f"  Regimes seen {len(set(regimes))}  ->  {' -> '.join(regime_colour(r) for r in unique)}")
     print(f"  Regime changes {changes}")
 
     rec_fs = [t["recommended_f"] for t in ticks]

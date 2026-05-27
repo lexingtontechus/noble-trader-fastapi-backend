@@ -2,8 +2,8 @@
 Renko HFT Trading Module for Noble Trader Agent.
 
 Pipeline:
-    Renko Brick Stream → Swing Classifier → Pattern Detector →
-    Signal Filter → Order Executor → Risk Manager
+    Renko Brick Stream -> Swing Classifier -> Pattern Detector ->
+    Signal Filter -> Order Executor -> Risk Manager
 
 Integrates with existing HMM regime detection, Kelly sizing,
 and risk analysis modules.

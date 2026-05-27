@@ -11,7 +11,7 @@ Mount with::
 
 Authentication:
   All endpoints require authentication via the unified auth dependency
-  (Clerk JWT → local JWT → API key → dev bypass). Auth levels:
+  (Clerk JWT -> local JWT -> API key -> dev bypass). Auth levels:
     - get_authed_user: Read-only endpoints - state, stats, bricks, etc. (any role)
     - require_write: Mutations - tick ingestion, backtests, regime, equity (admin/trader)
     - require_admin: Destructive - /config, /reset (admin only)
@@ -276,9 +276,9 @@ async def _get_pipeline_async(
     server restart that leaves an empty entry in _pipelines.
 
     Restore hierarchy:
-      1. If pipeline exists and has bricks → return immediately
-      2. If pipeline is empty or missing → try Supabase restore
-      3. If restore fails → create fresh pipeline from runtime config
+      1. If pipeline exists and has bricks -> return immediately
+      2. If pipeline is empty or missing -> try Supabase restore
+      3. If restore fails -> create fresh pipeline from runtime config
 
     Session Key Stability: uses ``user_id:symbol`` composite key
     when user_id is provided, ensuring user isolation.
@@ -740,7 +740,7 @@ if FASTAPI_AVAILABLE:
         if use_persistent:
             pipeline = _pipelines[key]
             log.info(
-                "backtest/run: using persistent pipeline for %s (cold → warmup)",
+                "backtest/run: using persistent pipeline for %s (cold -> warmup)",
                 key,
             )
         else:
@@ -809,7 +809,7 @@ if FASTAPI_AVAILABLE:
             # Cold pipeline - warm it up via stream (MCP agent use case)
             pipeline = _pipelines[key]
             log.info(
-                "backtest/stream: using persistent pipeline for %s (cold → warmup)",
+                "backtest/stream: using persistent pipeline for %s (cold -> warmup)",
                 key,
             )
         else:
@@ -1441,7 +1441,7 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
         return
 
     try:
-        # 1. Signal detected → send to #trade-signals
+        # 1. Signal detected -> send to #trade-signals
         filtered_data = result.get("filtered")
         if filtered_data and isinstance(filtered_data, dict):
             signal_data = filtered_data.get("original_signal", filtered_data)
@@ -1463,7 +1463,7 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
                 sl_price = round(price + 3 * brick_size, 4) if price else None
                 tp_price = round(price - 5 * brick_size, 4) if price else None
 
-            # Signal alert → #trade-signals
+            # Signal alert -> #trade-signals
             asyncio.create_task(discord_notifier.send_signal(
                 symbol=symbol,
                 direction=direction,
@@ -1475,7 +1475,7 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
                 regime=regime,
             ))
 
-            # Execution alert → #trade-executions
+            # Execution alert -> #trade-executions
             asyncio.create_task(discord_notifier.send_execution(
                 symbol=symbol,
                 side="buy" if direction.upper() in ("LONG", "BUY") else "sell",
@@ -1487,7 +1487,7 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
                 order_type="bracket",
             ))
 
-        # 2. Trade closed (SL/TP hit) → send to #trade-executions
+        # 2. Trade closed (SL/TP hit) -> send to #trade-executions
         trade_result = result.get("trade_result")
         if trade_result and isinstance(trade_result, dict):
             pnl_bricks = trade_result.get("pnl_bricks", 0.0)
@@ -1808,7 +1808,7 @@ async def _fetch_yahoo_prices(symbol: str, period: str = "6mo") -> tuple:
         if hist.empty:
             raise ValueError(f"No data returned for {symbol}")
         prices = hist["Close"].dropna().tolist()
-        timestamps = hist.index.astype("int64") // 10**9  # nanos → epoch seconds
+        timestamps = hist.index.astype("int64") // 10**9  # nanos -> epoch seconds
         timestamps = timestamps.tolist()
         log.info(f"yfinance: fetched {len(prices)} prices for {symbol} (period={period})")
         return prices, timestamps

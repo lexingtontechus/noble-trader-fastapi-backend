@@ -22,7 +22,7 @@ riskman = RiskManager()
 async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(get_authed_user)):
     """
     Full strategy signal pipeline:
-    1. Fit HMM regime model → detect current regime
+    1. Fit HMM regime model -> detect current regime
     2. Generate trading signal based on regime (long/short/flat)
     3. Compute regime-gated Kelly position size
     4. Compute risk metrics and guidance (stop/TP, VaR/CVaR)

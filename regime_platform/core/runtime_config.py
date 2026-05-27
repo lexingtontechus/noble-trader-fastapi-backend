@@ -5,7 +5,7 @@ Runtime Configuration Engine
 Provides hot-reloadable, admin-adjustable configuration backed by Supabase.
 
 Resolution order (highest priority wins):
-  1. DB override  (system_config table → in-memory cache with TTL)
+  1. DB override  (system_config table -> in-memory cache with TTL)
   2. Environment variable (e.g. RENKO_BRICK_SIZE)
   3. Hardcoded default (from the module that defines the param)
 
@@ -307,7 +307,7 @@ class RuntimeConfig:
     async def get(self, key: str, default: Any = None) -> Any:
         """
         Get a config value with full resolution chain:
-          DB override → env var → default
+          DB override -> env var -> default
         """
         await self._ensure_cache()
 
@@ -320,7 +320,7 @@ class RuntimeConfig:
         entry_if_exists = self._cache.get(key)
         env_var = entry_if_exists.env_var if entry_if_exists else None
         if not env_var:
-            # Derive env var name from key: renko.brick_size → RENKO_BRICK_SIZE
+            # Derive env var name from key: renko.brick_size -> RENKO_BRICK_SIZE
             env_var = key.upper().replace(".", "_")
         env_val = os.environ.get(env_var)
         if env_val is not None:
@@ -364,7 +364,7 @@ class RuntimeConfig:
         val = await self.get(key, default)
         if isinstance(val, str):
             return val
-        # Enum instance → use .value (e.g. BrickSizeMode.FIXED → "fixed")
+        # Enum instance -> use .value (e.g. BrickSizeMode.FIXED -> "fixed")
         from enum import Enum
         if isinstance(val, Enum):
             return val.value
@@ -539,7 +539,7 @@ class RuntimeConfig:
         if isinstance(raw, str):
             try:
                 from datetime import datetime, timezone
-                # ISO 8601 → datetime → epoch float
+                # ISO 8601 -> datetime -> epoch float
                 dt = datetime.fromisoformat(raw)
                 return dt.timestamp()
             except (ValueError, TypeError):
@@ -584,7 +584,7 @@ class RuntimeConfig:
         if value_type == ValueType.FLOAT:
             return float(raw)
         elif value_type == ValueType.INT:
-            return int(float(raw))  # float() handles "10.0" → 10
+            return int(float(raw))  # float() handles "10.0" -> 10
         elif value_type == ValueType.BOOL:
             if isinstance(raw, bool):
                 return raw
@@ -683,7 +683,7 @@ class RuntimeConfig:
         entries: Dict[str, ConfigEntry] = {}
         for key, default_val in _SyncProxy._defaults.items():
             value_type = RuntimeConfig._infer_type(default_val)
-            # Derive category from key prefix (e.g. 'sizing.base_risk' → 'sizing')
+            # Derive category from key prefix (e.g. 'sizing.base_risk' -> 'sizing')
             category = key.split(".")[0] if "." in key else "general"
             entries[key] = ConfigEntry(
                 key=key,
@@ -732,7 +732,7 @@ class _SyncProxy:
 
     @classmethod
     def get(cls, key: str, default: Any = None) -> Any:
-        """Get a config value synchronously (env var → default only, no DB)."""
+        """Get a config value synchronously (env var -> default only, no DB)."""
         # 1. Check env var
         env_var = key.upper().replace(".", "_")
         env_val = os.environ.get(env_var)

@@ -7,8 +7,8 @@ Features 14–19 are the **Markov features**: live HMM posterior probabilities
 injected from the fitted RegimeHMM. They are NEVER defaulted to uniform priors.
 
 Critical design rule (from field experience):
-  ✗  build_observation(prices)          - standalone fn, no HMM state → uniform [0.25]*4
-  ✓  InferenceObservationBuilder.build() - stateful class, HMM updated per bar → dynamic
+  ✗  build_observation(prices)          - standalone fn, no HMM state -> uniform [0.25]*4
+  ✓  InferenceObservationBuilder.build() - stateful class, HMM updated per bar -> dynamic
 
 Feature Index Reference
 ───────────────────────
@@ -32,7 +32,7 @@ Feature Index Reference
  17   vol_prob_high          P(high vol regime)      ← MARKOV FEATURE - must be dynamic
  18   trend_prob_strong_bear P(strong_bear trend)    ← MARKOV FEATURE - must be dynamic
  19   trend_prob_bear        P(bear trend)           ← MARKOV FEATURE - must be dynamic
- 20   trend_prob_bull        P(bull trend)           ← MARKOV FEATURE - must be dynamic  [NOTE: table says 14-19 but 4-state vol needs 4 slots → indices shift to 14-21]
+ 20   trend_prob_bull        P(bull trend)           ← MARKOV FEATURE - must be dynamic  [NOTE: table says 14-19 but 4-state vol needs 4 slots -> indices shift to 14-21]
  21   trend_prob_strong_bull P(strong_bull trend)    ← MARKOV FEATURE - must be dynamic
  22   regime_quality         HMM fit quality scalar (mean log-likelihood proxy)
  23   state_confidence       max(vol_probs) * max(trend_probs)
@@ -47,9 +47,9 @@ masaniello_pressure=24... but that exceeds 24.
 Resolution: We keep EXACTLY 24 features by:
   - Indices 14-16: vol_prob_{low, medium, high}         (3 aggregate buckets, not 4 raw)
   - Indices 17-19: trend_prob_{down, neutral, up}       (3 aggregate buckets, not 4 raw)
-  - med_low + med_high are combined → "medium" bucket at index 15
-  - bear + strong_bear combined → "down" bucket at index 17
-  - bull + strong_bull combined → "up" bucket at index 19
+  - med_low + med_high are combined -> "medium" bucket at index 15
+  - bear + strong_bear combined -> "down" bucket at index 17
+  - bull + strong_bull combined -> "up" bucket at index 19
 
 This preserves the 3-bucket API spec while feeding 4-state HMM posteriors underneath.
 Aggregation is explicit and documented - no information loss beyond the stated resolution.
@@ -147,7 +147,7 @@ class InferenceObservationBuilder:
     obs = builder.build_from_tick(new_price, new_high, new_low)
     """
 
-    UNIFORM_WARNING_THRESHOLD = 0.05   # std of Markov features below this → warn
+    UNIFORM_WARNING_THRESHOLD = 0.05   # std of Markov features below this -> warn
 
     def __init__(
         self,
@@ -478,7 +478,7 @@ class InferenceObservationBuilder:
     def _vol_slope(returns: np.ndarray, window: int = 10) -> float:
         """
         Standardised linear slope of rolling 5-bar vol over `window` bars.
-        Positive → vol expanding; negative → vol contracting.
+        Positive -> vol expanding; negative -> vol contracting.
         """
         if len(returns) < window + 5:
             return 0.0

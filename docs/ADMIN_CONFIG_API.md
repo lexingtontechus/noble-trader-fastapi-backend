@@ -205,7 +205,7 @@ The backend validates the value against the config schema before persisting:
 1. **Type coercion** - The value is coerced to the key's `value_type`:
    - `float`: `float(value)`
    - `int`: `int(float(value))`
-   - `bool`: True/true/1/yes → True, everything else → False
+   - `bool`: True/true/1/yes -> True, everything else -> False
    - `str`: `str(value)`
    - `json`: `json.loads(value)` if string, else pass-through
 

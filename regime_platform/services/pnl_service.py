@@ -286,7 +286,7 @@ class PnlService:
     """
 
     def __init__(self):
-        # In-memory alert cache: user_id → list[AlertThreshold]
+        # In-memory alert cache: user_id -> list[AlertThreshold]
         # Populated from Supabase on first access per user, or used as
         # standalone storage if Supabase is not configured.
         self._alerts: dict[str, list[AlertThreshold]] = {}
@@ -294,12 +294,12 @@ class PnlService:
         # Track which users have been loaded from Supabase
         self._alerts_loaded: set[str] = set()
 
-        # Cache for risk metrics: user_id → (timestamp, RiskDashboardMetrics)
+        # Cache for risk metrics: user_id -> (timestamp, RiskDashboardMetrics)
         self._risk_cache: dict[str, tuple[float, RiskDashboardMetrics]] = {}
         self._risk_cache_ttl = 30.0  # seconds
 
         # Previous metric values per user for true cross detection:
-        # user_id → { metric_name: float }
+        # user_id -> { metric_name: float }
         self._prev_values: dict[str, dict[str, float]] = {}
 
     # ─── Intraday P&L ────────────────────────────────────────────────────────

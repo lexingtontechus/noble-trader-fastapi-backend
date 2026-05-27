@@ -65,7 +65,7 @@ class TestDeflatedSharpeRatio:
         dsr_10 = deflated_sharpe_ratio(returns, n_trials=10)
         dsr_100 = deflated_sharpe_ratio(returns, n_trials=100)
 
-        # More trials → lower DSR
+        # More trials -> lower DSR
         assert dsr_1.dsr >= dsr_10.dsr
         assert dsr_10.dsr >= dsr_100.dsr
 
@@ -85,12 +85,12 @@ class TestDeflatedSharpeRatio:
         # If Sharpe is negative, DSR should be low (unlikely the strategy is positive)
         result = deflated_sharpe_ratio(returns, n_trials=1)
         if result.raw_sharpe < 0:
-            assert result.dsr < 0.5  # Negative Sharpe → low DSR
+            assert result.dsr < 0.5  # Negative Sharpe -> low DSR
 
     def test_dsr_significance_flag(self):
         """High Sharpe with few trials should be flagged significant."""
         rng = np.random.default_rng(42)
-        # Very strong positive mean → high annualized Sharpe
+        # Very strong positive mean -> high annualized Sharpe
         returns = rng.normal(0.005, 0.01, 1000)
         result = deflated_sharpe_ratio(returns, n_trials=1)
         # With such strong returns, should be significant
@@ -333,7 +333,7 @@ class TestBenjaminiHochbergFDR:
 
     def test_bh_controls_fdr(self):
         """BH should correctly identify significant p-values."""
-        # All small p-values → all significant
+        # All small p-values -> all significant
         p_values = [0.001, 0.002, 0.003]
         adjusted, significant = benjamini_hochberg_fdr(p_values, alpha=0.05)
         assert sum(significant) >= 2  # Most should be significant

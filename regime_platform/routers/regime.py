@@ -19,7 +19,7 @@ async def detect_regime(request: Request, req: RegimeRequest, user: TokenData = 
     and returns posterior regime probabilities plus a risk multiplier.
 
     HMM parameters (n_iter, window sizes, random_state) are resolved from
-    the runtime configuration system (DB → env → hardcoded default).
+    the runtime configuration system (DB -> env -> hardcoded default).
     """
     try:
         prices = np.array(req.prices, dtype=float)
@@ -56,9 +56,9 @@ async def detect_regime_v2(request: Request, req: RegimeV2Request, user: TokenDa
     - Transition matrix entropy (measures regime persistence)
     - Regime stability metric (fraction of recent bars in same regime)
 
-    With 2 states: vol={low, high}, trend={bear, bull} → 4 combined regimes
-    With 3 states: vol={low, med, high}, trend={bear, neutral, bull} → 9 combined regimes
-    With 4 states: vol={low, med_low, med_high, high}, trend={strong_bear, bear, bull, strong_bull} → 16 combined regimes
+    With 2 states: vol={low, high}, trend={bear, bull} -> 4 combined regimes
+    With 3 states: vol={low, med, high}, trend={bear, neutral, bull} -> 9 combined regimes
+    With 4 states: vol={low, med_low, med_high, high}, trend={strong_bear, bear, bull, strong_bull} -> 16 combined regimes
     """
     try:
         prices = np.array(req.prices, dtype=float)

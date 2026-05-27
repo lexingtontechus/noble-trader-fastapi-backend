@@ -8,8 +8,8 @@ Manages the current trading mode (simulation / paper / live) with:
 4. Mode change triggers health check on target environment
 5. Live mode requires explicit acknowledgment of risk disclaimer
 
-Flow for PAPER → LIVE:
-1. User requests mode change → generate confirmation token (5-min TTL in Redis)
+Flow for PAPER -> LIVE:
+1. User requests mode change -> generate confirmation token (5-min TTL in Redis)
 2. UI shows risk disclaimer + confirmation dialog with token
 3. User confirms (must provide acknowledgment text)
 4. Backend validates confirmation token
@@ -18,8 +18,8 @@ Flow for PAPER → LIVE:
 7. Backend sends Discord notification
 8. Frontend updates all visual indicators
 
-Flow for LIVE → PAPER:
-1. User requests mode change → generate confirmation token
+Flow for LIVE -> PAPER:
+1. User requests mode change -> generate confirmation token
 2. Backend cancels all open live orders (safety)
 3. Backend switches to paper endpoint
 4. Audit log + Discord notification
@@ -226,7 +226,7 @@ class ModeManager:
                 )
                 logger.info(
                     f"ModeManager: Mode change requested "
-                    f"{current.value} → {target_mode.value} by {requested_by} "
+                    f"{current.value} -> {target_mode.value} by {requested_by} "
                     f"(token expires in {self.TOKEN_TTL}s)"
                 )
             except Exception as e:
@@ -342,7 +342,7 @@ class ModeManager:
         await self._audit_mode_change(current, request.target_mode, acknowledged_by, org_id=org_id)
 
         logger.warning(
-            f"ModeManager: MODE CHANGED {current.value} → {request.target_mode.value} "
+            f"ModeManager: MODE CHANGED {current.value} -> {request.target_mode.value} "
             f"by {acknowledged_by}"
         )
 
@@ -446,7 +446,7 @@ class ModeManager:
         try:
             from notifications.discord import discord_notifier
             await discord_notifier.send_status(
-                f"**TRADING MODE CHANGED**: {from_mode.value} → {to_mode.value} "
+                f"**TRADING MODE CHANGED**: {from_mode.value} -> {to_mode.value} "
                 f"by {changed_by}"
             )
         except Exception:

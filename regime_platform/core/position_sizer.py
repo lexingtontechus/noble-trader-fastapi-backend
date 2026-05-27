@@ -36,14 +36,14 @@ Two complementary sizing paths, unified in one module:
            Floor at 0.25 keeps minimum skin-in-the-game during drawdowns.
 
     V_i = Volatility factor = clip(ATR_baseline / ATR_current, 0.5, 1.5)
-          High vol → shrink size; low vol → allow mild expansion.
+          High vol -> shrink size; low vol -> allow mild expansion.
 
   Kelly overlay (optional):
     When use_kelly_overlay=True, the Masaniello fraction is capped at the
     fractional Kelly bound: f* = kelly_fraction × max(0, (b·p - q) / b)
 
   Hard clamp:
-    risk_fraction = clip(f_i, min_risk, max_risk)  → [0.25%, 1.00%]
+    risk_fraction = clip(f_i, min_risk, max_risk)  -> [0.25%, 1.00%]
 
   Contract calculation:
     risk_amount     = equity × risk_fraction
@@ -136,7 +136,7 @@ class PositionSizer:
     """
     Stateless portfolio-fraction Kelly sizer (Path A).
 
-    Call .size(PositionRequest) → KellyResult.
+    Call .size(PositionRequest) -> KellyResult.
     All values in [0, 1] portfolio-fraction space.
 
     The ANNUALISE_FACTOR is configurable via the async size_async() method
@@ -209,7 +209,7 @@ class PositionSizer:
         """
         Async version of size() that resolves ANNUALISE_FACTOR from runtime config.
 
-        Resolution: runtime_config (DB/env) → hardcoded class default (252).
+        Resolution: runtime_config (DB/env) -> hardcoded class default (252).
         """
         from .runtime_config import runtime_config
         annualise = await runtime_config.get_int("risk.annualise_factor", default=self.ANNUALISE_FACTOR)
@@ -292,7 +292,7 @@ class SizingConfig:
         """
         Build a SizingConfig with values from the runtime configuration system.
 
-        Resolution: explicit overrides → DB/env runtime config → dataclass defaults.
+        Resolution: explicit overrides -> DB/env runtime config -> dataclass defaults.
         """
         from regime_platform.core.runtime_config import runtime_config
 
@@ -587,7 +587,7 @@ def _quality_factor(
     prob_factor:
       Measures how far p_win is above the minimum threshold, normalised
       so that 0.10 above the floor maps to 1.0.
-      e.g. p_win=0.60 → prob_factor=1.0; p_win=0.65+ → prob_factor=1.5
+      e.g. p_win=0.60 -> prob_factor=1.0; p_win=0.65+ -> prob_factor=1.5
       Clamp: [0.0, 1.5]
 
     regime_factor:
@@ -617,10 +617,10 @@ def _drawdown_factor(current_drawdown: float, max_drawdown: float) -> float:
     drops to zero due to drawdown alone.
 
     Examples (max_dd = 10%):
-      dd = 0%  → 1.00 (full size)
-      dd = 5%  → 0.50 (half size)
-      dd = 10% → 0.25 (floor; not zero)
-      dd = 15% → 0.25 (still at floor)
+      dd = 0%  -> 1.00 (full size)
+      dd = 5%  -> 0.50 (half size)
+      dd = 10% -> 0.25 (floor; not zero)
+      dd = 15% -> 0.25 (still at floor)
     """
     dd_ratio = current_drawdown / max(max_drawdown, 1e-9)
     return float(np.clip(1.0 - dd_ratio, 0.25, 1.0))
@@ -630,13 +630,13 @@ def _volatility_factor(atr_baseline: float, atr_current: float) -> float:
     """
     V_i = clip(ATR_baseline / ATR_current, 0.5, 1.5)
 
-    Inverted ratio: higher current vol → smaller position.
+    Inverted ratio: higher current vol -> smaller position.
     Baseline is the historical reference ATR (e.g. 20-day average).
 
     Examples:
-      ATR_current = ATR_baseline     → V = 1.00 (neutral)
-      ATR_current = 2 × ATR_baseline → V = 0.50 (floor; vol doubled)
-      ATR_current = ½ × ATR_baseline → V = 1.50 (cap; vol halved)
+      ATR_current = ATR_baseline     -> V = 1.00 (neutral)
+      ATR_current = 2 × ATR_baseline -> V = 0.50 (floor; vol doubled)
+      ATR_current = ½ × ATR_baseline -> V = 1.50 (cap; vol halved)
     """
     if atr_current <= 0:
         return 1.0

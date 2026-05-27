@@ -8,7 +8,7 @@ info:
 
     ## Renko HFT Pipeline (`/renko/*`)
     A 6-layer Renko brick processing pipeline for high-frequency trading:
-    1. **Brick Engine** - price → Renko brick conversion (fixed / ATR / dynamic sizing)
+    1. **Brick Engine** - price -> Renko brick conversion (fixed / ATR / dynamic sizing)
     2. **Swing Classifier** - HH/HL/LH/LL brick labelling with swing-point detection
     3. **Pattern Detector** - consecutive-swing pattern recognition (bull/bear triggers, double-top/bottom, consolidation)
     4. **Signal Filter** - session-time, regime-gate, cooldown, loss-limit, and velocity filters
@@ -158,8 +158,8 @@ paths:
         - ApiKeyAuth: []
       description: |
         Pushes a single price tick through the full Renko HFT pipeline:
-        Brick Engine → Swing Classifier → Pattern Detector → Signal Filter →
-        Risk Manager → Executor. Returns the complete processing result
+        Brick Engine -> Swing Classifier -> Pattern Detector -> Signal Filter ->
+        Risk Manager -> Executor. Returns the complete processing result
         including any generated signals, trade results, and brick updates.
       requestBody:
         required: true
@@ -925,8 +925,8 @@ paths:
         Attempts to restore a pipeline from the best available cache tier.
 
         Restore hierarchy (MCP agent perspective):
-          1. Redis L1 hit → sub-5ms, instant hydration
-          2. Supabase L2 hit → ~100ms, backfill Redis L1 for next time
+          1. Redis L1 hit -> sub-5ms, instant hydration
+          2. Supabase L2 hit -> ~100ms, backfill Redis L1 for next time
 
         If no snapshot exists in either tier, returns restored=false.
         v3 snapshots include full brick history, classified bricks, trade
@@ -1072,8 +1072,8 @@ paths:
       summary: One-shot full pipeline - regime + sizing + risk
       description: |
         Runs the complete pipeline in a single request:
-        1. Fit dual Gaussian HMMs → regime posteriors + risk_multiplier
-        2. Fractional Kelly → vol-scaled → regime-gated position size
+        1. Fit dual Gaussian HMMs -> regime posteriors + risk_multiplier
+        2. Fractional Kelly -> vol-scaled -> regime-gated position size
         3. Historical VaR/CVaR, drawdown, stop/TP suggestions
       requestBody:
         required: true
@@ -1266,7 +1266,7 @@ paths:
       summary: Strategy signal generation
       description: |
         Full strategy signal pipeline:
-        1. Fit HMM regime model → detect current regime
+        1. Fit HMM regime model -> detect current regime
         2. Generate trading signal (long/short/flat) based on regime
         3. Compute regime-gated Kelly position size
         4. Compute risk metrics and guidance (stop/TP, VaR/CVaR)
@@ -1741,7 +1741,7 @@ paths:
       description: Returns all active streaming sessions and their stats.
       responses:
         "200":
-          description: Map of symbol → session stats
+          description: Map of symbol -> session stats
           content:
             application/json:
               schema:
@@ -1951,13 +1951,13 @@ paths:
         messages to seed / push ticks. The server pushes back a regime
         snapshot after every tick and an alert message on regime transitions.
 
-        **Client → Server messages:**
+        **Client -> Server messages:**
         - `{"type":"seed", "symbol":"SPY", "prices":[...]}`
         - `{"type":"tick", "symbol":"SPY", "price":512.34}`
         - `{"type":"subscribe", "symbol":"SPY"}`
         - `{"type":"ping"}`
 
-        **Server → Client messages:**
+        **Server -> Client messages:**
         - Tick snapshots (TickResponse JSON)
         - `{"type":"pong"}`
         - `{"type":"error", "detail":"..."}`
@@ -1989,7 +1989,7 @@ paths:
             application/json:
               schema:
                 type: object
-                description: Map of config key → value with metadata
+                description: Map of config key -> value with metadata
 
   /config/categories:
     get:
@@ -2027,7 +2027,7 @@ paths:
             application/json:
               schema:
                 type: object
-                description: Map of config key → value for the category
+                description: Map of config key -> value for the category
         "404":
           $ref: '#/components/responses/NotFound'
 

@@ -66,12 +66,12 @@ class TestCacheKey:
         body = {"symbol": "SPY", "prices": [100.0] * 500}
         key1 = _make_cache_key("renko", body)
 
-        # Same length, same other params → same key
+        # Same length, same other params -> same key
         body2 = {"symbol": "SPY", "prices": [200.0] * 500}
         key2 = _make_cache_key("renko", body2)
         assert key1 == key2  # Same length, same symbol
 
-        # Different length → different key
+        # Different length -> different key
         body3 = {"symbol": "SPY", "prices": [100.0] * 300}
         key3 = _make_cache_key("renko", body3)
         assert key1 != key3
@@ -82,7 +82,7 @@ class TestCacheKey:
         body_b = {"brick_size": 0.5, "symbol": "SPY"}
         key_a = _make_cache_key("renko", body_a)
         key_b = _make_cache_key("renko", body_b)
-        assert key_a == key_b  # sorted keys → deterministic
+        assert key_a == key_b  # sorted keys -> deterministic
 
     def test_does_not_mutate_input(self):
         """_make_cache_key should NOT mutate the input dict."""

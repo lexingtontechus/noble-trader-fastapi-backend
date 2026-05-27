@@ -51,7 +51,7 @@ class PortfolioSummary:
     symbols:                   list[SymbolSummary]
 
     # Regime distribution across portfolio
-    regime_counts:             dict[str, int]   # label → count
+    regime_counts:             dict[str, int]   # label -> count
     dominant_regime:           str
     regime_consensus:          float            # fraction in dominant regime
 
@@ -207,7 +207,7 @@ class PortfolioService:
         """
         True if regime diversity is high - portfolio spans many regime buckets.
         Uses normalised entropy of vol_state distribution.
-        Threshold: entropy > 0.8 × log(n_states) → flagged as divergent.
+        Threshold: entropy > 0.8 × log(n_states) -> flagged as divergent.
         """
         if n < 2:
             return False

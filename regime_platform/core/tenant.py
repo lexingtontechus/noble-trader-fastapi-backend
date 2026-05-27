@@ -10,22 +10,22 @@ We use that to scope data so that different orgs sharing the same Redis
 instance never collide.
 
 Key conventions:
-  - org_id present  → ``org:<org_id>:<base_key>``
-  - no org_id, user_id present → ``user:<user_id>:<base_key>``
-  - neither → ``<base_key>`` (global scope, backwards compatible)
+  - org_id present  -> ``org:<org_id>:<base_key>``
+  - no org_id, user_id present -> ``user:<user_id>:<base_key>``
+  - neither -> ``<base_key>`` (global scope, backwards compatible)
 
 Usage
 ─────
   from regime_platform.core.tenant import tenant_key
 
   key = tenant_key("noble:halt:global", org_id="org_123")
-  # → "org:org_123:noble:halt:global"
+  # -> "org:org_123:noble:halt:global"
 
   key = tenant_key("noble:halt:global", user_id="user_456")
-  # → "user:user_456:noble:halt:global"
+  # -> "user:user_456:noble:halt:global"
 
   key = tenant_key("noble:halt:global")
-  # → "noble:halt:global"
+  # -> "noble:halt:global"
 """
 
 from __future__ import annotations

@@ -2,8 +2,8 @@
 Renko Pipeline - orchestrates the full HFT pipeline from tick to trade.
 
 Pipeline flow:
-    Tick → Brick Engine → Swing Classifier → Pattern Detector →
-    Signal Filter → Risk Manager → Executor → Trade Journal
+    Tick -> Brick Engine -> Swing Classifier -> Pattern Detector ->
+    Signal Filter -> Risk Manager -> Executor -> Trade Journal
 
 The pipeline is event-driven: each tick is processed synchronously
 through all stages. This ensures deterministic ordering and makes

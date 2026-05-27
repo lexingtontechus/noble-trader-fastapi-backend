@@ -155,7 +155,7 @@ class RiskManager:
     ) -> RiskMetrics:
         """
         Async entry-point - resolves configurable params from the runtime
-        configuration system (DB → env → hardcoded default).
+        configuration system (DB -> env -> hardcoded default).
 
         Thread-safe: each call resolves its own params independently.
         """

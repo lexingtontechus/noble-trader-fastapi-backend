@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         import os
         upstash = os.environ.get("UPSTASH_REDIS_REST_URL", "")
         if upstash:
-            # Convert https://...upstash.io → rediss://...upstash.io:6379
+            # Convert https://...upstash.io -> rediss://...upstash.io:6379
             # and append the token as the password
             token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
             host = upstash.replace("https://", "").rstrip("/")

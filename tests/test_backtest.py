@@ -301,5 +301,5 @@ class TestRegimeHMMNState:
             regime_label="low_vol_bull", confidence=0.56,
             n_bars_fitted=200,
         )
-        # low=1.50, bull=1.00 → 1.50
+        # low=1.50, bull=1.00 -> 1.50
         assert snap.risk_multiplier == 1.5

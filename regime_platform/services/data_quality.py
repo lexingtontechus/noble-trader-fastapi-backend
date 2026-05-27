@@ -97,7 +97,7 @@ class UniverseSnapshotService:
         end_date: date,
     ) -> dict[date, set[str]]:
         """
-        Return a mapping of date → constituent set for each date in the range.
+        Return a mapping of date -> constituent set for each date in the range.
 
         Efficient: fetches all events once, then replays forward.
         """
@@ -313,7 +313,7 @@ def adjust_prices(
     adjusted = list(prices)
     adjustments_applied = []
 
-    # Build a date → price_index mapping
+    # Build a date -> price_index mapping
     date_to_indices: dict[date, list[int]] = {}
     for i, ts in enumerate(timestamps):
         try:
@@ -350,7 +350,7 @@ def adjust_prices(
 
         if action_type == "split" and factor != 0:
             # Split adjustment: prices before ex_date are divided by (1/factor)
-            # e.g., 4:1 split → factor=0.25 → pre-split prices * 0.25
+            # e.g., 4:1 split -> factor=0.25 -> pre-split prices * 0.25
             split_factor = factor
             for idx in indices_before:
                 adjusted[idx] *= split_factor

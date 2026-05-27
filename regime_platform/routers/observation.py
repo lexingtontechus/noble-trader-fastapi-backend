@@ -122,10 +122,10 @@ async def build_observation_v2(req: ObservationV2Request, user: TokenData = Depe
     3. When include_tda=True, the vector extends to 34 features (24 + 10)
 
     TDA features capture topological structure of the price series:
-    - Connected components (0-dim persistence) → market fragmentation
-    - Loops (1-dim persistence) → cyclical patterns
-    - Anomaly score → topology deviation from baseline
-    - Regime change probability → early warning of regime transitions
+    - Connected components (0-dim persistence) -> market fragmentation
+    - Loops (1-dim persistence) -> cyclical patterns
+    - Anomaly score -> topology deviation from baseline
+    - Regime change probability -> early warning of regime transitions
     """
     try:
         prices = np.array(req.prices, dtype=float)

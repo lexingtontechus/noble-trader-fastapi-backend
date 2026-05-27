@@ -57,7 +57,7 @@ class SessionStatus(BaseModel):
 
 
 class WsMessage(BaseModel):
-    """Envelope for WebSocket messages from client → server."""
+    """Envelope for WebSocket messages from client -> server."""
     type: str        # "tick" | "seed" | "subscribe" | "ping"
     symbol: str
     price: Optional[float] = None

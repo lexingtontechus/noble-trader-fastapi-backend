@@ -13,9 +13,9 @@ Rate limiting:
   We use a simple sliding-window counter per webhook URL.
 
 Environment variables:
-  DISCORD_WEBHOOK_SIGNALS     → #trade-signals channel
-  DISCORD_WEBHOOK_EXECUTIONS  → #trade-executions channel
-  DISCORD_WEBHOOK_STATUS      → #system-status channel
+  DISCORD_WEBHOOK_SIGNALS     -> #trade-signals channel
+  DISCORD_WEBHOOK_EXECUTIONS  -> #trade-executions channel
+  DISCORD_WEBHOOK_STATUS      -> #system-status channel
 """
 
 from __future__ import annotations

@@ -187,7 +187,7 @@ _api_key_hdr = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # ── SaaS API Key Lookup ─────────────────────────────────────────────────────
 
-# In-memory cache for DB-backed API key lookups (key_hash → TokenData)
+# In-memory cache for DB-backed API key lookups (key_hash -> TokenData)
 # Avoids hitting Supabase on every request for the same key.
 _api_key_cache: dict[str, tuple[TokenData, float]] = {}
 _API_KEY_CACHE_TTL = 60  # seconds - re-validate keys every minute
@@ -335,7 +335,7 @@ async def get_current_user(
     )
 
 
-# ── Unified auth (Clerk JWT → old JWT → API key) ─────────────────────────────
+# ── Unified auth (Clerk JWT -> old JWT -> API key) ─────────────────────────────
 
 def _try_clerk_verification(token: str) -> Optional[TokenData]:
     """
@@ -401,11 +401,11 @@ async def get_authed_user(
     to the traditional JWT/API-key auth.
 
     Priority order:
-      1. Bearer token → try Clerk JWKS verification (dynamic issuer)
-      2. Bearer token → try local JWT_SECRET_KEY verification
-      3. X-API-Key header → SaaS API key (nt_live_*) DB lookup
-      4. X-API-Key header → static API key (service-to-service)
-      5. AUTH_ENABLED=false → dev mode (synthetic admin)
+      1. Bearer token -> try Clerk JWKS verification (dynamic issuer)
+      2. Bearer token -> try local JWT_SECRET_KEY verification
+      3. X-API-Key header -> SaaS API key (nt_live_*) DB lookup
+      4. X-API-Key header -> static API key (service-to-service)
+      5. AUTH_ENABLED=false -> dev mode (synthetic admin)
     """
     # Dev mode bypass (production blocked)
     if not AUTH_ENABLED:
@@ -501,9 +501,9 @@ async def ws_auth(
     Authenticate a WebSocket connection BEFORE calling accept().
 
     Checks (in order):
-      1. AUTH_ENABLED=false → dev mode, always accept
+      1. AUTH_ENABLED=false -> dev mode, always accept
       2. ?api_key=<key> query parameter (SaaS or static)
-      3. ?token=<jwt> query parameter (Clerk JWT → local JWT)
+      3. ?token=<jwt> query parameter (Clerk JWT -> local JWT)
       4. X-API-Key header (SaaS or static)
     """
     if not AUTH_ENABLED:

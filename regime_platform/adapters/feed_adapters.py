@@ -261,7 +261,7 @@ class BinanceFeedAdapter(FeedAdapter):
                 symbol = k.get("s", "UNKNOWN")
                 yield OHLCVBar(
                     symbol=symbol,
-                    ts=float(k["T"]) / 1000.0,   # close timestamp ms → s
+                    ts=float(k["T"]) / 1000.0,   # close timestamp ms -> s
                     open=float(k["o"]),
                     high=float(k["h"]),
                     low=float(k["l"]),

@@ -10,9 +10,9 @@ Architecture:
     L2: Supabase - ~100ms reads, durable, full history
 
 Restore hierarchy (MCP agent perspective):
-    1. Redis L1 hit → <5ms, instant hydration
-    2. Supabase L2 hit → ~100ms, still fast hydration
-    3. Yahoo fetch → 5-30s, full warmup cycle
+    1. Redis L1 hit -> <5ms, instant hydration
+    2. Supabase L2 hit -> ~100ms, still fast hydration
+    3. Yahoo fetch -> 5-30s, full warmup cycle
 
 Write path (dual-write):
     - On save: write Redis first (fast, non-blocking), then Supabase
@@ -25,8 +25,8 @@ v7.3 Changes:
     - Consolidated snapshot save paths to eliminate duplicate writes
 
 Key format:
-    renko:snapshot:{symbol}:{brick_size}  → compressed snapshot JSON
-    renko:snapshot:meta:{symbol}          → lightweight metadata (brick_count, has_position, etc.)
+    renko:snapshot:{symbol}:{brick_size}  -> compressed snapshot JSON
+    renko:snapshot:meta:{symbol}          -> lightweight metadata (brick_count, has_position, etc.)
 
 Error policy:
     Redis failures NEVER block the pipeline. If Redis is down, we fall

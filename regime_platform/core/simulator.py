@@ -166,7 +166,7 @@ class RegimeSimulator:
         T_vol   = model._vol_model.transmat_       # (4,4) - already sanitised
         T_trend = model._trend_model.transmat_     # (4,4)
 
-        # Kronecker product → 16×16
+        # Kronecker product -> 16×16
         T16 = np.kron(T_vol, T_trend)
 
         # Re-normalise rows (floating point drift in kron)
@@ -201,7 +201,7 @@ class RegimeSimulator:
         for vi, vl in enumerate(self.VOL_LABELS):
             for ti, tl in enumerate(self.TREND_LABELS):
                 label = f"{vl}_vol_{tl}"
-                # Map HMM raw state index → label index
+                # Map HMM raw state index -> label index
                 raw_vol_idx   = next((k for k, v in model._vol_label_map.items()   if v == vl),   vi)
                 raw_trend_idx = next((k for k, v in model._trend_label_map.items() if v == tl), ti)
                 mask = (vol_states == raw_vol_idx) & (trend_states == raw_trend_idx)

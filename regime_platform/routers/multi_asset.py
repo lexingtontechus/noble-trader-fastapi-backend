@@ -254,8 +254,8 @@ async def full_optimise(
 ):
     """
     Runs the complete multi-asset pipeline in one request:
-    1. Fit per-asset HMMs → per-asset RegimeSnapshots
-    2. Detect correlation regime → corr_regime label + blended multiplier
+    1. Fit per-asset HMMs -> per-asset RegimeSnapshots
+    2. Detect correlation regime -> corr_regime label + blended multiplier
     3. Solve drawdown-controlled max-Sharpe with both regime layers applied
     """
     try:

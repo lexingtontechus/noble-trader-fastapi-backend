@@ -12,7 +12,7 @@ Leveraged longs also incur margin interest:
 These costs can be the difference between a profitable short strategy
 and an unprofitable one, especially for strategies with long holding periods.
 
-All financing parameters are configurable via runtime_config (DB → env → hardcoded).
+All financing parameters are configurable via runtime_config (DB -> env -> hardcoded).
 Use FinancingParams.from_runtime_config() to resolve them in async contexts.
 """
 
@@ -34,7 +34,7 @@ class FinancingParams:
     @classmethod
     async def from_runtime_config(cls, overrides: Optional[Dict[str, Any]] = None) -> "FinancingParams":
         """
-        Build FinancingParams from runtime_config (DB → env → hardcoded default).
+        Build FinancingParams from runtime_config (DB -> env -> hardcoded default).
 
         Optional overrides dict takes highest priority.
         """

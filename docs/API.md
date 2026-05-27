@@ -53,7 +53,7 @@ The Noble Trader Platform is a quantitative trading risk management web service 
 | **Correlation** | `hmmlearn` + DCC | Portfolio-level correlation regime detection |
 | **Optimisation** | `scipy.optimize` | Drawdown-controlled max-Sharpe portfolio |
 | **Dynamic Masaniello** | Adaptive batch sizing | Progress-dependent position sizing with regime quality overlay |
-| **Renko HFT** | 6-layer pipeline | Brick construction → swing classification → pattern detection → signal filter → risk manager → execution |
+| **Renko HFT** | 6-layer pipeline | Brick construction -> swing classification -> pattern detection -> signal filter -> risk manager -> execution |
 | **GPU HMM** | `pomegranate` (optional) | 10-50× HMM speedup on CUDA/MPS |
 | **API Framework** | `FastAPI` + `pydantic v2` | Typed, validated, auto-documented REST API |
 
@@ -68,8 +68,8 @@ Combined label example: `low_vol_bull`, `high_vol_bear`, etc.
 ### Risk Multiplier
 
 Each regime maps to a **risk_multiplier** [0.25 – 1.50] that scales the Kelly fraction:
-- `low_vol_bull` → 1.5× (max risk-on)
-- `high_vol_bear` → 0.25× (max defensive)
+- `low_vol_bull` -> 1.5× (max risk-on)
+- `high_vol_bear` -> 0.25× (max defensive)
 
 ---
 
@@ -533,8 +533,8 @@ Sizes an entire batch of trades sequentially, with batch state (wins, losses, dr
 
 Two-stage pipeline for multi-asset position sizing:
 
-**Stage 1** - `DrawdownOptimiser` → regime-adjusted portfolio weights (what to hold)  
-**Stage 2** - `DynamicMasanielloSizer` → per-asset contract sizes (how much to hold)
+**Stage 1** - `DrawdownOptimiser` -> regime-adjusted portfolio weights (what to hold)  
+**Stage 2** - `DynamicMasanielloSizer` -> per-asset contract sizes (how much to hold)
 
 **Request:**
 
@@ -665,7 +665,7 @@ Enhanced risk analysis (US spelling) with five built-in stress test scenarios.
 ### POST /strategy/signal
 
 Full strategy signal pipeline:
-1. Fit HMM regime model → detect current regime
+1. Fit HMM regime model -> detect current regime
 2. Generate trading signal based on regime (`long` / `short` / `flat`)
 3. Compute regime-gated Kelly position size
 4. Compute risk metrics and guidance (stop/TP, VaR/CVaR)
@@ -725,7 +725,7 @@ Full strategy signal pipeline:
 ### POST /analyse/full
 
 Runs the complete pipeline in a single request:
-1. Fit HMM regime model → get vol/trend posteriors
+1. Fit HMM regime model -> get vol/trend posteriors
 2. Compute regime-gated Kelly position size
 3. Compute VaR, CVaR, drawdown, and trade guidance
 
@@ -1070,8 +1070,8 @@ Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constrai
 ### POST /optimise/full
 
 Runs the complete multi-asset pipeline in one request:
-1. Fit per-asset HMMs → per-asset RegimeSnapshots
-2. Detect correlation regime → corr_regime label + blended multiplier
+1. Fit per-asset HMMs -> per-asset RegimeSnapshots
+2. Detect correlation regime -> corr_regime label + blended multiplier
 3. Solve drawdown-controlled max-Sharpe with both regime layers applied
 
 **Additional Request Fields** (beyond `/optimise`):
@@ -1785,7 +1785,7 @@ The Renko HFT pipeline processes price ticks through a 6-layer architecture for 
 ### 6-Layer Pipeline Architecture
 
 ```
-Tick ──→ [Layer 1: Brick Engine] ──→ [Layer 2: Swing Classifier]
+Tick ──-> [Layer 1: Brick Engine] ──-> [Layer 2: Swing Classifier]
                                               │
                      [Layer 6: Executor] ←── [Layer 5: Risk Manager]
                            │                        │
@@ -1959,8 +1959,8 @@ All three endpoints are rate-limited under `RATE_LIMIT_WRITE`.
 Run a complete backtest on historical prices using an **isolated** `RenkoPipeline` instance. The pipeline flow runs the full 6-layer stack:
 
 ```
-Tick → Brick Engine → Swing Classifier → Pattern Detector
-     → Signal Filter → Risk Manager → Executor → Trade Journal
+Tick -> Brick Engine -> Swing Classifier -> Pattern Detector
+     -> Signal Filter -> Risk Manager -> Executor -> Trade Journal
 ```
 
 Returns comprehensive stats including win rate, profit factor, Sharpe estimate, max drawdown, per-pattern breakdowns, per-regime breakdowns, and Kelly inputs.
@@ -2371,7 +2371,7 @@ Compute execution modeling costs for a trade using Almgren-Chriss market impact,
 
 ## P&L Dashboard
 
-Live portfolio P&L analytics, risk metrics, CSV export, and alert threshold management. All endpoints require JWT authentication and are org-aware (credentials resolved via org-level → user-level → global fallback).
+Live portfolio P&L analytics, risk metrics, CSV export, and alert threshold management. All endpoints require JWT authentication and are org-aware (credentials resolved via org-level -> user-level -> global fallback).
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
@@ -2696,7 +2696,7 @@ Force a full reload of all configuration from Supabase, bypassing the TTL cache.
 
 ## Operational Hardening
 
-Operational safety layer providing kill switch, operating mode control, throttle monitoring, audit logging, and position reconciliation. The kill switch immediately halts all trading activity when activated - it cancels open orders, closes positions, and prevents new order submissions until explicitly deactivated. Operating modes (paper, live, maintenance) gate write access to the system and require two-step confirmation (request → confirm) for safety. The audit log tracks all configuration changes, mode transitions, and kill switch events with full attribution. Reconciliation compares the system's view of positions against the broker's reported state and flags discrepancies for manual review.
+Operational safety layer providing kill switch, operating mode control, throttle monitoring, audit logging, and position reconciliation. The kill switch immediately halts all trading activity when activated - it cancels open orders, closes positions, and prevents new order submissions until explicitly deactivated. Operating modes (paper, live, maintenance) gate write access to the system and require two-step confirmation (request -> confirm) for safety. The audit log tracks all configuration changes, mode transitions, and kill switch events with full attribution. Reconciliation compares the system's view of positions against the broker's reported state and flags discrepancies for manual review.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
@@ -2984,7 +2984,7 @@ Returns current PnL SSE connection status including subscriber count, last push 
 ### Quick Analysis (Single Asset)
 
 ```
-POST /analyse/full  →  regime + sizing + risk in one call
+POST /analyse/full  ->  regime + sizing + risk in one call
 ```
 
 Best for: One-shot analysis of a single symbol with minimal round trips.
@@ -2992,7 +2992,7 @@ Best for: One-shot analysis of a single symbol with minimal round trips.
 ### Signal-Driven Trading
 
 ```
-POST /strategy/signal  →  signal (long/short/flat) + sizing + risk guidance
+POST /strategy/signal  ->  signal (long/short/flat) + sizing + risk guidance
 ```
 
 Best for: Getting an actionable trading decision with full context.
@@ -3000,9 +3000,9 @@ Best for: Getting an actionable trading decision with full context.
 ### Multi-Asset Portfolio Construction
 
 ```
-POST /correlation/detect  →  portfolio-level correlation regime
-POST /optimise/full       →  correlation + optimisation one-shot
-POST /optimise/masaniello →  portfolio optimise + per-asset Masaniello sizing
+POST /correlation/detect  ->  portfolio-level correlation regime
+POST /optimise/full       ->  correlation + optimisation one-shot
+POST /optimise/masaniello ->  portfolio optimise + per-asset Masaniello sizing
 ```
 
 Best for: Building a regime-aware portfolio with precise per-asset position sizing.
@@ -3010,11 +3010,11 @@ Best for: Building a regime-aware portfolio with precise per-asset position sizi
 ### Live Streaming Pipeline
 
 ```
-POST /stream/seed           →  seed symbol with historical prices
-POST /stream/tick           →  push live ticks, receive regime snapshots
-GET  /sse/{symbol}          →  subscribe to real-time SSE stream
-GET  /sse/alerts            →  monitor regime changes across all symbols
-GET  /portfolio             →  aggregated portfolio view
+POST /stream/seed           ->  seed symbol with historical prices
+POST /stream/tick           ->  push live ticks, receive regime snapshots
+GET  /sse/{symbol}          ->  subscribe to real-time SSE stream
+GET  /sse/alerts            ->  monitor regime changes across all symbols
+GET  /portfolio             ->  aggregated portfolio view
 ```
 
 Best for: Real-time monitoring with regime change alerts.
@@ -3022,11 +3022,11 @@ Best for: Real-time monitoring with regime change alerts.
 ### Renko HFT Trading
 
 ```
-POST /renko/tick            →  process ticks through 6-layer pipeline
-GET  /renko/signals         →  check for pattern signals
-GET  /renko/trades          →  review trade journal
-POST /renko/regime          →  update HMM regime for gate filter
-GET  /renko/stats           →  comprehensive pipeline statistics
+POST /renko/tick            ->  process ticks through 6-layer pipeline
+GET  /renko/signals         ->  check for pattern signals
+GET  /renko/trades          ->  review trade journal
+POST /renko/regime          ->  update HMM regime for gate filter
+GET  /renko/stats           ->  comprehensive pipeline statistics
 ```
 
 Best for: High-frequency Renko-based trading with pattern detection and risk management.
@@ -3034,7 +3034,7 @@ Best for: High-frequency Renko-based trading with pattern detection and risk man
 ### Walk-Forward Backtesting
 
 ```
-POST /backtest/run  →  30+ metrics with full equity/drawdown curves
+POST /backtest/run  ->  30+ metrics with full equity/drawdown curves
 ```
 
 Best for: Validating strategy performance with realistic regime-aware execution.
@@ -3042,9 +3042,9 @@ Best for: Validating strategy performance with realistic regime-aware execution.
 ### Dynamic Masaniello Sizing
 
 ```
-POST /size/masaniello           →  single-trade sizing (Path B)
-POST /size/masaniello/batch     →  batch sizing with state flow
-POST /optimise/masaniello       →  full two-stage: optimise + Masaniello
+POST /size/masaniello           ->  single-trade sizing (Path B)
+POST /size/masaniello/batch     ->  batch sizing with state flow
+POST /optimise/masaniello       ->  full two-stage: optimise + Masaniello
 ```
 
 Best for: Progress-dependent position sizing where batch outcomes influence future trade sizes.
@@ -3052,7 +3052,7 @@ Best for: Progress-dependent position sizing where batch outcomes influence futu
 ### Observation Building for RL/ML
 
 ```
-POST /observation/build-v2  →  24 or 34 feature vector (with TDA)
+POST /observation/build-v2  ->  24 or 34 feature vector (with TDA)
 ```
 
 Best for: Feeding structured feature vectors into reinforcement learning or ML policy networks.
@@ -3060,8 +3060,8 @@ Best for: Feeding structured feature vectors into reinforcement learning or ML p
 ### GPU-Accelerated Regime Detection
 
 ```
-GET  /gpu/capabilities  →  check GPU availability
-POST /gpu/benchmark      →  measure speedup
+GET  /gpu/capabilities  ->  check GPU availability
+POST /gpu/benchmark      ->  measure speedup
 ```
 
 Best for: Enabling 10-50× HMM speedup with pomegranate on CUDA/MPS hardware.

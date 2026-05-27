@@ -4,7 +4,7 @@ Backtesting Engine
 Walk-forward backtest with regime-aware strategy signals, Kelly sizing, and risk checks.
 
 Pipeline per bar:
-  1. Fit HMM on trailing window → RegimeSnapshot
+  1. Fit HMM on trailing window -> RegimeSnapshot
   2. Generate strategy signal (long/short/flat) based on regime + trend
   3. Compute position size via Kelly + regime gating
   4. Apply risk check (VaR, max drawdown, regime limits)
@@ -144,9 +144,9 @@ class Backtester:
     Walk-forward backtester with regime-aware strategy.
     
     Strategy logic:
-      - Low vol + bull/strong_bull → long
-      - High vol + bear/strong_bear → short (if enabled)
-      - All other regimes → flat / exit
+      - Low vol + bull/strong_bull -> long
+      - High vol + bear/strong_bear -> short (if enabled)
+      - All other regimes -> flat / exit
       - Risk gate: block new trades if CVaR exceeds base_risk_limit
     
     Supports n-state HMM (2, 3, or 4 states) with auto-mapped labels.
@@ -443,11 +443,11 @@ class Backtester:
         vol = snap.vol_state
         trend = snap.trend_state
         
-        # "Low" half of vol labels + "bull" half of trend labels → long
+        # "Low" half of vol labels + "bull" half of trend labels -> long
         low_vol_labels = vol_labels[:len(vol_labels) // 2]      # e.g. ["low", "med_low"] for 4-state
         bull_trend_labels = trend_labels[len(trend_labels) // 2:]  # e.g. ["bull", "strong_bull"] for 4-state
         
-        # "High" half of vol labels + "bear" half of trend labels → short
+        # "High" half of vol labels + "bear" half of trend labels -> short
         high_vol_labels = vol_labels[len(vol_labels) // 2:]     # e.g. ["med_high", "high"] for 4-state
         bear_trend_labels = trend_labels[:len(trend_labels) // 2]  # e.g. ["strong_bear", "bear"] for 4-state
         

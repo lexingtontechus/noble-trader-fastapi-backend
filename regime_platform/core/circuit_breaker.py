@@ -80,12 +80,12 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        """Current state, auto-transitioning from OPEN → HALF_OPEN if timeout expired."""
+        """Current state, auto-transitioning from OPEN -> HALF_OPEN if timeout expired."""
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_time >= self.reset_timeout:
                 self._state = CircuitState.HALF_OPEN
                 self._success_count = 0
-                log.info(f"Circuit [{self.name}]: OPEN → HALF_OPEN (probe allowed)")
+                log.info(f"Circuit [{self.name}]: OPEN -> HALF_OPEN (probe allowed)")
         return self._state
 
     @property
@@ -130,7 +130,7 @@ class CircuitBreaker:
             if self._success_count >= self.success_threshold:
                 self._state = CircuitState.CLOSED
                 self._failure_count = 0
-                log.info(f"Circuit [{self.name}]: HALF_OPEN → CLOSED (recovered)")
+                log.info(f"Circuit [{self.name}]: HALF_OPEN -> CLOSED (recovered)")
         else:
             self._failure_count = 0
 
@@ -144,12 +144,12 @@ class CircuitBreaker:
             # Probe failed - back to OPEN
             self._state = CircuitState.OPEN
             log.warning(
-                f"Circuit [{self.name}]: HALF_OPEN → OPEN (probe failed: {exc})"
+                f"Circuit [{self.name}]: HALF_OPEN -> OPEN (probe failed: {exc})"
             )
         elif self._failure_count >= self.failure_threshold:
             self._state = CircuitState.OPEN
             log.warning(
-                f"Circuit [{self.name}]: CLOSED → OPEN "
+                f"Circuit [{self.name}]: CLOSED -> OPEN "
                 f"({self._failure_count} consecutive failures, last: {exc})"
             )
 

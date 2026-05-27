@@ -48,13 +48,13 @@
 
 #### `core/runtime_config.py` - NEW FILE
 - `RuntimeConfig` singleton with 30-second TTL in-memory cache backed by Supabase `system_config` table
-- Resolution order: DB override (highest) → env var → hardcoded default (lowest)
+- Resolution order: DB override (highest) -> env var -> hardcoded default (lowest)
 - Async-safe via `asyncio.Lock` with double-checked locking pattern
 - Type-strict getters: `get_float()`, `get_int()`, `get_bool()`, `get_str()`, `get_json()`
 - `set_value()` with validation (type coercion, range check, enum check), DB persist, audit logging, and on-change callbacks
 - `reset_value()` to revert a key to its hardcoded default
 - `reload()` to force full cache refresh from DB (bypasses TTL)
-- `_SyncProxy` / `sync_config` for non-async contexts (env var → default only, no DB)
+- `_SyncProxy` / `sync_config` for non-async contexts (env var -> default only, no DB)
 - 148 default values registered across 8 categories (renko, execution, alpaca, risk, sizing, stream, auth, regime)
 
 #### `routers/config.py` - NEW FILE
@@ -114,11 +114,11 @@
 - These endpoints exposed real-time regime data, risk metrics, and position info to anyone
 
 #### Renko Write Operations Upgraded from Viewer to Trader/Admin
-- `POST /renko/tick` - `get_authed_user` → `require_write` (viewers can no longer inject ticks)
-- `POST /renko/tick/batch` - `get_authed_user` → `require_write`
-- `POST /renko/backtest/run` - `get_authed_user` → `require_write`
-- `POST /renko/backtest/run/stream` - `get_authed_user` → `require_write`
-- `POST /renko/backtest/optimize` - `get_authed_user` → `require_write`
+- `POST /renko/tick` - `get_authed_user` -> `require_write` (viewers can no longer inject ticks)
+- `POST /renko/tick/batch` - `get_authed_user` -> `require_write`
+- `POST /renko/backtest/run` - `get_authed_user` -> `require_write`
+- `POST /renko/backtest/run/stream` - `get_authed_user` -> `require_write`
+- `POST /renko/backtest/optimize` - `get_authed_user` -> `require_write`
 
 #### `regime_platform/routers/stream_ws.py` - Updated
 - Added `Depends` import and `get_authed_user`, `TokenData` imports from `jwt_auth`
@@ -163,7 +163,7 @@
 
 #### `renko/router.py` - Updated
 - `POST /renko/backtest/run/stream` - new SSE endpoint with `StreamingResponse`
-- Streams `progress` → `progress` → ... → `complete` events as `data: {...}\n\n` SSE format
+- Streams `progress` -> `progress` -> ... -> `complete` events as `data: {...}\n\n` SSE format
 - `error` event type for pipeline failures
 - Redis cache check on entry - if cache HIT, emits single `complete` event immediately
 - Final complete result is cached in Redis (1h TTL) for subsequent non-streaming requests
@@ -295,7 +295,7 @@ New public symbols:
 - Floor at 0.25 preserves minimum position participation during drawdown.
 
 `V_i = clip(ATR_baseline / ATR_current, 0.5, 1.5)`
-- Inverted ATR ratio. High vol → shrink; low vol → mild expansion.
+- Inverted ATR ratio. High vol -> shrink; low vol -> mild expansion.
 
 **Pre-flight gates (in priority order, fire before formula):**
 1. equity > 0
@@ -368,7 +368,7 @@ the min_risk floor still applies (position is not zeroed out).
 - Three regime layers: (1) regime-adjusted μ, (2) per-asset weight bounds, (3) correlation exposure
 - Drawdown constraint via Cornish-Fisher CVaR proxy (analytic - no simulation required)
 - Correlation exposure scalar: `low_corr=1.00` · `mid_corr=0.90` · `high_corr=0.70` · `crisis=0.50`
-- Weight bounds tightened per-asset: `high_vol_strong_bear → max_weight × 0.25`
+- Weight bounds tightened per-asset: `high_vol_strong_bear -> max_weight × 0.25`
 - Scipy SLSQP solver with configurable `max_iter`, `tol`, and `dd_penalty_lambda`
 - `OptimisationResult` - weights, regime_adj_weights, expected return/vol/Sharpe/DD, convergence info
 
@@ -397,14 +397,14 @@ the min_risk floor still applies (position is not zeroed out).
 ### Architecture summary
 
 ```
-GET  /gpu/capabilities       pomegranate install check → CUDA/MPS/CPU selection
-POST /gpu/benchmark          synthetic fit → latency report
+GET  /gpu/capabilities       pomegranate install check -> CUDA/MPS/CPU selection
+POST /gpu/benchmark          synthetic fit -> latency report
 
-POST /feeds/start            FeedManager → AlpacaFeedAdapter/BinanceFeedAdapter/IBFeedAdapter
-                             → SessionRegistry.get(symbol).tick(close, ts)
+POST /feeds/start            FeedManager -> AlpacaFeedAdapter/BinanceFeedAdapter/IBFeedAdapter
+                             -> SessionRegistry.get(symbol).tick(close, ts)
 
-POST /correlation/detect     rolling corr features → 4-state HMM → corr regime label
-POST /optimise               regime-adj μ → SLSQP → DD-constrained weights
+POST /correlation/detect     rolling corr features -> 4-state HMM -> corr regime label
+POST /optimise               regime-adj μ -> SLSQP -> DD-constrained weights
 POST /optimise/full          detect + optimise in one request
 ```
 
@@ -443,7 +443,7 @@ POST /optimise/full          detect + optimise in one request
 
 #### `auth/jwt_auth.py` - NEW FILE
 - `create_access_token(data)` - creates signed HS256 JWT
-- `decode_token(token)` - validates and decodes JWT → `TokenData`
+- `decode_token(token)` - validates and decodes JWT -> `TokenData`
 - `get_current_user` - FastAPI Depends for HTTP endpoint auth
 - `require_write` - Depends requiring trader or admin role
 - `require_admin` - Depends requiring admin role
@@ -479,11 +479,11 @@ POST /optimise/full          detect + optimise in one request
 ### Architecture summary
 
 ```
-POST /simulate/{symbol}    HMM fit → 16-state Kronecker system → Monte Carlo
-GET  /portfolio            SessionRegistry → per-symbol regime + risk → aggregate
-POST /auth/token           credential check → JWT issue
+POST /simulate/{symbol}    HMM fit -> 16-state Kronecker system -> Monte Carlo
+GET  /portfolio            SessionRegistry -> per-symbol regime + risk -> aggregate
+POST /auth/token           credential check -> JWT issue
 WS   /ws/{symbol}          (auth-ready: pass ?token=<jwt> to authenticate)
-REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
+REDIS_URL (env)            on startup -> restore buffers -> re-fit HMMs
 ```
 
 ---
@@ -554,7 +554,7 @@ REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
 ### Changed - 4-State HMM Regime Detection
 
 #### `core/regime_engine.py`
-- **n_components: 3 → 4** for both the volatility and trend HMMs
+- **n_components: 3 -> 4** for both the volatility and trend HMMs
 - Volatility states: `low | med_low | med_high | high`  (was `low | medium | high`)
 - Trend states: `strong_bear | bear | bull | strong_bull`  (was `bear | neutral | bull`)
 - Volatile feature set expanded: vol HMM now uses 3 features (20-bar RV, 5-bar RV, |return|); trend HMM uses 3 features (return, 10-bar cum, 30-bar cum)
@@ -567,7 +567,7 @@ REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
 - `routers/regime.py`, `routers/pipeline.py` - label zips use `RegimeHMM.VOL_LABELS` / `RegimeHMM.TREND_LABELS`
 - `routers/stream_rest.py`, `routers/stream_ws.py` - same label zip update
 - `models/schemas.py`, `models/stream_schemas.py` - `min_length` / `ge` validators updated to 81
-- `services/stream_session.py` - `MIN_PRICES_FOR_FIT` updated from 51 → 81
+- `services/stream_session.py` - `MIN_PRICES_FOR_FIT` updated from 51 -> 81
 
 #### Added
 - `test_platform_v4.py` - 4-state smoke test verifying 4 prob vectors, 16-cell multiplier table, and correct assertions
@@ -619,7 +619,7 @@ Follows [Semantic Versioning](https://semver.org/).
 - Updated app factory including all streaming routers alongside existing batch routers
 
 #### `test_streaming.py`
-- Async smoke test: seed → 160-tick stream → subscriber queue → regime transition assertions
+- Async smoke test: seed -> 160-tick stream -> subscriber queue -> regime transition assertions
 
 ### Fixed
 

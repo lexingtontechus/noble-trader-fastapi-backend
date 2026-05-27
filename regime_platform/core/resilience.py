@@ -81,12 +81,12 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        """Current state, with automatic OPEN → HALF_OPEN transition."""
+        """Current state, with automatic OPEN -> HALF_OPEN transition."""
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
                 self._state = CircuitState.HALF_OPEN
                 self._success_count = 0
-                log.info("Circuit breaker [%s]: OPEN → HALF_OPEN", self.name)
+                log.info("Circuit breaker [%s]: OPEN -> HALF_OPEN", self.name)
         return self._state
 
     def record_success(self) -> None:
@@ -96,7 +96,7 @@ class CircuitBreaker:
             if self._success_count >= self.success_threshold:
                 self._state = CircuitState.CLOSED
                 self._failure_count = 0
-                log.info("Circuit breaker [%s]: HALF_OPEN → CLOSED", self.name)
+                log.info("Circuit breaker [%s]: HALF_OPEN -> CLOSED", self.name)
         else:
             # In CLOSED state, reset failure count on success
             self._failure_count = 0
@@ -110,7 +110,7 @@ class CircuitBreaker:
                 old_state = self._state.value
                 self._state = CircuitState.OPEN
                 log.warning(
-                    "Circuit breaker [%s]: %s → OPEN (after %d failures)",
+                    "Circuit breaker [%s]: %s -> OPEN (after %d failures)",
                     self.name,
                     old_state,
                     self._failure_count,

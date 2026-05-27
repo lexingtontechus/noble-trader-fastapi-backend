@@ -12,8 +12,8 @@ drawdown constraint. Combines three layers:
 
   2. Drawdown-controlled weight bounds
      Asset weight upper bounds are tightened in high-risk regimes:
-       low_vol_strong_bull → max weight = min(kelly_f × 1.5, 0.40)
-       high_vol_strong_bear → max weight = min(kelly_f × 0.25, 0.10)
+       low_vol_strong_bull -> max weight = min(kelly_f × 1.5, 0.40)
+       high_vol_strong_bear -> max weight = min(kelly_f × 0.25, 0.10)
 
   3. Correlation-regime overlay
      The correlation regime multiplier scales the entire portfolio's
@@ -91,8 +91,8 @@ def _regime_weight_bound(snap: Optional[RegimeSnapshot], base_max: float) -> flo
     if snap is None:
         return base_max
     mult = snap.risk_multiplier   # [0.10, 1.75]
-    # Scale bound proportionally: at mult=1.75 → 100% of base_max
-    #                              at mult=0.10 → 25% of base_max
+    # Scale bound proportionally: at mult=1.75 -> 100% of base_max
+    #                              at mult=0.10 -> 25% of base_max
     scale = np.interp(mult, [0.10, 1.75], [0.25, 1.00])
     return float(np.clip(base_max * scale, 0.01, base_max))
 

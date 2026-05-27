@@ -48,13 +48,13 @@ Combined label example: `low_vol_bull`, `high_vol_bear`, etc.
 ## Risk Multiplier
 
 Each regime maps to a **risk_multiplier** [0.25 – 1.50] that scales the Kelly fraction:
-- `low_vol_bull` → 1.5× (max risk-on)
-- `high_vol_bear` → 0.25× (max defensive)
+- `low_vol_bull` -> 1.5× (max risk-on)
+- `high_vol_bear` -> 0.25× (max defensive)
 
 ## Recommended Workflow
 
 ```
-POST /analyse/full  →  regime + sizing + risk in one call
+POST /analyse/full  ->  regime + sizing + risk in one call
 ```
 
 Or use individual endpoints for targeted analysis.

@@ -112,7 +112,7 @@ Transparent fallback to hmmlearn on CPU - no code changes needed.
 
 ```bash
 pip install pomegranate torch
-GET /gpu/capabilities   # → {"active_device": "cuda", "hmm_backend": "GpuRegimeHMM"}
+GET /gpu/capabilities   # -> {"active_device": "cuda", "hmm_backend": "GpuRegimeHMM"}
 ```
 
 ### Live feed workflow
@@ -140,7 +140,7 @@ POST /optimise/full
   "max_dd_limit": 0.15,
   "max_weight": 0.40
 }
-# → correlation regime + drawdown-controlled optimal weights
+# -> correlation regime + drawdown-controlled optimal weights
 ```
         """,
     )

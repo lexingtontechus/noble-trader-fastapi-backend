@@ -30,7 +30,7 @@ class ImpactParams:
     @classmethod
     async def from_runtime_config(cls, overrides: Optional[Dict[str, Any]] = None) -> "ImpactParams":
         """
-        Build ImpactParams from runtime_config (DB → env → hardcoded default).
+        Build ImpactParams from runtime_config (DB -> env -> hardcoded default).
 
         Optional overrides dict takes highest priority.
         """

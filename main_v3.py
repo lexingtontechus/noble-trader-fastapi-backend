@@ -112,7 +112,7 @@ POST /simulate/SPY
   "horizon": 20,
   "n_paths": 500
 }
-→ price fan (p5/p25/median/p75/p95), expected risk multiplier per step,
+-> price fan (p5/p25/median/p75/p95), expected risk multiplier per step,
   terminal VaR/CVaR, most likely terminal regime
 ```
 
@@ -129,7 +129,7 @@ POST /stream/tick  {"symbol": "SPY", "price": 512.34}
 
 # 3. Get portfolio view
 GET /portfolio
-→ per-symbol regime + Kelly f* + VaR, plus portfolio-level risk flags
+-> per-symbol regime + Kelly f* + VaR, plus portfolio-level risk flags
 ```
 
 ### Redis Persistence

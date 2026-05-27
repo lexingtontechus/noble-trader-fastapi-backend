@@ -601,8 +601,8 @@ class PortfolioMasanielloRequest(BaseModel):
     """Request for portfolio-optimised Masaniello sizing across multiple assets.
     
     Two-stage pipeline:
-      Stage 1: DrawdownOptimiser → portfolio weights
-      Stage 2: DynamicMasanielloSizer → per-asset position sizes
+      Stage 1: DrawdownOptimiser -> portfolio weights
+      Stage 2: DynamicMasanielloSizer -> per-asset position sizes
     """
     symbols: list[str] = Field(..., min_length=2, max_length=50)
     returns_matrix: list[list[float]] = Field(..., description="(n_bars × n_assets) matrix of log-returns.")

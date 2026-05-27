@@ -5,8 +5,8 @@ A 6-layer Renko-based high-frequency trading pipeline that processes price ticks
 ## Architecture
 
 ```
-Tick → Brick Engine → Swing Classifier → Pattern Detector
-     → Signal Filter (Kelly ─or─ Masaniello) → Risk Manager → Executor → Trade Journal
+Tick -> Brick Engine -> Swing Classifier -> Pattern Detector
+     -> Signal Filter (Kelly ─or─ Masaniello) -> Risk Manager -> Executor -> Trade Journal
 ```
 
 | Layer | Module | Purpose |
@@ -127,7 +127,7 @@ Run a complete backtest through the full 6-layer pipeline on historical prices. 
 
 #### POST /renko/backtest/optimize
 
-Grid-search parameter sweep across a `param_grid` of parameter names → value lists. Each combination runs a full isolated backtest. Max 50 combinations per request.
+Grid-search parameter sweep across a `param_grid` of parameter names -> value lists. Each combination runs a full isolated backtest. Max 50 combinations per request.
 
 **Request body (`RenkoBacktestOptimizeRequest`):**
 
@@ -135,7 +135,7 @@ Grid-search parameter sweep across a `param_grid` of parameter names → value l
 |-------|------|---------|-------------|
 | `prices` | `list[float]` | *required* | Historical price series (min 50 ticks) |
 | `symbol` | `string` | `"SPY"` | Trading symbol |
-| `param_grid` | `dict[str, list]` | *required* | Map of parameter → values to sweep. Keys: `brick_size`, `sl_bricks`, `tp_bricks`, `bull_trigger_n`, `bear_trigger_n`, `trailing_stop`, `trail_after_bricks`, `trail_distance_bricks`, `regime_gate`, `max_trades_per_session`, `max_daily_loss_bricks`, `max_consecutive_losses` |
+| `param_grid` | `dict[str, list]` | *required* | Map of parameter -> values to sweep. Keys: `brick_size`, `sl_bricks`, `tp_bricks`, `bull_trigger_n`, `bear_trigger_n`, `trailing_stop`, `trail_after_bricks`, `trail_distance_bricks`, `regime_gate`, `max_trades_per_session`, `max_daily_loss_bricks`, `max_consecutive_losses` |
 | `brick_size` | `float` | `0.50` | Fixed default brick size |
 | `...` | `...` | `...` | All other `RenkoConfig` params as fixed defaults |
 | `timestamps` | `list[float]` | `null` | Matching timestamps |
@@ -176,9 +176,9 @@ The Renko pipeline uses a two-tier cache for state persistence, optimized for MC
 | **L2** | Supabase | ~100ms | Durable | JSONB |
 
 **Restore hierarchy** (MCP agent cold-start path):
-1. **Redis L1 hit** → sub-5ms, instant hydration (ideal for MCP agents)
-2. **Supabase L2 hit** → ~100ms, backfill Redis L1 for next time
-3. **Yahoo Finance fetch** → 5-30s, full warmup cycle
+1. **Redis L1 hit** -> sub-5ms, instant hydration (ideal for MCP agents)
+2. **Supabase L2 hit** -> ~100ms, backfill Redis L1 for next time
+3. **Yahoo Finance fetch** -> 5-30s, full warmup cycle
 
 **Dual-write strategy**:
 - Every save writes to Redis L1 first (fire-and-forget), then Supabase L2
@@ -218,7 +218,7 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
 ```
 +---------------------------------------------------+
 |           MCP Agent: Cold Start                    |
-|  (GET /renko/state → brick_count == 0)            |
+|  (GET /renko/state -> brick_count == 0)            |
 +------------------------+--------------------------+
                          |
                          v
@@ -243,7 +243,7 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
 |           Auto-Save Triggers (7 events)            |
 |  Position open/close, regime, equity, sizing,      |
 |  live toggle, periodic (every 100th tick)           |
-|  → dual-write: Redis L1 + Supabase L2             |
+|  -> dual-write: Redis L1 + Supabase L2             |
 +---------------------------------------------------+
 ```
 
@@ -329,8 +329,8 @@ The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2
 
 | Event | Trigger | Why Critical |
 |-------|---------|-------------|
-| Position opened | Signal filtered → `_open_position()` | Open position must survive restart |
-| Position closed | Trade result → `_handle_trade_close()` | P&L journal must not be lost |
+| Position opened | Signal filtered -> `_open_position()` | Open position must survive restart |
+| Position closed | Trade result -> `_handle_trade_close()` | P&L journal must not be lost |
 | Regime changed | `POST /renko/regime` | Regime gate depends on correct regime |
 | Equity changed | `POST /renko/equity` | Position sizing depends on correct equity |
 | Sizing model changed | `POST /renko/sizing/model` | Sizing mode must survive restart |
@@ -363,35 +363,35 @@ MCP (Model Context Protocol) agents connect to `/mcp` and discover available too
 │                    MCP AGENT RENKO WORKFLOW                         │
 │                                                                     │
 │  1. COLD START (no pipeline state)                                 │
-│     renko_health()        → verify backend is alive                │
-│     warmup_pipeline()     → fetch Yahoo data + hydrate pipeline    │
+│     renko_health()        -> verify backend is alive                │
+│     warmup_pipeline()     -> fetch Yahoo data + hydrate pipeline    │
 │                             (or restore snapshot if <4h old)       │
 │                                                                     │
 │  2. MARKET HOURS MONITORING                                        │
-│     set_regime()          → feed HMM regime detection output       │
-│     set_equity()          → sync account equity from broker        │
-│     get_bricks()          → latest brick direction + velocity      │
-│     get_classified()      → pattern detection (impulse/correction) │
-│     get_signals()         → active entry/exit signals              │
-│     get_trades()          → recent trade performance               │
+│     set_regime()          -> feed HMM regime detection output       │
+│     set_equity()          -> sync account equity from broker        │
+│     get_bricks()          -> latest brick direction + velocity      │
+│     get_classified()      -> pattern detection (impulse/correction) │
+│     get_signals()         -> active entry/exit signals              │
+│     get_trades()          -> recent trade performance               │
 │                                                                     │
 │  3. SIZING DECISION                                                │
-│     get_sizing_model()    → Kelly or Masaniello? Check params      │
-│     set_sizing_model()    → switch model if regime warrants it     │
+│     get_sizing_model()    -> Kelly or Masaniello? Check params      │
+│     set_sizing_model()    -> switch model if regime warrants it     │
 │                                                                     │
 │  4. BACKTEST & OPTIMIZATION                                        │
-│     run_backtest()        → test strategy on historical data       │
-│     optimize_backtest()   → parameter sweep for best config        │
-│     statistical_rigor()   → is the edge statistically significant? │
+│     run_backtest()        -> test strategy on historical data       │
+│     optimize_backtest()   -> parameter sweep for best config        │
+│     statistical_rigor()   -> is the edge statistically significant? │
 │                                                                     │
 │  5. STATE PERSISTENCE                                              │
-│     save_snapshot()       → persist state after changes            │
-│     restore_snapshot()    → recover from cold start                │
+│     save_snapshot()       -> persist state after changes            │
+│     restore_snapshot()    -> recover from cold start                │
 │                                                                     │
 │  6. EXECUTION CONTROL                                              │
-│     execution_model()     → compute slippage, fill, financing      │
-│     toggle_live_execution() → enable/disable real order submission │
-│     get_live_status()     → check if live execution is active      │
+│     execution_model()     -> compute slippage, fill, financing      │
+│     toggle_live_execution() -> enable/disable real order submission │
+│     get_live_status()     -> check if live execution is active      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

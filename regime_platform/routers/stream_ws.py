@@ -8,13 +8,13 @@ Real-time streaming endpoints.
   GET /sse/{symbol}             - Server-Sent Events one-way stream
 
 WebSocket protocol (JSON messages):
-  Client → Server:
+  Client -> Server:
     {"type": "seed",      "symbol": "SPY", "prices": [...]}
     {"type": "tick",      "symbol": "SPY", "price": 512.34, "ts": 1710000000.0}
     {"type": "subscribe", "symbol": "SPY"}
     {"type": "ping"}
 
-  Server → Client:
+  Server -> Client:
     tick snapshots (TickResponse JSON)
     {"type": "pong"}
     {"type": "error", "detail": "..."}
@@ -198,7 +198,7 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
 
     Flow:
       1. Authenticates user via JWT
-      2. Resolves user's Alpaca credentials (Supabase → global fallback)
+      2. Resolves user's Alpaca credentials (Supabase -> global fallback)
       3. Starts Alpaca trade + data WebSocket connections if not running
       4. Pushes events via SSE until client disconnects
       5. Cleans up connections after 30s grace period if no consumers

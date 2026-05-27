@@ -6,8 +6,8 @@ Connects the DrawdownOptimiser (portfolio weights) to the
 DynamicMasanielloSizer (per-asset position sizing).
 
 Two-stage pipeline:
-  Stage 1: DrawdownOptimiser → regime-adjusted portfolio weights
-  Stage 2: DynamicMasanielloSizer → per-asset contract sizes
+  Stage 1: DrawdownOptimiser -> regime-adjusted portfolio weights
+  Stage 2: DynamicMasanielloSizer -> per-asset contract sizes
 
 Usage
 ─────
@@ -71,7 +71,7 @@ class BridgeResult:
 
 class MasanielloBridge:
     """
-    Two-stage pipeline: Portfolio Optimiser → Per-Asset Masaniello Sizing.
+    Two-stage pipeline: Portfolio Optimiser -> Per-Asset Masaniello Sizing.
     
     Stage 1 solves for optimal portfolio weights using regime-adjusted
     expected returns and drawdown constraints.

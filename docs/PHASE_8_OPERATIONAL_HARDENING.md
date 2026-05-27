@@ -397,7 +397,7 @@ class ModeManager:
     4. Mode change triggers health check on target environment
     5. Live mode requires explicit acknowledgment of risk disclaimer
 
-    Flow for PAPER → LIVE:
+    Flow for PAPER -> LIVE:
     1. User requests mode change in UI
     2. Backend generates confirmation token, stores in Redis with 5-min TTL
     3. UI shows risk disclaimer + confirmation dialog with token
@@ -408,7 +408,7 @@ class ModeManager:
     8. Backend sends Discord notification
     9. Frontend updates all visual indicators
 
-    Flow for LIVE → PAPER:
+    Flow for LIVE -> PAPER:
     1. User requests mode change
     2. Backend cancels all open live orders (safety)
     3. Backend switches to paper endpoint
@@ -502,10 +502,10 @@ class ReconciliationService:
     2. PERIODIC - Every 15 minutes, reconcile all orders from the last 24 hours
 
     Thresholds (configurable):
-    - SLIPPAGE_WARNING: > 50 bps → log warning
-    - SLIPPAGE_CRITICAL: > 200 bps → trigger risk alert + Discord notification
-    - PARTIAL_FILL_TIMEOUT: 5 minutes → convert remaining to market order or cancel
-    - MISSED_FILL_TIMEOUT: 10 minutes → escalate to manual review
+    - SLIPPAGE_WARNING: > 50 bps -> log warning
+    - SLIPPAGE_CRITICAL: > 200 bps -> trigger risk alert + Discord notification
+    - PARTIAL_FILL_TIMEOUT: 5 minutes -> convert remaining to market order or cancel
+    - MISSED_FILL_TIMEOUT: 10 minutes -> escalate to manual review
 
     Also reconciles position counts: our DB positions vs Alpaca's reported positions.
     """

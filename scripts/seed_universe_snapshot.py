@@ -38,7 +38,7 @@ HISTORICAL_EVENTS = [
     ("CTLT",   "added",   date(2020, 9, 21)),
     ("SEDG",   "added",   date(2020, 9, 21)),
     # Removed in same Sep 2020 rebalance
-    ("HFC",    "removed", date(2020, 9, 21)),   # HollyFrontier → merged
+    ("HFC",    "removed", date(2020, 9, 21)),   # HollyFrontier -> merged
     ("CPRI",   "removed", date(2020, 9, 21)),   # Capri Holdings
     ("FLIR",   "removed", date(2020, 9, 21)),   # FLIR Systems
     ("AIZ",    "removed", date(2020, 9, 21)),   # Assurant (temp removal)

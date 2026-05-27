@@ -1,4 +1,4 @@
-"""Centralized exception → HTTP status code mapping."""
+"""Centralized exception -> HTTP status code mapping."""
 
 import logging
 from fastapi import HTTPException
@@ -10,15 +10,15 @@ def classify_exception(exc: Exception) -> int:
     """Map an exception to the appropriate HTTP status code.
 
     Rules:
-        ValueError, TypeError           → 400  (bad input)
-        KeyError, AttributeError        → 400  (missing required field)
-        numpy.linalg.LinAlgError        → 422  (valid input, computation failed)
-        scipy exceptions                → 422  (valid input, computation failed)
-        FileNotFoundError, LookupError   → 404  (resource not found)
-        ImportError, ModuleNotFoundError → 503  (dependency missing)
+        ValueError, TypeError           -> 400  (bad input)
+        KeyError, AttributeError        -> 400  (missing required field)
+        numpy.linalg.LinAlgError        -> 422  (valid input, computation failed)
+        scipy exceptions                -> 422  (valid input, computation failed)
+        FileNotFoundError, LookupError   -> 404  (resource not found)
+        ImportError, ModuleNotFoundError -> 503  (dependency missing)
         ConnectionError, TimeoutError,
-        OSError                          → 502  (upstream failure)
-        Generic Exception                → 500  (unexpected failure)
+        OSError                          -> 502  (upstream failure)
+        Generic Exception                -> 500  (unexpected failure)
     """
     import numpy
 

@@ -457,9 +457,9 @@ class TDAEngine:
         Estimate probability of regime change based on TDA features.
         
         Indicators:
-        1. High anomaly score → topology has changed
-        2. Betti number spikes → new structure forming
-        3. Betti-0 decreasing rapidly → components merging → convergence
+        1. High anomaly score -> topology has changed
+        2. Betti number spikes -> new structure forming
+        3. Betti-0 decreasing rapidly -> components merging -> convergence
         """
         prob = 0.0
         

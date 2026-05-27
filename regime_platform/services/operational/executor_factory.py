@@ -4,7 +4,7 @@ Executor Factory - Singleton provider for properly-configured AlpacaExecutor ins
 Problem:
   All operational services (kill_switch, reconciler, mode_manager) were creating
   `AlpacaExecutor()` with no arguments, which meant:
-  - No API keys → always in simulation mode
+  - No API keys -> always in simulation mode
   - `executor.api` attribute doesn't exist (it's `executor._client`)
   - Emergency cancel/close/reconcile silently did nothing
 
@@ -190,7 +190,7 @@ class ExecutorFactory:
         if self._executor is not None and self._last_base_url != current_base_url:
             logger.info(
                 f"ExecutorFactory: Base URL changed "
-                f"({self._last_base_url} → {current_base_url}), re-creating executor"
+                f"({self._last_base_url} -> {current_base_url}), re-creating executor"
             )
             self._executor = None
             self._api_client = None

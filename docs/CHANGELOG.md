@@ -75,10 +75,10 @@
 - `POST /renko/execution/model` - Execution cost modeling
 
 ### Institutional Maturity Score
-- Overall: **2.8 → 3.7** (crosses 3.5 institutional threshold)
-- Data Quality: 1.5 → 4.0
-- Statistical Validation: 2.5 → 4.0
-- Execution Modeling: 2.5 → 4.0
+- Overall: **2.8 -> 3.7** (crosses 3.5 institutional threshold)
+- Data Quality: 1.5 -> 4.0
+- Statistical Validation: 2.5 -> 4.0
+- Execution Modeling: 2.5 -> 4.0
 
 ---
 
@@ -125,12 +125,12 @@
 - Key format: `bt:{prefix}:{sha256_hash}` where prefix is `renko`, `renko:compare`, `renko:optimize`, or `hmm`
 - Graceful fallback: if `REDIS_URL` is not configured or Redis is unavailable, all operations are no-ops
 - Redis failures NEVER propagate to the caller - cache miss is returned instead
-- `get(prefix, body)` → cached result dict or None (cache miss)
-- `set(prefix, body, result)` → True/False (stores with 1h TTL)
-- `invalidate(prefix, body)` → removes specific cached result
-- `clear_prefix(prefix)` → removes all cached results for a prefix (admin/debug)
-- `get_stats()` → key counts, memory usage, TTL info
-- `close()` → graceful Redis connection cleanup
+- `get(prefix, body)` -> cached result dict or None (cache miss)
+- `set(prefix, body, result)` -> True/False (stores with 1h TTL)
+- `invalidate(prefix, body)` -> removes specific cached result
+- `clear_prefix(prefix)` -> removes all cached results for a prefix (admin/debug)
+- `get_stats()` -> key counts, memory usage, TTL info
+- `close()` -> graceful Redis connection cleanup
 - Singleton `backtest_cache` shared across all endpoints
 
 #### Cache Integration - Renko Endpoints
@@ -210,7 +210,7 @@ Three isolated backtest endpoints that run on standalone `RenkoPipeline` instanc
 
 #### Renko HFT Pipeline v2
 - 14 endpoints under `/renko/` prefix
-- 6-layer pipeline: brick → swing → pattern → signal → risk → execution
+- 6-layer pipeline: brick -> swing -> pattern -> signal -> risk -> execution
 - Supabase caching with 4-hour TTL
 - Yahoo Finance warm-up integration
 - Pattern confidence scoring
@@ -365,13 +365,13 @@ Three isolated backtest endpoints that run on standalone `RenkoPipeline` instanc
 
 #### `curl_test.sh` - NEW FILE
 Bash script: 6 assertions against a live server.
-1. GET /health → 200
-2. POST /analyse/full with 200 synthetic SPY bars → 200
+1. GET /health -> 200
+2. POST /analyse/full with 200 synthetic SPY bars -> 200
 3. All 12 response fields present (regime_label, confidence, risk_multiplier,
    recommended_f, sharpe_ratio, var_95, cvar_95, max_drawdown, suggested_stop,
    suggested_tp, etc.)
-4. 6-bar payload → 422 (validation rejection)
-5. Negative price → 422 (validation rejection)
+4. 6-bar payload -> 422 (validation rejection)
+5. Negative price -> 422 (validation rejection)
 Supports custom base URL: `./curl_test.sh http://my-host:8000`
 Coloured output with jq if installed, falls back to python3 -m json.tool.
 
@@ -392,7 +392,7 @@ prints a formatted TickResponse for each tick.
 Browser EventSource monitor for GET /sse/alerts.
 - EventSource auto-reconnect with error distinction (never-connected vs dropped)
 - Every raw message logged via console.log; alerts routed by severity:
-  critical → console.error · warning → console.warn · info → console.info
+  critical -> console.error · warning -> console.warn · info -> console.info
 - Alert entry: coloured regime labels, mult/f* extracted from message string,
   critical badge pulses 3× via CSS animation
 - Stats bar: live counts per severity, heartbeat count, uptime timer, last alert
@@ -401,7 +401,7 @@ Browser EventSource monitor for GET /sse/alerts.
 
 #### `payload_spy_200bars.json` - NEW FILE
 Ready-made 200-bar SPY JSON payload for curl / Postman / Insomnia testing.
-4-segment multi-regime series (low-vol bull → med bull → med bear → high-vol bear).
+4-segment multi-regime series (low-vol bull -> med bull -> med bear -> high-vol bear).
 
 ### Changed
 - `README.md` - full rewrite: complete project structure tree, all 21 endpoints,
@@ -466,7 +466,7 @@ New public symbols:
 - Floor at 0.25 preserves minimum position participation during drawdown.
 
 `V_i = clip(ATR_baseline / ATR_current, 0.5, 1.5)`
-- Inverted ATR ratio. High vol → shrink; low vol → mild expansion.
+- Inverted ATR ratio. High vol -> shrink; low vol -> mild expansion.
 
 **Pre-flight gates (in priority order, fire before formula):**
 1. equity > 0
@@ -539,7 +539,7 @@ the min_risk floor still applies (position is not zeroed out).
 - Three regime layers: (1) regime-adjusted μ, (2) per-asset weight bounds, (3) correlation exposure
 - Drawdown constraint via Cornish-Fisher CVaR proxy (analytic - no simulation required)
 - Correlation exposure scalar: `low_corr=1.00` · `mid_corr=0.90` · `high_corr=0.70` · `crisis=0.50`
-- Weight bounds tightened per-asset: `high_vol_strong_bear → max_weight × 0.25`
+- Weight bounds tightened per-asset: `high_vol_strong_bear -> max_weight × 0.25`
 - Scipy SLSQP solver with configurable `max_iter`, `tol`, and `dd_penalty_lambda`
 - `OptimisationResult` - weights, regime_adj_weights, expected return/vol/Sharpe/DD, convergence info
 
@@ -568,14 +568,14 @@ the min_risk floor still applies (position is not zeroed out).
 ### Architecture summary
 
 ```
-GET  /gpu/capabilities       pomegranate install check → CUDA/MPS/CPU selection
-POST /gpu/benchmark          synthetic fit → latency report
+GET  /gpu/capabilities       pomegranate install check -> CUDA/MPS/CPU selection
+POST /gpu/benchmark          synthetic fit -> latency report
 
-POST /feeds/start            FeedManager → AlpacaFeedAdapter/BinanceFeedAdapter/IBFeedAdapter
-                             → SessionRegistry.get(symbol).tick(close, ts)
+POST /feeds/start            FeedManager -> AlpacaFeedAdapter/BinanceFeedAdapter/IBFeedAdapter
+                             -> SessionRegistry.get(symbol).tick(close, ts)
 
-POST /correlation/detect     rolling corr features → 4-state HMM → corr regime label
-POST /optimise               regime-adj μ → SLSQP → DD-constrained weights
+POST /correlation/detect     rolling corr features -> 4-state HMM -> corr regime label
+POST /optimise               regime-adj μ -> SLSQP -> DD-constrained weights
 POST /optimise/full          detect + optimise in one request
 ```
 
@@ -614,7 +614,7 @@ POST /optimise/full          detect + optimise in one request
 
 #### `auth/jwt_auth.py` - NEW FILE
 - `create_access_token(data)` - creates signed HS256 JWT
-- `decode_token(token)` - validates and decodes JWT → `TokenData`
+- `decode_token(token)` - validates and decodes JWT -> `TokenData`
 - `get_current_user` - FastAPI Depends for HTTP endpoint auth
 - `require_write` - Depends requiring trader or admin role
 - `require_admin` - Depends requiring admin role
@@ -650,11 +650,11 @@ POST /optimise/full          detect + optimise in one request
 ### Architecture summary
 
 ```
-POST /simulate/{symbol}    HMM fit → 16-state Kronecker system → Monte Carlo
-GET  /portfolio            SessionRegistry → per-symbol regime + risk → aggregate
-POST /auth/token           credential check → JWT issue
+POST /simulate/{symbol}    HMM fit -> 16-state Kronecker system -> Monte Carlo
+GET  /portfolio            SessionRegistry -> per-symbol regime + risk -> aggregate
+POST /auth/token           credential check -> JWT issue
 WS   /ws/{symbol}          (auth-ready: pass ?token=<jwt> to authenticate)
-REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
+REDIS_URL (env)            on startup -> restore buffers -> re-fit HMMs
 ```
 
 ---
@@ -725,7 +725,7 @@ REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
 ### Changed - 4-State HMM Regime Detection
 
 #### `core/regime_engine.py`
-- **n_components: 3 → 4** for both the volatility and trend HMMs
+- **n_components: 3 -> 4** for both the volatility and trend HMMs
 - Volatility states: `low | med_low | med_high | high`  (was `low | medium | high`)
 - Trend states: `strong_bear | bear | bull | strong_bull`  (was `bear | neutral | bull`)
 - Volatile feature set expanded: vol HMM now uses 3 features (20-bar RV, 5-bar RV, |return|); trend HMM uses 3 features (return, 10-bar cum, 30-bar cum)
@@ -738,7 +738,7 @@ REDIS_URL (env)            on startup → restore buffers → re-fit HMMs
 - `routers/regime.py`, `routers/pipeline.py` - label zips use `RegimeHMM.VOL_LABELS` / `RegimeHMM.TREND_LABELS`
 - `routers/stream_rest.py`, `routers/stream_ws.py` - same label zip update
 - `models/schemas.py`, `models/stream_schemas.py` - `min_length` / `ge` validators updated to 81
-- `services/stream_session.py` - `MIN_PRICES_FOR_FIT` updated from 51 → 81
+- `services/stream_session.py` - `MIN_PRICES_FOR_FIT` updated from 51 -> 81
 
 #### Added
 - `test_platform_v4.py` - 4-state smoke test verifying 4 prob vectors, 16-cell multiplier table, and correct assertions
@@ -790,7 +790,7 @@ Follows [Semantic Versioning](https://semver.org/).
 - Updated app factory including all streaming routers alongside existing batch routers
 
 #### `test_streaming.py`
-- Async smoke test: seed → 160-tick stream → subscriber queue → regime transition assertions
+- Async smoke test: seed -> 160-tick stream -> subscriber queue -> regime transition assertions
 
 ### Fixed
 

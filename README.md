@@ -77,7 +77,7 @@ regime_risk_platform/
 │   ├── index.html                    Full documentation site (26 pages)
 │   ├── ws-client.html                Interactive WebSocket test client
 │   ├── openapi.yaml                  OpenAPI 3.1 specification
-│   ├── CHANGELOG.md                  Complete version history (v1.0 → v3.1)
+│   ├── CHANGELOG.md                  Complete version history (v1.0 -> v3.1)
 │   └── deployment.md                 Production operations guide
 │
 ├── tests/
@@ -350,8 +350,8 @@ POST /stream/tick  {"symbol": "SPY", "price": 512.34}
 
 # 2b. WebSocket
 ws://localhost:8000/ws/SPY
-→ {"type":"seed","symbol":"SPY","prices":[...]}
-→ {"type":"tick","symbol":"SPY","price":512.34}
+-> {"type":"seed","symbol":"SPY","prices":[...]}
+-> {"type":"tick","symbol":"SPY","price":512.34}
 
 # 2c. Subscribe (read-only)
 GET /sse/SPY          # per-symbol tick stream
@@ -570,7 +570,7 @@ Without `REDIS_URL`, all state is in-memory with zero overhead.
 ```bash
 pip install pomegranate torch
 GET /gpu/capabilities
-# → {"active_device": "cuda", "hmm_backend": "GpuRegimeHMM (pomegranate)"}
+# -> {"active_device": "cuda", "hmm_backend": "GpuRegimeHMM (pomegranate)"}
 ```
 
 Transparent fallback to hmmlearn on CPU - no code changes required.

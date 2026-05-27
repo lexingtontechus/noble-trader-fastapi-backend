@@ -531,10 +531,10 @@ class AlpacaExecutor:
         Log order result to audit trail.
 
         Maps OrderResult.status to AuditEventType:
-        - SIMULATED/SUBMITTED/PARTIALLY_FILLED → ORDER_SUBMITTED
-        - FILLED → ORDER_FILLED
-        - REJECTED → ORDER_REJECTED
-        - CANCELLED → ORDER_CANCELLED
+        - SIMULATED/SUBMITTED/PARTIALLY_FILLED -> ORDER_SUBMITTED
+        - FILLED -> ORDER_FILLED
+        - REJECTED -> ORDER_REJECTED
+        - CANCELLED -> ORDER_CANCELLED
         """
         try:
             from regime_platform.services.operational.audit_logger import (

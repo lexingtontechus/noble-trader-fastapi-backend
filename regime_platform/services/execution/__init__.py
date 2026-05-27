@@ -6,7 +6,7 @@ Provides models for realistic execution simulation:
   - Fill probability modeling (limit/stop orders)
   - Borrowing & financing costs (short/leveraged positions)
 
-All default parameters are configurable via runtime_config (DB → env → hardcoded).
+All default parameters are configurable via runtime_config (DB -> env -> hardcoded).
 Use `get_execution_defaults()` to resolve them in async contexts.
 """
 
@@ -36,7 +36,7 @@ async def get_execution_defaults() -> dict:
     Returns a dict with keys matching the computation function parameter names,
     ready to be used as fallbacks when the caller doesn't provide explicit values.
 
-    Resolution: DB override → env var → hardcoded default.
+    Resolution: DB override -> env var -> hardcoded default.
     """
     from regime_platform.core.runtime_config import runtime_config
 

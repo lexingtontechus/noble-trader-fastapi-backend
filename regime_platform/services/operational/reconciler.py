@@ -6,10 +6,10 @@ Compares internal order expectations against Alpaca's reported fills:
 2. PERIODIC  - Reconcile all orders from last 24 hours
 
 Thresholds (configurable):
-- SLIPPAGE_WARNING: > 50 bps → log warning
-- SLIPPAGE_CRITICAL: > 200 bps → trigger risk alert + Discord
-- PARTIAL_FILL_TIMEOUT: 5 min → suggest cancel or convert to market
-- MISSED_FILL_TIMEOUT: 10 min → escalate
+- SLIPPAGE_WARNING: > 50 bps -> log warning
+- SLIPPAGE_CRITICAL: > 200 bps -> trigger risk alert + Discord
+- PARTIAL_FILL_TIMEOUT: 5 min -> suggest cancel or convert to market
+- MISSED_FILL_TIMEOUT: 10 min -> escalate
 
 Also reconciles position counts: our DB vs Alpaca's reported positions.
 """
@@ -63,8 +63,8 @@ class ReconciliationService:
     """
 
     # Thresholds (can be overridden via constructor)
-    SLIPPAGE_WARNING_BPS = 50      # > 50 bps → warning
-    SLIPPAGE_CRITICAL_BPS = 200    # > 200 bps → critical alert
+    SLIPPAGE_WARNING_BPS = 50      # > 50 bps -> warning
+    SLIPPAGE_CRITICAL_BPS = 200    # > 200 bps -> critical alert
     PARTIAL_FILL_TIMEOUT_S = 300   # 5 minutes
     MISSED_FILL_TIMEOUT_S = 600    # 10 minutes
 

@@ -14,7 +14,7 @@ transformation from a solid but gap-ridden system into a platform whose results
 are defensible to institutional investors. We scored every dimension against what
 institutional quant desks demand, identified the gaps, and closed them - one by one.
 
-**Overall maturity: 2.8 / 5 → 3.7 / 5** - a **32% improvement** that crosses the
+**Overall maturity: 2.8 / 5 -> 3.7 / 5** - a **32% improvement** that crosses the
 critical 3.5 threshold ("serious quant platform, defensible to institutional
 investors").
 
@@ -52,7 +52,7 @@ observability tooling as the platform scales.
 
 ## Dimension-by-Dimension Deep Dive
 
-### 1. Execution Modeling - 2.5 → 4.0 (+1.5)
+### 1. Execution Modeling - 2.5 -> 4.0 (+1.5)
 
 **What institutional standard demands:** Realistic execution simulation that
 accounts for market impact (price moves against you when you trade size),
@@ -82,7 +82,7 @@ models it comprehensively.
 
 ---
 
-### 2. Risk Management - 4.0 → 4.0 (Already Strong)
+### 2. Risk Management - 4.0 -> 4.0 (Already Strong)
 
 **What institutional standard demands:** Per-trade stop-loss and take-profit,
 OCO (one-cancels-other) handling, position sizing, and drawdown controls.
@@ -104,7 +104,7 @@ added precision (OCO handling, gap-through stops) that most platforms lack entir
 
 ---
 
-### 3. Statistical Validation - 2.5 → 4.0 (+1.5)
+### 3. Statistical Validation - 2.5 -> 4.0 (+1.5)
 
 **What institutional standard demands:** The ability to answer *"How many things
 did you try before this one worked?"* Institutional investors reject backtest
@@ -136,7 +136,7 @@ quants cite.
 
 ---
 
-### 4. Data Quality - 1.5 → 4.0 (+2.5, Largest Improvement)
+### 4. Data Quality - 1.5 -> 4.0 (+2.5, Largest Improvement)
 
 **What institutional standard demands:** Point-in-time data with delisted
 securities, split/dividend-adjusted prices, full data lineage, and systematic
@@ -167,7 +167,7 @@ largest improvement across the entire platform.
 
 ---
 
-### 5. Cost Modeling - 3.0 → 3.5 (+0.5)
+### 5. Cost Modeling - 3.0 -> 3.5 (+0.5)
 
 **What institutional standard demands:** Granular, per-trade cost breakdowns
 that separate commission, slippage, spread, market impact, borrow costs, and
@@ -195,7 +195,7 @@ breakdowns enable this diagnosis.
 
 ---
 
-### 6. Infrastructure - 2.5 → 3.0 (+0.5)
+### 6. Infrastructure - 2.5 -> 3.0 (+0.5)
 
 **What institutional standard demands:** SSE streaming for progressive results,
 cancellation support, reproducible backtests, and robust error handling.
@@ -218,7 +218,7 @@ non-negotiable for institutional audit compliance.
 
 ---
 
-### 7. Reporting / Attribution - 3.5 → 3.5 (Already Strong)
+### 7. Reporting / Attribution - 3.5 -> 3.5 (Already Strong)
 
 **What institutional standard demands:** Dollar-denominated P&L, regime-conditional
 performance breakdowns, and transparent cost attribution.
@@ -248,12 +248,12 @@ answer all three.
 | Phase | Focus | Key Achievement | Maturity Impact |
 |:-----:|-------|----------------|-----------------|
 | **1** | SSE Streaming | Progressive results, cancel support, real-time feedback | UX transformed from blank-screen to live-updating |
-| **2** | Transaction Cost Realism | Commission, slippage, spread - tracked separately per trade | Cost Modeling 3.0 → foundational |
-| **3** | Execution Realism | Gap-through stops, adverse fills, OCO handling | Execution 2.5 → 3.0 |
+| **2** | Transaction Cost Realism | Commission, slippage, spread - tracked separately per trade | Cost Modeling 3.0 -> foundational |
+| **3** | Execution Realism | Gap-through stops, adverse fills, OCO handling | Execution 2.5 -> 3.0 |
 | **4** | Analytics & Architecture | Dollar P&L, walk-forward, Monte Carlo, regime breakdown, TypeScript types | Reporting 3.5, Risk 4.0 secured |
-| **5** | Data Quality & Integrity | Survivorship bias elimination, corporate actions, data lineage, look-ahead hardening | **Data Quality 1.5 → 4.0** (largest single jump) |
-| **6** | Statistical Rigor | Deflated Sharpe Ratio, bootstrap CIs, multiple testing correction, White's Reality Check | **Statistical Validation 2.5 → 4.0** |
-| **7** | Advanced Execution Modeling | Almgren-Chriss impact, fill probability, borrow/financing costs | **Execution Modeling 2.5 → 4.0** |
+| **5** | Data Quality & Integrity | Survivorship bias elimination, corporate actions, data lineage, look-ahead hardening | **Data Quality 1.5 -> 4.0** (largest single jump) |
+| **6** | Statistical Rigor | Deflated Sharpe Ratio, bootstrap CIs, multiple testing correction, White's Reality Check | **Statistical Validation 2.5 -> 4.0** |
+| **7** | Advanced Execution Modeling | Almgren-Chriss impact, fill probability, borrow/financing costs | **Execution Modeling 2.5 -> 4.0** |
 
 ---
 
@@ -354,7 +354,7 @@ quantitative research platform whose results can withstand institutional
 scrutiny - survivorship-free data, statistically rigorous validation,
 realistic execution modeling, and full reproducibility.
 
-The 2.8 → 3.7 transformation didn't come from adding features for the sake
+The 2.8 -> 3.7 transformation didn't come from adding features for the sake
 of features. Each phase addressed a specific institutional credibility gap,
 and each gap was closed with the same methods that the institutions themselves
 use: Almgren-Chriss for market impact, Lopez de Prado's DSR for multiple

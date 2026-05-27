@@ -106,11 +106,11 @@ print(f"  Max weight (tight kelly): {max_w_kelly:.4f}")
 # ─── TEST 3: Correlation regime exposure ─────────────────────────────────────
 print("\n▶ Test 3: Correlation regime exposure scaling")
 
-check("Exposure: low_corr → 1.0",  _corr_regime_exposure("low_corr"), 1.0)
-check("Exposure: mid_corr → 0.90", _corr_regime_exposure("mid_corr"), 0.90)
-check("Exposure: high_corr → 0.70", _corr_regime_exposure("high_corr"), 0.70)
-check("Exposure: crisis → 0.50",   _corr_regime_exposure("crisis"), 0.50)
-check("Exposure: None → 0.90",     _corr_regime_exposure(None), 0.90)
+check("Exposure: low_corr -> 1.0",  _corr_regime_exposure("low_corr"), 1.0)
+check("Exposure: mid_corr -> 0.90", _corr_regime_exposure("mid_corr"), 0.90)
+check("Exposure: high_corr -> 0.70", _corr_regime_exposure("high_corr"), 0.70)
+check("Exposure: crisis -> 0.50",   _corr_regime_exposure("crisis"), 0.50)
+check("Exposure: None -> 0.90",     _corr_regime_exposure(None), 0.90)
 
 # Crisis regime should produce lower exposure
 result_crisis = opt.optimise(
@@ -123,18 +123,18 @@ check("Crisis: weights sum ≈ 0.50", sum(result_crisis.weights), 0.50, tol=0.05
 # ─── TEST 4: Regime weight bounds ────────────────────────────────────────────
 print("\n▶ Test 4: Regime weight bounds")
 
-# No snapshot → base_max
-check("Bound: no snap → base_max", _regime_weight_bound(None, 0.40), 0.40)
+# No snapshot -> base_max
+check("Bound: no snap -> base_max", _regime_weight_bound(None, 0.40), 0.40)
 
-# Favourable regime (mult=1.75) → 100% of base_max
+# Favourable regime (mult=1.75) -> 100% of base_max
 class FakeSnap:
     risk_multiplier = 1.75
-check("Bound: favourable → base_max", _regime_weight_bound(FakeSnap(), 0.40), 0.40, tol=0.01)
+check("Bound: favourable -> base_max", _regime_weight_bound(FakeSnap(), 0.40), 0.40, tol=0.01)
 
-# Adverse regime (mult=0.10) → 25% of base_max
+# Adverse regime (mult=0.10) -> 25% of base_max
 class AdverseSnap:
     risk_multiplier = 0.10
-check("Bound: adverse → 25% of base", _regime_weight_bound(AdverseSnap(), 0.40), 0.10, tol=0.01)
+check("Bound: adverse -> 25% of base", _regime_weight_bound(AdverseSnap(), 0.40), 0.10, tol=0.01)
 
 # ─── TEST 5: MasanielloBridge two-stage pipeline ────────────────────────────
 print("\n▶ Test 5: MasanielloBridge two-stage pipeline")
@@ -191,7 +191,7 @@ except Exception as e:
     FAIL += 1
     print(f"  ✗  Edge 2-asset: {e}")
 
-# Zero kelly fractions → all bounds tightened to 0.01
+# Zero kelly fractions -> all bounds tightened to 0.01
 try:
     result_zero_kelly = opt.optimise(
         returns_matrix=ret, symbols=symbols,
@@ -199,7 +199,7 @@ try:
     )
     # With zero kelly, upper bounds should be 0.01
     max_ub = max(b[1] for b in result_zero_kelly.per_asset_bounds)
-    check("Edge: zero kelly → tight bounds", max_ub <= 0.02, True)
+    check("Edge: zero kelly -> tight bounds", max_ub <= 0.02, True)
 except Exception as e:
     FAIL += 1
     print(f"  ✗  Edge zero kelly: {e}")

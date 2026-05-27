@@ -9,8 +9,8 @@ Design:
   - Graceful degradation: if bot token / chat ID not configured, silently skips
 
 Environment variables:
-  TELEGRAM_BOT_TOKEN  → Bot token from @BotFather
-  TELEGRAM_CHAT_ID    → Target chat ID (group or private)
+  TELEGRAM_BOT_TOKEN  -> Bot token from @BotFather
+  TELEGRAM_CHAT_ID    -> Target chat ID (group or private)
 """
 
 from __future__ import annotations

@@ -52,7 +52,7 @@
 ║    POST /size/masaniello/batch  - Batch Masaniello sizing                    ║
 ║    POST /optimise/masaniello    - Full two-stage: optimise + Masaniello       ║
 ║                                                                              ║
-║  Auth: Clerk JWT (primary) → local JWT → API key fallback                   ║
+║  Auth: Clerk JWT (primary) -> local JWT -> API key fallback                   ║
 ║  MCP:   FastAPI-MCP with auth + operation filtering (read-only/analysis)    ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -306,8 +306,8 @@ POST /optimise/masaniello  ->  portfolio optimise + per-asset Masaniello sizing
 
 Two-stage pipeline connecting portfolio optimisation to per-trade position sizing:
 
-1. **DrawdownOptimiser** → regime-adjusted portfolio weights (what to hold)
-2. **DynamicMasanielloSizer** → per-asset contract sizes (how much to hold)
+1. **DrawdownOptimiser** -> regime-adjusted portfolio weights (what to hold)
+2. **DynamicMasanielloSizer** -> per-asset contract sizes (how much to hold)
 
 Formula: `f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i`
 
@@ -488,7 +488,7 @@ Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 Agent autonomy (v7.2):
 - POST /renko/warmup - autonomous pipeline warmup (Yahoo fetch + snapshot save)
 - POST /renko/snapshot/save - persist pipeline state (Redis L1 + Supabase L2 dual-write)
-- POST /renko/snapshot/restore - recover from cold start (Redis L1 → Supabase L2 tiered restore)
+- POST /renko/snapshot/restore - recover from cold start (Redis L1 -> Supabase L2 tiered restore)
 - POST /renko/regime - update HMM regime (auto-saves on change)
 - POST /renko/equity - update account equity (auto-saves on change)
 - POST /renko/tick/batch - batch tick processing (warmup/backtest)

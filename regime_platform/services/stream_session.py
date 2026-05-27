@@ -74,15 +74,15 @@ class StreamSession:
     Stateful streaming session for one symbol.
 
     Lifecycle:
-      1. Seed with ≥51 historical prices  →  initial HMM fit
-      2. tick(price)                       →  returns StreamTick in ~1ms
-      3. Every `refit_every` bars          →  background HMM re-fit
-      4. On regime change                  →  alert callbacks fired
+      1. Seed with ≥51 historical prices  ->  initial HMM fit
+      2. tick(price)                       ->  returns StreamTick in ~1ms
+      3. Every `refit_every` bars          ->  background HMM re-fit
+      4. On regime change                  ->  alert callbacks fired
 
     Configuration:
       All params (window, kelly_fraction, target_vol, base_risk_limit,
       refit_every, regime_debounce) are configurable via from_runtime_config()
-      which resolves from the DB → env → hardcoded default chain.
+      which resolves from the DB -> env -> hardcoded default chain.
     """
 
     # Hardcoded fallback - overridden by runtime_config in from_runtime_config()
@@ -129,7 +129,7 @@ class StreamSession:
         """
         Create a StreamSession with params from the runtime configuration system.
 
-        Resolution: DB override → env var → hardcoded default.
+        Resolution: DB override -> env var -> hardcoded default.
         """
         from ..core.runtime_config import runtime_config
 
@@ -265,7 +265,7 @@ class StreamSession:
         if regime_changed:
             alert_msg = (
                 f"⚡ REGIME CHANGE [{self.symbol}]: "
-                f"{self._last_regime} → {snap.regime_label} "
+                f"{self._last_regime} -> {snap.regime_label} "
                 f"| risk_mult={snap.risk_multiplier:.2f}× "
                 f"| recommended_f={size_result.recommended_f:.4f}"
             )

@@ -19,10 +19,10 @@ Architecture
 3. Extract upper-triangle correlation features (vectorised)
 4. Run a 4-state GaussianHMM on the correlation feature vector
 5. Label states semantically by mean absolute correlation level:
-     low_corr  → mean |ρ| < 0.2 (diversified, normal market)
-     mid_corr  → mean |ρ| ∈ [0.2, 0.5] (moderate comovement)
-     high_corr → mean |ρ| ∈ [0.5, 0.75] (stress, pre-crisis)
-     crisis    → mean |ρ| > 0.75 (crash - full correlation)
+     low_corr  -> mean |ρ| < 0.2 (diversified, normal market)
+     mid_corr  -> mean |ρ| ∈ [0.2, 0.5] (moderate comovement)
+     high_corr -> mean |ρ| ∈ [0.5, 0.75] (stress, pre-crisis)
+     crisis    -> mean |ρ| > 0.75 (crash - full correlation)
 6. Overlay per-asset signals from RegimeHMM with the correlation regime
 
 Output: CorrelationSnapshot with per-asset breakdown + portfolio-level
@@ -68,10 +68,10 @@ class CorrelationSnapshot:
       low_corr | mid_corr | high_corr | crisis
 
     `corr_risk_multiplier` scales DOWN the per-asset multipliers:
-      low_corr  → 1.00 (full diversification benefit)
-      mid_corr  → 0.85
-      high_corr → 0.60
-      crisis    → 0.35 (diversification has collapsed)
+      low_corr  -> 1.00 (full diversification benefit)
+      mid_corr  -> 0.85
+      high_corr -> 0.60
+      crisis    -> 0.35 (diversification has collapsed)
 
     `blended_risk_multiplier` combines per-asset and correlation regimes:
       blended = mean(per_asset_multipliers) × corr_risk_multiplier
@@ -293,7 +293,7 @@ class CorrelationRegimeDetector:
             posteriors = np.full(n, 1.0 / n)
         posteriors /= posteriors.sum()
 
-        # Label states by mean absolute correlation (ascending → low..crisis)
+        # Label states by mean absolute correlation (ascending -> low..crisis)
         mean_abs = np.array([
             float(np.mean(np.abs(model.means_[k])))
             for k in range(n_states)

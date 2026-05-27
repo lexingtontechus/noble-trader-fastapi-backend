@@ -2,9 +2,9 @@
 Notifications Package - Discord and Telegram integration for the Noble Trader Agent.
 
 Discord Channels:
-  - #trade-signals   → Renko pattern signals (bull run, bear run, reversal, etc.)
-  - #trade-executions → Alpaca order fills, SL/TP hits
-  - #system-status   → Warmup completions, pipeline resets, errors, health, P&L alerts
+  - #trade-signals   -> Renko pattern signals (bull run, bear run, reversal, etc.)
+  - #trade-executions -> Alpaca order fills, SL/TP hits
+  - #system-status   -> Warmup completions, pipeline resets, errors, health, P&L alerts
 
 Telegram:
   - Single chat for P&L alerts, risk alerts, and system status

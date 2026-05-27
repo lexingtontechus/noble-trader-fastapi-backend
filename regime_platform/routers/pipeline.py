@@ -1,4 +1,4 @@
-"""Full pipeline: regime → sizing → risk in one call."""
+"""Full pipeline: regime -> sizing -> risk in one call."""
 
 from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import FullAnalysisRequest, FullAnalysisResponse, RegimeResponse, SizeResponse, RiskResponse
@@ -18,7 +18,7 @@ riskman = RiskManager()
 async def full_analysis(req: FullAnalysisRequest, user: TokenData = Depends(get_authed_user)):
     """
     Runs the complete pipeline in a single request:
-    1. Fit HMM regime model → get vol/trend posteriors
+    1. Fit HMM regime model -> get vol/trend posteriors
     2. Compute regime-gated Kelly position size
     3. Compute VaR, CVaR, drawdown, and trade guidance
     Returns a nested JSON with all three result objects.

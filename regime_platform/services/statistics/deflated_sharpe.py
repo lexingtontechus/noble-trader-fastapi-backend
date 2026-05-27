@@ -97,7 +97,7 @@ def deflated_sharpe_ratio(
         dsr_stat = (sr * np.sqrt(sample_length) - expected_max_sr * np.sqrt(sample_length)) / np.sqrt(sample_length * sr_variance / annualize_factor)
         dsr = float(sp_stats.norm.cdf(dsr_stat))
     else:
-        dsr = 0.5  # No variance → no information
+        dsr = 0.5  # No variance -> no information
     
     p_value = 1 - dsr
     is_significant = dsr > 0.95

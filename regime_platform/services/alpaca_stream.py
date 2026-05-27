@@ -11,13 +11,13 @@ Architecture:
   │                                                      │
   │  Per-user streams:                                   │
   │  ├─ trade_ws  (wss://api.alpaca.markets/stream)     │
-  │  │   → fills, account updates, position changes      │
+  │  │   -> fills, account updates, position changes      │
   │  ├─ data_ws   (wss://stream.data.alpaca.markets/..) │
-  │  │   → real-time quotes/trades for held positions    │
+  │  │   -> real-time quotes/trades for held positions    │
   │  │                                                    │
   │  Fan-out:                                            │
   │  └─ asyncio.Queue per SSE consumer                   │
-  │     → position_update, price_tick, pnl_snapshot,     │
+  │     -> position_update, price_tick, pnl_snapshot,     │
   │       account_update events                          │
   └─────────────────────────────────────────────────────┘
 
@@ -231,7 +231,7 @@ class UserStream:
     data_task: Optional[asyncio.Task] = None
     snapshot_task: Optional[asyncio.Task] = None
 
-    # Current positions cache (symbol → position dict)
+    # Current positions cache (symbol -> position dict)
     positions_cache: dict[str, dict] = field(default_factory=dict)
 
     # Last account snapshot
@@ -391,7 +391,7 @@ class AlpacaStreamManager:
     """
 
     def __init__(self):
-        self._streams: dict[str, UserStream] = {}  # user_id → UserStream
+        self._streams: dict[str, UserStream] = {}  # user_id -> UserStream
         self._lock = asyncio.Lock()
 
     async def start(self, user_id: str) -> Optional[UserStream]:

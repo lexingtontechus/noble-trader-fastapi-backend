@@ -77,43 +77,43 @@ def check(name, expr, expected=True, tol=None):
 print("\n▶ Test 1: Factor math - boundary conditions")
 
 # M_i
-check("M_i: target met → 0.0",      _masaniello_factor(3, 1, 5, 3), 0.0)
+check("M_i: target met -> 0.0",      _masaniello_factor(3, 1, 5, 3), 0.0)
 check("M_i: 0 wins, 1 trade left",  _masaniello_factor(0, 5, 5, 3), 1.5, tol=0.01)
 check("M_i: 1 win, 2 left, W=3",    _masaniello_factor(1, 4, 5, 3), 1.0, tol=1e-9)
-check("M_i: clamp upper 1.5",       _masaniello_factor(0, 5, 5, 5), 1.5)  # 5 wins in 1 trade → clamped
+check("M_i: clamp upper 1.5",       _masaniello_factor(0, 5, 5, 5), 1.5)  # 5 wins in 1 trade -> clamped
 check("M_i: clamp lower 0.0",       _masaniello_factor(5, 1, 5, 3) >= 0.0, True)
 
 # Q_i
-check("Q_i: p_win at floor → 0.0",  _quality_factor(0.50, 1.0, 1.0), 0.0)
+check("Q_i: p_win at floor -> 0.0",  _quality_factor(0.50, 1.0, 1.0), 0.0)
 check("Q_i: p_win=0.60, q=1, c=1",  _quality_factor(0.60, 1.0, 1.0), 1.0,  tol=1e-9)
 check("Q_i: p_win=0.65, q=1, c=1",  _quality_factor(0.65, 1.0, 1.0), 1.5,  tol=1e-9)  # prob_factor clamped
-check("Q_i: zero confidence → 0",   _quality_factor(0.65, 1.0, 0.0), 0.0)
+check("Q_i: zero confidence -> 0",   _quality_factor(0.65, 1.0, 0.0), 0.0)
 check("Q_i: max possible",          _quality_factor(0.65, 1.5, 1.0), 2.25, tol=1e-9)
-check("Q_i: low regime → 0",        _quality_factor(0.65, 0.0, 1.0), 0.0)
+check("Q_i: low regime -> 0",        _quality_factor(0.65, 0.0, 1.0), 0.0)
 
 # DD_i
-check("DD_i: no drawdown → 1.0",    _drawdown_factor(0.0,  0.10), 1.0)
-check("DD_i: half max → 0.50",      _drawdown_factor(0.05, 0.10), 0.50, tol=1e-9)
-check("DD_i: at max → floor 0.25",  _drawdown_factor(0.10, 0.10), 0.25)
-check("DD_i: beyond max → floor",   _drawdown_factor(0.20, 0.10), 0.25)
+check("DD_i: no drawdown -> 1.0",    _drawdown_factor(0.0,  0.10), 1.0)
+check("DD_i: half max -> 0.50",      _drawdown_factor(0.05, 0.10), 0.50, tol=1e-9)
+check("DD_i: at max -> floor 0.25",  _drawdown_factor(0.10, 0.10), 0.25)
+check("DD_i: beyond max -> floor",   _drawdown_factor(0.20, 0.10), 0.25)
 check("DD_i: floor is 0.25",        _drawdown_factor(1.00, 0.10), 0.25)
 
 # V_i
-check("V_i: baseline=current → 1.0",  _volatility_factor(10.0, 10.0), 1.0)
-check("V_i: vol doubled → 0.5 floor", _volatility_factor(10.0, 20.0), 0.5)
-check("V_i: vol halved → 1.5 cap",    _volatility_factor(10.0,  5.0), 1.5)
-check("V_i: zero current → 1.0",      _volatility_factor(10.0,  0.0), 1.0)
-check("V_i: very low vol → cap 1.5",  _volatility_factor(10.0,  1.0), 1.5)
+check("V_i: baseline=current -> 1.0",  _volatility_factor(10.0, 10.0), 1.0)
+check("V_i: vol doubled -> 0.5 floor", _volatility_factor(10.0, 20.0), 0.5)
+check("V_i: vol halved -> 1.5 cap",    _volatility_factor(10.0,  5.0), 1.5)
+check("V_i: zero current -> 1.0",      _volatility_factor(10.0,  0.0), 1.0)
+check("V_i: very low vol -> cap 1.5",  _volatility_factor(10.0,  1.0), 1.5)
 
 # Kelly
-check("Kelly: no edge → 0.0",       _fractional_kelly(0.50, 1.0, 0.25), 0.0)
+check("Kelly: no edge -> 0.0",       _fractional_kelly(0.50, 1.0, 0.25), 0.0)
 check("Kelly: p=0.6 R=2",           _fractional_kelly(0.60, 2.0, 0.25), 0.25 * ((2.0*0.6 - 0.4)/2.0), tol=1e-9)
-check("Kelly: b=0 → 0.0",           _fractional_kelly(0.60, 0.0, 0.25), 0.0)
+check("Kelly: b=0 -> 0.0",           _fractional_kelly(0.60, 0.0, 0.25), 0.0)
 
 # Edge
 check("Edge: p=0.6 R=2.0",         _expected_edge(0.6, 2.0), 0.6*2.0 - 0.4, tol=1e-9)
-check("Edge: p=0.5 R=2.0 → 0.5",   _expected_edge(0.5, 2.0), 0.5, tol=1e-9)
-check("Edge: p=0.4 R=1.0 → -0.2",  _expected_edge(0.4, 1.0), -0.2, tol=1e-9)
+check("Edge: p=0.5 R=2.0 -> 0.5",   _expected_edge(0.5, 2.0), 0.5, tol=1e-9)
+check("Edge: p=0.4 R=1.0 -> -0.2",  _expected_edge(0.4, 1.0), -0.2, tol=1e-9)
 
 # ─── TEST 2: Core formula correctness ─────────────────────────────────────────
 print("\n▶ Test 2: Core formula - known inputs")
@@ -153,7 +153,7 @@ check("Formula: DD_i = 1.0",            res.drawdown_factor,   1.0,    tol=1e-9)
 check("Formula: V_i = 1.0",             res.volatility_factor, 1.0,    tol=1e-9)
 check("Formula: f = 0.0055",            res.risk_fraction,     f_exp,  tol=1e-6)
 check("Formula: risk_amount = 550",      res.risk_amount,       100_000 * f_exp, tol=0.01)
-# units = 550 / (2.0 × 50) = 550 / 100 = 5.5 → contracts = 5
+# units = 550 / (2.0 × 50) = 550 / 100 = 5.5 -> contracts = 5
 check("Formula: units = 5.5",           res.units,    5.5,   tol=1e-6)
 check("Formula: contracts = 5",         res.contracts, 5)
 print(f"  {res.summary()}")
@@ -186,7 +186,7 @@ check("Gate: edge≤0",       "Expected edge non-positive" in blocked_reason({"p
 s2 = DynamicMasanielloSizer(SizingConfig(batch_halt_dd=0.05, min_rr=1.0, regime_floor=0.0))
 s2.batch._initial_equity = 100_000
 s2.batch.peak_equity = 100_000
-s2.batch.pnl         = -6_000   # 6% drawdown → triggers halt
+s2.batch.pnl         = -6_000   # 6% drawdown -> triggers halt
 ctx2 = TradeContext(
     equity=94_000, stop_distance_price=1.0, point_value=1.0,
     p_win=0.60, reward_risk=2.0, regime_quality=1.0, state_confidence=0.8,
@@ -342,11 +342,11 @@ check("Batch: drawdown computed",      dd > 0.0, True)
 check("Batch: drawdown ≈ 3%",         dd, 3000.0/100_000, tol=0.003)
 
 bs.reset(equity=98_000.0)
-check("Batch: reset → batch_num 2",   bs.batch_num, 2)
-check("Batch: reset → wins 0",        bs.wins, 0)
-check("Batch: reset → trade_index 1", bs.trade_index, 1)
-check("Batch: reset → pnl 0",         bs.pnl, 0.0)
-check("Batch: reset → peak_equity",   bs.peak_equity, 98_000.0)
+check("Batch: reset -> batch_num 2",   bs.batch_num, 2)
+check("Batch: reset -> wins 0",        bs.wins, 0)
+check("Batch: reset -> trade_index 1", bs.trade_index, 1)
+check("Batch: reset -> pnl 0",         bs.pnl, 0.0)
+check("Batch: reset -> peak_equity",   bs.peak_equity, 98_000.0)
 
 # ─── TEST 8: run_batch - sequential state injection ───────────────────────────
 print("\n▶ Test 8: run_batch")

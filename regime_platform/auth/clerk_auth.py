@@ -79,7 +79,7 @@ if not CLERK_AUTH_ENABLED:
 # Clerk JWTs don't include the user's role by default - it's stored in
 # privateMetadata. We look it up via the Clerk REST API and cache it.
 
-_role_cache: dict[str, tuple[str, float]] = {}   # user_id → (role, expiry)
+_role_cache: dict[str, tuple[str, float]] = {}   # user_id -> (role, expiry)
 ROLE_CACHE_TTL = 300  # 5 minutes
 
 
@@ -144,8 +144,8 @@ def _get_role_from_clerk_api(user_id: str) -> str:
 
 # ── JWKS Cache ────────────────────────────────────────────────────────────────
 
-_jwks_cache: dict[str, dict] = {}  # issuer → JWKS
-_jwks_cache_ttl: dict[str, float] = {}  # issuer → expiry timestamp
+_jwks_cache: dict[str, dict] = {}  # issuer -> JWKS
+_jwks_cache_ttl: dict[str, float] = {}  # issuer -> expiry timestamp
 JWKS_CACHE_SECONDS = 3600  # 1 hour cache
 
 

@@ -298,8 +298,8 @@ async def masaniello_portfolio(
     """
     Two-stage pipeline for multi-asset position sizing:
     
-    Stage 1: DrawdownOptimiser → regime-adjusted portfolio weights
-    Stage 2: DynamicMasanielloSizer → per-asset contract sizes
+    Stage 1: DrawdownOptimiser -> regime-adjusted portfolio weights
+    Stage 2: DynamicMasanielloSizer -> per-asset contract sizes
     
     Each asset's capital allocation comes from the optimiser, and
     the Masaniello formula sizes within that allocation.

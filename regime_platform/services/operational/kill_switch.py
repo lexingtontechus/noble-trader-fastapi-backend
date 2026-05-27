@@ -7,9 +7,9 @@ Tiers:
 3. SYMBOL_HALT - Stops trading for a specific symbol
 
 State is stored in Redis for cross-process persistence:
-- noble:halt:global         → JSON HaltRecord or None
-- noble:halt:user:{user_id} → JSON HaltRecord or None
-- noble:halt:symbol:{sym}   → JSON HaltRecord or None
+- noble:halt:global         -> JSON HaltRecord or None
+- noble:halt:user:{user_id} -> JSON HaltRecord or None
+- noble:halt:symbol:{sym}   -> JSON HaltRecord or None
 
 In-memory cache for zero-latency checks in the hot path.
 

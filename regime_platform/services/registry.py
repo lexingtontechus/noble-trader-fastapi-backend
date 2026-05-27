@@ -44,7 +44,7 @@ class SessionRegistry:
 
         When no explicit params are provided (all None), creates the session
         via StreamSession.from_runtime_config() which resolves all params
-        from the runtime configuration system (DB → env → hardcoded default).
+        from the runtime configuration system (DB -> env -> hardcoded default).
 
         When explicit params are given, creates with those overrides (backward
         compatible for Redis restore and other callers that provide params).

@@ -34,7 +34,7 @@ async def get_fill_defaults() -> dict:
     Resolve fill probability internals from runtime_config.
 
     Returns a dict of all fill-probability-specific parameters.
-    Resolution: DB override → env var → hardcoded default.
+    Resolution: DB override -> env var -> hardcoded default.
     """
     from regime_platform.core.runtime_config import runtime_config
 

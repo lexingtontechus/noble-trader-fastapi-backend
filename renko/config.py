@@ -156,7 +156,7 @@ class RenkoConfig:
         """
         Build a RenkoConfig with values from the runtime configuration system.
 
-        Resolution: explicit overrides → DB/env runtime config → dataclass defaults.
+        Resolution: explicit overrides -> DB/env runtime config -> dataclass defaults.
 
         This is the recommended way to create a RenkoConfig in async contexts
         (FastAPI endpoints, pipeline creation). The sync dataclass constructor
@@ -164,7 +164,7 @@ class RenkoConfig:
         """
         from regime_platform.core.runtime_config import runtime_config
 
-        # Map RenkoConfig field names → runtime_config keys
+        # Map RenkoConfig field names -> runtime_config keys
         key_map: Dict[str, str] = {
             "brick_size": "renko.brick_size",
             "brick_size_mode": "renko.brick_size_mode",
@@ -227,7 +227,7 @@ class RenkoConfig:
             "masaniello_target_wins": "renko.masaniello_target_wins",
         }
 
-        # Type map: field name → getter method on runtime_config
+        # Type map: field name -> getter method on runtime_config
         type_map: Dict[str, str] = {
             "brick_size": "get_float",
             "brick_size_mode": "get_str",

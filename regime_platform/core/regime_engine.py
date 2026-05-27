@@ -3,7 +3,7 @@ Regime Detection Engine - Hidden Markov Model via hmmlearn.
 Detects volatility (Low / Medium-Low / Medium-High / High) and
 trend (Strong-Bear / Bear / Bull / Strong-Bull) regimes.
 
-Upgraded from 3 → 4 states per dimension for finer-grained risk segmentation.
+Upgraded from 3 -> 4 states per dimension for finer-grained risk segmentation.
 The 4×4 grid yields 16 distinct regime labels, allowing the position sizer
 to react more precisely to transitional market conditions.
 """
@@ -37,18 +37,18 @@ class RegimeSnapshot:
         Supports 2, 3, and 4-state labels via centralized scale maps.
 
         Vol scale:
-          low       → 1.50 (2-state) / 1.75 (4-state)
-          med       → 1.00 (3-state)
-          med_low   → 1.20 (4-state)
-          med_high  → 0.70 (4-state)
-          high      → 0.40 (2-state) / 0.35 (4-state)
+          low       -> 1.50 (2-state) / 1.75 (4-state)
+          med       -> 1.00 (3-state)
+          med_low   -> 1.20 (4-state)
+          med_high  -> 0.70 (4-state)
+          high      -> 0.40 (2-state) / 0.35 (4-state)
 
         Trend scale:
-          strong_bull → 1.00 (4-state)
-          bull        → 0.88 (4-state) / 1.00 (2/3-state)
-          neutral     → 0.80 (3-state)
-          bear        → 0.50 (2-state) / 0.60 (4-state)
-          strong_bear → 0.40 (4-state)
+          strong_bull -> 1.00 (4-state)
+          bull        -> 0.88 (4-state) / 1.00 (2/3-state)
+          neutral     -> 0.80 (3-state)
+          bear        -> 0.50 (2-state) / 0.60 (4-state)
+          strong_bear -> 0.40 (4-state)
 
         Combined = clip(vol_scale × trend_scale, 0.10, 1.75)
         """
@@ -303,10 +303,10 @@ class RegimeHMM:
         This is common with strongly-structured synthetic data or short windows.
 
         Fixes applied in-place:
-        - NaN/zero startprob_ → uniform
-        - NaN/zero transmat_ rows → uniform rows
-        - NaN means_ → zero
-        - NaN/zero covars_ → identity-like (1e-3 diagonal)
+        - NaN/zero startprob_ -> uniform
+        - NaN/zero transmat_ rows -> uniform rows
+        - NaN means_ -> zero
+        - NaN/zero covars_ -> identity-like (1e-3 diagonal)
         """
         n = model.n_components
         # startprob_
@@ -329,7 +329,7 @@ class RegimeHMM:
             model.means_ = np.where(np.isfinite(model.means_), model.means_, 0.0)
 
         # covars_ - write to private _covars_ to bypass shape-validation setter
-        # Shape: "diag" → (n_components, n_features), "full" → (n, nf, nf)
+        # Shape: "diag" -> (n_components, n_features), "full" -> (n, nf, nf)
         if hasattr(model, "_covars_") and model._covars_ is not None:
             bad = ~np.isfinite(model._covars_) | (model._covars_ <= 0)
             if bad.any():
@@ -339,8 +339,8 @@ class RegimeHMM:
     def _label_states(model: hmm.GaussianHMM, labels: list[str]) -> dict[int, str]:
         """
         Sort HMM component means to auto-label states.
-        Uses feature 0 for vol (ascending → low to high),
-        feature 2 for trend (ascending → bear to bull).
+        Uses feature 0 for vol (ascending -> low to high),
+        feature 2 for trend (ascending -> bear to bull).
         Works for any n_components (2, 3, or 4).
         """
         n = min(model.n_components, len(labels))

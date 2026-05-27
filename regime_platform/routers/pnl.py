@@ -266,7 +266,7 @@ async def create_alert_threshold(
     broadcast via SSE and (optionally) Discord.
 
     Example: {"metric": "drawdown_pct", "operator": "lte", "value": -5.0, "severity": "critical"}
-    → Alerts when portfolio drawdown reaches -5%.
+    -> Alerts when portfolio drawdown reaches -5%.
     """
     try:
         threshold = await pnl_service.create_alert_threshold(
