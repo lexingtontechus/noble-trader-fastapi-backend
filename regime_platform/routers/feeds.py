@@ -5,7 +5,7 @@ Manages live OHLCV feed adapters (Alpaca, Binance, IB).
 Adapters stream bars directly into seeded StreamSessions.
 
 Note: Adapter tasks run as background asyncio tasks tied to the
-app lifespan. They are not persisted across restarts — reconfigure
+app lifespan. They are not persisted across restarts - reconfigure
 on each startup (or use the lifespan hook in main_v4.py).
 """
 
@@ -92,7 +92,7 @@ async def start_feeds(
     """
     Start one or more live feed adapters.
 
-    Symbols must be seeded via `POST /stream/seed` before starting feeds —
+    Symbols must be seeded via `POST /stream/seed` before starting feeds -
     bars for unseeded symbols are silently dropped.
 
     Adapters reconnect automatically on disconnect (exponential backoff).

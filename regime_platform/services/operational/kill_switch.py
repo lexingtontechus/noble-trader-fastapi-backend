@@ -1,10 +1,10 @@
 """
-Kill Switch Service — Three-tier emergency halt system.
+Kill Switch Service - Three-tier emergency halt system.
 
 Tiers:
-1. GLOBAL_HALT — Stops ALL trading across all users, all symbols
-2. USER_HALT   — Stops trading for a specific user
-3. SYMBOL_HALT — Stops trading for a specific symbol
+1. GLOBAL_HALT - Stops ALL trading across all users, all symbols
+2. USER_HALT   - Stops trading for a specific user
+3. SYMBOL_HALT - Stops trading for a specific symbol
 
 State is stored in Redis for cross-process persistence:
 - noble:halt:global         → JSON HaltRecord or None
@@ -13,15 +13,15 @@ State is stored in Redis for cross-process persistence:
 
 In-memory cache for zero-latency checks in the hot path.
 
-v7.4: DEACTIVATED — Background refresh (pub/sub + polling) disabled.
+v7.4: DEACTIVATED - Background refresh (pub/sub + polling) disabled.
       The Redis pub/sub listener was causing repeated crashes on Render
       when Upstash closed idle connections, creating a crash loop that
       impacted service availability.
 
       Current state:
-      - start_refresh() is a no-op — no background tasks
-      - stop_refresh() is a no-op — nothing to stop
-      - is_halted() returns False (cache is always empty) — trading always allowed
+      - start_refresh() is a no-op - no background tasks
+      - stop_refresh() is a no-op - nothing to stop
+      - is_halted() returns False (cache is always empty) - trading always allowed
       - activate_halt()/deactivate_halt() still write to Redis for future use
       - KillSwitchGateMiddleware is fail-open, so deactivation = trading allowed
 
@@ -72,7 +72,7 @@ class HaltRecord(BaseModel):
 class KillSwitchService:
     """Redis-backed kill switch with in-memory cache for hot-path checks.
 
-    v7.4: DEACTIVATED — All background refresh tasks disabled.
+    v7.4: DEACTIVATED - All background refresh tasks disabled.
     See module docstring for reactivation options.
     """
 
@@ -89,7 +89,7 @@ class KillSwitchService:
     # ── Disabled background tasks ─────────────────────────────────────────
 
     async def start_refresh(self):
-        """DEACTIVATED — No background tasks started.
+        """DEACTIVATED - No background tasks started.
 
         Previous versions started a Redis pub/sub listener and a 60s
         fallback polling loop. Both have been disabled because the pub/sub
@@ -104,13 +104,13 @@ class KillSwitchService:
         """
         self._running = True
         logger.warning(
-            "KillSwitch: DEACTIVATED — no background refresh tasks. "
+            "KillSwitch: DEACTIVATED - no background refresh tasks. "
             "Kill switch will not enforce halts until reactivated. "
             "See kill_switch.py module docstring for reactivation options."
         )
 
     async def stop_refresh(self):
-        """DEACTIVATED — Nothing to stop."""
+        """DEACTIVATED - Nothing to stop."""
         self._running = False
         logger.info("KillSwitch: Stopped (was already deactivated)")
 
@@ -227,7 +227,7 @@ class KillSwitchService:
         if client:
             try:
                 await client.set(key, record_json)
-                logger.warning(f"KillSwitch: HALT ACTIVATED — {level.value} scope={scope} reason={reason.value} by={triggered_by} org={org_id}")
+                logger.warning(f"KillSwitch: HALT ACTIVATED - {level.value} scope={scope} reason={reason.value} by={triggered_by} org={org_id}")
             except Exception as e:
                 logger.error(f"KillSwitch: Failed to write halt to Redis: {e}")
 
@@ -251,7 +251,7 @@ class KillSwitchService:
         if client:
             try:
                 await client.delete(key)
-                logger.info(f"KillSwitch: HALT DEACTIVATED — {level.value} scope={scope} by={deactivated_by} org={org_id}")
+                logger.info(f"KillSwitch: HALT DEACTIVATED - {level.value} scope={scope} by={deactivated_by} org={org_id}")
             except Exception as e:
                 logger.error(f"KillSwitch: Failed to remove halt from Redis: {e}")
 
@@ -285,7 +285,7 @@ class KillSwitchService:
                     except Exception as e:
                         logger.error(f"KillSwitch: Failed to cancel order {order.id}: {e}")
             else:
-                logger.warning("KillSwitch: No Alpaca API client — cancel_all_orders is no-op (simulation mode)")
+                logger.warning("KillSwitch: No Alpaca API client - cancel_all_orders is no-op (simulation mode)")
         except Exception as e:
             logger.error(f"KillSwitch: cancel_all_orders failed: {e}")
 
@@ -310,7 +310,7 @@ class KillSwitchService:
                     except Exception as e:
                         logger.error(f"KillSwitch: Failed to close position {pos.symbol}: {e}")
             else:
-                logger.warning("KillSwitch: No Alpaca API client — close_all_positions is no-op (simulation mode)")
+                logger.warning("KillSwitch: No Alpaca API client - close_all_positions is no-op (simulation mode)")
         except Exception as e:
             logger.error(f"KillSwitch: close_all_positions failed: {e}")
 

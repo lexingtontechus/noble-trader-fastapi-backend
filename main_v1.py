@@ -1,14 +1,14 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║         Dynamic Regime Risk Management Platform — FastAPI Service           ║
+║         Dynamic Regime Risk Management Platform - FastAPI Service           ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
 ║  Endpoints:                                                                  ║
-║    POST /regime/detect      — HMM-based vol + trend regime classification    ║
-║    POST /size/kelly         — Regime-gated fractional Kelly position sizing  ║
-║    POST /risk/analyse       — VaR, CVaR, drawdown, stop/TP suggestions       ║
-║    POST /analyse/full       — One-shot: all three in one request             ║
+║    POST /regime/detect      - HMM-based vol + trend regime classification    ║
+║    POST /size/kelly         - Regime-gated fractional Kelly position sizing  ║
+║    POST /risk/analyse       - VaR, CVaR, drawdown, stop/TP suggestions       ║
+║    POST /analyse/full       - One-shot: all three in one request             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 

@@ -6,9 +6,9 @@ Async adapters that stream live OHLCV bars into `StreamSession.tick()`.
 
 Supported brokers
 ─────────────────
-  • Alpaca        — REST + WebSocket (crypto + equities)
-  • Binance       — WebSocket kline stream (crypto)
-  • Interactive Brokers — TWS API via ib_async (equities, futures, FX)
+  • Alpaca        - REST + WebSocket (crypto + equities)
+  • Binance       - WebSocket kline stream (crypto)
+  • Interactive Brokers - TWS API via ib_async (equities, futures, FX)
 
 Architecture
 ────────────
@@ -23,7 +23,7 @@ Usage
       async for bar in feed:
           await session.tick(bar.close, bar.ts)
 
-  # FeedManager (recommended — handles reconnect + multi-symbol routing)
+  # FeedManager (recommended - handles reconnect + multi-symbol routing)
   mgr = FeedManager()
   await mgr.add(AlpacaFeedAdapter(symbols=["SPY"], bar_size="1Min"))
   await mgr.add(BinanceFeedAdapter(symbols=["BTCUSDT"], interval="1m"))
@@ -36,7 +36,7 @@ Environment variables required per adapter
   Binance:  BINANCE_API_KEY, BINANCE_SECRET_KEY (read-only key sufficient)
   IB:       IB_HOST (default 127.0.0.1), IB_PORT (default 7497), IB_CLIENT_ID
 
-Install requirements (not in base requirements.txt — optional)
+Install requirements (not in base requirements.txt - optional)
 ──────────────────────────────────────────────────────────────
   pip install alpaca-py websockets aiohttp ib_async
 """
@@ -77,7 +77,7 @@ class FeedAdapter(ABC):
     """
     Async OHLCV feed adapter.
 
-    Subclass and implement `stream()` — an async generator that yields `OHLCVBar`.
+    Subclass and implement `stream()` - an async generator that yields `OHLCVBar`.
     The base class provides reconnect logic with exponential backoff.
     """
 
@@ -213,7 +213,7 @@ class BinanceFeedAdapter(FeedAdapter):
 
     Streams OHLCV bars at the specified interval for any Binance spot pair.
 
-    Required env vars: None (public stream — no auth needed for klines)
+    Required env vars: None (public stream - no auth needed for klines)
     Optional: BINANCE_TESTNET=true for testnet
     Install: pip install websockets
 
@@ -406,7 +406,7 @@ class FeedManager:
                         await session.tick(bar.close, bar.ts)
                         self._bar_count[bar.symbol] = self._bar_count.get(bar.symbol, 0) + 1
                     else:
-                        log.debug(f"FeedManager: no session for {bar.symbol} — bar dropped (seed first)")
+                        log.debug(f"FeedManager: no session for {bar.symbol} - bar dropped (seed first)")
 
         self._tasks = [
             asyncio.create_task(_run_adapter(a))

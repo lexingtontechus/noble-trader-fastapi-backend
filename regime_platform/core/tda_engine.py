@@ -5,10 +5,10 @@ Detects market regime transitions using persistent homology from
 point-cloud embeddings of price/return data.
 
 Key concepts:
-  • Persistence Diagram — birth/death pairs of topological features (0-dim = connected components, 1-dim = loops)
-  • Betti Numbers — number of live features at each filtration step
-  • Persistence Entropy — information-theoretic measure of topological complexity
-  • Anomaly Score — deviation from baseline topology indicating regime change
+  • Persistence Diagram - birth/death pairs of topological features (0-dim = connected components, 1-dim = loops)
+  • Betti Numbers - number of live features at each filtration step
+  • Persistence Entropy - information-theoretic measure of topological complexity
+  • Anomaly Score - deviation from baseline topology indicating regime change
 
 Implementation uses numpy/scipy only (no gudhi/ripser dependency for deployment).
 For production, consider switching to ripser.py for performance.
@@ -80,7 +80,7 @@ class TDAEngine:
     from price series, then computes persistent homology via a
     distance matrix approach.
     
-    No external TDA library required — uses numpy/scipy for
+    No external TDA library required - uses numpy/scipy for
     Vietoris-Rips complex computation at small scales.
     """
     
@@ -331,7 +331,7 @@ class TDAEngine:
         A loop is born when a triangle is completed and dies when
         it is filled in.
         
-        This is a simplified approximation — for production use ripser.
+        This is a simplified approximation - for production use ripser.
         """
         n = dist_matrix.shape[0]
         if n < 3:
@@ -439,7 +439,7 @@ class TDAEngine:
             diff = abs(current_entropy - self._baseline_entropy)
             return float(diff / (self._baseline_entropy + 0.1))  # normalised deviation
         else:
-            # No baseline — use heuristic
+            # No baseline - use heuristic
             # Normal entropy range for financial data: 1-5 bits
             if current_entropy < 0.5:
                 return 0.0  # very low entropy = simple structure = normal

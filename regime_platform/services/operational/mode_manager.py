@@ -1,5 +1,5 @@
 """
-Mode Manager Service — Paper/Live trading mode toggle with confirmation gates.
+Mode Manager Service - Paper/Live trading mode toggle with confirmation gates.
 
 Manages the current trading mode (simulation / paper / live) with:
 1. Redis-backed mode state (persists across restarts)
@@ -106,7 +106,7 @@ class ModeManager:
         if self._cached_state:
             return self._cached_state.current_mode
 
-        # Try Supabase system_config (L2 — durable, authoritative)
+        # Try Supabase system_config (L2 - durable, authoritative)
         try:
             from regime_platform.core.settings import settings
             if settings.SUPABASE_URL and settings.SUPABASE_KEY:
@@ -258,7 +258,7 @@ class ModeManager:
         # Validate token exists in Redis
         client = await self._get_client()
         if not client:
-            raise RuntimeError("Redis unavailable — cannot confirm mode change")
+            raise RuntimeError("Redis unavailable - cannot confirm mode change")
 
         try:
             token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{confirmation_token}", org_id=org_id)
@@ -299,7 +299,7 @@ class ModeManager:
         # Update AlpacaExecutor base URL
         await self._switch_executor_mode(request.target_mode)
 
-        # Save new state to Redis (no TTL — persistent, acts as L1 cache)
+        # Save new state to Redis (no TTL - persistent, acts as L1 cache)
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
         try:
             await client.set(mode_key, new_state.model_dump_json())
@@ -308,7 +308,7 @@ class ModeManager:
         except Exception as e:
             logger.error(f"ModeManager: Failed to persist mode change to Redis: {e}")
 
-        # v7.3: Write-through to Supabase system_config (L2 — durable)
+        # v7.3: Write-through to Supabase system_config (L2 - durable)
         try:
             from regime_platform.core.settings import settings as _settings
             if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:

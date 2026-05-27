@@ -56,7 +56,7 @@ def analyse_risk(
     tp_cvar_multiplier: int = DEFAULT_TP_CVAR_MULTIPLIER,
 ) -> RiskMetrics:
     """
-    Pure function — computes risk metrics with fully explicit parameters.
+    Pure function - computes risk metrics with fully explicit parameters.
 
     This is thread-safe and suitable for concurrent async usage because
     all tuning parameters are passed as arguments, not read from mutable
@@ -135,7 +135,7 @@ class RiskManager:
         regime: RegimeSnapshot | None = None,
         base_risk_limit: float = DEFAULT_BASE_RISK_LIMIT,
     ) -> RiskMetrics:
-        """Sync wrapper — uses hardcoded class-level defaults (backward compatible)."""
+        """Sync wrapper - uses hardcoded class-level defaults (backward compatible)."""
         return analyse_risk(
             returns=returns,
             recommended_f=recommended_f,
@@ -154,7 +154,7 @@ class RiskManager:
         base_risk_limit: float = 0.02,
     ) -> RiskMetrics:
         """
-        Async entry-point — resolves configurable params from the runtime
+        Async entry-point - resolves configurable params from the runtime
         configuration system (DB → env → hardcoded default).
 
         Thread-safe: each call resolves its own params independently.

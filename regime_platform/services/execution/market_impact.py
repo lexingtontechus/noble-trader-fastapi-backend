@@ -93,12 +93,12 @@ def compute_market_impact(
     Returns
     -------
     dict with keys:
-        participation_rate: float — order_size / ADV
-        permanent_impact_bps: float — permanent impact in basis points
-        temporary_impact_bps: float — temporary impact in basis points
-        total_impact_bps: float — combined impact in basis points
-        impact_cost_dollars: float — estimated dollar cost of impact
-        impact_cost_pct: float — impact as percentage of order value
+        participation_rate: float - order_size / ADV
+        permanent_impact_bps: float - permanent impact in basis points
+        temporary_impact_bps: float - temporary impact in basis points
+        total_impact_bps: float - combined impact in basis points
+        impact_cost_dollars: float - estimated dollar cost of impact
+        impact_cost_pct: float - impact as percentage of order value
     """
     if adv_shares <= 0 or order_shares <= 0:
         return {

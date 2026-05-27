@@ -1,5 +1,5 @@
 """
-Fill Probability Model — estimates the probability of order fills.
+Fill Probability Model - estimates the probability of order fills.
 
 In reality, limit orders don't always execute. This model estimates
 fill probability based on:
@@ -100,11 +100,11 @@ def compute_fill_probability(
     Returns
     -------
     dict with:
-        fill_probability: float — P(fill) between 0 and 1
+        fill_probability: float - P(fill) between 0 and 1
         order_type: str
         distance_from_mid_pct: float
-        distance_in_sigmas: float — distance normalized by volatility
-        expected_fill_price_offset_bps: float — adverse selection offset
+        distance_in_sigmas: float - distance normalized by volatility
+        expected_fill_price_offset_bps: float - adverse selection offset
         interpretation: str
     """
     # Extract internal thresholds from fill_cfg or use hardcoded defaults
@@ -126,7 +126,7 @@ def compute_fill_probability(
             "distance_from_mid_pct": 0.0,
             "distance_in_sigmas": 0.0,
             "expected_fill_price_offset_bps": 0.0,
-            "interpretation": "Market order — guaranteed fill at current price.",
+            "interpretation": "Market order - guaranteed fill at current price.",
         }
 
     # Convert distance to volatility units
@@ -156,18 +156,18 @@ def compute_fill_probability(
         # Stop orders are market orders when triggered, so they fill but with slippage
         fill_probability = max(fill_probability, stop_min_fill)
         expected_offset = volatility_daily * 10_000 * stop_adverse_sigma
-        interpretation = f"Stop order — {fill_probability:.1%} fill probability (near-certain when triggered)."
+        interpretation = f"Stop order - {fill_probability:.1%} fill probability (near-certain when triggered)."
     else:
         # Limit orders: adverse selection means the fill is "too early"
         expected_offset = volatility_daily * 10_000 * limit_adverse_sigma
         if fill_probability > interp_high:
-            interpretation = f"Limit order close to market — {fill_probability:.1%} fill probability (high confidence)."
+            interpretation = f"Limit order close to market - {fill_probability:.1%} fill probability (high confidence)."
         elif fill_probability > interp_mid:
-            interpretation = f"Limit order moderate distance — {fill_probability:.1%} fill probability (uncertain fill)."
+            interpretation = f"Limit order moderate distance - {fill_probability:.1%} fill probability (uncertain fill)."
         elif fill_probability > interp_low:
-            interpretation = f"Limit order far from market — {fill_probability:.1%} fill probability (low confidence)."
+            interpretation = f"Limit order far from market - {fill_probability:.1%} fill probability (low confidence)."
         else:
-            interpretation = f"Limit order very far from market — {fill_probability:.1%} fill probability (unlikely to fill)."
+            interpretation = f"Limit order very far from market - {fill_probability:.1%} fill probability (unlikely to fill)."
 
     return {
         "fill_probability": round(fill_probability, 4),

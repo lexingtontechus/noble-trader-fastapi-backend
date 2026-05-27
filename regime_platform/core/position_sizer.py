@@ -1,16 +1,16 @@
 """
-Position Sizing Engine — v3.1
+Position Sizing Engine - v3.1
 ══════════════════════════════
 
 Two complementary sizing paths, unified in one module:
 
-  Path A — Portfolio-fraction Kelly (original, stateless)
+  Path A - Portfolio-fraction Kelly (original, stateless)
   ────────────────────────────────────────────────────────
   Operates on historical returns. Produces a portfolio-fraction f ∈ [0,1].
   Use when you want a returns-based, regime-gated Kelly fraction for
   systematic allocation (no stop distance / point value required).
 
-  Path B — Dynamic Masaniello (new, stateful)
+  Path B - Dynamic Masaniello (new, stateful)
   ────────────────────────────────────────────
   Operates on per-trade context: equity, stop distance, point value.
   Implements the formula:
@@ -87,7 +87,7 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PATH A — Portfolio-fraction Kelly (original interface, unchanged)
+# PATH A - Portfolio-fraction Kelly (original interface, unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -222,11 +222,11 @@ class PositionSizer:
         notes = []
         if full_kelly > 0.5:
             notes.append(
-                "Full Kelly > 50% — fractional Kelly strongly recommended to control drawdowns."
+                "Full Kelly > 50% - fractional Kelly strongly recommended to control drawdowns."
             )
         if sharpe < 0:
             notes.append(
-                "Negative Sharpe — Kelly fraction will be zero (no edge detected)."
+                "Negative Sharpe - Kelly fraction will be zero (no edge detected)."
             )
         if annual_sigma > target_vol * 1.5:
             notes.append(
@@ -234,16 +234,16 @@ class PositionSizer:
                 "vol-scaling will reduce size significantly."
             )
         if regime_mult < 0.5:
-            notes.append("High-risk regime detected — position size reduced by ≥50%.")
+            notes.append("High-risk regime detected - position size reduced by ≥50%.")
         if regime_mult > 1.2:
             notes.append(
-                "Favourable low-vol bull regime — size scaled up above baseline."
+                "Favourable low-vol bull regime - size scaled up above baseline."
             )
         return notes
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PATH B — Dynamic Masaniello Sizer
+# PATH B - Dynamic Masaniello Sizer
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ class SizingConfig:
     """
 
     # Base risk  β
-    base_risk: float = 0.005  # 0.50% of equity — the β in f_i = β × ...
+    base_risk: float = 0.005  # 0.50% of equity - the β in f_i = β × ...
     min_risk: float = 0.0025  # hard floor: 0.25%
     max_risk: float = 0.010  # hard cap:   1.00%
 
@@ -598,7 +598,7 @@ def _quality_factor(
       State confidence from HMM posteriors.
       Clamp: [0.0, 1.0]
 
-    Q_i = 0 when any factor is 0 — acts as a quality gate.
+    Q_i = 0 when any factor is 0 - acts as a quality gate.
     Maximum Q_i = 1.5 × 1.5 × 1.0 = 2.25 (rare; requires all factors maxed).
     """
     prob_edge = max(0.0, p_win - min_prob)
@@ -613,7 +613,7 @@ def _drawdown_factor(current_drawdown: float, max_drawdown: float) -> float:
     DD_i = clip(1 - dd / max_dd, 0.25, 1.0)
 
     Scales down sizing linearly as drawdown approaches max_drawdown.
-    Floor at 0.25 preserves minimum participation — the position never
+    Floor at 0.25 preserves minimum participation - the position never
     drops to zero due to drawdown alone.
 
     Examples (max_dd = 10%):
@@ -659,7 +659,7 @@ def _fractional_kelly(p_win: float, reward_risk: float, kelly_fraction: float) -
 
 
 def _expected_edge(p_win: float, reward_risk: float) -> float:
-    """E = p·R - (1-p)  — expected value in R multiples."""
+    """E = p·R - (1-p)  - expected value in R multiples."""
     return float(p_win * reward_risk - (1.0 - p_win))
 
 
@@ -676,8 +676,8 @@ class DynamicMasanielloSizer:
     batch.record() after outcome is known, batch.reset(equity) at batch end.
 
     Convenience entry-points:
-      size_from_snapshot(snap, ...)  — build context from RegimeSnapshot
-      run_batch(contexts, ...)       — size an entire batch in one call
+      size_from_snapshot(snap, ...)  - build context from RegimeSnapshot
+      run_batch(contexts, ...)       - size an entire batch in one call
     """
 
     def __init__(self, config: Optional[SizingConfig] = None):
@@ -735,7 +735,7 @@ class DynamicMasanielloSizer:
         Returns a block reason string if any pre-flight gate fails,
         else None (all gates passed).
 
-        Gates are checked in priority order — most critical first.
+        Gates are checked in priority order - most critical first.
         Each gate fires before any formula computation, so the reason
         is always specific rather than 'Q_i = 0'.
         """
@@ -750,20 +750,20 @@ class DynamicMasanielloSizer:
         if ctx.regime_quality < cfg.regime_floor:
             return (
                 f"Regime quality {ctx.regime_quality:.3f} below floor "
-                f"{cfg.regime_floor:.3f} — trade blocked."
+                f"{cfg.regime_floor:.3f} - trade blocked."
             )
         if ctx.p_win < cfg.min_prob:
             return (
                 f"Win probability {ctx.p_win:.3f} below minimum "
-                f"{cfg.min_prob:.3f} — trade blocked."
+                f"{cfg.min_prob:.3f} - trade blocked."
             )
         if ctx.reward_risk < cfg.min_rr:
             return (
                 f"Reward/risk {ctx.reward_risk:.2f} below minimum "
-                f"{cfg.min_rr:.2f} — trade blocked."
+                f"{cfg.min_rr:.2f} - trade blocked."
             )
         if self.batch.halted:
-            return "Batch halted — intraday drawdown limit reached."
+            return "Batch halted - intraday drawdown limit reached."
         if self.batch.drawdown >= cfg.batch_halt_dd:
             self.batch.halted = True
             return (
@@ -772,7 +772,7 @@ class DynamicMasanielloSizer:
             )
         edge = _expected_edge(ctx.p_win, ctx.reward_risk)
         if edge <= 0:
-            return f"Expected edge non-positive ({edge:+.4f}) — no trade."
+            return f"Expected edge non-positive ({edge:+.4f}) - no trade."
         return None
 
     # ── Core sizing ───────────────────────────────────────────────────────────
@@ -919,7 +919,7 @@ class DynamicMasanielloSizer:
         pnls[i] = realised PnL for trade i (used to update peak_equity)
 
         Batch state (drawdown, wins, trade_index) is injected into each
-        context automatically — do NOT pre-populate these fields.
+        context automatically - do NOT pre-populate these fields.
         """
         results: List[PositionSizeResult] = []
         for i, ctx in enumerate(contexts):
@@ -973,11 +973,11 @@ def monte_carlo_batch(
 
     Each simulation runs a full batch (config.batch_size trades), sampling
     win/loss according to base_context.p_win. Batch state is reset between
-    simulations (sizer.batch is NOT mutated — a fresh BatchState per sim).
+    simulations (sizer.batch is NOT mutated - a fresh BatchState per sim).
 
     Returns distribution statistics useful for strategy validation:
-      p_target_hit   — fraction of sims where target_wins was reached
-      p_halt         — fraction of sims halted by drawdown limit
+      p_target_hit   - fraction of sims where target_wins was reached
+      p_halt         - fraction of sims halted by drawdown limit
       mean/median/std PnL, p10/p90 PnL
       mean/p95 max drawdown
 

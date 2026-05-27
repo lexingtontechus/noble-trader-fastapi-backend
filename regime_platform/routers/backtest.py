@@ -1,4 +1,4 @@
-"""Backtest endpoints — walk-forward backtesting with regime-aware strategy."""
+"""Backtest endpoints - walk-forward backtesting with regime-aware strategy."""
 
 import asyncio
 import csv
@@ -97,7 +97,7 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
     5. Trade execution with commission/slippage
     6. Comprehensive performance metrics (30+)
 
-    Results are cached in Redis (1h TTL) for identical configs — repeated
+    Results are cached in Redis (1h TTL) for identical configs - repeated
     requests with the same parameters return instantly from cache.
     The response includes a `cached` field indicating cache HIT/MISS.
 
@@ -108,11 +108,11 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
         cache_key_body = req.model_dump()
         cached = await backtest_cache.get("hmm", cache_key_body)
         if cached is not None:
-            # Cache HIT — reconstruct response from cached data
+            # Cache HIT - reconstruct response from cached data
             cached["cached"] = True
             return BacktestResponse(**cached)
 
-        # ── Cache MISS — run the backtest ──────────────────────────────
+        # ── Cache MISS - run the backtest ──────────────────────────────
         prices = np.array(req.prices, dtype=float)
         config = BacktestConfig(
             window=req.window,
@@ -663,7 +663,7 @@ async def export_backtest(
                 },
             )
 
-        # CSV export — multiple sections separated by blank lines
+        # CSV export - multiple sections separated by blank lines
         output = io.StringIO()
         writer = csv.writer(output)
 

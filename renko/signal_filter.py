@@ -1,5 +1,5 @@
 """
-Signal Filter — the risk governance layer.
+Signal Filter - the risk governance layer.
 
 Filters raw pattern signals through multiple safety checks before
 they reach the order executor:
@@ -179,7 +179,7 @@ class SignalFilter:
         kelly_fraction : float
             Kelly-derived position sizing fraction.
         regime_quality : float
-            Regime risk multiplier [0.10, 1.75] — from RegimeSnapshot.
+            Regime risk multiplier [0.10, 1.75] - from RegimeSnapshot.
         regime_confidence : float
             HMM state confidence [0, 1].
         current_drawdown : float
@@ -225,19 +225,19 @@ class SignalFilter:
                 else:
                     passed.append("cooldown")
 
-        # Filter 2: Max trades per session (applies even in warmup — hard risk limit)
+        # Filter 2: Max trades per session (applies even in warmup - hard risk limit)
         if rejection_reason is None and self._stats.trades_taken >= self.max_trades_per_session:
             rejection_reason = "max_trades_reached"
         elif rejection_reason is None:
             passed.append("max_trades")
 
-        # Filter 3: Max daily loss (applies even in warmup — hard risk limit)
+        # Filter 3: Max daily loss (applies even in warmup - hard risk limit)
         if rejection_reason is None and self._stats.daily_pnl_bricks <= -self.max_daily_loss_bricks:
             rejection_reason = "max_daily_loss"
         elif rejection_reason is None:
             passed.append("daily_loss_limit")
 
-        # Filter 4: Max consecutive losses (applies even in warmup — hard risk limit)
+        # Filter 4: Max consecutive losses (applies even in warmup - hard risk limit)
         if rejection_reason is None and self._stats.consecutive_losses >= self.max_consecutive_losses:
             rejection_reason = "max_consecutive_losses"
         elif rejection_reason is None:
@@ -271,7 +271,7 @@ class SignalFilter:
             })
             return None
 
-        # Passed — compute position size based on sizing_mode
+        # Passed - compute position size based on sizing_mode
         if self.sizing_mode == "masaniello" and self._masaniello_sizer is not None:
             sizing_result = self._compute_masaniello_size(
                 signal=signal,
@@ -288,7 +288,7 @@ class SignalFilter:
             )
             if sizing_result is not None:
                 return sizing_result
-            # Masaniello blocked the trade — fall through to Kelly as fallback
+            # Masaniello blocked the trade - fall through to Kelly as fallback
             # (This happens when Masaniello gates reject, e.g. p_win too low)
 
         # Kelly sizing (default or Masaniello fallback)
@@ -411,7 +411,7 @@ class SignalFilter:
         result = sizer.size_trade(ctx)
 
         if not result.allowed:
-            # Masaniello blocked — log and return None to fall back to Kelly
+            # Masaniello blocked - log and return None to fall back to Kelly
             self._rejected.append({
                 "timestamp": signal.timestamp,
                 "reason": f"masaniello_blocked: {result.reason}",

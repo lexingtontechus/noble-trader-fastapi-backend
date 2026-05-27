@@ -1,9 +1,9 @@
 """
-Reconciliation Service — Fill verification and position reconciliation.
+Reconciliation Service - Fill verification and position reconciliation.
 
 Compares internal order expectations against Alpaca's reported fills:
-1. IMMEDIATE — After order submission, verify fill status
-2. PERIODIC  — Reconcile all orders from last 24 hours
+1. IMMEDIATE - After order submission, verify fill status
+2. PERIODIC  - Reconcile all orders from last 24 hours
 
 Thresholds (configurable):
 - SLIPPAGE_WARNING: > 50 bps → log warning
@@ -172,7 +172,7 @@ class ReconciliationService:
 
             # Check fill status
             if order_status == "filled":
-                # Full fill — check price deviation
+                # Full fill - check price deviation
                 if expected_price and filled_price:
                     result.slippage_bps = self._calculate_slippage_bps(
                         expected_price, filled_price
@@ -416,9 +416,9 @@ class ReconciliationService:
         }
 
     async def _handle_critical_discrepancy(self, result: ReconciliationResult):
-        """Handle critical slippage — alert + audit + Discord."""
+        """Handle critical slippage - alert + audit + Discord."""
         logger.warning(
-            f"Reconciler: CRITICAL SLIPPAGE — order {result.order_id} "
+            f"Reconciler: CRITICAL SLIPPAGE - order {result.order_id} "
             f"{result.slippage_bps:.1f} bps on {result.symbol}"
         )
 
@@ -426,7 +426,7 @@ class ReconciliationService:
         try:
             from notifications.discord import discord_notifier
             await discord_notifier.send_status(
-                f"**CRITICAL SLIPPAGE**: Order {result.order_id} on {result.symbol} — "
+                f"**CRITICAL SLIPPAGE**: Order {result.order_id} on {result.symbol} - "
                 f"{result.slippage_bps:.1f} bps slippage "
                 f"(expected ${result.expected_price}, filled ${result.actual_fill_price})"
             )

@@ -2,10 +2,10 @@
 Tests for Phase 6: Statistical Rigor.
 
 Covers:
-  6A — Deflated Sharpe Ratio (DSR)
-  6B — Bootstrap Confidence Intervals
-  6C — Multiple Testing Correction (Bonferroni, Holm-Bonferroni, BH FDR)
-  6D — Strategy Significance Tests (White's Reality Check, Hansen's SPA)
+  6A - Deflated Sharpe Ratio (DSR)
+  6B - Bootstrap Confidence Intervals
+  6C - Multiple Testing Correction (Bonferroni, Holm-Bonferroni, BH FDR)
+  6D - Strategy Significance Tests (White's Reality Check, Hansen's SPA)
 """
 
 import math
@@ -41,7 +41,7 @@ from regime_platform.services.statistics.significance_tests import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6A — Deflated Sharpe Ratio
+# 6A - Deflated Sharpe Ratio
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -142,7 +142,7 @@ class TestDeflatedSharpeRatio:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6B — Bootstrap Confidence Intervals
+# 6B - Bootstrap Confidence Intervals
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -263,7 +263,7 @@ class TestBootstrapCI:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6C — Multiple Testing Correction
+# 6C - Multiple Testing Correction
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -410,7 +410,7 @@ class TestMultipleTestingCorrection:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6D — Strategy Significance Tests
+# 6D - Strategy Significance Tests
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -488,7 +488,7 @@ class TestHansenSPA:
         wrc = whites_reality_check(strategies, n_bootstrap=500, seed=42)
         spa = hansen_spa(strategies, n_bootstrap=500, seed=42)
         # SPA should have p-value <= WRC (more powerful)
-        # This is a soft test — not guaranteed for every seed
+        # This is a soft test - not guaranteed for every seed
         assert isinstance(spa.p_value, float)
         assert isinstance(wrc.p_value, float)
 

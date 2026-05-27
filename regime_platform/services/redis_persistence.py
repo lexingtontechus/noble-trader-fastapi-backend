@@ -39,7 +39,7 @@ Usage
 Error policy
 ────────────
   All Redis operations are wrapped in try/except. A Redis failure NEVER
-  raises in the tick path — it logs a warning and the system continues
+  raises in the tick path - it logs a warning and the system continues
   with in-memory state. Redis is persistence, not availability.
 """
 
@@ -91,7 +91,7 @@ class RedisPersistence:
         # Use provided URL or fall back to settings
         _url = redis_url or settings.redis_url_effective
         if not _url:
-            log.info("REDIS_URL not set — price buffer persistence disabled (in-memory only)")
+            log.info("REDIS_URL not set - price buffer persistence disabled (in-memory only)")
             return
 
         try:
@@ -101,14 +101,14 @@ class RedisPersistence:
             self._enabled    = True
             log.info(f"Redis persistence configured: {_url} (batched XADD, batch_size={BATCH_SIZE})")
         except ImportError:
-            log.warning("redis package not installed — persistence disabled. pip install redis")
+            log.warning("redis package not installed - persistence disabled. pip install redis")
 
     @property
     def enabled(self) -> bool:
         return self._enabled
 
     async def _get_client(self):
-        """Lazy connection — uses shared pool when available.
+        """Lazy connection - uses shared pool when available.
 
         v7.3: Prefers the shared RedisConnectionManager. Falls back to
         standalone connection only if the pool is unavailable.
@@ -334,5 +334,5 @@ class RedisPersistence:
                 pass
 
 
-# Singleton — shared across all sessions
+# Singleton - shared across all sessions
 persistence = RedisPersistence()

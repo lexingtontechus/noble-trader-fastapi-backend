@@ -12,7 +12,7 @@ redis>=5.0.0
 PyJWT[crypto]>=2.9.0,<3.0.0
 httpx>=0.28.1
 clerk-backend-api>=0.1.0
-# MCP (Model Context Protocol) — exposes FastAPI endpoints as AI agent tools
+# MCP (Model Context Protocol) - exposes FastAPI endpoints as AI agent tools
 fastapi-mcp>=0.4.0
 # v3.0 optional GPU + feed adapter dependencies
 # GPU HMM (install for 10-50x speedup on large datasets)
@@ -27,5 +27,5 @@ websockets>=12.0
 # Feed adapters (install only the adapter you need)
 # alpaca-py>=0.20.0        # Alpaca Markets
 # ib_async>=0.9.0           # Interactive Brokers
-# Yahoo Finance (for backend warmup / cold-start — optional, falls back to HTTP API)
+# Yahoo Finance (for backend warmup / cold-start - optional, falls back to HTTP API)
 yfinance>=0.2.31

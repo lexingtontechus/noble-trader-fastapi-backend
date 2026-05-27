@@ -3,9 +3,9 @@ Rate limiting middleware using slowapi.
 
 Provides per-IP rate limiting on compute-heavy endpoints to prevent abuse.
 Configuration via environment variables:
-  RATE_LIMIT_DEFAULT  — default limit for general endpoints (default "60/minute")
-  RATE_LIMIT_COMPUTE  — limit for HMM/optimization endpoints (default "10/minute")
-  RATE_LIMIT_WRITE    — limit for write/trade endpoints (default "20/minute")
+  RATE_LIMIT_DEFAULT  - default limit for general endpoints (default "60/minute")
+  RATE_LIMIT_COMPUTE  - limit for HMM/optimization endpoints (default "10/minute")
+  RATE_LIMIT_WRITE    - limit for write/trade endpoints (default "20/minute")
 """
 
 from slowapi import Limiter

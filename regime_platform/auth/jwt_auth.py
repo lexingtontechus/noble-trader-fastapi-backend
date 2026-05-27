@@ -3,18 +3,18 @@ JWT Authentication
 ═══════════════════
 
 Provides JWT-based authentication for:
-  • HTTP endpoints  — FastAPI Depends(get_current_user)
-  • WebSocket       — Token passed as ?token= query param
-  • API key fallback — X-API-Key header for service-to-service calls
-  • SaaS API keys   — nt_live_* keys backed by Supabase api_keys table
+  • HTTP endpoints  - FastAPI Depends(get_current_user)
+  • WebSocket       - Token passed as ?token= query param
+  • API key fallback - X-API-Key header for service-to-service calls
+  • SaaS API keys   - nt_live_* keys backed by Supabase api_keys table
 
 Configuration (environment variables)
 ──────────────────────────────────────
-  JWT_SECRET_KEY   — signing secret (required; no default for security)
-  JWT_ALGORITHM    — default "HS256"
-  JWT_EXPIRE_MINS  — token lifetime in minutes (default 60)
-  API_KEYS         — comma-separated valid API keys (optional, static)
-  AUTH_ENABLED     — set "false" to disable auth entirely (dev mode)
+  JWT_SECRET_KEY   - signing secret (required; no default for security)
+  JWT_ALGORITHM    - default "HS256"
+  JWT_EXPIRE_MINS  - token lifetime in minutes (default 60)
+  API_KEYS         - comma-separated valid API keys (optional, static)
+  AUTH_ENABLED     - set "false" to disable auth entirely (dev mode)
 
 SaaS API Keys (nt_live_*)
 ─────────────────────────
@@ -190,7 +190,7 @@ _api_key_hdr = APIKeyHeader(name="X-API-Key", auto_error=False)
 # In-memory cache for DB-backed API key lookups (key_hash → TokenData)
 # Avoids hitting Supabase on every request for the same key.
 _api_key_cache: dict[str, tuple[TokenData, float]] = {}
-_API_KEY_CACHE_TTL = 60  # seconds — re-validate keys every minute
+_API_KEY_CACHE_TTL = 60  # seconds - re-validate keys every minute
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -221,7 +221,7 @@ def _lookup_saas_api_key(api_key: str) -> Optional[TokenData]:
         import psycopg2
         db_url = getattr(settings, "DATABASE_URL", None)
         if not db_url:
-            log.warning("[api-keys] DATABASE_URL not configured — cannot look up SaaS API keys")
+            log.warning("[api-keys] DATABASE_URL not configured - cannot look up SaaS API keys")
             return None
 
         conn = psycopg2.connect(db_url)
@@ -304,7 +304,7 @@ async def get_current_user(
     If AUTH_ENABLED=false, returns a synthetic admin user (dev mode).
     """
     if not AUTH_ENABLED:
-        # Dev mode — only allowed in development, never in production
+        # Dev mode - only allowed in development, never in production
         _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
         if _DEPLOY_ENV in ("production", "staging"):
             raise HTTPException(
@@ -316,7 +316,7 @@ async def get_current_user(
 
     # API key check: try SaaS API key first, then static API_KEYS
     if api_key:
-        # SaaS API key (nt_live_*) — DB-backed
+        # SaaS API key (nt_live_*) - DB-backed
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
             return saas_user
@@ -371,10 +371,10 @@ def _try_clerk_verification(token: str) -> Optional[TokenData]:
 
     iss = payload.get("iss", "")
     if "clerk" not in iss.lower() and ".accounts.dev" not in iss.lower():
-        log.debug(f"Token issuer '{iss}' is not a Clerk domain — skipping Clerk verification")
+        log.debug(f"Token issuer '{iss}' is not a Clerk domain - skipping Clerk verification")
         return None
 
-    # Issuer is a Clerk domain — attempt full verification
+    # Issuer is a Clerk domain - attempt full verification
     try:
         clerk_user = verify_clerk_token(token)
         role = clerk_user.role if clerk_user.role in ("admin", "trader", "viewer") else "viewer"
@@ -420,7 +420,7 @@ async def get_authed_user(
 
     # API key check: try SaaS API key first, then static API_KEYS
     if api_key:
-        # SaaS API key (nt_live_*) — DB-backed
+        # SaaS API key (nt_live_*) - DB-backed
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
             return saas_user
@@ -548,7 +548,7 @@ async def ws_auth(
         if hdr_key in API_KEYS:
             return TokenData(sub=f"apikey:{hdr_key[:8]}...")
 
-    raise WebSocketAuthError("Unauthorised — provide ?token=<jwt> or ?api_key=<key>")
+    raise WebSocketAuthError("Unauthorised - provide ?token=<jwt> or ?api_key=<key>")
 
 
 # ── Login endpoint helper ─────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 """
-ObservationBuilder — 24-Feature Stateful Observation Vector
+ObservationBuilder - 24-Feature Stateful Observation Vector
 ════════════════════════════════════════════════════════════
 
 Constructs the full 24-observation vector used by the RL/ML policy layer.
@@ -7,8 +7,8 @@ Features 14–19 are the **Markov features**: live HMM posterior probabilities
 injected from the fitted RegimeHMM. They are NEVER defaulted to uniform priors.
 
 Critical design rule (from field experience):
-  ✗  build_observation(prices)          — standalone fn, no HMM state → uniform [0.25]*4
-  ✓  InferenceObservationBuilder.build() — stateful class, HMM updated per bar → dynamic
+  ✗  build_observation(prices)          - standalone fn, no HMM state → uniform [0.25]*4
+  ✓  InferenceObservationBuilder.build() - stateful class, HMM updated per bar → dynamic
 
 Feature Index Reference
 ───────────────────────
@@ -22,24 +22,24 @@ Feature Index Reference
   7   vol_regime_percentile  Percentile rank of current vol vs 252-bar history
   8   atr_vs_baseline        ATR(14) / ATR(252-bar mean)
   9   vol_trend_slope        Linear slope of 10-bar rolling vol (standardised)
- 10   regime_prob_0          P(HMM state 0) — raw, unsorted
- 11   regime_prob_1          P(HMM state 1) — raw, unsorted
- 12   regime_prob_2          P(HMM state 2) — raw, unsorted
- 13   regime_prob_3          P(HMM state 3) — raw, unsorted
- 14   vol_prob_low           P(low vol regime)       ← MARKOV FEATURE — must be dynamic
- 15   vol_prob_med_low       P(med_low vol regime)   ← MARKOV FEATURE — must be dynamic
- 16   vol_prob_med_high      P(med_high vol regime)  ← MARKOV FEATURE — must be dynamic
- 17   vol_prob_high          P(high vol regime)      ← MARKOV FEATURE — must be dynamic
- 18   trend_prob_strong_bear P(strong_bear trend)    ← MARKOV FEATURE — must be dynamic
- 19   trend_prob_bear        P(bear trend)           ← MARKOV FEATURE — must be dynamic
- 20   trend_prob_bull        P(bull trend)           ← MARKOV FEATURE — must be dynamic  [NOTE: table says 14-19 but 4-state vol needs 4 slots → indices shift to 14-21]
- 21   trend_prob_strong_bull P(strong_bull trend)    ← MARKOV FEATURE — must be dynamic
+ 10   regime_prob_0          P(HMM state 0) - raw, unsorted
+ 11   regime_prob_1          P(HMM state 1) - raw, unsorted
+ 12   regime_prob_2          P(HMM state 2) - raw, unsorted
+ 13   regime_prob_3          P(HMM state 3) - raw, unsorted
+ 14   vol_prob_low           P(low vol regime)       ← MARKOV FEATURE - must be dynamic
+ 15   vol_prob_med_low       P(med_low vol regime)   ← MARKOV FEATURE - must be dynamic
+ 16   vol_prob_med_high      P(med_high vol regime)  ← MARKOV FEATURE - must be dynamic
+ 17   vol_prob_high          P(high vol regime)      ← MARKOV FEATURE - must be dynamic
+ 18   trend_prob_strong_bear P(strong_bear trend)    ← MARKOV FEATURE - must be dynamic
+ 19   trend_prob_bear        P(bear trend)           ← MARKOV FEATURE - must be dynamic
+ 20   trend_prob_bull        P(bull trend)           ← MARKOV FEATURE - must be dynamic  [NOTE: table says 14-19 but 4-state vol needs 4 slots → indices shift to 14-21]
+ 21   trend_prob_strong_bull P(strong_bull trend)    ← MARKOV FEATURE - must be dynamic
  22   regime_quality         HMM fit quality scalar (mean log-likelihood proxy)
  23   state_confidence       max(vol_probs) * max(trend_probs)
  24   masaniello_pressure    M_i = f* × (1 - recommended_f) position pressure factor
  25   drawdown_factor        DD_i = current drawdown from peak, clipped [-1, 0]
 
-Wait — the spec uses 3-bucket vol (indices 14-16) and 3-bucket trend (17-19) matching
+Wait - the spec uses 3-bucket vol (indices 14-16) and 3-bucket trend (17-19) matching
 the original 3-state design. Since the HMM is 4-state, we expose ALL 4 vol + 4 trend
 probs across indices 14-21, then regime_quality=22, state_confidence=23,
 masaniello_pressure=24... but that exceeds 24.
@@ -52,7 +52,7 @@ Resolution: We keep EXACTLY 24 features by:
   - bull + strong_bull combined → "up" bucket at index 19
 
 This preserves the 3-bucket API spec while feeding 4-state HMM posteriors underneath.
-Aggregation is explicit and documented — no information loss beyond the stated resolution.
+Aggregation is explicit and documented - no information loss beyond the stated resolution.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ from .regime_engine import RegimeHMM, RegimeSnapshot
 # ─── Feature index constants (single source of truth) ────────────────────────
 
 class F:
-    """Feature index namespace — use F.VOL_PROB_LOW not magic numbers."""
+    """Feature index namespace - use F.VOL_PROB_LOW not magic numbers."""
     LOG_RET_1          = 0
     LOG_RET_3          = 1
     LOG_RET_10         = 2
@@ -89,7 +89,7 @@ class F:
     VOL_PROB_MEDIUM    = 15   # P(med_low + med_high combined)
     VOL_PROB_HIGH      = 16   # P(high vol)
     TREND_PROB_DOWN    = 17   # P(strong_bear + bear combined)
-    TREND_PROB_NEUTRAL = 18   # P(bear + bull midpoint — see _aggregate_trend)
+    TREND_PROB_NEUTRAL = 18   # P(bear + bull midpoint - see _aggregate_trend)
     TREND_PROB_UP      = 19   # P(bull + strong_bull combined)
     # ── Quality / risk features ──
     REGIME_QUALITY     = 20
@@ -134,7 +134,7 @@ class InferenceObservationBuilder:
     Stateful 24-feature observation builder.
 
     Maintains a fitted RegimeHMM across calls so Markov features (indices 14–19)
-    are always computed from live HMM posteriors — never from a uniform prior.
+    are always computed from live HMM posteriors - never from a uniform prior.
 
     Usage
     ─────
@@ -201,7 +201,7 @@ class InferenceObservationBuilder:
         """
         Build observation from a full price window.
         The HMM is re-fitted every `refit_every` bars in the background.
-        Markov features are ALWAYS computed from the fitted HMM — never uniform.
+        Markov features are ALWAYS computed from the fitted HMM - never uniform.
         """
         self._prices = list(np.asarray(prices)[-self.window:])
         self._highs  = list(np.asarray(high)[-self.window:])
@@ -296,7 +296,7 @@ class InferenceObservationBuilder:
 
         # ── 10–13: Raw HMM posteriors (unsorted, 4 states) ───────────────────
         # Use snap.vol_probs (already reordered by label) remapped to raw index
-        # order via the inverse label map — avoids a second predict_proba call
+        # order via the inverse label map - avoids a second predict_proba call
         # that can NaN on degenerate emission densities.
         snap = self._last_snap
         if snap is not None and self._hmm._vol_label_map:
@@ -316,7 +316,7 @@ class InferenceObservationBuilder:
         #
         # CRITICAL: these must come from _last_snap, which is set by _fit_hmm()
         # and updated in _compute_observation via predict(). Never fall through
-        # to a uniform prior — the guard below will catch it.
+        # to a uniform prior - the guard below will catch it.
         #
         # 3-bucket aggregation for the 4-state HMM:
         #   vol:   low=low,  medium=med_low+med_high,  high=high
@@ -345,7 +345,7 @@ class InferenceObservationBuilder:
                 vec[F.TREND_PROB_NEUTRAL] /= trend_sum
                 vec[F.TREND_PROB_UP]      /= trend_sum
         else:
-            # HMM not yet fitted — mark with sentinel, not uniform prior
+            # HMM not yet fitted - mark with sentinel, not uniform prior
             # Downstream code should check obs.is_markov_uniform() and skip
             # policy inference until snap is available.
             vec[F.MARKOV_SLICE] = 0.0   # all-zero sentinel (never [0.33, 0.33, 0.33])

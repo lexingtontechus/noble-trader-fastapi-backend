@@ -1,5 +1,5 @@
 """
-v3.0 Feature Tests — GPU HMM · Feed Adapters · Correlation · Optimisation
+v3.0 Feature Tests - GPU HMM · Feed Adapters · Correlation · Optimisation
 Run from v30 directory: python test_v30.py
 """
 import sys, warnings
@@ -42,7 +42,7 @@ print("  v3.0 Feature Tests")
 print("=" * 68)
 
 # ─── TEST 1: GPU Engine (capabilities + factory) ──────────────────────────────
-print("\n▶ Test 1: GPU engine — create_regime_hmm factory")
+print("\n▶ Test 1: GPU engine - create_regime_hmm factory")
 from regime_platform.core.gpu_engine import create_regime_hmm, gpu_capabilities
 
 caps = gpu_capabilities()
@@ -52,7 +52,7 @@ print(f"  MPS available:         {caps['mps_available']}")
 print(f"  Active device:         {caps['active_device']}")
 print(f"  HMM backend:           {caps['hmm_backend']}")
 
-# Force CPU (hmmlearn) — always available
+# Force CPU (hmmlearn) - always available
 model = create_regime_hmm(force_cpu=True)
 from regime_platform.core.regime_engine import RegimeHMM
 assert isinstance(model, RegimeHMM), "force_cpu=True must return RegimeHMM"
@@ -108,7 +108,7 @@ from regime_platform.core.correlation_regime import (
 
 detector = CorrelationRegimeDetector(CorrelationRegimeConfig(window=40))
 
-# Normal market — expect low/mid corr
+# Normal market - expect low/mid corr
 snap_normal = detector.detect(returns_normal, SYMBOLS)
 assert snap_normal.corr_regime in CORR_LABELS
 assert 0.0 <= snap_normal.corr_confidence <= 1.0
@@ -122,7 +122,7 @@ print(f"    mean |ρ|:              {snap_normal.mean_abs_correlation:.4f}")
 print(f"    corr_risk_mult:        {snap_normal.corr_risk_multiplier:.2f}×")
 print(f"    confidence:            {snap_normal.corr_confidence:.2%}")
 
-# Crisis market — expect high_corr or crisis
+# Crisis market - expect high_corr or crisis
 snap_crisis = detector.detect(returns_crisis, SYMBOLS)
 print(f"  Crisis market regime:    {snap_crisis.corr_regime}")
 print(f"    mean |ρ|:              {snap_crisis.mean_abs_correlation:.4f}")
@@ -189,17 +189,17 @@ res_normal = opt2.optimise(returns_normal, SYMBOLS, corr_regime="low_corr")
 res_crisis = opt2.optimise(returns_crisis, SYMBOLS, corr_regime="crisis")
 assert res_crisis.regime_exposure < res_normal.regime_exposure, \
     f"Crisis exposure ({res_crisis.regime_exposure:.2f}) should be < normal ({res_normal.regime_exposure:.2f})"
-print(f"  Regime exposure — low_corr: {res_normal.regime_exposure:.2f}  crisis: {res_crisis.regime_exposure:.2f}")
+print(f"  Regime exposure - low_corr: {res_normal.regime_exposure:.2f}  crisis: {res_crisis.regime_exposure:.2f}")
 print("  ✓ Crisis reduces portfolio exposure vs normal regime")
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 print(f"\n{'─' * 68}")
 print("✅  All v3.0 tests passed.\n")
 print("  New endpoints available on main_v4.py:")
-print("  GET  /gpu/capabilities          — hardware + backend report")
-print("  POST /gpu/benchmark             — latency benchmark")
-print("  POST /feeds/start               — start Alpaca/Binance/IB live feeds")
-print("  GET  /feeds/status              — adapter health")
-print("  POST /correlation/detect        — DCC portfolio correlation regime")
-print("  POST /optimise                  — drawdown-controlled max-Sharpe")
-print("  POST /optimise/full             — correlation + optimise one-shot")
+print("  GET  /gpu/capabilities          - hardware + backend report")
+print("  POST /gpu/benchmark             - latency benchmark")
+print("  POST /feeds/start               - start Alpaca/Binance/IB live feeds")
+print("  GET  /feeds/status              - adapter health")
+print("  POST /correlation/detect        - DCC portfolio correlation regime")
+print("  POST /optimise                  - drawdown-controlled max-Sharpe")
+print("  POST /optimise/full             - correlation + optimise one-shot")

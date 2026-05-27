@@ -141,7 +141,7 @@ Get a single config entry by its full key path.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `key` | string (path) | Full config key (e.g., "renko.brick_size") — supports dot notation |
+| `key` | string (path) | Full config key (e.g., "renko.brick_size") - supports dot notation |
 
 **Response:** `ConfigEntryResponse`
 
@@ -202,18 +202,18 @@ Update a config value. Admin only.
 
 The backend validates the value against the config schema before persisting:
 
-1. **Type coercion** — The value is coerced to the key's `value_type`:
+1. **Type coercion** - The value is coerced to the key's `value_type`:
    - `float`: `float(value)`
    - `int`: `int(float(value))`
    - `bool`: True/true/1/yes → True, everything else → False
    - `str`: `str(value)`
    - `json`: `json.loads(value)` if string, else pass-through
 
-2. **Range check** — If `min_value` or `max_value` are defined and the type is `float` or `int`:
+2. **Range check** - If `min_value` or `max_value` are defined and the type is `float` or `int`:
    - `value >= min_value`
    - `value <= max_value`
 
-3. **Enum check** — If `allowed_values` is defined:
+3. **Enum check** - If `allowed_values` is defined:
    - `value in allowed_values`
 
 **Response:** `ConfigEntryResponse` (with updated value)
@@ -257,7 +257,7 @@ Reset a config value to its hardcoded default. Admin only.
 | 500 | `ConfigError` | Key has no default value defined |
 
 **Side Effects:**
-- Same as PATCH — cache updated, DB upserted, audit logged
+- Same as PATCH - cache updated, DB upserted, audit logged
 - Audit `reason` is automatically set to "Reset to default"
 
 ---
@@ -359,7 +359,7 @@ Get the config change audit log. Admin only.
 **Notes:**
 - Entries are ordered by `changed_at` descending (most recent first)
 - The `changed_by` field contains the Clerk user `sub` (e.g., `user_2xyz...`)
-- The audit log is append-only — entries cannot be modified or deleted
+- The audit log is append-only - entries cannot be modified or deleted
 - If Supabase is unavailable, an empty list is returned (graceful degradation)
 
 ---
@@ -460,7 +460,7 @@ All errors follow the standard FastAPI HTTPException format:
 
 ## Rate Limiting
 
-The config endpoints are not rate-limited separately — they fall under the default rate limit tier. Since config changes are infrequent admin operations, rate limiting is not a concern in practice.
+The config endpoints are not rate-limited separately - they fall under the default rate limit tier. Since config changes are infrequent admin operations, rate limiting is not a concern in practice.
 
 ---
 
@@ -519,4 +519,4 @@ The config endpoints are not rate-limited separately — they fall under the def
 
 | Trigger | Table | Function | When |
 |---------|-------|----------|------|
-| `trg_system_config_updated_at` | system_config | `update_system_config_updated_at()` | BEFORE UPDATE — sets `updated_at = now()` |
+| `trg_system_config_updated_at` | system_config | `update_system_config_updated_at()` | BEFORE UPDATE - sets `updated_at = now()` |

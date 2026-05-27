@@ -52,7 +52,7 @@ def _supports_colour(no_color: bool) -> bool:
 
 
 class C:
-    """ANSI colour codes — disabled when NO_COLOR=True."""
+    """ANSI colour codes - disabled when NO_COLOR=True."""
     _on = True
 
     @classmethod
@@ -121,7 +121,7 @@ def post(url: str, payload: dict, timeout: float = 10.0) -> dict:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        raise RuntimeError(f"HTTP {e.code} — {body[:300]}")
+        raise RuntimeError(f"HTTP {e.code} - {body[:300]}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection failed: {e.reason}. Is the server running?")
 
@@ -170,7 +170,7 @@ def print_tick(tick: dict, tick_num: int, prev_regime: Optional[str], raw_json: 
         return
 
     regime_changed = tick.get("regime_changed", False)
-    regime_label   = tick.get("regime_label", "—")
+    regime_label   = tick.get("regime_label", "-")
     alert          = tick.get("alert")
 
     # Separator + regime-change banner
@@ -302,18 +302,18 @@ def main():
 
     if not args.json:
         print()
-        print(C.bold(f"  Regime Risk Platform — SPY Tick Stream Test"))
+        print(C.bold(f"  Regime Risk Platform - SPY Tick Stream Test"))
         print(C.dim(f"  Server: {base_url}"))
         print(C.dim(f"  Symbol: {args.symbol} | Seed: {args.seed_bars} bars | "
                     f"Ticks: {args.ticks} | Regime: {args.regime}"))
 
     # ── 1. Health check ───────────────────────────────────────────────────────
     if not args.json:
-        print(f"\n  {C.bold('Step 1')} — Health check")
+        print(f"\n  {C.bold('Step 1')} - Health check")
     try:
         health = get(f"{base_url}/health")
         if not args.json:
-            print(f"  {C.green('✓')}  Server OK — v{health.get('version','?')}  "
+            print(f"  {C.green('✓')}  Server OK - v{health.get('version','?')}  "
                   f"sessions={health.get('sessions',0)}  "
                   f"redis={health.get('redis',False)}")
     except RuntimeError as e:
@@ -322,7 +322,7 @@ def main():
 
     # ── 2. Generate seed prices ───────────────────────────────────────────────
     if not args.json:
-        print(f"\n  {C.bold('Step 2')} — Generating {args.seed_bars} seed bars ({args.regime} regime)")
+        print(f"\n  {C.bold('Step 2')} - Generating {args.seed_bars} seed bars ({args.regime} regime)")
 
     seed_prices = generate_prices(
         args.seed_bars, params["seed_mu"], params["seed_sigma"], start=100.0, seed=42
@@ -332,7 +332,7 @@ def main():
 
     # ── 3. Seed the session ───────────────────────────────────────────────────
     if not args.json:
-        print(f"\n  {C.bold('Step 3')} — Seeding {args.symbol} session ...")
+        print(f"\n  {C.bold('Step 3')} - Seeding {args.symbol} session ...")
 
     seed_payload = {
         "symbol":       args.symbol,
@@ -353,11 +353,11 @@ def main():
     if not args.json:
         ready = status.get("ready", False)
         icon  = C.green("✓") if ready else C.yellow("⚠")
-        print(f"  {icon}  Session seeded — ready={ready}  n_bars={status.get('n_bars',0)}  "
+        print(f"  {icon}  Session seeded - ready={ready}  n_bars={status.get('n_bars',0)}  "
               f"refits={status.get('refit_count',0)}  "
               f"regime={status.get('last_regime','pending')}")
         if not ready:
-            print(f"  {C.yellow('⚠')}  Session not ready — add more seed bars (--seed-bars 200)")
+            print(f"  {C.yellow('⚠')}  Session not ready - add more seed bars (--seed-bars 200)")
 
     # ── 4. Generate live ticks ────────────────────────────────────────────────
     live_prices = generate_live_ticks(
@@ -369,7 +369,7 @@ def main():
     )
 
     if not args.json:
-        print(f"\n  {C.bold('Step 4')} — Pushing {args.ticks} live ticks "
+        print(f"\n  {C.bold('Step 4')} - Pushing {args.ticks} live ticks "
               f"(μ={live_mu:+.4f}, σ={live_sigma:.4f})")
         print(f"  {C.dim('(live price range preview: '  )}"
               f"{C.grey(f'{min(live_prices):.2f} – {max(live_prices):.2f})')}")
@@ -415,7 +415,7 @@ def main():
     if all_ticks:
         print_summary(args.symbol, all_ticks, latencies, args.seed_bars, args.json)
     else:
-        print(f"\n  {C.yellow('⚠')}  No TickResponse received — "
+        print(f"\n  {C.yellow('⚠')}  No TickResponse received - "
               "session may still be warming up. Try --seed-bars 200.\n")
 
 

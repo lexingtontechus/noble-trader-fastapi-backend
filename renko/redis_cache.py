@@ -6,8 +6,8 @@ Provides a fast Redis-backed caching layer for Renko pipeline snapshots,
 sitting above the Supabase L2 (durable) store.
 
 Architecture:
-    L1: Redis   — sub-5ms reads, 4h TTL, compressed JSON
-    L2: Supabase — ~100ms reads, durable, full history
+    L1: Redis   - sub-5ms reads, 4h TTL, compressed JSON
+    L2: Supabase - ~100ms reads, durable, full history
 
 Restore hierarchy (MCP agent perspective):
     1. Redis L1 hit → <5ms, instant hydration
@@ -53,7 +53,7 @@ META_PREFIX = "renko:snapshot:meta:"
 # Default TTL: 4 hours (matches Supabase freshness threshold)
 DEFAULT_TTL_SECONDS = 14400
 
-# Max compressed snapshot size (10 MB — safety limit)
+# Max compressed snapshot size (10 MB - safety limit)
 MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024
 
 
@@ -63,7 +63,7 @@ class RenkoRedisCache:
 
     If REDIS_URL is not configured or the redis package is unavailable,
     all methods become no-ops and `enabled` is False. This ensures the
-    pipeline works perfectly without Redis — just slower on cold starts.
+    pipeline works perfectly without Redis - just slower on cold starts.
 
     v7.3: Uses shared Redis pool for binary client. Replaced KEYS with SCAN.
     """
@@ -76,7 +76,7 @@ class RenkoRedisCache:
         _url = redis_url or settings.redis_url_effective
         if not _url:
             log.info(
-                "REDIS_URL not set — Renko L1 cache disabled "
+                "REDIS_URL not set - Renko L1 cache disabled "
                 "(Supabase L2 only, ~100ms restore)"
             )
             return
@@ -88,14 +88,14 @@ class RenkoRedisCache:
             self._enabled = True
             log.info(f"Renko L1 cache configured (TTL={ttl_seconds}s)")
         except ImportError:
-            log.warning("redis package not installed — Renko L1 cache disabled")
+            log.warning("redis package not installed - Renko L1 cache disabled")
 
     @property
     def enabled(self) -> bool:
         return self._enabled
 
     async def _get_client(self):
-        """Lazy connection — created on first use.
+        """Lazy connection - created on first use.
 
         v7.3: Uses the shared Redis pool for the binary client.
         """
@@ -164,7 +164,7 @@ class RenkoRedisCache:
             if len(compressed) > MAX_SNAPSHOT_BYTES:
                 log.warning(
                     f"Renko snapshot for {symbol} too large for Redis L1 "
-                    f"({len(compressed)} bytes, max {MAX_SNAPSHOT_BYTES}) — skipping"
+                    f"({len(compressed)} bytes, max {MAX_SNAPSHOT_BYTES}) - skipping"
                 )
                 return False
 
@@ -236,7 +236,7 @@ class RenkoRedisCache:
         """
         Load lightweight metadata for a symbol from Redis L1.
 
-        Much faster than loading the full snapshot — useful for
+        Much faster than loading the full snapshot - useful for
         readiness checks and status displays.
         """
         if not self._enabled:
@@ -328,5 +328,5 @@ class RenkoRedisCache:
             self._redis = None
 
 
-# Singleton — shared across all Renko endpoints
+# Singleton - shared across all Renko endpoints
 renko_cache = RenkoRedisCache()

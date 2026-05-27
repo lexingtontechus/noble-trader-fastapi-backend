@@ -517,7 +517,7 @@ class MasanielloSizeRequest(BaseModel):
     atr_current: float = Field(..., gt=0, description="Current ATR value.")
     # Optional: provide prices to auto-detect regime
     prices: Optional[list[float]] = Field(default=None, min_length=81, description="Price series for auto regime detection.")
-    # Batch state (optional — if not provided, fresh batch is assumed)
+    # Batch state (optional - if not provided, fresh batch is assumed)
     wins_so_far: int = Field(default=0, ge=0)
     losses_so_far: int = Field(default=0, ge=0)
     trade_index: int = Field(default=1, ge=1)
@@ -577,7 +577,7 @@ class MasanielloBatchRequest(BaseModel):
     p_wins: list[float] = Field(..., min_length=1, max_length=50, description="Win probability per trade.")
     reward_risks: list[float] = Field(..., min_length=1, max_length=50, description="R multiple per trade.")
     atr_currents: list[float] = Field(..., min_length=1, max_length=50, description="Current ATR per trade.")
-    # Outcomes (optional — if provided, updates batch state)
+    # Outcomes (optional - if provided, updates batch state)
     outcomes: Optional[list[bool]] = Field(default=None, description="Win/loss outcomes (True=win, False=loss).")
     pnls: Optional[list[float]] = Field(default=None, description="PnL per trade.")
     # Config

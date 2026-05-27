@@ -1,11 +1,11 @@
 """
-Kill Switch Gate Middleware — Blocks order execution when trading is halted.
+Kill Switch Gate Middleware - Blocks order execution when trading is halted.
 
 Intercepts requests to trading execution endpoints and checks the kill switch
 before allowing them through. Returns 403 with halt details if any active
 halt exists for the requesting user or symbol.
 
-This is the last line of defense — even if a bug in the signal pipeline
+This is the last line of defense - even if a bug in the signal pipeline
 generates a trade, the kill switch middleware will block it from reaching
 Alpaca.
 """
@@ -88,7 +88,7 @@ class KillSwitchGateMiddleware(BaseHTTPMiddleware):
                 halt_info = active_halt.model_dump(mode="json") if active_halt else {}
                 
                 logger.warning(
-                    f"KillSwitchGate: BLOCKED {request.method} {path} — "
+                    f"KillSwitchGate: BLOCKED {request.method} {path} - "
                     f"trading is halted ({halt_info.get('level', 'unknown')})"
                 )
                 

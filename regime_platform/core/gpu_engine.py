@@ -5,7 +5,7 @@ GPU-Accelerated HMM Engine
 Provides a `GpuRegimeHMM` that mirrors the `RegimeHMM` interface exactly,
 replacing hmmlearn's Gaussian HMM with pomegranate's PyTorch-backed HMM.
 
-When a CUDA GPU is available, EM runs on GPU — typically 10–50× faster
+When a CUDA GPU is available, EM runs on GPU - typically 10–50× faster
 than hmmlearn on large datasets (>10,000 bars or batch inference).
 
 When GPU is unavailable, the class transparently falls back to hmmlearn
@@ -104,7 +104,7 @@ class GpuRegimeHMM:
     Pomegranate differences from hmmlearn:
       - fit() takes a list of sequences (each shape (T, D))
       - predict_proba() returns a torch.Tensor, converted to numpy
-      - No transmat_/startprob_ attributes — use .edges and .starts
+      - No transmat_/startprob_ attributes - use .edges and .starts
         (we sanitize differently: re-normalise the distribution weights)
     """
 
@@ -300,20 +300,20 @@ def create_regime_hmm(
     snap  = model.predict(prices)
     """
     if force_cpu:
-        log.debug("force_cpu=True — using hmmlearn RegimeHMM")
+        log.debug("force_cpu=True - using hmmlearn RegimeHMM")
         return RegimeHMM(n_components=n_components, n_iter=n_iter)
 
     device = _best_device()
 
     if _has_pomegranate() and device != "cpu":
-        log.info(f"GPU available ({device}) + pomegranate installed — using GpuRegimeHMM")
+        log.info(f"GPU available ({device}) + pomegranate installed - using GpuRegimeHMM")
         return GpuRegimeHMM(n_components=n_components, n_iter=n_iter, device=device)
 
     if _has_pomegranate() and not _has_cuda() and not _has_mps():
-        log.debug("pomegranate installed but no GPU — using hmmlearn RegimeHMM (CPU is faster for small n)")
+        log.debug("pomegranate installed but no GPU - using hmmlearn RegimeHMM (CPU is faster for small n)")
         return RegimeHMM(n_components=n_components, n_iter=n_iter)
 
-    log.debug("pomegranate not installed — using hmmlearn RegimeHMM")
+    log.debug("pomegranate not installed - using hmmlearn RegimeHMM")
     return RegimeHMM(n_components=n_components, n_iter=n_iter)
 
 

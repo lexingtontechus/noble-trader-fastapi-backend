@@ -1,5 +1,5 @@
 """
-PnlService — Intraday P&L analytics, risk dashboard, CSV export, alert thresholds.
+PnlService - Intraday P&L analytics, risk dashboard, CSV export, alert thresholds.
 
 Provides:
   • Intraday P&L time-bucketed from Alpaca portfolio history (5Min/15Min/1Hour/1Day)
@@ -228,7 +228,7 @@ def _row_to_threshold(row: dict) -> AlertThreshold:
 async def _push_pnl_alert_discord(alert: dict) -> None:
     """
     Push a triggered P&L alert to Discord via the STATUS webhook.
-    Non-blocking — failures are logged but never crash.
+    Non-blocking - failures are logged but never crash.
     """
     try:
         from notifications.discord import discord_notifier, AlertLevel
@@ -256,7 +256,7 @@ async def _push_pnl_alert_discord(alert: dict) -> None:
 async def _push_pnl_alert_telegram(alert: dict) -> None:
     """
     Push a triggered P&L alert to Telegram via the Bot API.
-    Non-blocking — failures are logged but never crash.
+    Non-blocking - failures are logged but never crash.
     """
     try:
         from notifications.telegram import telegram_notifier
@@ -518,7 +518,7 @@ class PnlService:
         daily_pnl = hist.get("pnl", [])
 
         if len(daily_pnl) < 2:
-            # Not enough data — return zeros
+            # Not enough data - return zeros
             return RiskDashboardMetrics(computed_at=datetime.now(timezone.utc).isoformat())
 
         pnl_array = np.array(daily_pnl, dtype=float)

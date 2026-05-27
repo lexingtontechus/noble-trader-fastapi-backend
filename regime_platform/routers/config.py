@@ -7,15 +7,15 @@ admin role. Reads are available to any authenticated user (sensitive
 values are masked for non-admin readers).
 
 Endpoints:
-    GET    /config/                 — List all config entries (grouped by category)
-    GET    /config/{category}       — Get config entries for a category
-    GET    /config/key/{key}        — Get a single config entry
-    PATCH  /config/key/{key}        — Update a config value (admin only)
-    POST   /config/key/{key}/reset  — Reset a config to its default (admin only)
-    POST   /config/reload           — Force reload from DB (admin only)
-    GET    /config/schema           — Full schema with types, ranges, descriptions
-    GET    /config/audit            — Config change audit log
-    GET    /config/categories       — List all categories
+    GET    /config/                 - List all config entries (grouped by category)
+    GET    /config/{category}       - Get config entries for a category
+    GET    /config/key/{key}        - Get a single config entry
+    PATCH  /config/key/{key}        - Update a config value (admin only)
+    POST   /config/key/{key}/reset  - Reset a config to its default (admin only)
+    POST   /config/reload           - Force reload from DB (admin only)
+    GET    /config/schema           - Full schema with types, ranges, descriptions
+    GET    /config/audit            - Config change audit log
+    GET    /config/categories       - List all categories
 """
 
 from __future__ import annotations

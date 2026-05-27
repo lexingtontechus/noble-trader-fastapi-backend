@@ -1,14 +1,14 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v2.1.0       ║
+║     Dynamic Regime Risk Management Platform - FastAPI Service  v2.1.0       ║
 ║                                                                              ║
 ║  v2.1 additions (roadmap items):                                             ║
-║    POST /simulate/{symbol}  — Markov-chain regime transition simulation      ║
-║    GET  /portfolio          — Multi-symbol aggregated regime + risk          ║
-║    Redis Streams            — Optional price buffer persistence              ║
-║    JWT / API-Key auth       — WebSocket + HTTP endpoint protection           ║
-║    POST /auth/token         — Issue JWT access tokens                        ║
-║    GET  /auth/me            — Current user info                              ║
+║    POST /simulate/{symbol}  - Markov-chain regime transition simulation      ║
+║    GET  /portfolio          - Multi-symbol aggregated regime + risk          ║
+║    Redis Streams            - Optional price buffer persistence              ║
+║    JWT / API-Key auth       - WebSocket + HTTP endpoint protection           ║
+║    POST /auth/token         - Issue JWT access tokens                        ║
+║    GET  /auth/me            - Current user info                              ║
 ║                                                                              ║
 ║  All v2.0 endpoints unchanged:                                               ║
 ║    POST /analyse/full | /regime/detect | /size/kelly | /risk/analyse         ║
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Restore any persisted sessions from Redis on startup
     if persistence.enabled:
         symbols = await persistence.list_persisted_symbols()
-        log.info(f"Redis persistence active — found {len(symbols)} persisted symbol(s): {symbols}")
+        log.info(f"Redis persistence active - found {len(symbols)} persisted symbol(s): {symbols}")
         from regime_platform.services.registry import registry
         for symbol in symbols:
             meta    = await persistence.load_meta(symbol)
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
             else:
                 log.info(f"  ⚠ {symbol}: restored {n} bars (< 81 min, pending seed)")
     else:
-        log.info("Redis not configured — starting with empty in-memory sessions")
+        log.info("Redis not configured - starting with empty in-memory sessions")
 
     yield  # ── app is running ──
 
@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
         version="2.1.0",
         lifespan=lifespan,
         description="""
-## v2.1.0 — Simulation · Portfolio · Redis Persistence · JWT Auth
+## v2.1.0 - Simulation · Portfolio · Redis Persistence · JWT Auth
 
 ### New in v2.1
 

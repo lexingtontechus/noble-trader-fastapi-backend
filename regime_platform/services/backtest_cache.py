@@ -1,5 +1,5 @@
 """
-Backtest Result Cache — Redis-backed with 1h TTL
+Backtest Result Cache - Redis-backed with 1h TTL
 ═══════════════════════════════════════════════════
 
 Caches backtest results keyed on the full request configuration so
@@ -10,8 +10,8 @@ Architecture
   • Cache key: "bt:{prefix}:{sha256(canonical_json(request_body))}"
   • TTL: 3600 seconds (1 hour)
   • If REDIS_URL is not configured or redis is unavailable, all
-    operations are no-ops — the backtest runs normally.
-  • Never raises — Redis failures are caught and logged.
+    operations are no-ops - the backtest runs normally.
+  • Never raises - Redis failures are caught and logged.
 
 v7.3 Changes
 ────────────
@@ -32,7 +32,7 @@ Usage
   result = await run_expensive_backtest(...)
   await backtest_cache.set("renko", request_dict, result)
 
-  # Invalidate (optional — TTL handles expiry)
+  # Invalidate (optional - TTL handles expiry)
   await backtest_cache.invalidate("renko", request_dict)
 
   # Health check
@@ -89,7 +89,7 @@ class BacktestCache:
 
     If REDIS_URL is not configured or the redis package is not installed,
     all methods become no-ops and `enabled` is False. Redis failures are
-    always caught and logged — they NEVER propagate to the caller.
+    always caught and logged - they NEVER propagate to the caller.
 
     v7.3: Uses shared connection pool. Replaces KEYS with SCAN + SET tracking.
     """
@@ -101,7 +101,7 @@ class BacktestCache:
 
         _url = redis_url or settings.redis_url_effective
         if not _url:
-            log.info("REDIS_URL not set — backtest result caching disabled")
+            log.info("REDIS_URL not set - backtest result caching disabled")
             return
 
         try:
@@ -110,7 +110,7 @@ class BacktestCache:
             self._enabled = True
             log.info(f"Backtest cache configured (TTL={ttl}s)")
         except ImportError:
-            log.warning("redis package not installed — backtest cache disabled. pip install redis")
+            log.warning("redis package not installed - backtest cache disabled. pip install redis")
 
     @property
     def enabled(self) -> bool:
@@ -136,7 +136,7 @@ class BacktestCache:
         Look up a cached backtest result.
 
         Returns the cached result dict on HIT, or None on MISS.
-        Never raises — Redis errors return None (cache miss).
+        Never raises - Redis errors return None (cache miss).
         """
         if not self._enabled:
             return None
@@ -163,7 +163,7 @@ class BacktestCache:
         Store a backtest result in the cache.
 
         Returns True if stored successfully, False otherwise.
-        Never raises — Redis errors are caught and logged.
+        Never raises - Redis errors are caught and logged.
         """
         if not self._enabled:
             return False
@@ -283,6 +283,6 @@ class BacktestCache:
         self._redis = None
 
 
-# ── Singleton — shared across all endpoints ──────────────────────────────────
+# ── Singleton - shared across all endpoints ──────────────────────────────────
 
 backtest_cache = BacktestCache()

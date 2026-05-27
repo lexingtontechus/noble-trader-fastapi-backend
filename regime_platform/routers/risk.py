@@ -122,7 +122,7 @@ async def risk_analyze(request: Request, req: RiskAnalyzeRequest, user: TokenDat
             base_risk_limit=base_risk_limit,
         )
 
-        # Stress tests — params resolved from runtime_config
+        # Stress tests - params resolved from runtime_config
         stress_tests = []
         stress_min_returns = await runtime_config.get_int("risk.stress_min_returns", default=20)
         if req.stress_scenarios and len(returns) > stress_min_returns:

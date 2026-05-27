@@ -271,18 +271,18 @@ class RuntimeConfig:
                 self._schema_loaded = True
                 log.debug("Refreshed runtime config cache: %d entries", len(self._cache))
             elif not self._cache:
-                # Cold start with no DB data — populate from sync_config defaults
+                # Cold start with no DB data - populate from sync_config defaults
                 # so that lookups for known keys don't 404 when Supabase is down.
                 self._cache = self._defaults_to_entries()
                 self._cache_time = now
                 self._schema_loaded = True
                 log.info(
-                    "Populated config cache from sync defaults (%d keys) — DB unavailable",
+                    "Populated config cache from sync defaults (%d keys) - DB unavailable",
                     len(self._cache),
                 )
             else:
                 # Warm cache but DB fetch returned empty (timeout / transient error).
-                # Extend TTL to prevent thundering herd — every request would otherwise
+                # Extend TTL to prevent thundering herd - every request would otherwise
                 # queue on the lock and retry the 5-second HTTP timeout.
                 self._cache_time = now
                 log.warning(
@@ -475,7 +475,7 @@ class RuntimeConfig:
 
         The callback receives (key: str, entry: ConfigEntry).
         Callbacks are fired after the value is persisted and the cache is updated.
-        Errors in callbacks are caught and logged — they never block set_value().
+        Errors in callbacks are caught and logged - they never block set_value().
         """
         self._on_change_callbacks.append(callback)
 
@@ -592,7 +592,7 @@ class RuntimeConfig:
                 return raw.lower() in ("true", "1", "yes")
             return bool(raw)
         elif value_type == ValueType.STR:
-            # DB stores strings as JSON strings (with quotes) — strip if needed
+            # DB stores strings as JSON strings (with quotes) - strip if needed
             s = str(raw)
             if s.startswith('"') and s.endswith('"'):
                 s = s[1:-1]
@@ -679,7 +679,7 @@ class RuntimeConfig:
         This ensures that known keys like 'quality_floor' still resolve
         instead of returning 404.
         """
-        from .runtime_config import sync_config  # noqa: F811 — same module
+        from .runtime_config import sync_config  # noqa: F811 - same module
         entries: Dict[str, ConfigEntry] = {}
         for key, default_val in _SyncProxy._defaults.items():
             value_type = RuntimeConfig._infer_type(default_val)
@@ -722,7 +722,7 @@ class _SyncProxy:
         brick_size = sync_config.get_float("renko.brick_size", 0.50)
     """
 
-    # Hardcoded defaults registry — populated by register_defaults()
+    # Hardcoded defaults registry - populated by register_defaults()
     _defaults: Dict[str, Any] = {}
 
     @classmethod
@@ -868,7 +868,7 @@ sync_config.register_defaults({
     "risk.base_risk_limit": 0.02,
     "risk.stop_cvar_multiplier": 2,
     "risk.tp_cvar_multiplier": 3,
-    # Risk — Stress tests
+    # Risk - Stress tests
     "risk.stress_crash_mean": -0.02,
     "risk.stress_crash_std": 0.04,
     "risk.stress_crash_seed": 42,
@@ -896,12 +896,12 @@ sync_config.register_defaults({
     "exec.fill_threshold": 1.0,
     "exec.htb_premium_bps": 500.0,
     "exec.trading_days_per_year": 252,
-    # Execution — financing
+    # Execution - financing
     "exec.borrow_rate_bps": 50.0,
     "exec.margin_rate_bps": 150.0,
     "exec.dividend_yield_bps": 200.0,
     "exec.trading_days_per_quarter": 63,
-    # Execution — fill probability
+    # Execution - fill probability
     "exec.default_participation_rate": 0.01,
     "exec.volume_penalty_multiplier": 10.0,
     "exec.max_volume_penalty": 0.3,
@@ -920,7 +920,7 @@ sync_config.register_defaults({
     "stream.refit_every": 50,
     "stream.regime_debounce": 3,
     "stream.subscriber_queue_size": 500,
-    # Alpaca — WS core
+    # Alpaca - WS core
     "alpaca.ws_max_reconnects": 20,
     "alpaca.ws_base_backoff": 1.0,
     "alpaca.ws_ping_interval": 30,
@@ -928,7 +928,7 @@ sync_config.register_defaults({
     "alpaca.snapshot_interval_sec": 5,
     "alpaca.stream_grace_period": 30,
     "alpaca.sse_queue_size": 500,
-    # Alpaca — WS timeouts & throttling
+    # Alpaca - WS timeouts & throttling
     "alpaca.ws_close_timeout": 5,
     "alpaca.ws_backoff_cap": 8,
     "alpaca.supabase_http_timeout": 10.0,
@@ -939,13 +939,13 @@ sync_config.register_defaults({
     "alpaca.data_no_position_wait_timeout": 5.0,
     "alpaca.data_tick_min_interval": 1.0,
     "alpaca.data_resubscribe_interval": 2.0,
-    # Risk — stress test extended
+    # Risk - stress test extended
     "risk.stress_min_returns": 20,
     "risk.stress_liquidity_downside_mult": 1.5,
     "risk.stress_liquidity_upside_mult": 0.8,
-    # Sizing — quality floor (alias for regime_floor, used by MCP tools)
+    # Sizing - quality floor (alias for regime_floor, used by MCP tools)
     "sizing.quality_floor": 0.50,
     "renko.quality_floor": 0.50,
-    # Renko — sizing mode (exposed for MCP tool discovery)
+    # Renko - sizing mode (exposed for MCP tool discovery)
     "renko.sizing_mode": "kelly",
 })

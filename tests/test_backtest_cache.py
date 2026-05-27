@@ -1,5 +1,5 @@
 """
-Tests for the backtest_cache service — Redis-backed caching with 1h TTL.
+Tests for the backtest_cache service - Redis-backed caching with 1h TTL.
 
 Covers:
   - Cache key generation (deterministic hashing)

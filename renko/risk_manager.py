@@ -1,5 +1,5 @@
 """
-Risk Manager — brick-denominated risk management for Renko HFT.
+Risk Manager - brick-denominated risk management for Renko HFT.
 
 Because every Renko brick is the same size, risk parameters are
 expressed in brick units which translate to deterministic dollar
@@ -273,7 +273,7 @@ class RiskManager:
         """Unrealised P&L in bricks (requires latest price)."""
         if self.active_position is None:
             return 0.0
-        # Use current SL as reference for unrealised — caller should
+        # Use current SL as reference for unrealised - caller should
         # call evaluate() for accurate P&L
         return self.active_position.peak_profit_bricks
 
@@ -305,7 +305,7 @@ class RiskManager:
         """Check if take-profit has been reached, with slight adverse slippage on limit fills."""
         if pos.direction == SignalDirection.LONG:
             if brick.close_price >= pos.tp_price:
-                # TP is a limit order — slight adverse fill but much less than SL
+                # TP is a limit order - slight adverse fill but much less than SL
                 exit_price = pos.tp_price * (1 - self.slippage_bps / 20000)
                 return self._make_result(pos, exit_price, PositionStatus.CLOSED_TP, brick)
         else:
@@ -342,7 +342,7 @@ class RiskManager:
         if pos.peak_profit_bricks < pos.params.trail_after_bricks:
             return None  # Trailing not active yet
 
-        # The trailing stop IS the current SL — if SL is hit and
+        # The trailing stop IS the current SL - if SL is hit and
         # trailing is active, we label it as a trailing exit
         if pos.direction == SignalDirection.LONG:
             if brick.close_price <= pos.current_sl_price and pos.current_sl_price > pos.sl_price:
@@ -367,7 +367,7 @@ class RiskManager:
         if not (sl_triggered and tp_triggered):
             return None
 
-        # Both triggered — use priority
+        # Both triggered - use priority
         if self.params.oco_priority == "sl_first":
             return self._check_stop_loss(pos, brick)
         else:
@@ -380,7 +380,7 @@ class RiskManager:
         return None
 
     def _check_partial_exit(self, pos: ActivePosition, brick: Brick) -> None:
-        """Check for partial exit (no close — just reduces position)."""
+        """Check for partial exit (no close - just reduces position)."""
         if pos.partial_closed or pos.params.partial_exit_pct <= 0:
             return
 

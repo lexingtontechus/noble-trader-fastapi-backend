@@ -1,6 +1,6 @@
-# Phase 8: Operational Hardening — From Research Platform to Live-Tradable System
+# Phase 8: Operational Hardening - From Research Platform to Live-Tradable System
 
-> **Status:** SCOPED — Ready for implementation  
+> **Status:** SCOPED - Ready for implementation  
 > **Prerequisite:** Phases 1-7 COMPLETE (HMM regime engine, Renko pipeline, walk-forward, Monte Carlo, statistical rigor, execution modeling)  
 > **Goal:** Bridge the gap between "impressive quant engine" and "production trading system" by building the operational scaffolding that institutions require before deploying real capital.
 
@@ -8,9 +8,9 @@
 
 ## 0. Why Phase 8 Exists
 
-Phases 1-7 built a **Ferrari engine on a go-kart chassis.** The quantitative toolkit — HMM regime detection, Renko signal pipeline with 7-layer filtering, walk-forward validation, bootstrap CI, deflated Sharpe, Almgren-Chriss execution modeling, strategy evolution with A/B testing — is genuinely institutional-grade. In several areas (integrated regime-aware execution, TDA persistent homology, automated strategy rotation), it exceeds what most sell-side desks have in production.
+Phases 1-7 built a **Ferrari engine on a go-kart chassis.** The quantitative toolkit - HMM regime detection, Renko signal pipeline with 7-layer filtering, walk-forward validation, bootstrap CI, deflated Sharpe, Almgren-Chriss execution modeling, strategy evolution with A/B testing - is genuinely institutional-grade. In several areas (integrated regime-aware execution, TDA persistent homology, automated strategy rotation), it exceeds what most sell-side desks have in production.
 
-What's missing is the **operational infrastructure** — the unglamorous but essential pieces that separate a working research system from a system you'd trust with real money. Institutions call this "operational readiness," and it has hard requirements: kill switches, immutable audit trails, fill reconciliation, paper/live toggle with confirmation gates, multi-tenant isolation, and per-feature RBAC. Without these, no compliance officer signs off, no risk manager green-lights, and no PM trades live.
+What's missing is the **operational infrastructure** - the unglamorous but essential pieces that separate a working research system from a system you'd trust with real money. Institutions call this "operational readiness," and it has hard requirements: kill switches, immutable audit trails, fill reconciliation, paper/live toggle with confirmation gates, multi-tenant isolation, and per-feature RBAC. Without these, no compliance officer signs off, no risk manager green-lights, and no PM trades live.
 
 Phase 8 is deliberately scoped in priority tiers so you can ship incrementally. P0 items are the absolute minimum for live trading. P1 items make it production-hardened. P2 items make it institution-grade.
 
@@ -61,13 +61,13 @@ Phase 8 is deliberately scoped in priority tiers so you can ship incrementally. 
 
 ---
 
-## 2. P0 — Live Trading Blockers (Must Build First)
+## 2. P0 - Live Trading Blockers (Must Build First)
 
 Estimated total: **7-10 days**
 
 ### 2A. Kill Switch / Emergency Halt
 
-**Problem:** If something goes wrong — a bug in the signal pipeline, a data feed error, a runaway algo — there is currently no way to immediately stop all trading activity. The circuit breaker only protects individual API calls, not the overall trading system.
+**Problem:** If something goes wrong - a bug in the signal pipeline, a data feed error, a runaway algo - there is currently no way to immediately stop all trading activity. The circuit breaker only protects individual API calls, not the overall trading system.
 
 **Solution:** A three-tier kill switch system with frontend UI, backend service, and middleware enforcement.
 
@@ -77,9 +77,9 @@ Estimated total: **7-10 days**
 
 ```python
 # Three-tier kill switch:
-# 1. GLOBAL_HALT — stops ALL trading across all users, all symbols
-# 2. USER_HALT   — stops trading for a specific user
-# 3. SYMBOL_HALT — stops trading for a specific symbol
+# 1. GLOBAL_HALT - stops ALL trading across all users, all symbols
+# 2. USER_HALT   - stops trading for a specific user
+# 3. SYMBOL_HALT - stops trading for a specific symbol
 
 from enum import Enum
 from datetime import datetime
@@ -138,7 +138,7 @@ class KillSwitchService:
 class KillSwitchMiddleware:
     """
     Intercepts ALL requests to /trading/execute, /alpaca/orders/create,
-    /renko/orders, /trading/approve — returns 403 with halt details
+    /renko/orders, /trading/approve - returns 403 with halt details
     if an active halt exists.
     """
     PROTECTED_PATHS = [
@@ -195,7 +195,7 @@ class KillSwitchMiddleware:
 │  [Cancel All Open Orders]  [Close All Positions]    │
 │                                                     │
 │  ── Active Halts ──                                 │
-│  🔴 GLOBAL — Manual — admin@noble — 2m ago         │
+│  🔴 GLOBAL - Manual - admin@noble - 2m ago         │
 │     [DEACTIVATE]                                    │
 │                                                     │
 └─────────────────────────────────────────────────────┘
@@ -204,11 +204,11 @@ class KillSwitchMiddleware:
 **DaisyUI components:** `card`, `badge`, `btn btn-error`, `select`, `alert alert-warning`
 
 **BFF routes:**
-- `GET /api/trading/kill-switch/status` — active halts
-- `POST /api/trading/kill-switch/activate` — activate halt (requires admin role)
-- `POST /api/trading/kill-switch/deactivate` — deactivate halt (requires admin role)
-- `POST /api/trading/kill-switch/cancel-all` — cancel all orders
-- `POST /api/trading/kill-switch/close-all` — close all positions
+- `GET /api/trading/kill-switch/status` - active halts
+- `POST /api/trading/kill-switch/activate` - activate halt (requires admin role)
+- `POST /api/trading/kill-switch/deactivate` - deactivate halt (requires admin role)
+- `POST /api/trading/kill-switch/cancel-all` - cancel all orders
+- `POST /api/trading/kill-switch/close-all` - close all positions
 
 **Estimated effort:** 2 days
 
@@ -216,7 +216,7 @@ class KillSwitchMiddleware:
 
 ### 2B. Persistent Audit Log (Append-Only Trade Ledger)
 
-**Problem:** The current `TradeJournal` is an in-memory deque (max 10,000 entries) that's lost on restart. The `executor.py` order history is also in-memory. There is no immutable, append-only record of what was executed, when, and why. This is a compliance non-negotiable — without an audit trail, you can't reconcile, can't investigate incidents, and can't satisfy any regulatory requirement.
+**Problem:** The current `TradeJournal` is an in-memory deque (max 10,000 entries) that's lost on restart. The `executor.py` order history is also in-memory. There is no immutable, append-only record of what was executed, when, and why. This is a compliance non-negotiable - without an audit trail, you can't reconcile, can't investigate incidents, and can't satisfy any regulatory requirement.
 
 **Solution:** PostgreSQL append-only audit table + structured event logging.
 
@@ -226,7 +226,7 @@ class KillSwitchMiddleware:
 
 ```sql
 -- Append-only trade audit log
--- No UPDATE or DELETE permissions — INSERT and SELECT only
+-- No UPDATE or DELETE permissions - INSERT and SELECT only
 CREATE TABLE trade_audit_log (
     id            BIGSERIAL PRIMARY KEY,
     event_type    VARCHAR(50) NOT NULL,     -- ORDER_SUBMITTED, ORDER_FILLED, ORDER_REJECTED,
@@ -332,7 +332,7 @@ class AuditLogger:
         risk_metrics: Optional[dict] = None,
         metadata: Optional[dict] = None,
     ) -> int:
-        """Returns the audit log ID. Raises on failure — audit events must never be silently lost."""
+        """Returns the audit log ID. Raises on failure - audit events must never be silently lost."""
         ...
 ```
 
@@ -364,9 +364,9 @@ class AuditLogger:
 **DaisyUI components:** `card`, `badge` (color-coded by event type), `select`, `btn`, `table`
 
 **BFF routes:**
-- `GET /api/trading/audit-log` — paginated query with filters
-- `GET /api/trading/audit-log/export` — CSV export
-- `GET /api/trading/audit-log/summary` — event counts by type for last 24h/7d/30d
+- `GET /api/trading/audit-log` - paginated query with filters
+- `GET /api/trading/audit-log/export` - CSV export
+- `GET /api/trading/audit-log/summary` - event counts by type for last 24h/7d/30d
 
 **Estimated effort:** 2-3 days
 
@@ -384,9 +384,9 @@ class AuditLogger:
 
 ```python
 class TradingMode(str, Enum):
-    SIMULATION = "simulation"   # No API keys — orders logged locally
+    SIMULATION = "simulation"   # No API keys - orders logged locally
     PAPER = "paper"             # Alpaca paper API
-    LIVE = "live"               # Alpaca live API — REAL MONEY
+    LIVE = "live"               # Alpaca live API - REAL MONEY
 
 class ModeManager:
     """
@@ -457,12 +457,12 @@ After clicking "LIVE TRADING":
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Navbar indicator:** When in live mode, the navbar shows a persistent `🔴 LIVE` badge that pulses red. The entire page gets a subtle red border. The footer changes from "Paper Trading Only" to "⚠️ LIVE TRADING — Real Money at Risk".
+**Navbar indicator:** When in live mode, the navbar shows a persistent `🔴 LIVE` badge that pulses red. The entire page gets a subtle red border. The footer changes from "Paper Trading Only" to "⚠️ LIVE TRADING - Real Money at Risk".
 
 **BFF routes:**
-- `GET /api/trading/mode` — current mode
-- `POST /api/trading/mode/request` — request mode change (returns confirmation token)
-- `POST /api/trading/mode/confirm` — confirm mode change
+- `GET /api/trading/mode` - current mode
+- `POST /api/trading/mode/request` - request mode change (returns confirmation token)
+- `POST /api/trading/mode/confirm` - confirm mode change
 
 **Config changes:**
 - Add `NEXT_PUBLIC_ALPACA_LIVE_BASE_URL` env var
@@ -497,9 +497,9 @@ class ReconciliationResult(BaseModel):
 class ReconciliationService:
     """
     Runs reconciliation on two schedules:
-    1. IMMEDIATE — After every order submission, poll Alpaca for fill status
+    1. IMMEDIATE - After every order submission, poll Alpaca for fill status
        (current OrderTracker does this, but doesn't compare against expectations)
-    2. PERIODIC — Every 15 minutes, reconcile all orders from the last 24 hours
+    2. PERIODIC - Every 15 minutes, reconcile all orders from the last 24 hours
 
     Thresholds (configurable):
     - SLIPPAGE_WARNING: > 50 bps → log warning
@@ -542,15 +542,15 @@ class ReconciliationService:
 ```
 
 **BFF routes:**
-- `GET /api/trading/reconcile/status` — last reconciliation results
-- `POST /api/trading/reconcile/run` — trigger manual reconciliation
-- `GET /api/trading/reconcile/positions` — position comparison
+- `GET /api/trading/reconcile/status` - last reconciliation results
+- `POST /api/trading/reconcile/run` - trigger manual reconciliation
+- `GET /api/trading/reconcile/positions` - position comparison
 
 **Estimated effort:** 2-3 days
 
 ---
 
-## 3. P1 — Production Hardening (Should Build Next)
+## 3. P1 - Production Hardening (Should Build Next)
 
 Estimated total: **5-8 days**
 
@@ -558,7 +558,7 @@ Estimated total: **5-8 days**
 
 **Problem:** All database queries use `userId: "default"` hardcoded. Every user sees the same data, the same backtests, the same trade recommendations. In production, each user must only see their own data.
 
-**Solution:** Leverage Clerk Organizations for surface-level multi-tenant isolation. This gives us org-scoped auth, role management, and metadata storage almost for free — reducing the implementation from 5+ days to 1-2 days.
+**Solution:** Leverage Clerk Organizations for surface-level multi-tenant isolation. This gives us org-scoped auth, role management, and metadata storage almost for free - reducing the implementation from 5+ days to 1-2 days.
 
 #### What Clerk Orgs Handle Out of the Box
 
@@ -573,7 +573,7 @@ Estimated total: **5-8 days**
 
 | Concern | Work Required |
 |---------|--------------|
-| Backend: filter queries by `org_id` | Add `WHERE org_id = X` to SQL queries — straightforward |
+| Backend: filter queries by `org_id` | Add `WHERE org_id = X` to SQL queries - straightforward |
 | Redis: namespace keys by org | `org:{org_id}:kill_switch` instead of just `kill_switch` |
 | Audit log: tag events with org | One column addition |
 | Alpaca keys per org | Store in Clerk org metadata or DB |
@@ -623,7 +623,7 @@ class AlpacaRateLimiter:
 **Solution:** Add Clerk session validation + role checking in `proxy.ts`.
 
 ```typescript
-// src/app/api/[...path]/proxy.ts — enhanced auth middleware
+// src/app/api/[...path]/proxy.ts - enhanced auth middleware
 
 async function validateRequest(request: Request) {
   const session = await auth();
@@ -656,7 +656,7 @@ async function validateRequest(request: Request) {
 
 ### 3D. Real-Time P&L Dashboard
 
-**Problem:** Positions and P&L are fetched on-demand only. A PM watching live positions has no streaming updates — they must manually refresh to see current P&L. In a live trading context, stale P&L means missed stop-outs and delayed risk decisions.
+**Problem:** Positions and P&L are fetched on-demand only. A PM watching live positions has no streaming updates - they must manually refresh to see current P&L. In a live trading context, stale P&L means missed stop-outs and delayed risk decisions.
 
 **Solution:** SSE-based position P&L streaming with Alpaca's position snapshots.
 
@@ -729,7 +729,7 @@ export function RoleGate({ minRole, children, fallback = null }) {
 
 ---
 
-## 4. P2 — Institution-Grade Enhancements (Nice-to-Have)
+## 4. P2 - Institution-Grade Enhancements (Nice-to-Have)
 
 Estimated total: **8-12 days**
 
@@ -823,7 +823,7 @@ CREATE TABLE portfolio_snapshots (
 ## 5. Implementation Roadmap
 
 ```
-Week 1-2: P0 — Live Trading Blockers
+Week 1-2: P0 - Live Trading Blockers
 ├── Day 1-2:   Kill Switch (backend service + middleware)
 ├── Day 3-4:   Kill Switch (frontend panel + BFF routes)
 ├── Day 5-7:   Persistent Audit Log (DB schema + backend service)
@@ -832,14 +832,14 @@ Week 1-2: P0 — Live Trading Blockers
 ├── Day 12-13: Fill Reconciliation (backend service + frontend panel)
 └── Day 14:    Integration testing + end-to-end walkthrough
 
-Week 3-4: P1 — Production Hardening
+Week 3-4: P1 - Production Hardening
 ├── Day 15-16: Multi-Tenant via Clerk Orgs (org_id scoping + Redis namespacing)
 ├── Day 18:    Alpaca Rate Throttle
 ├── Day 19-20: Server-Side Auth Middleware
 ├── Day 21-23: Real-Time P&L Dashboard
 └── Day 24:    Per-Feature RBAC
 
-Week 5-6: P2 — Institution-Grade (optional, can be spread over time)
+Week 5-6: P2 - Institution-Grade (optional, can be spread over time)
 ├── Day 25-29: Compliance Reporting Module
 ├── Day 30-34: Broker Abstraction Layer
 ├── Day 35-37: Historical Equity Curve
@@ -897,7 +897,7 @@ Week 5-6: P2 — Institution-Grade (optional, can be spread over time)
 
 | Risk | Current Mitigation | Phase 8 Mitigation | Residual Risk |
 |------|--------------------|---------------------|---------------|
-| Runaway algo places unlimited orders | Circuit breaker (per-API-call only) | Kill switch + rate limiter + signal cooldown | Low — triple-layered |
+| Runaway algo places unlimited orders | Circuit breaker (per-API-call only) | Kill switch + rate limiter + signal cooldown | Low - triple-layered |
 | Accidental live mode switch | None (hardcoded paper) | Confirmation gate + acknowledgment + audit log | Very Low |
 | Data feed error triggers bad signals | Regime gate + velocity filter | Kill switch auto-trigger on data_feed_error | Low |
 | Fill at unexpected price | No monitoring | Reconciliation with slippage thresholds + alerts | Low |
@@ -929,7 +929,7 @@ Phase 8 is complete when:
 
 Phase 8 is the story that turns heads:
 
-> **"We built a quant engine that rivals institutional desks. Then we asked: what would it take to trust this with real money? Phase 8 is the answer — kill switches, immutable audit trails, fill reconciliation, and the operational scaffolding that separates research from production. This isn't a backtesting toy anymore. It's a live-tradable system with institutional-grade quantitative rigor AND institutional-grade operational safety."**
+> **"We built a quant engine that rivals institutional desks. Then we asked: what would it take to trust this with real money? Phase 8 is the answer - kill switches, immutable audit trails, fill reconciliation, and the operational scaffolding that separates research from production. This isn't a backtesting toy anymore. It's a live-tradable system with institutional-grade quantitative rigor AND institutional-grade operational safety."**
 
 The institutional gap scores tell the story:
 
@@ -943,5 +943,5 @@ The institutional gap scores tell the story:
 
 ---
 
-*Document version: 1.0 — Scoped for implementation*  
+*Document version: 1.0 - Scoped for implementation*  
 *Last updated: 2026-05-20*

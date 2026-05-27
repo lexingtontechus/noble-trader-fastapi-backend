@@ -6,9 +6,9 @@ When testing N strategy variations, the probability of finding at least one
 adjust p-values to control for this multiple testing problem.
 
 Methods:
-  1. Bonferroni — most conservative, divides alpha by N
-  2. Holm-Bonferroni — step-down, slightly less conservative
-  3. Benjamini-Hochberg FDR — controls false discovery rate
+  1. Bonferroni - most conservative, divides alpha by N
+  2. Holm-Bonferroni - step-down, slightly less conservative
+  3. Benjamini-Hochberg FDR - controls false discovery rate
 
 Reference:
   - Bonferroni (1936)
@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Tuple
 
 def bonferroni_correction(p_values: List[float], alpha: float = 0.05) -> Dict[str, Any]:
     """
-    Apply Bonferroni correction — the most conservative method.
+    Apply Bonferroni correction - the most conservative method.
     
     Adjusted p-value = min(p * N, 1.0)
     """
@@ -74,7 +74,7 @@ def benjamini_hochberg_fdr(p_values: List[float], alpha: float = 0.05) -> Dict[s
     """
     Apply Benjamini-Hochberg FDR correction.
     
-    Controls the False Discovery Rate (FDR) — the expected proportion of
+    Controls the False Discovery Rate (FDR) - the expected proportion of
     false positives among rejected hypotheses. Less conservative than
     family-wise error rate methods (Bonferroni, Holm).
     

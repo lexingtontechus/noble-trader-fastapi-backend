@@ -1,4 +1,4 @@
-"""TDA (Topological Data Analysis) endpoints — persistent homology feature extraction."""
+"""TDA (Topological Data Analysis) endpoints - persistent homology feature extraction."""
 
 from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import TDARequest, TDAResponse

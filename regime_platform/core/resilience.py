@@ -1,7 +1,7 @@
 """
 Circuit breaker and retry utilities for external service calls.
 
-No external dependencies — uses only stdlib + asyncio.
+No external dependencies - uses only stdlib + asyncio.
 
 Usage::
 
@@ -38,9 +38,9 @@ log = logging.getLogger("regime.resilience")
 
 
 class CircuitState(str, Enum):
-    CLOSED = "closed"        # Normal — requests flow through
-    OPEN = "open"            # Tripped — requests are rejected
-    HALF_OPEN = "half_open"  # Testing — one request allowed through
+    CLOSED = "closed"        # Normal - requests flow through
+    OPEN = "open"            # Tripped - requests are rejected
+    HALF_OPEN = "half_open"  # Testing - one request allowed through
 
 
 class CircuitOpenError(Exception):
@@ -120,7 +120,7 @@ class CircuitBreaker:
         """Enter the circuit breaker context. Raises CircuitOpenError if OPEN."""
         if self.state == CircuitState.OPEN:
             raise CircuitOpenError(
-                f"Circuit breaker [{self.name}] is OPEN — requests rejected"
+                f"Circuit breaker [{self.name}] is OPEN - requests rejected"
             )
         return self
 

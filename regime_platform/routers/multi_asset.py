@@ -1,10 +1,10 @@
 """
 Multi-asset correlation regime + drawdown-optimised portfolio endpoints.
 
-  POST /correlation/detect   — detect portfolio-level correlation regime
-  POST /optimise             — solve drawdown-controlled max-Sharpe portfolio
-  POST /optimise/full        — correlation detect + optimise in one request
-  POST /optimise/masaniello  — two-stage: portfolio optimisation + per-asset Masaniello sizing
+  POST /correlation/detect   - detect portfolio-level correlation regime
+  POST /optimise             - solve drawdown-controlled max-Sharpe portfolio
+  POST /optimise/full        - correlation detect + optimise in one request
+  POST /optimise/masaniello  - two-stage: portfolio optimisation + per-asset Masaniello sizing
 """
 
 from __future__ import annotations
@@ -148,10 +148,10 @@ async def detect_correlation_regime(
     Fits a 4-state Gaussian HMM on rolling correlation features across all assets.
 
     Returns the current correlation regime:
-    - `low_corr`  — assets moving independently (healthy diversification)
-    - `mid_corr`  — moderate comovement
-    - `high_corr` — elevated stress, correlations rising
-    - `crisis`    — crash regime, diversification collapsed (mean |ρ| > 0.75)
+    - `low_corr`  - assets moving independently (healthy diversification)
+    - `mid_corr`  - moderate comovement
+    - `high_corr` - elevated stress, correlations rising
+    - `crisis`    - crash regime, diversification collapsed (mean |ρ| > 0.75)
 
     Also returns per-asset regime breakdowns and a `blended_risk_multiplier`
     that combines per-asset regimes with the portfolio correlation multiplier.
@@ -199,9 +199,9 @@ async def optimise_portfolio(
     Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constraint.
 
     Three regime layers applied:
-    1. **Regime-adjusted μ** — per-asset expected returns scaled by risk multiplier
-    2. **Regime weight bounds** — tighter upper bounds in high-risk regimes
-    3. **Correlation exposure** — gross portfolio exposure reduced in crisis regimes
+    1. **Regime-adjusted μ** - per-asset expected returns scaled by risk multiplier
+    2. **Regime weight bounds** - tighter upper bounds in high-risk regimes
+    3. **Correlation exposure** - gross portfolio exposure reduced in crisis regimes
 
     The drawdown constraint uses a Cornish-Fisher CVaR proxy. Set `max_dd_limit`
     to your maximum acceptable expected drawdown (e.g. 0.20 = 20%).
@@ -326,11 +326,11 @@ async def optimise_with_masaniello(
     """
     Full two-stage pipeline in one request:
 
-    **Stage 1** — DrawdownOptimiser:
+    **Stage 1** - DrawdownOptimiser:
     Solves a regime-adjusted max-Sharpe portfolio with drawdown constraint.
     Produces per-asset portfolio weights (capital allocation).
 
-    **Stage 2** — Dynamic Masaniello Sizer:
+    **Stage 2** - Dynamic Masaniello Sizer:
     Sizes each asset's position within its allocated capital using:
       f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
 

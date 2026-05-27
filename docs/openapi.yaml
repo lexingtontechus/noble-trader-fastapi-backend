@@ -1,19 +1,19 @@
 openapi: "3.1.0"
 
 info:
-  title: Noble Trader Agent — FastAPI Backend
+  title: Noble Trader Agent - FastAPI Backend
   version: "7.2.0"
   description: |
     A production-grade quantitative trading platform combining two major subsystems:
 
     ## Renko HFT Pipeline (`/renko/*`)
     A 6-layer Renko brick processing pipeline for high-frequency trading:
-    1. **Brick Engine** — price → Renko brick conversion (fixed / ATR / dynamic sizing)
-    2. **Swing Classifier** — HH/HL/LH/LL brick labelling with swing-point detection
-    3. **Pattern Detector** — consecutive-swing pattern recognition (bull/bear triggers, double-top/bottom, consolidation)
-    4. **Signal Filter** — session-time, regime-gate, cooldown, loss-limit, and velocity filters
-    5. **Risk Manager** — bracket orders with SL/TP in brick units, trailing stop, daily loss cap
-    6. **Executor** — paper/live order submission via Alpaca with Discord notification hooks
+    1. **Brick Engine** - price → Renko brick conversion (fixed / ATR / dynamic sizing)
+    2. **Swing Classifier** - HH/HL/LH/LL brick labelling with swing-point detection
+    3. **Pattern Detector** - consecutive-swing pattern recognition (bull/bear triggers, double-top/bottom, consolidation)
+    4. **Signal Filter** - session-time, regime-gate, cooldown, loss-limit, and velocity filters
+    5. **Risk Manager** - bracket orders with SL/TP in brick units, trailing stop, daily loss cap
+    6. **Executor** - paper/live order submission via Alpaca with Discord notification hooks
 
     ## Regime Platform (multiple routers)
     HMM-based regime detection, Kelly position sizing, VaR/CVaR risk analysis,
@@ -23,15 +23,15 @@ info:
 
     ### Authentication
     All endpoints support **unified authentication** via one of:
-    1. **Clerk JWT** — `Authorization: Bearer <clerk_jwt>` (preferred)
-    2. **Local JWT** — `Authorization: Bearer <local_jwt>`
-    3. **SaaS API Key** — `X-API-Key: nt_live_*` (looked up in Supabase `api_keys`)
-    4. **Static API Key** — `X-API-Key: <key>` (matched against `API_KEYS` env var)
+    1. **Clerk JWT** - `Authorization: Bearer <clerk_jwt>` (preferred)
+    2. **Local JWT** - `Authorization: Bearer <local_jwt>`
+    3. **SaaS API Key** - `X-API-Key: nt_live_*` (looked up in Supabase `api_keys`)
+    4. **Static API Key** - `X-API-Key: <key>` (matched against `API_KEYS` env var)
 
     Auth levels:
-    - **Read** (`get_authed_user`): Any authenticated user — state, stats, bricks, signals, trades
-    - **Write** (`require_write`): `admin` or `trader` role — tick ingestion, backtests, regime/equity updates, snapshot restore
-    - **Admin** (`require_admin`): `admin` role only — config changes, reset, live toggle
+    - **Read** (`get_authed_user`): Any authenticated user - state, stats, bricks, signals, trades
+    - **Write** (`require_write`): `admin` or `trader` role - tick ingestion, backtests, regime/equity updates, snapshot restore
+    - **Admin** (`require_admin`): `admin` role only - config changes, reset, live toggle
 
     SSE endpoints also require auth. The `/health` and `/renko/health` endpoints are public.
   contact:
@@ -64,7 +64,7 @@ tags:
   - name: Observation Builder
     description: 24-feature HMM observation vector construction
   - name: TDA Features
-    description: Topological Data Analysis — persistent homology feature extraction
+    description: Topological Data Analysis - persistent homology feature extraction
   - name: Simulation
     description: Monte Carlo regime transition simulation
   - name: Portfolio
@@ -393,7 +393,7 @@ paths:
       description: |
         Updates the current HMM regime label used by the Signal Filter's
         regime gate. Only trades aligned with the current regime are allowed.
-        **Admin-only endpoint** — requires the `admin` role.
+        **Admin-only endpoint** - requires the `admin` role.
       parameters:
         - name: symbol
           in: query
@@ -416,7 +416,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — admin role required
+          description: Forbidden - admin role required
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -430,7 +430,7 @@ paths:
       description: |
         Updates the current account equity used for position sizing
         calculations in the Risk Manager layer.
-        **Admin-only endpoint** — requires the `admin` role.
+        **Admin-only endpoint** - requires the `admin` role.
       parameters:
         - name: symbol
           in: query
@@ -453,7 +453,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — admin role required
+          description: Forbidden - admin role required
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -821,7 +821,7 @@ paths:
         MCP agents to fully operate the pipeline without any frontend dependency.
 
         Flow:
-          1. Check Supabase for a fresh snapshot (<4h) — if found, restore it (instant)
+          1. Check Supabase for a fresh snapshot (<4h) - if found, restore it (instant)
           2. Fetch historical prices from Yahoo Finance (via yfinance or Yahoo v8 API)
           3. Create a fresh pipeline with runtime config
           4. Set regime to `low_vol_bull` (enables signal generation during warmup)
@@ -829,7 +829,7 @@ paths:
           6. Save snapshot to Redis L1 + Supabase L2 (dual-write)
           7. Prune stale snapshots older than 24h (housekeeping)
 
-        **Write access** — requires `admin` or `trader` role.
+        **Write access** - requires `admin` or `trader` role.
       parameters:
         - name: symbol
           in: query
@@ -863,7 +863,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — write role required
+          description: Forbidden - write role required
         "502":
           description: Yahoo Finance fetch failed and no snapshot available
 
@@ -885,7 +885,7 @@ paths:
         equity, position open) where persistence must be guaranteed before
         proceeding.
 
-        **Write access** — requires `admin` or `trader` role.
+        **Write access** - requires `admin` or `trader` role.
       parameters:
         - name: symbol
           in: query
@@ -912,7 +912,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — write role required
+          description: Forbidden - write role required
 
   /renko/snapshot/restore:
     post:
@@ -931,9 +931,9 @@ paths:
         If no snapshot exists in either tier, returns restored=false.
         v3 snapshots include full brick history, classified bricks, trade
         journal, active position with trailing stop state, and signal filter
-        state — enabling complete pipeline hydration without warmup.
+        state - enabling complete pipeline hydration without warmup.
 
-        **Write access** — requires `admin` or `trader` role.
+        **Write access** - requires `admin` or `trader` role.
       parameters:
         - name: symbol
           in: query
@@ -956,7 +956,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — write role required
+          description: Forbidden - write role required
 
   /renko/sizing/model:
     get:
@@ -967,7 +967,7 @@ paths:
         parameters for a given symbol. Includes Kelly parameters always, and
         Masaniello parameters when the sizing mode is `masaniello`.
         Also returns the current batch state for Masaniello tracking.
-        **Any authenticated user** — requires `get_authed_user`.
+        **Any authenticated user** - requires `get_authed_user`.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -1026,7 +1026,7 @@ paths:
         Sets the position sizing model and its parameters for a given symbol.
         Switches between Kelly Criterion and Masaniello sizing modes, and
         updates all associated parameters.
-        **Admin-only endpoint** — requires the `admin` role.
+        **Admin-only endpoint** - requires the `admin` role.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -1056,7 +1056,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden — admin role required
+          description: Forbidden - admin role required
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -1069,7 +1069,7 @@ paths:
   /analyse/full:
     post:
       tags: [Full Pipeline]
-      summary: One-shot full pipeline — regime + sizing + risk
+      summary: One-shot full pipeline - regime + sizing + risk
       description: |
         Runs the complete pipeline in a single request:
         1. Fit dual Gaussian HMMs → regime posteriors + risk_multiplier
@@ -1943,7 +1943,7 @@ paths:
   # ── WEBSOCKET ─────────────────────────────────────────────────────────────
 
   /ws/{symbol}:
-    get:  # OpenAPI workaround — actual protocol is WS
+    get:  # OpenAPI workaround - actual protocol is WS
       tags: [Real-Time Streaming]
       summary: WebSocket stream
       description: |

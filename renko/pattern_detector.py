@@ -1,5 +1,5 @@
 """
-Pattern Detector — identifies tradeable patterns from classified bricks.
+Pattern Detector - identifies tradeable patterns from classified bricks.
 
 Core patterns:
     1. N-Bull Run  : N consecutive HH/HL bricks -> long entry

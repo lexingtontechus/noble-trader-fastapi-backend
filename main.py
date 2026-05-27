@@ -1,56 +1,56 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v7.2.0       ║
+║     Dynamic Regime Risk Management Platform - FastAPI Service  v7.2.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
 ║  v2.x Endpoints:                                                             ║
-║    POST /regime/detect      — HMM-based vol + trend regime classification    ║
-║    POST /size/kelly         — Regime-gated fractional Kelly position sizing  ║
-║    POST /risk/analyse       — VaR, CVaR, drawdown, stop/TP suggestions       ║
-║    POST /analyse/full       — One-shot: all three in one request             ║
-║    POST /simulate/{symbol}  — Markov-chain regime transition simulation      ║
-║    GET  /portfolio           — Multi-symbol aggregated regime + risk          ║
+║    POST /regime/detect      - HMM-based vol + trend regime classification    ║
+║    POST /size/kelly         - Regime-gated fractional Kelly position sizing  ║
+║    POST /risk/analyse       - VaR, CVaR, drawdown, stop/TP suggestions       ║
+║    POST /analyse/full       - One-shot: all three in one request             ║
+║    POST /simulate/{symbol}  - Markov-chain regime transition simulation      ║
+║    GET  /portfolio           - Multi-symbol aggregated regime + risk          ║
 ║                                                                              ║
 ║  v3.0 additions:                                                             ║
-║    GPU HMM       GET  /gpu/capabilities — pomegranate backend auto-select    ║
-║                  POST /gpu/benchmark    — fit/predict latency benchmark      ║
-║    Feed adapters POST /feeds/start      — Alpaca / Binance / IB live feeds   ║
-║                  POST /feeds/stop       — stop all feed adapters             ║
-║                  GET  /feeds/status     — bar counts and adapter health      ║
-║    Correlation   POST /correlation/detect — DCC-based portfolio regime       ║
-║    Optimisation  POST /optimise           — drawdown-controlled max-Sharpe   ║
-║                  POST /optimise/full      — correlation + optimise one-shot  ║
-║    Observation   POST /observation/build  — 24-feature obs vector (HMM)     ║
-║    Streaming     POST /stream/seed        — seed historical prices           ║
-║                  POST /stream/tick        — ingest single tick               ║
-║                  GET  /stream/sessions    — list active sessions             ║
-║                  WS   /ws/{symbol}        — WebSocket stream                 ║
-║                  GET  /sse/{symbol}       — SSE stream                       ║
+║    GPU HMM       GET  /gpu/capabilities - pomegranate backend auto-select    ║
+║                  POST /gpu/benchmark    - fit/predict latency benchmark      ║
+║    Feed adapters POST /feeds/start      - Alpaca / Binance / IB live feeds   ║
+║                  POST /feeds/stop       - stop all feed adapters             ║
+║                  GET  /feeds/status     - bar counts and adapter health      ║
+║    Correlation   POST /correlation/detect - DCC-based portfolio regime       ║
+║    Optimisation  POST /optimise           - drawdown-controlled max-Sharpe   ║
+║                  POST /optimise/full      - correlation + optimise one-shot  ║
+║    Observation   POST /observation/build  - 24-feature obs vector (HMM)     ║
+║    Streaming     POST /stream/seed        - seed historical prices           ║
+║                  POST /stream/tick        - ingest single tick               ║
+║                  GET  /stream/sessions    - list active sessions             ║
+║                  WS   /ws/{symbol}        - WebSocket stream                 ║
+║                  GET  /sse/{symbol}       - SSE stream                       ║
 ║                                                                              ║
 ║  v5.0 Renko HFT Pipeline:                                                    ║
-║    POST /renko/tick         — Process single tick through 6-layer pipeline   ║
-║    POST /renko/tick/batch   — Batch tick processing (backtest / warm-up)    ║
-║    GET  /renko/state        — Current pipeline state                          ║
-║    GET  /renko/stats        — Comprehensive pipeline statistics              ║
-║    GET  /renko/bricks       — Recent Renko bricks                            ║
-║    GET  /renko/classified   — Bricks with swing labels (HH/HL/LH/LL)       ║
-║    GET  /renko/signals      — Pattern signals                               ║
-║    GET  /renko/trades       — Trade journal                                 ║
-║    GET  /renko/swing-points — Detected swing points                         ║
-║    POST /renko/regime       — Update HMM regime for gate filter             ║
-║    POST /renko/equity       — Update account equity                         ║
-║    POST /renko/config       — Update pipeline configuration                 ║
-║    POST /renko/reset        — Reset pipeline for a symbol                   ║
-║    GET  /renko/backtest/stats — Backtest/trading statistics                 ║
-║    POST /renko/backtest/run   — Run isolated Renko backtest                 ║
-║    POST /renko/backtest/compare — Compare multiple Renko configs            ║
-║    POST /renko/backtest/optimize — Renko parameter sweep (grid search)     ║
+║    POST /renko/tick         - Process single tick through 6-layer pipeline   ║
+║    POST /renko/tick/batch   - Batch tick processing (backtest / warm-up)    ║
+║    GET  /renko/state        - Current pipeline state                          ║
+║    GET  /renko/stats        - Comprehensive pipeline statistics              ║
+║    GET  /renko/bricks       - Recent Renko bricks                            ║
+║    GET  /renko/classified   - Bricks with swing labels (HH/HL/LH/LL)       ║
+║    GET  /renko/signals      - Pattern signals                               ║
+║    GET  /renko/trades       - Trade journal                                 ║
+║    GET  /renko/swing-points - Detected swing points                         ║
+║    POST /renko/regime       - Update HMM regime for gate filter             ║
+║    POST /renko/equity       - Update account equity                         ║
+║    POST /renko/config       - Update pipeline configuration                 ║
+║    POST /renko/reset        - Reset pipeline for a symbol                   ║
+║    GET  /renko/backtest/stats - Backtest/trading statistics                 ║
+║    POST /renko/backtest/run   - Run isolated Renko backtest                 ║
+║    POST /renko/backtest/compare - Compare multiple Renko configs            ║
+║    POST /renko/backtest/optimize - Renko parameter sweep (grid search)     ║
 ║                                                                              ║
 ║  v5.1 Dynamic Masaniello Pipeline:                                            ║
-║    POST /size/masaniello        — Single-trade Masaniello sizing              ║
-║    POST /size/masaniello/batch  — Batch Masaniello sizing                    ║
-║    POST /optimise/masaniello    — Full two-stage: optimise + Masaniello       ║
+║    POST /size/masaniello        - Single-trade Masaniello sizing              ║
+║    POST /size/masaniello/batch  - Batch Masaniello sizing                    ║
+║    POST /optimise/masaniello    - Full two-stage: optimise + Masaniello       ║
 ║                                                                              ║
 ║  Auth: Clerk JWT (primary) → local JWT → API key fallback                   ║
 ║  MCP:   FastAPI-MCP with auth + operation filtering (read-only/analysis)    ║
@@ -338,7 +338,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
     )
 
-    # CORS — restricted to configured origins (never allow_origins=["*"] in production)
+    # CORS - restricted to configured origins (never allow_origins=["*"] in production)
     cors_origins = [
         o.strip()
         for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -402,16 +402,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     # can discover and call them via the MCP protocol at /mcp.
     #
     # Security measures:
-    #   1. AuthConfig with get_authed_user dependency — MCP endpoint requires
+    #   1. AuthConfig with get_authed_user dependency - MCP endpoint requires
     #      JWT / API-key auth; unauthenticated connections get 401
-    #   2. exclude_operations — dangerous write / infrastructure / auth-circular
+    #   2. exclude_operations - dangerous write / infrastructure / auth-circular
     #      endpoints are NOT exposed as MCP tools
-    #   3. headers=["authorization", "x-api-key"] — forwarded to REST calls so
+    #   3. headers=["authorization", "x-api-key"] - forwarded to REST calls so
     #      per-route Depends() auth is also enforced
     if MCP_AVAILABLE:
         # Operation IDs to EXCLUDE from MCP exposure
         #
-        # v7.1 — Full agent autonomy: MCP agents can now warmup, restore,
+        # v7.1 - Full agent autonomy: MCP agents can now warmup, restore,
         # set regime, set equity, run backtests, switch sizing models,
         # and toggle live execution. Only genuinely dangerous or
         # infrastructure-only operations remain excluded.
@@ -427,7 +427,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         #   - toggle_live: agent needs execution mode control
         #   - run_backtest / optimize: agent needs strategy testing
         _mcp_excluded_ops = [
-            # ── Auth (circular — MCP clients should already have tokens) ──
+            # ── Auth (circular - MCP clients should already have tokens) ──
             "clerk_config_auth_clerk_config_get",
             "clerk_me_auth_clerk_me_get",
             "verify_clerk_token_endpoint_auth_clerk_verify_post",
@@ -437,18 +437,18 @@ async def global_exception_handler(request: Request, exc: Exception):
             # ── Feed adapters (infrastructure control) ──
             "start_feeds_feeds_start_post",
             "stop_feeds_feeds_stop_post",
-            # ── Single tick injection (manipulation risk — use batch/warmup instead) ──
+            # ── Single tick injection (manipulation risk - use batch/warmup instead) ──
             "process_tick_renko_tick_post",
-            # ── Pipeline reset (destructive — loses all brick history & trades) ──
+            # ── Pipeline reset (destructive - loses all brick history & trades) ──
             "reset_pipeline_renko_reset_post",
-            # ── Config update (destructive — rebuilds pipeline from scratch) ──
+            # ── Config update (destructive - rebuilds pipeline from scratch) ──
             "update_config_renko_config_post",
             # ── Stream data injection / teardown ──
             "seed_session_stream_seed_post",
             "ingest_tick_stream_tick_post",
             "ingest_ticks_stream_ticks_post",
             "remove_session_stream_session__symbol__delete",
-            # ── Backtest delete (destructive — MCP should run/read, not delete) ──
+            # ── Backtest delete (destructive - MCP should run/read, not delete) ──
             "delete_backtest_result_backtest__backtest_id__delete",
         ]
 
@@ -466,7 +466,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         mcp = FastApiMCP(
             app,
             name="Noble Trader MCP",
-            description="""Noble Trader Dynamic Regime Risk Management Platform — MCP Server
+            description="""Noble Trader Dynamic Regime Risk Management Platform - MCP Server
 
 Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 - Regime detection (HMM-based vol + trend classification)
@@ -486,16 +486,16 @@ Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 - Snapshot management (save/restore pipeline state)
 
 Agent autonomy (v7.2):
-- POST /renko/warmup — autonomous pipeline warmup (Yahoo fetch + snapshot save)
-- POST /renko/snapshot/save — persist pipeline state (Redis L1 + Supabase L2 dual-write)
-- POST /renko/snapshot/restore — recover from cold start (Redis L1 → Supabase L2 tiered restore)
-- POST /renko/regime — update HMM regime (auto-saves on change)
-- POST /renko/equity — update account equity (auto-saves on change)
-- POST /renko/tick/batch — batch tick processing (warmup/backtest)
-- POST /renko/sizing/model — switch Kelly ↔ Masaniello (auto-saves on change)
-- POST /renko/live/toggle — toggle live execution (auto-saves on change)
-- POST /renko/backtest/run — run isolated backtests
-- POST /renko/backtest/optimize — parameter sweep
+- POST /renko/warmup - autonomous pipeline warmup (Yahoo fetch + snapshot save)
+- POST /renko/snapshot/save - persist pipeline state (Redis L1 + Supabase L2 dual-write)
+- POST /renko/snapshot/restore - recover from cold start (Redis L1 → Supabase L2 tiered restore)
+- POST /renko/regime - update HMM regime (auto-saves on change)
+- POST /renko/equity - update account equity (auto-saves on change)
+- POST /renko/tick/batch - batch tick processing (warmup/backtest)
+- POST /renko/sizing/model - switch Kelly ↔ Masaniello (auto-saves on change)
+- POST /renko/live/toggle - toggle live execution (auto-saves on change)
+- POST /renko/backtest/run - run isolated backtests
+- POST /renko/backtest/optimize - parameter sweep
 - Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
 
 Excluded from MCP (use REST API directly):
@@ -509,12 +509,12 @@ Excluded from MCP (use REST API directly):
         _excluded_count = len(_mcp_excluded_ops)
         _auth_status = "enabled" if _mcp_auth else "DISABLED (dev mode)"
         log.info(
-            f"MCP server mounted at /mcp — "
+            f"MCP server mounted at /mcp - "
             f"{_tool_count} tools exposed, {_excluded_count} excluded, "
             f"auth {_auth_status}"
         )
     else:
-        log.warning("fastapi-mcp not installed — MCP endpoint disabled")
+        log.warning("fastapi-mcp not installed - MCP endpoint disabled")
 
     @app.get("/", include_in_schema=False)
     async def root():

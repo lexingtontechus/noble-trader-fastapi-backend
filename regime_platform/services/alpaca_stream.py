@@ -1,5 +1,5 @@
 """
-AlpacaStreamManager — Per-user Alpaca WebSocket streaming for real-time P&L.
+AlpacaStreamManager - Per-user Alpaca WebSocket streaming for real-time P&L.
 
 Manages Alpaca trade and data WebSocket connections for authenticated users.
 Pushes position updates, price ticks, P&L snapshots, and account updates
@@ -223,7 +223,7 @@ class UserStream:
     secret_key: str
     base_url: str  # paper or live
 
-    # Fan-out queues — one per SSE consumer
+    # Fan-out queues - one per SSE consumer
     queues: list[asyncio.Queue] = field(default_factory=list)
 
     # Background tasks
@@ -283,14 +283,14 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
     Resolve Alpaca API credentials for a user (optionally within an org context).
 
     Priority:
-      1. Supabase credentials table — org-level keys (if org_id provided)
-      2. Supabase credentials table — user-level keys (per-user, encrypted)
+      1. Supabase credentials table - org-level keys (if org_id provided)
+      2. Supabase credentials table - user-level keys (per-user, encrypted)
       3. Global ALPACA_API_KEY / ALPACA_SECRET_KEY env vars (fallback)
 
     Returns:
       (api_key, secret_key, base_url) or None if no keys found.
     """
-    # Try Supabase — org-level credentials first
+    # Try Supabase - org-level credentials first
     if settings.SUPABASE_URL and settings.SUPABASE_KEY and org_id:
         try:
             import httpx
@@ -328,7 +328,7 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
         except Exception as e:
             log.warning(f"Supabase org-level credential lookup failed for org {org_id}: {e}")
 
-    # Try Supabase — user-level credentials
+    # Try Supabase - user-level credentials
     if settings.SUPABASE_URL and settings.SUPABASE_KEY:
         try:
             import httpx
@@ -385,7 +385,7 @@ class AlpacaStreamManager:
     """
     Manages per-user Alpaca WebSocket streaming connections.
 
-    Singleton — one instance shared across all SSE consumers.
+    Singleton - one instance shared across all SSE consumers.
     Each authenticated user gets their own trade + data WebSocket connections.
     Events are fanned out to all SSE consumers for that user.
     """
@@ -406,7 +406,7 @@ class AlpacaStreamManager:
                 stream = self._streams[user_id]
                 if stream.running:
                     return stream
-                # Stale entry — clean up
+                # Stale entry - clean up
                 await self._stop_stream(user_id)
 
         # Resolve credentials
@@ -470,7 +470,7 @@ class AlpacaStreamManager:
         # If no more consumers, stop the stream after a grace period
         if not stream.queues:
             grace = await runtime_config.get_int("alpaca.stream_grace_period", default=30)
-            log.info(f"No more SSE consumers for user {user_id} — scheduling stop in {grace}s")
+            log.info(f"No more SSE consumers for user {user_id} - scheduling stop in {grace}s")
             await asyncio.sleep(grace)  # grace period for reconnections
             stream = self._streams.get(user_id)
             if stream and not stream.queues:
@@ -577,7 +577,7 @@ class AlpacaStreamManager:
         try:
             import websockets
         except ImportError:
-            log.error("websockets not installed — trade stream unavailable")
+            log.error("websockets not installed - trade stream unavailable")
             return
 
         # Build WS URL
@@ -663,7 +663,7 @@ class AlpacaStreamManager:
             event_type = data.get("event", "")
 
             if event_type == "fill" or event_type == "partial_fill":
-                # A fill occurred — update position cache and broadcast
+                # A fill occurred - update position cache and broadcast
                 symbol = data.get("symbol", data.get("order", {}).get("symbol", ""))
                 if symbol:
                     # Refresh position from REST API
@@ -751,10 +751,10 @@ class AlpacaStreamManager:
         try:
             import websockets
         except ImportError:
-            log.error("websockets not installed — data stream unavailable")
+            log.error("websockets not installed - data stream unavailable")
             return
 
-        # Build WS URL — IEX feed is free, SIP requires subscription
+        # Build WS URL - IEX feed is free, SIP requires subscription
         if "paper" in stream.base_url:
             ws_url = "wss://stream.data.alpaca.markets/v2/iex"
         else:
@@ -772,7 +772,7 @@ class AlpacaStreamManager:
             # Only connect if we have positions to watch
             symbols = list(stream.positions_cache.keys())
             if not symbols:
-                # No positions — wait for a fill or new position
+                # No positions - wait for a fill or new position
                 stream.data_resubscribe_event.clear()
                 no_pos_wait_timeout = await runtime_config.get_float("alpaca.data_no_position_wait_timeout", default=5.0)
                 try:
@@ -856,7 +856,7 @@ class AlpacaStreamManager:
                                     f"+{new_symbols} -{removed_symbols}, total={len(current_symbols)}"
                                 )
                             elif removed_symbols:
-                                # Positions removed — re-subscribe with current set
+                                # Positions removed - re-subscribe with current set
                                 all_streams = [f"q.{sym}" for sym in current_symbols]
                                 resub_msg = json.dumps({
                                     "action": "listen",

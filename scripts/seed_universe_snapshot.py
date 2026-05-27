@@ -43,7 +43,7 @@ HISTORICAL_EVENTS = [
     ("FLIR",   "removed", date(2020, 9, 21)),   # FLIR Systems
     ("AIZ",    "removed", date(2020, 9, 21)),   # Assurant (temp removal)
 
-    # Dec 21, 2020 — Tesla addition (most famous S&P 500 addition)
+    # Dec 21, 2020 - Tesla addition (most famous S&P 500 addition)
     ("TSLA",   "added",   date(2020, 12, 21)),
     # Removed to make room for Tesla
     ("APTV",   "removed", date(2020, 12, 21)),  # Aptiv (replaced; later re-added)
@@ -86,7 +86,7 @@ HISTORICAL_EVENTS = [
     ("PARA",   "added",   date(2022, 9, 19)),   # Paramount Global (reclassification)
 
     # ── 2023 ──────────────────────────────────────────────────────────────
-    # Jul 18, 2023 — Activision Blizzard removed (Microsoft acquisition)
+    # Jul 18, 2023 - Activision Blizzard removed (Microsoft acquisition)
     ("ATVI",   "removed", date(2023, 7, 18)),
     # Replacement
     ("PLTR",   "added",   date(2023, 7, 18)),   # Palantir initially added here (some sources say Nov 2024; keeping both events)
@@ -116,7 +116,7 @@ HISTORICAL_EVENTS = [
     ("DELL",   "added",   date(2024, 6, 24)),   # Dell Technologies
     ("ERIE",   "added",   date(2024, 6, 24)),   # Erie Indemnity
 
-    # Sep 2024 — major rebalance
+    # Sep 2024 - major rebalance
     ("PLTR",   "added",   date(2024, 9, 23)),   # Palantir (official Sep 2024 entry)
     ("DELL",   "added",   date(2024, 9, 23)),   # Dell (confirmed Sep rebalance)
     ("ERIE",   "added",   date(2024, 9, 23)),   # Erie Indemnity (confirmed)

@@ -2,10 +2,10 @@
 Data Quality & Integrity service (Phase 5).
 
 Provides:
-  5A — Survivorship bias elimination via point-in-time universe snapshots
-  5B — Corporate action adjustments (splits, dividends)
-  5C — Data versioning & lineage (hashing, provenance tracking)
-  5D — Look-ahead bias audit framework
+  5A - Survivorship bias elimination via point-in-time universe snapshots
+  5B - Corporate action adjustments (splits, dividends)
+  5C - Data versioning & lineage (hashing, provenance tracking)
+  5D - Look-ahead bias audit framework
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from ..core.settings import settings
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5A — Survivorship Bias Elimination
+# 5A - Survivorship Bias Elimination
 # ═══════════════════════════════════════════════════════════════════════════
 
 class UniverseSnapshotService:
@@ -170,11 +170,11 @@ def filter_prices_by_universe(
     Returns the filtered price list (same length, None for excluded dates).
     """
     if not constituents:
-        # No universe data available — return all prices (backward compat)
+        # No universe data available - return all prices (backward compat)
         return prices
 
     if symbol in constituents:
-        # Symbol is in the universe for the entire period — no filtering needed
+        # Symbol is in the universe for the entire period - no filtering needed
         return prices
 
     # If timestamps are available, check per-date membership
@@ -196,7 +196,7 @@ def filter_prices_by_universe(
             filtered.append(price)
         return filtered
 
-    # No timestamps — can't do per-date filtering; return all (conservative)
+    # No timestamps - can't do per-date filtering; return all (conservative)
     return prices
 
 
@@ -218,7 +218,7 @@ def check_survivorship_bias(
         return {
             "mode": "pit_constituents",
             "warning": False,
-            "message": "Point-in-time universe filtering active — survivorship bias eliminated.",
+            "message": "Point-in-time universe filtering active - survivorship bias eliminated.",
             "index_name": index_name,
         }
     else:
@@ -227,7 +227,7 @@ def check_survivorship_bias(
             "warning": True,
             "message": (
                 "Backtest uses current index constituents. Results may be inflated "
-                "due to survivorship bias — delisted stocks are excluded. "
+                "due to survivorship bias - delisted stocks are excluded. "
                 "Use universe_mode='pit_constituents' for bias-free results."
             ),
             "index_name": index_name,
@@ -235,7 +235,7 @@ def check_survivorship_bias(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5B — Corporate Action Adjustments
+# 5B - Corporate Action Adjustments
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CorporateActionService:
@@ -381,7 +381,7 @@ def adjust_prices(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5C — Data Versioning & Lineage
+# 5C - Data Versioning & Lineage
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compute_data_hash(prices: list[float], symbol: str = "") -> str:
@@ -441,7 +441,7 @@ def build_data_source_metadata(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5D — Look-Ahead Bias Audit
+# 5D - Look-Ahead Bias Audit
 # ═══════════════════════════════════════════════════════════════════════════
 
 class LookAheadAuditor:

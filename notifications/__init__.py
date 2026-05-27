@@ -1,5 +1,5 @@
 """
-Notifications Package — Discord and Telegram integration for the Noble Trader Agent.
+Notifications Package - Discord and Telegram integration for the Noble Trader Agent.
 
 Discord Channels:
   - #trade-signals   → Renko pattern signals (bull run, bear run, reversal, etc.)

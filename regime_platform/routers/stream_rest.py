@@ -1,12 +1,12 @@
 """
 REST streaming endpoints.
 
-  POST /stream/seed/{symbol}     — seed historical prices
-  POST /stream/tick              — ingest a single tick (returns tick JSON)
-  POST /stream/ticks             — batch ingest multiple ticks
-  GET  /stream/sessions          — list active sessions + stats
-  GET  /stream/session/{symbol}  — single session status
-  DELETE /stream/session/{symbol}— remove session
+  POST /stream/seed/{symbol}     - seed historical prices
+  POST /stream/tick              - ingest a single tick (returns tick JSON)
+  POST /stream/ticks             - batch ingest multiple ticks
+  GET  /stream/sessions          - list active sessions + stats
+  GET  /stream/session/{symbol}  - single session status
+  DELETE /stream/session/{symbol}- remove session
 """
 
 from __future__ import annotations

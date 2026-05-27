@@ -12,9 +12,9 @@
 Noble-Trader's backtesting platform has undergone a systematic, phase-by-phase
 transformation from a solid but gap-ridden system into a platform whose results
 are defensible to institutional investors. We scored every dimension against what
-institutional quant desks demand, identified the gaps, and closed them — one by one.
+institutional quant desks demand, identified the gaps, and closed them - one by one.
 
-**Overall maturity: 2.8 / 5 → 3.7 / 5** — a **32% improvement** that crosses the
+**Overall maturity: 2.8 / 5 → 3.7 / 5** - a **32% improvement** that crosses the
 critical 3.5 threshold ("serious quant platform, defensible to institutional
 investors").
 
@@ -30,29 +30,29 @@ Three dimensions leaped from institutional failure to institutional grade:
 
 ## The Full Scorecard
 
-### Before vs. After — At a Glance
+### Before vs. After - At a Glance
 
 | Dimension | Before | After | Delta | Institutional Threshold (3.5) |
 |-----------|:------:|:-----:|:-----:|:-----------------------------:|
 | **Execution Modeling** | 2.5 | **4.0** | +1.5 | ✅ Met |
-| **Risk Management** | 4.0 | **4.0** | — | ✅ Already met |
+| **Risk Management** | 4.0 | **4.0** | - | ✅ Already met |
 | **Statistical Validation** | 2.5 | **4.0** | +1.5 | ✅ Met |
 | **Data Quality** | 1.5 | **4.0** | +2.5 | ✅ Met |
 | **Cost Modeling** | 3.0 | **3.5** | +0.5 | ✅ Met |
 | **Infrastructure** | 2.5 | **3.0** | +0.5 | ⚠️ Approaching |
-| **Reporting / Attribution** | 3.5 | **3.5** | — | ✅ Met |
+| **Reporting / Attribution** | 3.5 | **3.5** | - | ✅ Met |
 | **OVERALL** | **2.8** | **3.7** | **+0.9** | ✅ **Met** |
 
 **6 of 7 dimensions now meet or exceed the 3.5 institutional threshold.**
 The remaining gap (Infrastructure: 3.0) is a maintenance and scale concern,
-not a credibility concern — it's addressable through deployment hardening and
+not a credibility concern - it's addressable through deployment hardening and
 observability tooling as the platform scales.
 
 ---
 
 ## Dimension-by-Dimension Deep Dive
 
-### 1. Execution Modeling — 2.5 → 4.0 (+1.5)
+### 1. Execution Modeling - 2.5 → 4.0 (+1.5)
 
 **What institutional standard demands:** Realistic execution simulation that
 accounts for market impact (price moves against you when you trade size),
@@ -69,9 +69,9 @@ positions were free. Market impact for large orders was ignored entirely.
 
 | Feature | Phase | What It Does |
 |---------|-------|-------------|
-| **Almgren-Chriss Market Impact** | 7A | Models the permanent and temporary price impact of trading a fraction of average daily volume. A trade representing 5% of ADV incurs realistic impact costs that scale with the square root of participation rate — exactly as the academic literature prescribes. Small trades (<0.1% ADV) see negligible impact. |
+| **Almgren-Chriss Market Impact** | 7A | Models the permanent and temporary price impact of trading a fraction of average daily volume. A trade representing 5% of ADV incurs realistic impact costs that scale with the square root of participation rate - exactly as the academic literature prescribes. Small trades (<0.1% ADV) see negligible impact. |
 | **Fill Probability Modeling** | 7B | A logit-based fill probability model that probabilistically rejects limit orders unlikely to execute based on distance from mid-price, volatility, and volume conditions. Market orders (stops, signal entries) always fill. The `missed_fills` metric reveals how many paper profits vanish when execution is uncertain. |
-| **Gap-Through Stop Handling** | 3 | When a brick opens past the stop price (overnight gap, earnings, flash crash), the fill occurs at the open price — not the fantasy stop price. This single fix can reduce a strategy's backtest return by 20–40% for gap-prone instruments. |
+| **Gap-Through Stop Handling** | 3 | When a brick opens past the stop price (overnight gap, earnings, flash crash), the fill occurs at the open price - not the fantasy stop price. This single fix can reduce a strategy's backtest return by 20–40% for gap-prone instruments. |
 | **Adverse Fill Bias on Stops** | 3 | Stop orders are market orders; they receive worse fills than the stop price. Take-profit limit orders fill at or better than the limit. This asymmetry is how real markets work. |
 | **Borrow & Financing Costs** | 7C | Short positions accrue daily borrow costs (default 50bps annualized, adjustable for hard-to-borrow names). Leveraged longs accrue margin interest at the broker call rate. These costs are tracked separately from commission and slippage. |
 
@@ -82,12 +82,12 @@ models it comprehensively.
 
 ---
 
-### 2. Risk Management — 4.0 → 4.0 (Already Strong)
+### 2. Risk Management - 4.0 → 4.0 (Already Strong)
 
 **What institutional standard demands:** Per-trade stop-loss and take-profit,
 OCO (one-cancels-other) handling, position sizing, and drawdown controls.
 
-**Where we started (4.0):** The platform already had robust risk management —
+**Where we started (4.0):** The platform already had robust risk management -
 per-trade SL/TP in the HMM backtester, the Renko risk manager with configurable
 stops and targets, and max drawdown limits. This was our strongest dimension
 from day one.
@@ -104,7 +104,7 @@ added precision (OCO handling, gap-through stops) that most platforms lack entir
 
 ---
 
-### 3. Statistical Validation — 2.5 → 4.0 (+1.5)
+### 3. Statistical Validation - 2.5 → 4.0 (+1.5)
 
 **What institutional standard demands:** The ability to answer *"How many things
 did you try before this one worked?"* Institutional investors reject backtest
@@ -125,7 +125,7 @@ data mining without correction.
 |---------|-------|-------------|
 | **Deflated Sharpe Ratio (DSR)** | 6A | Implements Lopez de Prado's DSR formula, which adjusts the observed Sharpe ratio for the number of independent trials, sample length, and the skewness/kurtosis of returns. If you test 100 strategies and the best Sharpe is 2.0, DSR tells you whether that 2.0 is statistically significant or just the expected maximum of 100 random draws. |
 | **Bootstrap Confidence Intervals** | 6B | Every key metric (Sharpe, max drawdown, win rate, profit factor) now gets a 95% confidence interval via percentile and circular block bootstrap. Instead of "Sharpe = 1.45", the platform reports "Sharpe = 1.45 [1.12, 1.78]". Wide CIs flag unreliable metrics; narrow CIs confirm robustness. |
-| **Multiple Testing Correction** | 6C | Three correction methods — Bonferroni (most conservative), Holm-Bonferroni (step-down), and Benjamini-Hochberg FDR (controls false discovery rate) — are applied to all optimization sweep results. When 15 of 100 strategies appear "significant" at p < 0.05, correction typically reveals only 2–3 are genuinely significant. |
+| **Multiple Testing Correction** | 6C | Three correction methods - Bonferroni (most conservative), Holm-Bonferroni (step-down), and Benjamini-Hochberg FDR (controls false discovery rate) - are applied to all optimization sweep results. When 15 of 100 strategies appear "significant" at p < 0.05, correction typically reveals only 2–3 are genuinely significant. |
 | **White's Reality Check + Hansen's SPA** | 6D | Tests whether the best strategy from a set beats a benchmark after accounting for data snooping. White's Reality Check and Hansen's Superior Predictive Ability provide p-values that survive the "how many things did you try?" test. |
 
 **Why it matters:** Without statistical rigor, backtest results are indefensible.
@@ -136,7 +136,7 @@ quants cite.
 
 ---
 
-### 4. Data Quality — 1.5 → 4.0 (+2.5, Largest Improvement)
+### 4. Data Quality - 1.5 → 4.0 (+2.5, Largest Improvement)
 
 **What institutional standard demands:** Point-in-time data with delisted
 securities, split/dividend-adjusted prices, full data lineage, and systematic
@@ -156,18 +156,18 @@ manual code review.
 |---------|-------|-------------|
 | **Survivorship Bias Elimination** | 5A | Point-in-time (PIT) universe snapshots ensure that when you backtest "S&P 500 strategy from 2020–2025," only stocks actually in the index at each date are included. Delisted/bankrupt stocks are included up to their removal date. This eliminates the systematic upward bias from testing only on survivors. |
 | **Corporate Action Adjustments** | 5B | Split-adjusted and fully-adjusted price modes handle stock splits (a 4:1 split correctly adjusts pre-split positions) and dividends (ex-dividend price drops are reflected). Without these, every corporate action event produces phantom gains or losses. |
-| **Data Versioning & Lineage** | 5C | Every backtest result records a SHA-256 hash of the input data and source metadata. If the underlying data changes between runs, the platform warns the user that results may not be reproducible — a minimum requirement for institutional audit trails. |
+| **Data Versioning & Lineage** | 5C | Every backtest result records a SHA-256 hash of the input data and source metadata. If the underlying data changes between runs, the platform warns the user that results may not be reproducible - a minimum requirement for institutional audit trails. |
 | **Look-Ahead Bias Hardening** | 5D | A systematic audit framework with a `look_ahead_audit` flag that instruments the backtest pipeline, logging every data access with its timestamp vs. the current simulation time. Any future-data access triggers a warning in results. |
 
 **Why it matters:** Data quality is the **#1 audit item at any institutional
 fund**. If your data has survivorship bias, every backtest result is suspect
 regardless of how sophisticated your execution model or statistics are. This
-dimension went from "critical failure" to "institutional grade" — the single
+dimension went from "critical failure" to "institutional grade" - the single
 largest improvement across the entire platform.
 
 ---
 
-### 5. Cost Modeling — 3.0 → 3.5 (+0.5)
+### 5. Cost Modeling - 3.0 → 3.5 (+0.5)
 
 **What institutional standard demands:** Granular, per-trade cost breakdowns
 that separate commission, slippage, spread, market impact, borrow costs, and
@@ -195,7 +195,7 @@ breakdowns enable this diagnosis.
 
 ---
 
-### 6. Infrastructure — 2.5 → 3.0 (+0.5)
+### 6. Infrastructure - 2.5 → 3.0 (+0.5)
 
 **What institutional standard demands:** SSE streaming for progressive results,
 cancellation support, reproducible backtests, and robust error handling.
@@ -211,14 +211,14 @@ seconds of blank screen. No cancellation. No intermediate feedback.
 | **Cancel Support** | 1 | AbortController on the frontend allows users to cancel long-running backtests mid-stream. No more waiting 30 seconds for a computation you didn't want. |
 | **Data Reproducibility** | 5C | SHA-256 data hashing ensures backtests are reproducible. The platform can detect when underlying data has changed between runs. |
 
-**Why it matters:** Infrastructure doesn't make backtests more accurate — it
+**Why it matters:** Infrastructure doesn't make backtests more accurate - it
 makes them more usable and trustworthy. Progressive loading and cancellation
 are table stakes for any professional tool, and data reproducibility is
 non-negotiable for institutional audit compliance.
 
 ---
 
-### 7. Reporting / Attribution — 3.5 → 3.5 (Already Strong)
+### 7. Reporting / Attribution - 3.5 → 3.5 (Already Strong)
 
 **What institutional standard demands:** Dollar-denominated P&L, regime-conditional
 performance breakdowns, and transparent cost attribution.
@@ -237,7 +237,7 @@ breakdown by market regime.
 | **Monte Carlo Confidence Bands** | 4C | 1,000 trade-order permutations generate 5th–95th percentile confidence bands on the equity curve. If the 5th-percentile curve is still profitable, the strategy is robust regardless of trade timing. |
 
 **Why it matters:** Institutional investors don't just want to know "does it
-work?" — they want to know *when* it works, *how much* it makes, and *how
+work?" - they want to know *when* it works, *how much* it makes, and *how
 confident* you are. Dollar P&L, regime breakdowns, and Monte Carlo bands
 answer all three.
 
@@ -248,7 +248,7 @@ answer all three.
 | Phase | Focus | Key Achievement | Maturity Impact |
 |:-----:|-------|----------------|-----------------|
 | **1** | SSE Streaming | Progressive results, cancel support, real-time feedback | UX transformed from blank-screen to live-updating |
-| **2** | Transaction Cost Realism | Commission, slippage, spread — tracked separately per trade | Cost Modeling 3.0 → foundational |
+| **2** | Transaction Cost Realism | Commission, slippage, spread - tracked separately per trade | Cost Modeling 3.0 → foundational |
 | **3** | Execution Realism | Gap-through stops, adverse fills, OCO handling | Execution 2.5 → 3.0 |
 | **4** | Analytics & Architecture | Dollar P&L, walk-forward, Monte Carlo, regime breakdown, TypeScript types | Reporting 3.5, Risk 4.0 secured |
 | **5** | Data Quality & Integrity | Survivorship bias elimination, corporate actions, data lineage, look-ahead hardening | **Data Quality 1.5 → 4.0** (largest single jump) |
@@ -264,41 +264,41 @@ quant platform."* Here's what our 3.7 means concretely:
 
 ### ✅ What We Can Now Do
 
-- **Defend backtest results to institutional investors** — Survivorship bias is
+- **Defend backtest results to institutional investors** - Survivorship bias is
   eliminated, statistical significance is rigorously tested, and multiple testing
   corrections are applied. An institutional due diligence team will find our
   results reproducible and our methodology sound.
 
-- **Accurately estimate live trading performance** — Execution costs are modeled
+- **Accurately estimate live trading performance** - Execution costs are modeled
   at every level: commission, slippage, spread, market impact, borrow costs, and
   fill probability. The gap between backtest and live performance should be
   dramatically smaller than platforms that ignore these factors.
 
-- **Distinguish skill from luck** — The Deflated Sharpe Ratio, bootstrap
+- **Distinguish skill from luck** - The Deflated Sharpe Ratio, bootstrap
   confidence intervals, and White's Reality Check answer the fundamental question:
   "Is this strategy genuinely good, or did we just get lucky?" If the DSR says
   the Sharpe is significant after 100 trials, it's significant. Period.
 
-- **Reproduce any historical result** — Data hashing and lineage tracking mean
+- **Reproduce any historical result** - Data hashing and lineage tracking mean
   that any backtest result can be verified. If the data has changed, the platform
   flags it. This is a GIPS compliance requirement.
 
-- **Diagnose strategy failure modes** — Regime-conditional breakdowns show when
+- **Diagnose strategy failure modes** - Regime-conditional breakdowns show when
   a strategy works and when it doesn't. Cost attribution shows which cost
   component is eating returns. Walk-forward degradation ratios quantify how much
   performance decays out-of-sample.
 
 ### ⚠️ What's Still on the Horizon
 
-- **Infrastructure (3.0 / 5)** — Deployment hardening, observability, and
+- **Infrastructure (3.0 / 5)** - Deployment hardening, observability, and
   scale testing would push this to 3.5+. This is a maintenance and ops concern,
   not a credibility concern.
 
-- **Advanced reporting (3.5 / 5)** — Institutional-grade attribution reporting
+- **Advanced reporting (3.5 / 5)** - Institutional-grade attribution reporting
   (Brinson attribution, factor exposure analysis, risk decomposition) would
   push this to 4.0+. The foundation is solid; the polish is incremental.
 
-- **Unified simulation framework (Phase 4F)** — The two backtest engines (HMM
+- **Unified simulation framework (Phase 4F)** - The two backtest engines (HMM
   regime and Renko pipeline) share conceptual patterns but not code. A unified
   framework would reduce maintenance burden and ensure consistency, but it's an
   internal refactor that doesn't change user-facing behavior. Parked until a
@@ -337,13 +337,13 @@ quant platform."* Here's what our 3.7 means concretely:
 
 | Phase | Backend Version | Frontend Version |
 |-------|:--------------:|:----------------:|
-| Phase 1 — SSE Streaming | v3.3.0 | v5.3.0 |
-| Phase 2 — Transaction Cost Realism | v3.4.0 | v5.4.0 |
-| Phase 3 — Execution Realism | v3.5.0 | v5.5.0 |
-| Phase 4 — Analytics & Architecture | v4.0.0 | v6.0.0 |
-| Phase 5 — Data Quality & Integrity | v4.1.0 | v6.1.0 |
-| Phase 6 — Statistical Rigor | v4.2.0 | v6.2.0 |
-| Phase 7 — Advanced Execution Modeling | v5.0.0 | v7.0.0 |
+| Phase 1 - SSE Streaming | v3.3.0 | v5.3.0 |
+| Phase 2 - Transaction Cost Realism | v3.4.0 | v5.4.0 |
+| Phase 3 - Execution Realism | v3.5.0 | v5.5.0 |
+| Phase 4 - Analytics & Architecture | v4.0.0 | v6.0.0 |
+| Phase 5 - Data Quality & Integrity | v4.1.0 | v6.1.0 |
+| Phase 6 - Statistical Rigor | v4.2.0 | v6.2.0 |
+| Phase 7 - Advanced Execution Modeling | v5.0.0 | v7.0.0 |
 
 ---
 
@@ -351,7 +351,7 @@ quant platform."* Here's what our 3.7 means concretely:
 
 **Noble-Trader is no longer a backtesting tool with gaps.** It is a
 quantitative research platform whose results can withstand institutional
-scrutiny — survivorship-free data, statistically rigorous validation,
+scrutiny - survivorship-free data, statistically rigorous validation,
 realistic execution modeling, and full reproducibility.
 
 The 2.8 → 3.7 transformation didn't come from adding features for the sake
@@ -361,7 +361,7 @@ use: Almgren-Chriss for market impact, Lopez de Prado's DSR for multiple
 testing, point-in-time data for survivorship bias, and bootstrap methods for
 confidence intervals.
 
-**The result is a platform that doesn't just produce backtests — it produces
+**The result is a platform that doesn't just produce backtests - it produces
 evidence.**
 
 ---

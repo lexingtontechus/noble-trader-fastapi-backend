@@ -1,5 +1,5 @@
 """
-Telegram Bot Notifier — sends messages to Telegram chats via Bot API.
+Telegram Bot Notifier - sends messages to Telegram chats via Bot API.
 
 Design:
   - Uses a single bot token + chat ID for P&L and system alerts
@@ -157,7 +157,7 @@ class TelegramNotifier:
         Send a message via Telegram Bot API.
 
         Returns True if sent successfully, False otherwise.
-        Never raises — all errors are caught and logged.
+        Never raises - all errors are caught and logged.
         """
         if not self.is_configured:
             return False
@@ -246,7 +246,7 @@ class TelegramNotifier:
             current_str = f"${current_value:+,.2f}"
 
         text = (
-            f"{emoji} <b>P&amp;L Alert — {label}</b>\n\n"
+            f"{emoji} <b>P&amp;L Alert - {label}</b>\n\n"
             f"<b>Metric:</b> {metric_display}\n"
             f"<b>Condition:</b> {operator.replace('_', ' ')} {threshold_str}\n"
             f"<b>Current Value:</b> {current_str}\n"
@@ -269,7 +269,7 @@ class TelegramNotifier:
         emoji = SEVERITY_EMOJI.get(level, "ℹ️")
         label = SEVERITY_LABEL.get(level, level.value.upper())
 
-        text = f"{emoji} <b>System — {label}</b>\n\n{message}\n"
+        text = f"{emoji} <b>System - {label}</b>\n\n{message}\n"
 
         if data:
             text += "\n"
@@ -384,7 +384,7 @@ class TelegramNotifier:
         label = SEVERITY_LABEL.get(level, level.value.upper())
 
         text = (
-            f"{emoji} <b>Risk Alert — {label}</b>\n\n"
+            f"{emoji} <b>Risk Alert - {label}</b>\n\n"
             f"<b>Type:</b> {risk_type.replace('_', ' ').title()}\n"
             f"{message}\n"
         )
@@ -414,5 +414,5 @@ def _utc_now_iso() -> str:
 
 # ── Singleton ────────────────────────────────────────────────────────────
 
-# Global singleton instance — import and use across the backend
+# Global singleton instance - import and use across the backend
 telegram_notifier = TelegramNotifier()

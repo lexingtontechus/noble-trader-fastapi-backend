@@ -1,5 +1,5 @@
 """
-Renko Brick Engine — the foundation of the HFT pipeline.
+Renko Brick Engine - the foundation of the HFT pipeline.
 
 Converts a real-time tick stream into Renko brick events.
 Uses the classic 2-brick reversal rule: a direction change
@@ -158,7 +158,7 @@ class RenkoBrickEngine:
     # ── Internal ──────────────────────────────────────────────────
 
     def _seed(self, price: float, ts: float) -> None:
-        """Initialise engine on first tick — set reference levels."""
+        """Initialise engine on first tick - set reference levels."""
         self._state.direction = None
         bs = self.brick_size
         # Round reference levels to brick grid
@@ -169,7 +169,7 @@ class RenkoBrickEngine:
         self._initialized = True
 
     def _evaluate(self, price: float, ts: float) -> List[Brick]:
-        """Core brick construction logic — classic Renko with 2-brick reversal."""
+        """Core brick construction logic - classic Renko with 2-brick reversal."""
         new_bricks: List[Brick] = []
         bs = self.brick_size
         st = self._state

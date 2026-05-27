@@ -1,5 +1,5 @@
 """
-Deflated Sharpe Ratio — adjusts observed Sharpe for multiple testing.
+Deflated Sharpe Ratio - adjusts observed Sharpe for multiple testing.
 
 Reference: Lopez de Prado & Bailey (2014) "The Deflated Sharpe Ratio"
 
@@ -55,13 +55,13 @@ def deflated_sharpe_ratio(
     Returns
     -------
     dict with keys:
-        dsr: float — Deflated Sharpe Ratio (probability that observed Sharpe is significant)
-        observed_sharpe: float — input Sharpe
-        n_trials: int — number of trials
-        expected_max_sharpe: float — expected maximum Sharpe under null (V(SR))
-        p_value: float — 1 - DSR (probability this is due to luck)
-        is_significant: bool — True if DSR > 0.95 (5% significance)
-        interpretation: str — human-readable interpretation
+        dsr: float - Deflated Sharpe Ratio (probability that observed Sharpe is significant)
+        observed_sharpe: float - input Sharpe
+        n_trials: int - number of trials
+        expected_max_sharpe: float - expected maximum Sharpe under null (V(SR))
+        p_value: float - 1 - DSR (probability this is due to luck)
+        is_significant: bool - True if DSR > 0.95 (5% significance)
+        interpretation: str - human-readable interpretation
     """
     # If returns provided, compute moments
     if returns is not None and len(returns) > 2:
@@ -83,7 +83,7 @@ def deflated_sharpe_ratio(
     # E[max(SR)] = sqrt(V(SR_hat)) * ((1 - gamma) * Phi^{-1}(1 - 1/N) + gamma * Phi^{-1}(1 - 1/(N*e)))
     # Simplified approximation:
     if n_trials > 1:
-        # Z_n = sqrt(2 * ln(n)) — expected maximum of N standard normal draws
+        # Z_n = sqrt(2 * ln(n)) - expected maximum of N standard normal draws
         z_n = np.sqrt(2 * np.log(n_trials))
         # Correction for finite samples (small N)
         gamma = 0.5772156649  # Euler-Mascheroni constant
@@ -104,15 +104,15 @@ def deflated_sharpe_ratio(
     
     # Interpretation
     if dsr > 0.99:
-        interpretation = "Highly significant — strong evidence of genuine alpha after multiple testing adjustment"
+        interpretation = "Highly significant - strong evidence of genuine alpha after multiple testing adjustment"
     elif dsr > 0.95:
-        interpretation = "Significant at 5% level — strategy likely has genuine edge after N trials"
+        interpretation = "Significant at 5% level - strategy likely has genuine edge after N trials"
     elif dsr > 0.90:
-        interpretation = "Borderline — marginal evidence after multiple testing; exercise caution"
+        interpretation = "Borderline - marginal evidence after multiple testing; exercise caution"
     elif dsr > 0.75:
-        interpretation = "Not significant — observed Sharpe likely due to selection bias from N trials"
+        interpretation = "Not significant - observed Sharpe likely due to selection bias from N trials"
     else:
-        interpretation = "Not significant — observed Sharpe is consistent with random chance across N trials"
+        interpretation = "Not significant - observed Sharpe is consistent with random chance across N trials"
     
     return {
         "dsr": round(dsr, 6),

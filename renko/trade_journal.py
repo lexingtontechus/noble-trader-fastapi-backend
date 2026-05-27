@@ -1,5 +1,5 @@
 """
-Trade Journal + Stats Engine — records every trade and computes
+Trade Journal + Stats Engine - records every trade and computes
 performance metrics for strategy evaluation and Kelly sizing.
 
 Tracks:

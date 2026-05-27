@@ -5,8 +5,8 @@ Regime Transition Simulator
 Simulates future regime and price paths using the HMM transition matrix
 extracted from a fitted RegimeHMM.  Two simulation modes:
 
-  1. MarkovChain  — discrete-state Markov chain over combined vol×trend regimes
-  2. MonteCarlo   — continuous price paths drawn from per-regime return distributions,
+  1. MarkovChain  - discrete-state Markov chain over combined vol×trend regimes
+  2. MonteCarlo   - continuous price paths drawn from per-regime return distributions,
                     with regime switching driven by the Markov chain
 
 Both modes produce `n_paths` forward trajectories of `horizon` steps, yielding:
@@ -14,7 +14,7 @@ Both modes produce `n_paths` forward trajectories of `horizon` steps, yielding:
   - Price trajectory per path
   - Summary statistics: regime occupancy, expected risk multiplier, VaR fan
 
-Design note: this is an endogenous simulation — it does NOT call an external
+Design note: this is an endogenous simulation - it does NOT call an external
 ODE solver (simupy) because hmmlearn already gives us the discrete-time
 transition matrix, which is the natural representation for regime switching.
 A continuous-time ODE layer (simupy) would be useful for underlying factor
@@ -163,7 +163,7 @@ class RegimeSimulator:
         Also compute per-regime (mu, sigma) from historical returns filtered
         by the Viterbi-decoded state sequence.
         """
-        T_vol   = model._vol_model.transmat_       # (4,4) — already sanitised
+        T_vol   = model._vol_model.transmat_       # (4,4) - already sanitised
         T_trend = model._trend_model.transmat_     # (4,4)
 
         # Kronecker product → 16×16
@@ -173,7 +173,7 @@ class RegimeSimulator:
         row_sums = T16.sum(axis=1, keepdims=True)
         T16 = np.where(row_sums > 0, T16 / row_sums, 1.0 / 16)
 
-        # Per-regime return distribution — fit on empirical data
+        # Per-regime return distribution - fit on empirical data
         regime_stats = self._fit_regime_return_stats(model, returns)
 
         return T16, regime_stats

@@ -42,7 +42,7 @@ class BacktestConfig:
     max_position_pct: float = 0.25    # max position as fraction of equity
     risk_check: bool = True           # enable VaR/CVaR risk gates
     regime_gate: bool = True          # block trades in high-vol bear regimes
-    # Per-trade risk management (Phase 3 — Execution Realism)
+    # Per-trade risk management (Phase 3 - Execution Realism)
     stop_loss_pct: float = 0.0        # Per-trade stop-loss as fraction (0 = disabled, 0.05 = 5%)
     take_profit_pct: float = 0.0      # Per-trade take-profit as fraction (0 = disabled, 0.10 = 10%)
 
@@ -523,7 +523,7 @@ class Backtester:
         calmar = float(annual_return / abs(max_dd)) if max_dd != 0 else 0.0
         information = float(excess_return / annual_vol) if annual_vol > 0 else 0.0
         
-        # Trade stats — now using pnl_pct (fixed from always-0 bug)
+        # Trade stats - now using pnl_pct (fixed from always-0 bug)
         win_pcts = [t.pnl_pct for t in wins] if wins else [0.0]
         loss_pcts = [abs(t.pnl_pct) for t in losses] if losses else [0.0]
         avg_win_pct = float(np.mean(win_pcts))

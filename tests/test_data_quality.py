@@ -2,11 +2,11 @@
 Tests for Phase 5: Data Quality & Integrity.
 
 Covers:
-  5A — Survivorship bias elimination
-  5B — Corporate action adjustments
-  5C — Data versioning & lineage
-  5D — Look-ahead bias audit
-  5E — Price validation
+  5A - Survivorship bias elimination
+  5B - Corporate action adjustments
+  5C - Data versioning & lineage
+  5D - Look-ahead bias audit
+  5E - Price validation
 """
 
 import math
@@ -29,7 +29,7 @@ from regime_platform.services.data_quality import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5A — Survivorship Bias
+# 5A - Survivorship Bias
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -65,7 +65,7 @@ class TestSurvivorshipBias:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5B — Corporate Action Adjustments
+# 5B - Corporate Action Adjustments
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -153,7 +153,7 @@ class TestCorporateActionAdjustments:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5C — Data Versioning & Lineage
+# 5C - Data Versioning & Lineage
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -216,7 +216,7 @@ class TestDataVersioning:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5D — Look-Ahead Bias Audit
+# 5D - Look-Ahead Bias Audit
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -283,7 +283,7 @@ class TestLookAheadAudit:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5E — Price Validation
+# 5E - Price Validation
 # ═══════════════════════════════════════════════════════════════════════════
 
 

@@ -1,10 +1,10 @@
 """
 Authentication endpoints.
 
-  POST /auth/token   — issue a JWT (username/password or API key exchange)
-  GET  /auth/me      — return current user info from token
-  POST /auth/refresh — refresh a non-expired token
-  GET  /auth/clerk/me — return Clerk user info from Clerk JWT token
+  POST /auth/token   - issue a JWT (username/password or API key exchange)
+  GET  /auth/me      - return current user info from token
+  POST /auth/refresh - refresh a non-expired token
+  GET  /auth/clerk/me - return Clerk user info from Clerk JWT token
 
 In production, the /auth/token endpoint should validate against a real
 user store. The implementation here uses a configurable in-memory user
@@ -19,8 +19,8 @@ If AUTH_USERS is not set, the token endpoint is disabled and returns 503.
 Clerk Authentication:
   - Uses CLERK_SECRET_KEY from .env.local
   - Clerk tokens are verified using Clerk's JWKS endpoint
-  - POST /auth/clerk/verify — verify a Clerk JWT token
-  - GET  /auth/clerk/me — get current Clerk user info
+  - POST /auth/clerk/verify - verify a Clerk JWT token
+  - GET  /auth/clerk/me - get current Clerk user info
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     Roles: `admin` (full access) · `trader` (read + write) · `viewer` (read-only)
     """
     if not AUTH_ENABLED:
-        # Dev mode — issue a token without credential check (development only)
+        # Dev mode - issue a token without credential check (development only)
         _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
         if _DEPLOY_ENV in ("production", "staging"):
             raise HTTPException(

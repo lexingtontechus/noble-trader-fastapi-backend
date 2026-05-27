@@ -1,5 +1,5 @@
 """
-Audit Logger Service — Append-only, immutable trade audit trail.
+Audit Logger Service - Append-only, immutable trade audit trail.
 
 Every write goes to:
 1. Supabase trade_audit_log table (source of truth, immutable)

@@ -1,5 +1,5 @@
 """
-Executor Factory — Singleton provider for properly-configured AlpacaExecutor instances.
+Executor Factory - Singleton provider for properly-configured AlpacaExecutor instances.
 
 Problem:
   All operational services (kill_switch, reconciler, mode_manager) were creating
@@ -82,7 +82,7 @@ class ThrottledAlpacaREST:
                     loop = None
 
                 if loop is not None and loop.is_running():
-                    # We're inside an async context — schedule acquire
+                    # We're inside an async context - schedule acquire
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         acquired = asyncio.get_event_loop().run_in_executor(
@@ -92,7 +92,7 @@ class ThrottledAlpacaREST:
                     # and let the throttle catch up. Best-effort throttling.
                     return attr(*args, **kwargs)
                 else:
-                    # No running loop — safe to use asyncio.run
+                    # No running loop - safe to use asyncio.run
                     acquired = asyncio.run(throttle.acquire())
                     if not acquired:
                         raise RuntimeError(
@@ -235,7 +235,7 @@ class ExecutorFactory:
         settings = self._get_settings()
 
         if not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY:
-            logger.debug("ExecutorFactory: No Alpaca API keys — REST client unavailable")
+            logger.debug("ExecutorFactory: No Alpaca API keys - REST client unavailable")
             return None
 
         try:
@@ -273,7 +273,7 @@ class ExecutorFactory:
         self._executor = None
         self._api_client = None
         self._last_base_url = None
-        logger.info("ExecutorFactory: Cache invalidated — next access will re-create")
+        logger.info("ExecutorFactory: Cache invalidated - next access will re-create")
 
     @property
     def execution_mode(self) -> str:

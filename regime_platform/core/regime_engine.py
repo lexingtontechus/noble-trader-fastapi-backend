@@ -1,5 +1,5 @@
 """
-Regime Detection Engine — Hidden Markov Model via hmmlearn.
+Regime Detection Engine - Hidden Markov Model via hmmlearn.
 Detects volatility (Low / Medium-Low / Medium-High / High) and
 trend (Strong-Bear / Bear / Bull / Strong-Bull) regimes.
 
@@ -72,7 +72,7 @@ class RegimeHMM:
 
     Both models use posterior state probabilities (forward-backward algorithm),
     not just Viterbi hard assignments, so confidence scores are smooth and
-    differentiable. States are auto-labelled by sorting HMM component means —
+    differentiable. States are auto-labelled by sorting HMM component means -
     no manual mapping required.
     """
 
@@ -328,7 +328,7 @@ class RegimeHMM:
         if not np.all(np.isfinite(model.means_)):
             model.means_ = np.where(np.isfinite(model.means_), model.means_, 0.0)
 
-        # covars_ — write to private _covars_ to bypass shape-validation setter
+        # covars_ - write to private _covars_ to bypass shape-validation setter
         # Shape: "diag" → (n_components, n_features), "full" → (n, nf, nf)
         if hasattr(model, "_covars_") and model._covars_ is not None:
             bad = ~np.isfinite(model._covars_) | (model._covars_ <= 0)

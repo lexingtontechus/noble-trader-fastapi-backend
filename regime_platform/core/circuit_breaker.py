@@ -21,9 +21,9 @@ Usage
 
 States
 ──────
-  CLOSED   — normal operation, calls pass through
-  OPEN     — failures exceeded threshold, calls fail fast
-  HALF_OPEN — timeout expired, one probe call allowed
+  CLOSED   - normal operation, calls pass through
+  OPEN     - failures exceeded threshold, calls fail fast
+  HALF_OPEN - timeout expired, one probe call allowed
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ class CircuitBreaker:
 
         if current_state == CircuitState.OPEN:
             raise CircuitOpenError(
-                f"Circuit [{self.name}] is OPEN — failing fast. "
+                f"Circuit [{self.name}] is OPEN - failing fast. "
                 f"Last failure: {self._last_failure_detail} "
                 f"({int(time.monotonic() - self._last_failure_time)}s ago)"
             )
@@ -141,7 +141,7 @@ class CircuitBreaker:
         self._last_failure_detail = str(exc)[:200]
 
         if self._state == CircuitState.HALF_OPEN:
-            # Probe failed — back to OPEN
+            # Probe failed - back to OPEN
             self._state = CircuitState.OPEN
             log.warning(
                 f"Circuit [{self.name}]: HALF_OPEN → OPEN (probe failed: {exc})"

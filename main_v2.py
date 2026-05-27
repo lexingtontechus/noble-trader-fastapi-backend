@@ -1,5 +1,5 @@
 """
-Dynamic Regime Risk Management Platform — FastAPI Service v2.0
+Dynamic Regime Risk Management Platform - FastAPI Service v2.0
 
 Batch: POST /regime/detect | /size/kelly | /risk/analyse | /analyse/full
 Stream: POST /stream/seed | /stream/tick | WS /ws/{symbol} | GET /sse/{symbol} | GET /sse/alerts
@@ -19,7 +19,7 @@ def create_app() -> FastAPI:
         title="Dynamic Regime Risk Management Platform",
         version="2.0.0",
         description="""
-## v2.0 — Live Streaming Support
+## v2.0 - Live Streaming Support
 
 ### Streaming workflow
 

@@ -1,4 +1,4 @@
-"""Strategy signal endpoints — combines regime detection, Kelly sizing, and risk guidance."""
+"""Strategy signal endpoints - combines regime detection, Kelly sizing, and risk guidance."""
 
 from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import StrategySignalRequest, StrategySignalResponse
@@ -85,12 +85,12 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
         # 5. Adjust signal based on risk
         notes = list(size_result.notes)
         if risk.risk_budget_used > 1.0:
-            notes.append("Risk budget exceeded — consider reducing position size.")
+            notes.append("Risk budget exceeded - consider reducing position size.")
         if signal == "long" and risk.regime_max_loss > req.base_risk_limit:
-            notes.append("Regime risk exceeds base limit — signal weakened.")
+            notes.append("Regime risk exceeds base limit - signal weakened.")
             signal_strength *= 0.5
         if signal != "flat" and size_result.recommended_f < 0.02:
-            notes.append("Very low Kelly fraction — signal may not be actionable.")
+            notes.append("Very low Kelly fraction - signal may not be actionable.")
             signal = "flat"
             signal_strength *= 0.1
 

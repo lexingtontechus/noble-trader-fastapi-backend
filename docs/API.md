@@ -1,10 +1,10 @@
-# Noble Trader Dynamic Regime Risk Management Platform — API Reference
+# Noble Trader Dynamic Regime Risk Management Platform - API Reference
 
 **Version:** 7.0.0  
 **Base URL:** `https://noble-trader-fastapi-backend.onrender.com`  
 **Stack:** FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2  
 **Interactive Docs:** `/docs` (Swagger UI) · `/redoc` (ReDoc)  
-**MCP Server:** `/mcp` (Model Context Protocol — exposes all endpoints as AI agent tools)
+**MCP Server:** `/mcp` (Model Context Protocol - exposes all endpoints as AI agent tools)
 
 ---
 
@@ -77,13 +77,13 @@ Each regime maps to a **risk_multiplier** [0.25 – 1.50] that scales the Kelly 
 
 The platform supports four authentication methods, tried in priority order by the unified `get_authed_user()` dependency:
 
-1. **Clerk JWT** (primary) — verified via Clerk's JWKS endpoint. The BFF obtains JWTs via `POST /v1/sessions/{id}/tokens` with the "server" template (enriched with email, name, role claims). If the template isn't configured, the default JWT (sub/iss/exp only) is used, and the backend enriches null claims via the Clerk Backend API.
+1. **Clerk JWT** (primary) - verified via Clerk's JWKS endpoint. The BFF obtains JWTs via `POST /v1/sessions/{id}/tokens` with the "server" template (enriched with email, name, role claims). If the template isn't configured, the default JWT (sub/iss/exp only) is used, and the backend enriches null claims via the Clerk Backend API.
 
-2. **Local JWT** — signed with `JWT_SECRET_KEY`, issued via `/auth/token`
+2. **Local JWT** - signed with `JWT_SECRET_KEY`, issued via `/auth/token`
 
-3. **API Key** — `X-API-Key` header for service-to-service calls (cron jobs, background tasks)
+3. **API Key** - `X-API-Key` header for service-to-service calls (cron jobs, background tasks)
 
-4. **Dev bypass** — When `AUTH_ENABLED=false`, all requests are treated as admin
+4. **Dev bypass** - When `AUTH_ENABLED=false`, all requests are treated as admin
 
 ### JWT Template System
 
@@ -102,15 +102,15 @@ All 104 endpoints now require authentication. Auth levels:
 | Public | None | `/`, `/health`, `/auth/token`, `/auth/clerk/verify`, `/auth/clerk/config` |
 | Any authenticated role | `get_authed_user` | Read-only GET endpoints (48 endpoints) |
 | Write (admin/trader) | `require_write` | Mutations, tick ingestion, backtests, regime updates, mode changes (38 endpoints) |
-| Admin only | `require_admin` | Destructive ops — config, reset, kill-switch, config overrides (10 endpoints) |
+| Admin only | `require_admin` | Destructive ops - config, reset, kill-switch, config overrides (10 endpoints) |
 
 ### Roles
 
 | Role | Access Level |
 |------|-------------|
-| `admin` | Full access — all endpoints, configuration, feed management |
-| `trader` | Read + write — sizing, risk, streaming, simulation |
-| `viewer` | Read-only — regime detection, portfolio view, health checks |
+| `admin` | Full access - all endpoints, configuration, feed management |
+| `trader` | Read + write - sizing, risk, streaming, simulation |
+| `viewer` | Read-only - regime detection, portfolio view, health checks |
 
 ### Environment Variables
 
@@ -369,10 +369,10 @@ f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
 
 Where:
 - **β** = base risk fraction (default 0.5%)
-- **M_i** = Masaniello progress factor — urgency = wins_needed / trades_remaining
-- **Q_i** = Model quality composite — prob × regime_quality × confidence
-- **DD_i** = Drawdown scaling factor — never below 0.25
-- **V_i** = Volatility adjustment — ATR-based ratio
+- **M_i** = Masaniello progress factor - urgency = wins_needed / trades_remaining
+- **Q_i** = Model quality composite - prob × regime_quality × confidence
+- **DD_i** = Drawdown scaling factor - never below 0.25
+- **V_i** = Volatility adjustment - ATR-based ratio
 
 Supports optional Kelly overlay cap and regime auto-detection from prices.
 
@@ -533,8 +533,8 @@ Sizes an entire batch of trades sequentially, with batch state (wins, losses, dr
 
 Two-stage pipeline for multi-asset position sizing:
 
-**Stage 1** — `DrawdownOptimiser` → regime-adjusted portfolio weights (what to hold)  
-**Stage 2** — `DynamicMasanielloSizer` → per-asset contract sizes (how much to hold)
+**Stage 1** - `DrawdownOptimiser` → regime-adjusted portfolio weights (what to hold)  
+**Stage 2** - `DynamicMasanielloSizer` → per-asset contract sizes (how much to hold)
 
 **Request:**
 
@@ -1031,9 +1031,9 @@ Fits a 4-state Gaussian HMM on rolling correlation features across all assets. R
 ### POST /optimise
 
 Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constraint. Three regime layers applied:
-1. **Regime-adjusted μ** — per-asset expected returns scaled by risk multiplier
-2. **Regime weight bounds** — tighter upper bounds in high-risk regimes
-3. **Correlation exposure** — gross portfolio exposure reduced in crisis regimes
+1. **Regime-adjusted μ** - per-asset expected returns scaled by risk multiplier
+2. **Regime weight bounds** - tighter upper bounds in high-risk regimes
+3. **Correlation exposure** - gross portfolio exposure reduced in crisis regimes
 
 **Request:**
 
@@ -1135,7 +1135,7 @@ Full two-stage pipeline connecting portfolio optimisation to per-trade position 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Request:** Same as `PortfolioMasanielloRequest` — see [`/size/masaniello/portfolio`](#post-sizemasanielloportfolio) for full parameter documentation.
+**Request:** Same as `PortfolioMasanielloRequest` - see [`/size/masaniello/portfolio`](#post-sizemasanielloportfolio) for full parameter documentation.
 
 **Example Request:**
 
@@ -1235,7 +1235,7 @@ Full two-stage pipeline connecting portfolio optimisation to per-trade position 
 
 ### POST /observation/build
 
-Constructs the full 24-feature observation vector used by the RL/ML policy layer. Features 14–19 are **Markov features**: live HMM posterior probabilities — never defaulted to uniform priors.
+Constructs the full 24-feature observation vector used by the RL/ML policy layer. Features 14–19 are **Markov features**: live HMM posterior probabilities - never defaulted to uniform priors.
 
 **24 Feature Labels:**
 
@@ -1729,7 +1729,7 @@ Runs `n_iterations` fit+predict cycles on synthetic price data. Returns mean lat
 
 ### POST /feeds/start
 
-Start one or more live feed adapters. Symbols must be seeded via `POST /stream/seed` before starting feeds — bars for unseeded symbols are silently dropped. Adapters reconnect automatically on disconnect (exponential backoff).
+Start one or more live feed adapters. Symbols must be seeded via `POST /stream/seed` before starting feeds - bars for unseeded symbols are silently dropped. Adapters reconnect automatically on disconnect (exponential backoff).
 
 **Request** (array of configs):
 
@@ -1780,7 +1780,7 @@ Returns running state and per-symbol bar counts for all active feed adapters.
 
 ## Renko HFT Pipeline
 
-The Renko HFT pipeline processes price ticks through a 6-layer architecture for high-frequency trading signals. The route prefix is `/renko` (NOT `/api/renko`). All GET endpoints now use `_get_pipeline_async`, which reads pipeline configuration from `runtime_config` — a Supabase-backed hot-reloadable configuration store. This means GET endpoints reflect the latest runtime configuration without requiring a server restart, and any admin configuration changes via `POST /renko/config` or the Admin Config API are immediately visible.
+The Renko HFT pipeline processes price ticks through a 6-layer architecture for high-frequency trading signals. The route prefix is `/renko` (NOT `/api/renko`). All GET endpoints now use `_get_pipeline_async`, which reads pipeline configuration from `runtime_config` - a Supabase-backed hot-reloadable configuration store. This means GET endpoints reflect the latest runtime configuration without requiring a server restart, and any admin configuration changes via `POST /renko/config` or the Admin Config API are immediately visible.
 
 ### 6-Layer Pipeline Architecture
 
@@ -1943,7 +1943,7 @@ Returns trading statistics from the journal: win rate, profit factor, Sharpe, ma
 
 ## Renko Backtest Endpoints
 
-Isolated Renko pipeline backtest endpoints that run on **standalone `RenkoPipeline` instances** — they never affect the live pipeline state.
+Isolated Renko pipeline backtest endpoints that run on **standalone `RenkoPipeline` instances** - they never affect the live pipeline state.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
@@ -2498,7 +2498,7 @@ Create a new P&L alert threshold. When the metric crosses the threshold, an aler
 
 **Metrics:** `day_pnl`, `unrealized_pnl`, `drawdown_pct`, `var_breach`, `equity_change_pct`
 
-**Operators:** `lt`, `gt`, `lte`, `gte`, `crosses_below`, `crosses_above` (true cross detection — requires previous value to have been on the other side of the threshold)
+**Operators:** `lt`, `gt`, `lte`, `gte`, `crosses_below`, `crosses_above` (true cross detection - requires previous value to have been on the other side of the threshold)
 
 **Severities:** `info`, `warning`, `critical`
 
@@ -2594,11 +2594,11 @@ Returns the current Alpaca API rate throttle status including remaining tokens, 
 
 When a user selects a Clerk Organization, the JWT includes an `org_id` claim. The backend uses this to scope credential resolution:
 
-1. **Org-level credentials** — Supabase `credentials` table with matching `org_id` (takes priority)
-2. **User-level credentials** — Supabase `credentials` table with matching `user_id`
-3. **Global fallback** — `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` env vars
+1. **Org-level credentials** - Supabase `credentials` table with matching `org_id` (takes priority)
+2. **User-level credentials** - Supabase `credentials` table with matching `user_id`
+3. **Global fallback** - `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` env vars
 
-The frontend automatically requests org-scoped JWTs via `auth().orgId` and forwards the `X-Org-Id` header. No BFF route changes are needed — all routes inherit org-scoping through `getFastAPIAuthHeaders()`.
+The frontend automatically requests org-scoped JWTs via `auth().orgId` and forwards the `X-Org-Id` header. No BFF route changes are needed - all routes inherit org-scoping through `getFastAPIAuthHeaders()`.
 
 ### Notification Channels
 
@@ -2609,7 +2609,7 @@ Triggered P&L alerts are pushed to two channels simultaneously:
 | **Discord** | `DISCORD_WEBHOOK_STATUS` env var | Rich embed with severity color coding |
 | **Telegram** | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | HTML-formatted message with emoji severity |
 
-Both channels are fire-and-forget — failures are logged but never crash the alert evaluation loop.
+Both channels are fire-and-forget - failures are logged but never crash the alert evaluation loop.
 
 ---
 
@@ -2696,7 +2696,7 @@ Force a full reload of all configuration from Supabase, bypassing the TTL cache.
 
 ## Operational Hardening
 
-Operational safety layer providing kill switch, operating mode control, throttle monitoring, audit logging, and position reconciliation. The kill switch immediately halts all trading activity when activated — it cancels open orders, closes positions, and prevents new order submissions until explicitly deactivated. Operating modes (paper, live, maintenance) gate write access to the system and require two-step confirmation (request → confirm) for safety. The audit log tracks all configuration changes, mode transitions, and kill switch events with full attribution. Reconciliation compares the system's view of positions against the broker's reported state and flags discrepancies for manual review.
+Operational safety layer providing kill switch, operating mode control, throttle monitoring, audit logging, and position reconciliation. The kill switch immediately halts all trading activity when activated - it cancels open orders, closes positions, and prevents new order submissions until explicitly deactivated. Operating modes (paper, live, maintenance) gate write access to the system and require two-step confirmation (request → confirm) for safety. The audit log tracks all configuration changes, mode transitions, and kill switch events with full attribution. Reconciliation compares the system's view of positions against the broker's reported state and flags discrepancies for manual review.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
@@ -2744,7 +2744,7 @@ Initiates a two-step mode change. The request is stored as pending until confirm
 ```json
 {
   "target_mode": "live",
-  "reason": "Market open — switching to live execution"
+  "reason": "Market open - switching to live execution"
 }
 ```
 
@@ -2761,7 +2761,7 @@ Initiates a two-step mode change. The request is stored as pending until confirm
 
 ### POST /operational/kill-switch/activate
 
-Emergency halt — immediately cancels all open orders and prevents new order submissions. All Renko pipeline tick processing continues (signals are still generated), but no orders are routed to the broker. This is the fastest way to stop all trading activity in an emergency.
+Emergency halt - immediately cancels all open orders and prevents new order submissions. All Renko pipeline tick processing continues (signals are still generated), but no orders are routed to the broker. This is the fastest way to stop all trading activity in an emergency.
 
 **Response:**
 
@@ -2790,7 +2790,7 @@ Returns paginated audit log entries tracking configuration changes, mode transit
 
 ## Live Stream REST
 
-REST tick ingestion and session management endpoints for real-time streaming. These endpoints complement the SSE streaming layer by providing a synchronous REST interface for seeding sessions, ingesting ticks individually or in batches, and managing session lifecycle. Sessions maintain an in-memory price buffer and HMM model state, allowing real-time regime detection on every tick without re-fitting the model from scratch. The seed endpoint must be called before ticks can be ingested — it initializes the session with enough historical data to fit the HMM. Ticks are processed synchronously on POST and return the updated regime snapshot immediately.
+REST tick ingestion and session management endpoints for real-time streaming. These endpoints complement the SSE streaming layer by providing a synchronous REST interface for seeding sessions, ingesting ticks individually or in batches, and managing session lifecycle. Sessions maintain an in-memory price buffer and HMM model state, allowing real-time regime detection on every tick without re-fitting the model from scratch. The seed endpoint must be called before ticks can be ingested - it initializes the session with enough historical data to fit the HMM. Ticks are processed synchronously on POST and return the updated regime snapshot immediately.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
@@ -2870,7 +2870,7 @@ Replay or batch-ingest multiple ticks. Returns a snapshot for each tick (or a bu
 
 ## SSE Streaming
 
-Server-Sent Events endpoints for real-time push notifications. These endpoints establish long-lived HTTP connections that push JSON events to subscribers without polling. The SSE layer sits on top of the streaming session infrastructure — ticks ingested via `POST /stream/tick` are automatically broadcast to any connected SSE subscribers for that symbol. Regime change alerts are fired only when the detected regime transitions to a different state, preventing alert fatigue from repeated identical states. PnL SSE streams push equity updates at configurable intervals. All SSE connections require JWT authentication and support automatic reconnection via the `Last-Event-ID` header.
+Server-Sent Events endpoints for real-time push notifications. These endpoints establish long-lived HTTP connections that push JSON events to subscribers without polling. The SSE layer sits on top of the streaming session infrastructure - ticks ingested via `POST /stream/tick` are automatically broadcast to any connected SSE subscribers for that symbol. Regime change alerts are fired only when the detected regime transitions to a different state, preventing alert fatigue from repeated identical states. PnL SSE streams push equity updates at configurable intervals. All SSE connections require JWT authentication and support automatic reconnection via the `Last-Event-ID` header.
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|

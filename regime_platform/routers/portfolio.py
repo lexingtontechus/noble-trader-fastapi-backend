@@ -70,10 +70,10 @@ async def get_portfolio(
       portfolio VaR (independence assumption: √ΣVaR²), risk flags
 
     Risk flags:
-    - `high_risk_count`        — symbols with risk_multiplier < 0.5
-    - `concentration_flag`     — any symbol with recommended_f > 40%
-    - `regime_divergence_flag` — portfolio spans many different regime buckets
-    - `active_alerts`          — symbols that recently changed regime
+    - `high_risk_count`        - symbols with risk_multiplier < 0.5
+    - `concentration_flag`     - any symbol with recommended_f > 40%
+    - `regime_divergence_flag` - portfolio spans many different regime buckets
+    - `active_alerts`          - symbols that recently changed regime
 
     Symbols must be seeded via POST /stream/seed before appearing here.
     """

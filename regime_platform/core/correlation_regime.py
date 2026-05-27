@@ -8,7 +8,7 @@ correlation (DCC) structure across multiple assets simultaneously.
 Why correlation regimes matter
 ──────────────────────────────
 Single-asset HMMs classify each symbol independently. In a true crisis,
-correlations spike toward 1.0 across all risk assets simultaneously —
+correlations spike toward 1.0 across all risk assets simultaneously -
 diversification collapses right when you need it most. A correlation regime
 detector catches this structural shift that per-symbol HMMs miss.
 
@@ -22,7 +22,7 @@ Architecture
      low_corr  → mean |ρ| < 0.2 (diversified, normal market)
      mid_corr  → mean |ρ| ∈ [0.2, 0.5] (moderate comovement)
      high_corr → mean |ρ| ∈ [0.5, 0.75] (stress, pre-crisis)
-     crisis    → mean |ρ| > 0.75 (crash — full correlation)
+     crisis    → mean |ρ| > 0.75 (crash - full correlation)
 6. Overlay per-asset signals from RegimeHMM with the correlation regime
 
 Output: CorrelationSnapshot with per-asset breakdown + portfolio-level
@@ -30,7 +30,7 @@ Output: CorrelationSnapshot with per-asset breakdown + portfolio-level
 
 References
 ──────────
-Engle (2002) "Dynamic Conditional Correlation" — J. Business & Economic Stats.
+Engle (2002) "Dynamic Conditional Correlation" - J. Business & Economic Stats.
 Longin & Solnik (2001) "Extreme Correlation of International Equity Markets"
 """
 
@@ -188,8 +188,8 @@ class CorrelationRegimeDetector:
             asset_regimes.append(AssetRegime(
                 symbol=sym,
                 regime_label=snap.regime_label if snap else "unknown",
-                vol_state=snap.vol_state    if snap else "—",
-                trend_state=snap.trend_state if snap else "—",
+                vol_state=snap.vol_state    if snap else "-",
+                trend_state=snap.trend_state if snap else "-",
                 confidence=snap.confidence  if snap else 0.0,
                 risk_multiplier=mult,
                 contribution=1.0 / n_assets,

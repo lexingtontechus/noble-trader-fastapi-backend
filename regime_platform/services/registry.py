@@ -1,5 +1,5 @@
 """
-SessionRegistry — global store of active StreamSessions.
+SessionRegistry - global store of active StreamSessions.
 
 One registry per process. Accessed by all WebSocket and SSE handlers.
 Thread-safe via asyncio.Lock.
@@ -107,7 +107,7 @@ class SessionRegistry:
             self._sessions.clear()
             if invalidated:
                 log.info(
-                    "Stream config changed — invalidated %d session(s): %s",
+                    "Stream config changed - invalidated %d session(s): %s",
                     len(invalidated), ", ".join(invalidated),
                 )
             return invalidated
@@ -124,11 +124,11 @@ async def on_stream_config_changed(key: str, entry) -> None:
 
     Note: Alpaca WS params (alpaca.*) are read per-connection cycle,
     so reconnections naturally pick up new values. No explicit invalidation
-    needed — the 30s TTL cache ensures freshness.
+    needed - the 30s TTL cache ensures freshness.
     """
     if key.startswith("stream."):
         await registry.invalidate_all()
 
 
-# Singleton — imported everywhere
+# Singleton - imported everywhere
 registry = SessionRegistry()

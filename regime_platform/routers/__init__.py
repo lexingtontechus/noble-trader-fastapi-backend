@@ -1,4 +1,4 @@
-"""Router module — all FastAPI routers for the regime platform."""
+"""Router module - all FastAPI routers for the regime platform."""
 
 from . import (
     auth_router,

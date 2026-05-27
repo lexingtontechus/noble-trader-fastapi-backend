@@ -1,5 +1,5 @@
 """
-Smoke test — runs the full pipeline on synthetic price data.
+Smoke test - runs the full pipeline on synthetic price data.
 Run from /home/claude:  python test_platform.py
 """
 
@@ -23,7 +23,7 @@ returns = np.concatenate([
 prices = 100 * np.cumprod(1 + returns)
 
 print("=" * 60)
-print("  Dynamic Regime Risk Management Platform — Smoke Test")
+print("  Dynamic Regime Risk Management Platform - Smoke Test")
 print("=" * 60)
 
 # 1. Regime

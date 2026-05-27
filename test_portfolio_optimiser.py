@@ -1,5 +1,5 @@
 """
-portfolio_optimiser.py + masaniello_bridge.py — Test Suite
+portfolio_optimiser.py + masaniello_bridge.py - Test Suite
 
 Covers:
   1. Basic optimisation with synthetic returns
@@ -211,5 +211,5 @@ print(f"  {PASS}/{total} tests passed  {'✅' if FAIL == 0 else f'❌ {FAIL} fai
 if FAIL == 0:
     print("\n✅  All portfolio optimiser tests passed.\n")
 else:
-    print(f"\n❌  {FAIL} test(s) failed — see above.\n")
+    print(f"\n❌  {FAIL} test(s) failed - see above.\n")
     sys.exit(1)

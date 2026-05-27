@@ -1,16 +1,16 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform — FastAPI Service  v3.0.0       ║
+║     Dynamic Regime Risk Management Platform - FastAPI Service  v3.0.0       ║
 ║                                                                              ║
 ║  v3.0 additions (roadmap items):                                             ║
-║    GPU HMM       GET  /gpu/capabilities — pomegranate backend auto-select    ║
-║                  POST /gpu/benchmark    — fit/predict latency benchmark      ║
-║    Feed adapters POST /feeds/start      — Alpaca / Binance / IB live feeds   ║
-║                  POST /feeds/stop       — stop all feed adapters             ║
-║                  GET  /feeds/status     — bar counts and adapter health      ║
-║    Correlation   POST /correlation/detect — DCC-based portfolio regime       ║
-║    Optimisation  POST /optimise           — drawdown-controlled max-Sharpe   ║
-║                  POST /optimise/full      — correlation + optimise one-shot  ║
+║    GPU HMM       GET  /gpu/capabilities - pomegranate backend auto-select    ║
+║                  POST /gpu/benchmark    - fit/predict latency benchmark      ║
+║    Feed adapters POST /feeds/start      - Alpaca / Binance / IB live feeds   ║
+║                  POST /feeds/stop       - stop all feed adapters             ║
+║                  GET  /feeds/status     - bar counts and adapter health      ║
+║    Correlation   POST /correlation/detect - DCC-based portfolio regime       ║
+║    Optimisation  POST /optimise           - drawdown-controlled max-Sharpe   ║
+║                  POST /optimise/full      - correlation + optimise one-shot  ║
 ║                                                                              ║
 ║  All v2.x endpoints unchanged.                                               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -18,9 +18,9 @@
 Environment variables
 ─────────────────────
   (All v2.x vars still apply)
-  ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL  — Alpaca feed
-  BINANCE_TESTNET=true                                — Binance testnet
-  IB_HOST, IB_PORT, IB_CLIENT_ID                     — Interactive Brokers
+  ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL  - Alpaca feed
+  BINANCE_TESTNET=true                                - Binance testnet
+  IB_HOST, IB_PORT, IB_CLIENT_ID                     - Interactive Brokers
 """
 
 import logging
@@ -90,7 +90,7 @@ def create_app() -> FastAPI:
         version="3.0.0",
         lifespan=lifespan,
         description="""
-## v3.0.0 — GPU HMM · Live Feeds · Correlation Regimes · Portfolio Optimisation
+## v3.0.0 - GPU HMM · Live Feeds · Correlation Regimes · Portfolio Optimisation
 
 ### New in v3.0
 
@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
 
 When `pomegranate ≥ 1.0` is installed and a CUDA/MPS device is available,
 all HMM fit/predict calls run on GPU (typically 10–50× faster on large bars).
-Transparent fallback to hmmlearn on CPU — no code changes needed.
+Transparent fallback to hmmlearn on CPU - no code changes needed.
 
 ```bash
 pip install pomegranate torch

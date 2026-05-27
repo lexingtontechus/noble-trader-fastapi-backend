@@ -1,5 +1,5 @@
 """
-FastAPI Router — exposes the Renko HFT pipeline as REST endpoints.
+FastAPI Router - exposes the Renko HFT pipeline as REST endpoints.
 
 These endpoints can be mounted on the existing FastAPI backend
 running on Render, or used standalone.
@@ -12,9 +12,9 @@ Mount with::
 Authentication:
   All endpoints require authentication via the unified auth dependency
   (Clerk JWT → local JWT → API key → dev bypass). Auth levels:
-    - get_authed_user: Read-only endpoints — state, stats, bricks, etc. (any role)
-    - require_write: Mutations — tick ingestion, backtests, regime, equity (admin/trader)
-    - require_admin: Destructive — /config, /reset (admin only)
+    - get_authed_user: Read-only endpoints - state, stats, bricks, etc. (any role)
+    - require_write: Mutations - tick ingestion, backtests, regime, equity (admin/trader)
+    - require_admin: Destructive - /config, /reset (admin only)
 
 Discord notifications:
   When a signal is detected or a trade is closed, the router
@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from scipy import stats as sp_stats
 
-# FastAPI is optional — the module works without it for backtesting
+# FastAPI is optional - the module works without it for backtesting
 try:
     from fastapi import APIRouter, HTTPException, Depends, Request
     FASTAPI_AVAILABLE = True
@@ -48,7 +48,7 @@ from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
 from renko.redis_cache import renko_cache
 
-# Discord notifications (graceful import — not required for pipeline to work)
+# Discord notifications (graceful import - not required for pipeline to work)
 try:
     from notifications.discord import discord_notifier, AlertLevel
     DISCORD_AVAILABLE = True
@@ -227,7 +227,7 @@ class SizingModelRequest(BaseModel):
 
 # ── Pipeline registry ─────────────────────────────────────────────
 
-# In-memory registry of active pipelines — keyed by composite user_id:symbol
+# In-memory registry of active pipelines - keyed by composite user_id:symbol
 # For MCP agent use (single admin), key is just "symbol" (no user_id).
 # For multi-user, key is "user_id:symbol" for isolation.
 _pipelines: Dict[str, RenkoPipeline] = {}
@@ -272,7 +272,7 @@ async def _get_pipeline_async(
 
     HydrateOnRequest: attempts Supabase snapshot restore whenever the
     pipeline is empty (brick_count == 0), not just on first access.
-    This ensures MCP agents NEVER see a void state — even after a
+    This ensures MCP agents NEVER see a void state - even after a
     server restart that leaves an empty entry in _pipelines.
 
     Restore hierarchy:
@@ -290,7 +290,7 @@ async def _get_pipeline_async(
         # ── HydrateOnRequest: re-attempt restore if pipeline is empty ──
         if pipeline.brick_engine.brick_count > 0:
             return pipeline
-        # Pipeline exists but has 0 bricks — try to hydrate from Supabase
+        # Pipeline exists but has 0 bricks - try to hydrate from Supabase
         log.info(
             "HydrateOnRequest: pipeline %s is empty (brick_count=0), "
             "attempting Supabase restore...",
@@ -304,16 +304,16 @@ async def _get_pipeline_async(
                 restored.brick_engine.brick_count, key,
             )
             return restored
-        # Restore failed or returned empty — return the existing empty pipeline
+        # Restore failed or returned empty - return the existing empty pipeline
         return pipeline
 
-    # First access for this key — try Supabase restore
+    # First access for this key - try Supabase restore
     restored = await _restore_pipeline_snapshot(symbol, user_id=user_id)
     if restored:
         _pipelines[key] = restored
         return restored
 
-    # No snapshot available — create fresh pipeline from runtime config
+    # No snapshot available - create fresh pipeline from runtime config
     config = await RenkoConfig.from_runtime_config(
         overrides={"symbol": symbol, **(config_overrides or {})}
     )
@@ -347,7 +347,7 @@ async def _on_config_changed(key: str, entry) -> None:
         _pipelines.clear()
         if invalidated:
             log.info(
-                "Config %s changed — invalidated %d pipeline(s): %s",
+                "Config %s changed - invalidated %d pipeline(s): %s",
                 key, len(invalidated), ", ".join(invalidated),
             )
 
@@ -355,7 +355,7 @@ async def _on_config_changed(key: str, entry) -> None:
 # ── Router ─────────────────────────────────────────────────────────
 
 if FASTAPI_AVAILABLE:
-    # Auth imports — conditional since regime_platform may not be on sys.path
+    # Auth imports - conditional since regime_platform may not be on sys.path
     try:
         from regime_platform.auth.jwt_auth import get_authed_user, require_write, require_admin, TokenData
         AUTH_AVAILABLE = True
@@ -375,7 +375,7 @@ if FASTAPI_AVAILABLE:
     @renko_router.get("/health")
     async def renko_health() -> Dict[str, Any]:
         """
-        Diagnostic endpoint — tests pipeline creation, runtime_config,
+        Diagnostic endpoint - tests pipeline creation, runtime_config,
         and Supabase connectivity. No auth required.
         """
         import traceback
@@ -806,14 +806,14 @@ if FASTAPI_AVAILABLE:
         )
 
         if use_persistent:
-            # Cold pipeline — warm it up via stream (MCP agent use case)
+            # Cold pipeline - warm it up via stream (MCP agent use case)
             pipeline = _pipelines[key]
             log.info(
                 "backtest/stream: using persistent pipeline for %s (cold → warmup)",
                 key,
             )
         else:
-            # Warm pipeline or new — create transient for isolation
+            # Warm pipeline or new - create transient for isolation
             config = await RenkoConfig.from_runtime_config(overrides=overrides)
             pipeline = RenkoPipeline(config)
 
@@ -984,7 +984,7 @@ if FASTAPI_AVAILABLE:
 
         result = {}
 
-        # Market impact — use runtime default for sigma_daily and adv if not specified
+        # Market impact - use runtime default for sigma_daily and adv if not specified
         sigma_daily = body.sigma_daily if body.sigma_daily != 0.02 else defaults["sigma_daily"]
         adv_shares = body.adv_shares if body.adv_shares != 10_000_000 else defaults["default_adv_shares"]
 
@@ -997,7 +997,7 @@ if FASTAPI_AVAILABLE:
             temporary_impact_coeff=defaults["temporary_impact_coeff"],
         )
 
-        # Fill probability — use runtime defaults for time horizon, sensitivity, threshold
+        # Fill probability - use runtime defaults for time horizon, sensitivity, threshold
         result["fill_probability"] = compute_fill_probability(
             order_type=body.order_type,
             distance_from_mid_pct=body.distance_from_mid_pct,
@@ -1007,7 +1007,7 @@ if FASTAPI_AVAILABLE:
             threshold=defaults["fill_threshold"],
         )
 
-        # Financing costs — use runtime defaults for rates
+        # Financing costs - use runtime defaults for rates
         if body.position_notional > 0:
             result["financing_costs"] = compute_total_financing_costs(
                 position_notional=body.position_notional,
@@ -1216,13 +1216,13 @@ if FASTAPI_AVAILABLE:
         user: TokenData = Depends(require_write),
     ) -> Dict[str, Any]:
         """
-        Warm up a Renko pipeline with historical prices — backend-native warmup.
+        Warm up a Renko pipeline with historical prices - backend-native warmup.
 
         This endpoint replaces the BFF (Next.js frontend) warmup, enabling
         MCP agents to fully operate the pipeline without any frontend dependency.
 
         Flow:
-          1. Check Supabase for a fresh snapshot (<4h) — if found, restore it
+          1. Check Supabase for a fresh snapshot (<4h) - if found, restore it
           2. Fetch historical prices from Yahoo Finance (via yfinance)
           3. Create a fresh pipeline (runtime config)
           4. Set regime to ``low_vol_bull`` (enables signal generation during warmup)
@@ -1262,12 +1262,12 @@ if FASTAPI_AVAILABLE:
                         rows = resp.json()
                         if rows and rows[0].get("stats"):
                             updated_at = rows[0].get("updated_at")
-                            # Parse timestamp — could be ISO or epoch
+                            # Parse timestamp - could be ISO or epoch
                             from regime_platform.core.runtime_config import _parse_timestamp
                             ts = _parse_timestamp(updated_at) if updated_at else 0
                             age_seconds = _time.time() - ts if ts > 0 else float("inf")
                             if age_seconds < 14400:  # 4 hours
-                                # Fresh snapshot — restore it directly
+                                # Fresh snapshot - restore it directly
                                 data = rows[0]["stats"]
                                 pipeline = RenkoPipeline.from_snapshot(data)
                                 key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
@@ -1293,7 +1293,7 @@ if FASTAPI_AVAILABLE:
             prices, timestamps = await _fetch_yahoo_prices(symbol, period)
         except Exception as e:
             # If Yahoo fetch fails, try restoring a stale snapshot
-            log.warning(f"Yahoo fetch failed for {symbol}: {e} — trying stale snapshot")
+            log.warning(f"Yahoo fetch failed for {symbol}: {e} - trying stale snapshot")
             restored = await _restore_pipeline_snapshot(symbol)
             if restored:
                 key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
@@ -1348,7 +1348,7 @@ if FASTAPI_AVAILABLE:
         if DISCORD_AVAILABLE:
             try:
                 asyncio.create_task(discord_notifier.send_status(
-                    message=f"Pipeline warmup complete: {symbol} — {total_bricks} bricks, {len(prices)} prices",
+                    message=f"Pipeline warmup complete: {symbol} - {total_bricks} bricks, {len(prices)} prices",
                     symbol=symbol,
                     level=AlertLevel.INFO,
                     data={
@@ -1402,7 +1402,7 @@ if FASTAPI_AVAILABLE:
         pipeline = await _get_pipeline_async(symbol)
         snap = pipeline.snapshot()
 
-        # Awaited, confirmed save — not fire-and-forget
+        # Awaited, confirmed save - not fire-and-forget
         saved = await _save_pipeline_snapshot_confirmed(symbol, pipeline)
 
         return {
@@ -1435,7 +1435,7 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
     dict for filtered signals and trade close events, then fires the
     appropriate Discord embeds asynchronously (fire-and-forget).
 
-    Never blocks or raises — all notification errors are caught and logged.
+    Never blocks or raises - all notification errors are caught and logged.
     """
     if not DISCORD_AVAILABLE:
         return
@@ -1565,7 +1565,7 @@ def _notify_reset(symbol: str) -> None:
 
 
 async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> bool:
-    """Save pipeline state snapshot to Redis L1 + Supabase L2 — awaited, returns success boolean.
+    """Save pipeline state snapshot to Redis L1 + Supabase L2 - awaited, returns success boolean.
 
     v7.3: Delegates to the unified _save_snapshot() with confirmed=True.
     This ensures the same snapshot data is never written to Redis twice
@@ -1589,7 +1589,7 @@ async def _save_snapshot(
     user_id: Optional[str] = None,
     confirmed: bool = False,
 ) -> bool:
-    """Unified pipeline snapshot save — eliminates duplicate Redis writes.
+    """Unified pipeline snapshot save - eliminates duplicate Redis writes.
 
     v7.3: Consolidates the previous _save_pipeline_snapshot() and
     _save_pipeline_snapshot_confirmed() into a single function with a
@@ -1645,7 +1645,7 @@ async def _save_snapshot(
             row["user_id"] = user_id
 
         if confirmed:
-            # Awaited write — return success/failure
+            # Awaited write - return success/failure
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(url, headers=headers, json=row)
                 if resp.status_code in (200, 201, 204):
@@ -1662,11 +1662,11 @@ async def _save_snapshot(
                 else:
                     log.warning(
                         f"Snapshot save FAILED for {symbol}: "
-                        f"HTTP {resp.status_code} — {resp.text[:200]}"
+                        f"HTTP {resp.status_code} - {resp.text[:200]}"
                     )
                     return False
         else:
-            # Fire-and-forget write — don't block the caller
+            # Fire-and-forget write - don't block the caller
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(url, headers=headers, json=row)
                 if resp.status_code in (200, 201, 204):
@@ -1691,8 +1691,8 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
     """Restore a pipeline from the best available cache tier. Returns None on failure.
 
     Tiered restore (MCP agent perspective):
-      L1: Redis    — sub-5ms, compressed JSON, 4h TTL
-      L2: Supabase — ~100ms, durable, full history
+      L1: Redis    - sub-5ms, compressed JSON, 4h TTL
+      L2: Supabase - ~100ms, durable, full history
 
     v2+ snapshots include ``bricks``, ``classified``, and ``trades`` arrays
     inside the ``stats`` JSONB column, allowing full pipeline hydration
@@ -1716,7 +1716,7 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
                 )
                 return pipeline
         except Exception as e:
-            log.debug(f"Redis L1 restore failed for {symbol}: {e} — trying Supabase L2")
+            log.debug(f"Redis L1 restore failed for {symbol}: {e} - trying Supabase L2")
 
     # ── Tier 2: Supabase L2 (~100ms) ──
     try:
@@ -1813,9 +1813,9 @@ async def _fetch_yahoo_prices(symbol: str, period: str = "6mo") -> tuple:
         log.info(f"yfinance: fetched {len(prices)} prices for {symbol} (period={period})")
         return prices, timestamps
     except ImportError:
-        log.debug("yfinance not installed — falling back to Yahoo chart API")
+        log.debug("yfinance not installed - falling back to Yahoo chart API")
     except Exception as e:
-        log.warning(f"yfinance failed for {symbol}: {e} — trying Yahoo chart API")
+        log.warning(f"yfinance failed for {symbol}: {e} - trying Yahoo chart API")
 
     # ── Fallback: Yahoo Finance v8 chart API (no deps) ──
     import httpx
@@ -1859,7 +1859,7 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
     useful for restore (superseded by newer snapshots or warmup runs).
 
     Returns the number of rows deleted, or 0 if pruning was skipped.
-    This is a housekeeping operation — failures are logged but never raised.
+    This is a housekeeping operation - failures are logged but never raised.
 
     MCP agent perspective: stale data wastes L2 roundtrips. By pruning on
     warmup, we ensure only useful snapshots exist, keeping restore fast.
@@ -1919,7 +1919,7 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
         return 0
 
 
-# ── Execution Bridge (async — called from router) ────────────────────
+# ── Execution Bridge (async - called from router) ────────────────────
 
 
 async def _execute_signal(pending: dict, user: TokenData, symbol: str) -> Optional[dict]:
@@ -1935,7 +1935,7 @@ async def _execute_signal(pending: dict, user: TokenData, symbol: str) -> Option
         # Resolve user's Alpaca credentials
         creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
         if not creds:
-            log.warning(f"No Alpaca credentials for user {user.sub} — order not submitted")
+            log.warning(f"No Alpaca credentials for user {user.sub} - order not submitted")
             return {"status": "skipped", "error": "No Alpaca credentials configured"}
 
         api_key, secret_key, base_url = creds
@@ -1998,7 +1998,7 @@ async def _close_pipeline_position(pending: dict, user: TokenData) -> Optional[d
 
         creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
         if not creds:
-            log.warning(f"No Alpaca credentials for user {user.sub} — position close not submitted")
+            log.warning(f"No Alpaca credentials for user {user.sub} - position close not submitted")
             return {"status": "skipped", "error": "No Alpaca credentials configured"}
 
         api_key, secret_key, base_url = creds

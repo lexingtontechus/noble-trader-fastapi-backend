@@ -1,17 +1,17 @@
 """
-position_sizer.py v3.1 — Test Suite
+position_sizer.py v3.1 - Test Suite
 
 Covers:
-  1. Factor math — M_i, Q_i, DD_i, V_i boundary conditions
+  1. Factor math - M_i, Q_i, DD_i, V_i boundary conditions
   2. Core formula correctness with known inputs
-  3. Gate ordering — each block reason fires before formula runs
-  4. Kelly overlay — cap applied correctly, cap=0 falls back to min_risk
-  5. Hard clamp — f never leaves [min_risk, max_risk]
-  6. RegimeSnapshot integration — from_snapshot + size_from_snapshot
-  7. BatchState — wins/losses/drawdown/reset lifecycle
-  8. run_batch — state injection, sequential progression
-  9. Monte Carlo — distribution stats, p_target_hit, p_halt
- 10. Path A (PositionSizer / KellyResult) — unchanged interface preserved
+  3. Gate ordering - each block reason fires before formula runs
+  4. Kelly overlay - cap applied correctly, cap=0 falls back to min_risk
+  5. Hard clamp - f never leaves [min_risk, max_risk]
+  6. RegimeSnapshot integration - from_snapshot + size_from_snapshot
+  7. BatchState - wins/losses/drawdown/reset lifecycle
+  8. run_batch - state injection, sequential progression
+  9. Monte Carlo - distribution stats, p_target_hit, p_halt
+ 10. Path A (PositionSizer / KellyResult) - unchanged interface preserved
 
 Run: python test_position_sizer.py
 """
@@ -31,7 +31,7 @@ from regime_platform.core.position_sizer import (
     PositionSizer, PositionRequest, KellyResult,
 )
 
-# Minimal RegimeSnapshot stub — mirrors real dataclass interface
+# Minimal RegimeSnapshot stub - mirrors real dataclass interface
 from dataclasses import dataclass
 from typing import Optional as Opt
 
@@ -74,7 +74,7 @@ def check(name, expr, expected=True, tol=None):
         print(f"  ✗  {name}  EXCEPTION: {e}")
 
 # ─── TEST 1: Factor math ──────────────────────────────────────────────────────
-print("\n▶ Test 1: Factor math — boundary conditions")
+print("\n▶ Test 1: Factor math - boundary conditions")
 
 # M_i
 check("M_i: target met → 0.0",      _masaniello_factor(3, 1, 5, 3), 0.0)
@@ -116,7 +116,7 @@ check("Edge: p=0.5 R=2.0 → 0.5",   _expected_edge(0.5, 2.0), 0.5, tol=1e-9)
 check("Edge: p=0.4 R=1.0 → -0.2",  _expected_edge(0.4, 1.0), -0.2, tol=1e-9)
 
 # ─── TEST 2: Core formula correctness ─────────────────────────────────────────
-print("\n▶ Test 2: Core formula — known inputs")
+print("\n▶ Test 2: Core formula - known inputs")
 
 cfg = SizingConfig(
     base_risk=0.005, min_risk=0.0025, max_risk=0.01,
@@ -159,7 +159,7 @@ check("Formula: contracts = 5",         res.contracts, 5)
 print(f"  {res.summary()}")
 
 # ─── TEST 3: Gate ordering ────────────────────────────────────────────────────
-print("\n▶ Test 3: Gate ordering — block reasons")
+print("\n▶ Test 3: Gate ordering - block reasons")
 
 def blocked_reason(overrides: dict) -> str:
     base = dict(
@@ -306,7 +306,7 @@ r_bull = s_snap.size_from_snapshot(
 check("snapshot bull: allowed",                r_bull.allowed, True)
 check("snapshot bull: quality_factor > 0",     r_bull.quality_factor > 0, True)
 
-# size_from_snapshot (crisis bear — regime_quality = 0.14 below default floor 0.50)
+# size_from_snapshot (crisis bear - regime_quality = 0.14 below default floor 0.50)
 s_bear = DynamicMasanielloSizer(SizingConfig(min_rr=1.0, regime_floor=0.50))
 r_bear = s_bear.size_from_snapshot(
     snap_bear, equity=50_000,
@@ -348,7 +348,7 @@ check("Batch: reset → trade_index 1", bs.trade_index, 1)
 check("Batch: reset → pnl 0",         bs.pnl, 0.0)
 check("Batch: reset → peak_equity",   bs.peak_equity, 98_000.0)
 
-# ─── TEST 8: run_batch — sequential state injection ───────────────────────────
+# ─── TEST 8: run_batch - sequential state injection ───────────────────────────
 print("\n▶ Test 8: run_batch")
 
 s_batch = DynamicMasanielloSizer(SizingConfig(
@@ -379,7 +379,7 @@ check("run_batch: trade_index = 6",    final_batch.trade_index, 6)
 check("run_batch: pnl = 440",          final_batch.pnl, sum(pnls), tol=0.01)
 check("run_batch: history length 5",   len(final_batch.history), 5)
 
-# State injection — trade 2 should have wins_so_far=1 (from trade 1 win)
+# State injection - trade 2 should have wins_so_far=1 (from trade 1 win)
 check("run_batch: trade 2 M reflects win 1",
       results[1].masaniello_factor < results[0].masaniello_factor, True)
 
@@ -415,7 +415,7 @@ print(f"  MC results: p_target_hit={mc_stats['p_target_hit']:.2%}  "
       f"sharpe≈{mc_stats['sharpe_approx']:.3f}")
 
 # ─── TEST 10: Path A preserved (PositionSizer / KellyResult) ─────────────────
-print("\n▶ Test 10: Path A — KellyResult interface unchanged")
+print("\n▶ Test 10: Path A - KellyResult interface unchanged")
 
 np.random.seed(7)
 returns = np.random.normal(0.0008, 0.010, 300).tolist()
@@ -451,5 +451,5 @@ print(f"  {PASS}/{total} tests passed  {'✅' if FAIL == 0 else f'❌ {FAIL} fai
 if FAIL == 0:
     print("\n✅  All position sizer tests passed.\n")
 else:
-    print(f"\n❌  {FAIL} test(s) failed — see above.\n")
+    print(f"\n❌  {FAIL} test(s) failed - see above.\n")
     sys.exit(1)

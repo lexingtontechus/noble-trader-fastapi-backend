@@ -1,4 +1,4 @@
-"""Observation builder endpoints — 24-feature and 24+-feature stateful observation vectors."""
+"""Observation builder endpoints - 24-feature and 24+-feature stateful observation vectors."""
 
 from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import ObservationRequest, ObservationResponse, ObservationV2Request, ObservationV2Response
@@ -48,7 +48,7 @@ async def build_observation(req: ObservationRequest, user: TokenData = Depends(g
     """
     Constructs the full 24-feature observation vector used by the RL/ML policy
     layer. Features 14–19 are **Markov features**: live HMM posterior
-    probabilities from a fitted RegimeHMM — never defaulted to uniform priors.
+    probabilities from a fitted RegimeHMM - never defaulted to uniform priors.
 
     Requires `prices`, `high`, and `low` series (min 81 bars each).
 
@@ -162,7 +162,7 @@ async def build_observation_v2(req: ObservationV2Request, user: TokenData = Depe
                 tda_anomaly = tda_result.anomaly_score
                 tda_regime_change = tda_result.regime_change_probability
             except Exception:
-                # TDA failed — append zeros
+                # TDA failed - append zeros
                 vector.extend([0.0] * 10)
                 labels.extend(TDA_FEATURE_LABELS)
                 tda_anomaly = 0.0

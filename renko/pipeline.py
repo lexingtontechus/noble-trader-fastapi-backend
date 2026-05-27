@@ -1,5 +1,5 @@
 """
-Renko Pipeline — orchestrates the full HFT pipeline from tick to trade.
+Renko Pipeline - orchestrates the full HFT pipeline from tick to trade.
 
 Pipeline flow:
     Tick → Brick Engine → Swing Classifier → Pattern Detector →
@@ -125,7 +125,7 @@ class RenkoPipeline:
         masaniello_sizer = None
         if self.config.sizing_mode.value == "masaniello":
             from regime_platform.core.position_sizer import DynamicMasanielloSizer, SizingConfig
-            # quality_floor is an alias for regime_floor — use whichever is set
+            # quality_floor is an alias for regime_floor - use whichever is set
             regime_floor = self.config.masaniello_regime_floor
             if hasattr(self.config, 'masaniello_quality_floor') and self.config.masaniello_quality_floor != regime_floor:
                 regime_floor = self.config.masaniello_quality_floor
@@ -354,7 +354,7 @@ class RenkoPipeline:
         if bc == 0:
             level = "cold"
             can_trade = False
-            reason = "Pipeline is empty — call POST /renko/warmup first"
+            reason = "Pipeline is empty - call POST /renko/warmup first"
         elif bc < 50:
             level = "warming"
             can_trade = False
@@ -404,8 +404,8 @@ class RenkoPipeline:
 
         v3 format adds ``active_position``, ``signal_filter_state``, and
         ``snapshot_version`` so that ``from_snapshot()`` can fully hydrate
-        the pipeline — including restoring an open position with trailing
-        stop state — without requiring a warmup or losing trades.
+        the pipeline - including restoring an open position with trailing
+        stop state - without requiring a warmup or losing trades.
 
         This is critical for MCP agents: an orphaned position after restart
         is a risk disaster. The agent must know its exact state on recovery.
@@ -474,7 +474,7 @@ class RenkoPipeline:
             "session_stats": self.signal_filter.session_stats,
             "journal_stats": self.journal.get_stats(),
             "snapshot_ts": time.time(),
-            # Full history arrays — enable instant restore without warmup
+            # Full history arrays - enable instant restore without warmup
             "bricks": [b.to_dict() for b in self.brick_engine.history],
             "classified": [cb.to_dict() for cb in self.swing_classifier.classified_history],
             "trades": [t.to_dict() for t in self.journal.trades],
@@ -495,11 +495,11 @@ class RenkoPipeline:
         Restore a pipeline from a persisted snapshot.
 
         v3 snapshots additionally restore:
-          - ``active_position`` — open position with trailing stop state
-          - ``signal_filter_state`` — session counters, warmup mode, Masaniello batch
+          - ``active_position`` - open position with trailing stop state
+          - ``signal_filter_state`` - session counters, warmup mode, Masaniello batch
 
         When the snapshot includes ``bricks``, ``classified``, and ``trades``
-        arrays (v2+ format), the pipeline is fully hydrated — the brick engine
+        arrays (v2+ format), the pipeline is fully hydrated - the brick engine
         has its complete history, the swing classifier has classified context,
         and the journal has all trade records.  This eliminates the need for
         a warmup cycle on restart.
@@ -617,7 +617,7 @@ class RenkoPipeline:
             pipeline.journal._trade_counter = len(trades_data)
             logger.info("Hydrated trade journal with %d trade records", len(trades_data))
 
-        # ── Hydrate active position (v3 snapshots — MCP agent safety) ──
+        # ── Hydrate active position (v3 snapshots - MCP agent safety) ──
         pos_data = data.get("active_position")
         if pos_data and isinstance(pos_data, dict):
             from renko.risk_manager import ActivePosition, RiskParams
@@ -651,7 +651,7 @@ class RenkoPipeline:
             pipeline.risk_manager.active_position = pos
             logger.warning(
                 "Hydrated ACTIVE POSITION from snapshot: %s at %.2f, "
-                "SL=%.2f, TP=%.2f, trail_sl=%.2f, bricks_open=%d — "
+                "SL=%.2f, TP=%.2f, trail_sl=%.2f, bricks_open=%d - "
                 "agent MUST verify position with broker",
                 pos.direction.value, pos.entry_price,
                 pos.sl_price, pos.tp_price, pos.current_sl_price,
@@ -680,7 +680,7 @@ class RenkoPipeline:
                 sf._warmup_mode, sf._session_trades_taken, sf._consecutive_losses,
             )
 
-        # ── Hydrate pending signal context (v3.1 — trade journal continuity) ──
+        # ── Hydrate pending signal context (v3.1 - trade journal continuity) ──
         last_filtered_data = data.get("last_filtered")
         if last_filtered_data and isinstance(last_filtered_data, dict):
             try:
@@ -819,7 +819,7 @@ class RenkoPipeline:
         """
         result = self.backtest(prices, timestamps, regimes)
         
-        # Data hash (Phase 5 — data lineage)
+        # Data hash (Phase 5 - data lineage)
         price_bytes = ",".join(f"{p:.6f}" for p in prices).encode()
         data_hash = hashlib.sha256(price_bytes).hexdigest()[:16]
         result["data_hash"] = data_hash
@@ -848,7 +848,7 @@ class RenkoPipeline:
             )
             result["deflated_sharpe"] = dsr
         else:
-            result["deflated_sharpe"] = {"dsr": 1.0, "n_trials": 1, "interpretation": "Single trial — no multiple testing adjustment needed"}
+            result["deflated_sharpe"] = {"dsr": 1.0, "n_trials": 1, "interpretation": "Single trial - no multiple testing adjustment needed"}
         
         return result
 
@@ -937,7 +937,7 @@ class RenkoPipeline:
             logger.warning(f"Cannot open position: {e}")
 
     def _handle_trade_close(self, result: TradeResult) -> None:
-        """Handle a closed trade — update journal with full cost modeling."""
+        """Handle a closed trade - update journal with full cost modeling."""
         self.signal_filter.record_trade_result(result.pnl_bricks)
 
         # Create journal record if we have filtered signal context

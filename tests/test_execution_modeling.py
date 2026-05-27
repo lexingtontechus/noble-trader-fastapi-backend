@@ -3,9 +3,9 @@ Comprehensive pytest test suite for Phase 7 (Execution Modeling) of the
 noble-trader backtest platform.
 
 Covers:
-  7A — Almgren-Chriss Market Impact Model (10 tests)
-  7B — Fill Probability Model (12 tests)
-  7C — Borrowing & Financing Cost Modeling (12 tests)
+  7A - Almgren-Chriss Market Impact Model (10 tests)
+  7B - Fill Probability Model (12 tests)
+  7C - Borrowing & Financing Cost Modeling (12 tests)
   Integration with RiskManager, TradeRecord, RenkoConfig, RenkoBacktestRequest (8+ tests)
 
 All tests are self-contained and deterministic.
@@ -134,7 +134,7 @@ def sample_trades_for_summary():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 7A — Market Impact (Almgren-Chriss)
+# 7A - Market Impact (Almgren-Chriss)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -324,7 +324,7 @@ class TestMarketImpact:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 7B — Fill Probability
+# 7B - Fill Probability
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -575,7 +575,7 @@ class TestFillProbability:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 7C — Borrow / Financing
+# 7C - Borrow / Financing
 # ══════════════════════════════════════════════════════════════════════
 
 

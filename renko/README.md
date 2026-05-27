@@ -1,4 +1,4 @@
-# Renko HFT Pipeline — Noble Trader Agent
+# Renko HFT Pipeline - Noble Trader Agent
 
 A 6-layer Renko-based high-frequency trading pipeline that processes price ticks through brick construction, swing classification, pattern detection, signal filtering, order execution, and risk management.
 
@@ -21,13 +21,13 @@ Tick → Brick Engine → Swing Classifier → Pattern Detector
 The Signal Filter layer includes a pluggable position-sizing sub-layer. When `sizing_mode=kelly` (default), it computes a simple equity-fraction size. When `sizing_mode=masaniello`, it routes through the `DynamicMasanielloSizer` from `regime_platform/core/position_sizer.py`, which produces a stateful, adaptive size based on batch progress, regime quality, drawdown, and volatility. If Masaniello gates reject a trade (e.g. win probability below threshold), the filter falls back to Kelly sizing.
 
 Supporting modules:
-- `pipeline.py` — Orchestrates the full pipeline flow
-- `trade_journal.py` — Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
-- `config.py` — `RenkoConfig` dataclass with 30+ tunable parameters
-- `redis_cache.py` — Redis L1 cache for sub-5ms snapshot restores
-- `router.py` — 27 FastAPI REST endpoints
-- `integration.py` — Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
-- `backtest.py` / `tests.py` — Backtesting and unit tests
+- `pipeline.py` - Orchestrates the full pipeline flow
+- `trade_journal.py` - Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
+- `config.py` - `RenkoConfig` dataclass with 30+ tunable parameters
+- `redis_cache.py` - Redis L1 cache for sub-5ms snapshot restores
+- `router.py` - 27 FastAPI REST endpoints
+- `integration.py` - Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
+- `backtest.py` / `tests.py` - Backtesting and unit tests
 
 ## API Endpoints
 
@@ -63,7 +63,7 @@ All endpoints are mounted under `/renko/` on the FastAPI backend.
 | `GET` | `/renko/sizing/model` | Get current position sizing model and parameters | Any |
 | `POST` | `/renko/sizing/model` | Set position sizing model (Kelly ↔ Masaniello) | Admin |
 
-### Backtest Endpoints (Isolated — Never Affect Live Pipeline)
+### Backtest Endpoints (Isolated - Never Affect Live Pipeline)
 
 These endpoints create standalone `RenkoPipeline` instances for each request. They never read from or write to the live pipeline registry, making them safe for experimentation and parameter tuning.
 
@@ -189,10 +189,10 @@ The Renko pipeline uses a two-tier cache for state persistence, optimized for MC
 
 Warm-up results are saved to Supabase for instant loading on subsequent visits. Each row is keyed by `(symbol, brick_size)` and stores:
 
-- `stats` (JSONB) — Full v3.1 snapshot (bricks, classified, trades, active_position, signal_filter_state, last_filtered, last_signal)
-- `config` (JSONB) — Pipeline configuration
-- `total_bricks`, `total_trades`, `total_pnl_bricks` — Quick-access columns
-- `updated_at` (TIMESTAMPTZ) — Last refresh timestamp
+- `stats` (JSONB) - Full v3.1 snapshot (bricks, classified, trades, active_position, signal_filter_state, last_filtered, last_signal)
+- `config` (JSONB) - Pipeline configuration
+- `total_bricks`, `total_trades`, `total_pnl_bricks` - Quick-access columns
+- `updated_at` (TIMESTAMPTZ) - Last refresh timestamp
 
 ### Redis L1 Cache (`renko:snapshot:{symbol}:{brick_size}`)
 
@@ -213,7 +213,7 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
 - **Safety**: Only rows for the requested symbol are pruned; other symbols are unaffected
 - **Response field**: `pruned_snapshots` indicates how many rows were removed
 
-### Data Flow Decision Tree (v7.2 — 3-Tier)
+### Data Flow Decision Tree (v7.2 - 3-Tier)
 
 ```
 +---------------------------------------------------+
@@ -272,8 +272,8 @@ The warm-up flow feeds 6 months of historical Yahoo Finance data through the pip
 
 ### BFF Warm-up Endpoint (`/api/renko/warmup`)
 
-**POST** — Warm up pipeline + save to Supabase:
-1. Check Supabase for fresh cache (<4h) — if found, return it directly
+**POST** - Warm up pipeline + save to Supabase:
+1. Check Supabase for fresh cache (<4h) - if found, return it directly
 2. Fetch historical prices from Yahoo Finance (`yahoo-finance2`)
 3. Reset the backend pipeline for the target symbol
 4. Set regime to `low_vol_bull` (enables signal generation during warm-up)
@@ -281,7 +281,7 @@ The warm-up flow feeds 6 months of historical Yahoo Finance data through the pip
 6. Fetch full pipeline state (bricks, classified, signals, trades, stats)
 7. Upsert snapshot to Supabase `ta_renko_snapshot` on `(symbol, brick_size)`
 
-**GET** — Load cached snapshot:
+**GET** - Load cached snapshot:
 1. Query Supabase by `(symbol, brick_size)`
 2. Return `{ cached: true, stale: true/false, ... }` or `{ cached: false }`
 
@@ -299,7 +299,7 @@ Warm-up is automatically triggered when:
 v7.1 introduces a **backend-native warmup endpoint** that eliminates the need for the Next.js BFF layer. MCP agents can now fully operate the pipeline without any frontend dependency.
 
 **Flow:**
-1. Check Supabase for a fresh snapshot (<4h) — if found, restore it directly (instant, <500ms)
+1. Check Supabase for a fresh snapshot (<4h) - if found, restore it directly (instant, <500ms)
 2. Fetch historical prices from Yahoo Finance (`yfinance` library or Yahoo v8 chart API fallback)
 3. Create a fresh pipeline with runtime config
 4. Set regime to `low_vol_bull` (enables signal generation during warmup)
@@ -340,7 +340,7 @@ The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2
 
 ## MCP Agent Workflow
 
-MCP (Model Context Protocol) agents connect to `/mcp` and discover available tools automatically. As of v7.1, the Renko pipeline is fully autonomous via MCP — no frontend or BFF dependency required.
+MCP (Model Context Protocol) agents connect to `/mcp` and discover available tools automatically. As of v7.1, the Renko pipeline is fully autonomous via MCP - no frontend or BFF dependency required.
 
 ### MCP Tool Categories
 
@@ -397,13 +397,13 @@ MCP (Model Context Protocol) agents connect to `/mcp` and discover available too
 
 ### Excluded from MCP (require direct REST API)
 
-These endpoints remain excluded from MCP for safety — they are destructive or could be used for manipulation:
+These endpoints remain excluded from MCP for safety - they are destructive or could be used for manipulation:
 
 | Endpoint | Reason | Alternative |
 |----------|--------|-------------|
-| `POST /renko/tick` | Single tick injection — manipulation risk | Use `POST /renko/tick/batch` or `POST /renko/warmup` |
-| `POST /renko/reset` | Destructive — loses all brick history | Use `POST /renko/warmup` to rehydrate |
-| `POST /renko/config` | Destructive — rebuilds pipeline from scratch | Use runtime config API (`/config/`) |
+| `POST /renko/tick` | Single tick injection - manipulation risk | Use `POST /renko/tick/batch` or `POST /renko/warmup` |
+| `POST /renko/reset` | Destructive - loses all brick history | Use `POST /renko/warmup` to rehydrate |
+| `POST /renko/config` | Destructive - rebuilds pipeline from scratch | Use runtime config API (`/config/`) |
 
 
 ## Frontend Components
@@ -456,7 +456,7 @@ The pipeline supports two position sizing modes, selected via the `sizing_mode` 
 position_usd = equity × min(kelly_fraction, 0.10)
 ```
 
-- **Simple and stateless** — each trade's size depends only on current equity and the Kelly fraction.
+- **Simple and stateless** - each trade's size depends only on current equity and the Kelly fraction.
 - The Kelly fraction is derived from the trade journal's historical win rate and profit factor, or falls back to `default_win_rate` (0.55) when no history exists.
 - Hard cap at `max_position_pct` (10% of equity) prevents over-concentration.
 - Best suited for strategies with stable edge and no need for adaptive sizing.
@@ -467,7 +467,7 @@ position_usd = equity × min(kelly_fraction, 0.10)
 f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
 ```
 
-- **Stateful and adaptive** — sizing changes across trades within a batch based on cumulative results.
+- **Stateful and adaptive** - sizing changes across trades within a batch based on cumulative results.
 - The formula decomposes into four independent factors:
 
 | Factor | Symbol | Formula | Range | Purpose |
@@ -482,7 +482,7 @@ f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
 - Pre-flight gates block trades entirely when win probability, reward/risk, or regime quality fall below their minimums.
 - Optional Kelly overlay caps the Masaniello fraction at the fractional Kelly bound.
 - Batch state (wins, losses, drawdown, peak equity) is tracked automatically within the `SignalFilter`.
-- Best suited for strategies that benefit from adaptive sizing — e.g. pressing when behind in a batch, pulling back during drawdowns, or scaling with regime confidence.
+- Best suited for strategies that benefit from adaptive sizing - e.g. pressing when behind in a batch, pulling back during drawdowns, or scaling with regime confidence.
 
 ## Sizing Mode Configuration
 
@@ -525,7 +525,7 @@ curl -X POST https://backend/renko/config \
 
 ### 4. POST /renko/config with sizing_mode in body
 
-Same as #3 — include `sizing_mode` and any `masaniello_*` overrides in the config body. This triggers a full pipeline reset.
+Same as #3 - include `sizing_mode` and any `masaniello_*` overrides in the config body. This triggers a full pipeline reset.
 
 ## Masaniello Parameters
 
@@ -533,16 +533,16 @@ All parameters live on `RenkoConfig` with the `masaniello_` prefix. They are onl
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `masaniello_base_risk` | 0.005 | (0, 1) | **β** — base risk fraction of equity (0.50%) |
+| `masaniello_base_risk` | 0.005 | (0, 1) | **β** - base risk fraction of equity (0.50%) |
 | `masaniello_min_risk` | 0.0025 | (0, 1) | Hard floor for risk fraction after clamping (0.25%) |
 | `masaniello_max_risk` | 0.010 | (0, 1) | Hard cap for risk fraction after clamping (1.00%) |
 | `masaniello_min_prob` | 0.50 | [0, 1] | Minimum win probability to allow a trade |
 | `masaniello_min_rr` | 2.50 | > 0 | Minimum reward/risk ratio to allow a trade |
 | `masaniello_max_drawdown` | 0.10 | (0, 1) | Max strategy drawdown for DD_i linear scaling (10%) |
 | `masaniello_regime_floor` | 0.50 | [0, 1] | Minimum regime quality (risk_multiplier) to allow a trade |
-| `masaniello_use_kelly_overlay` | false | — | When true, cap Masaniello fraction at fractional Kelly bound |
-| `masaniello_batch_size` | 5 | ≥ 1 | **N** — number of trades per batch |
-| `masaniello_target_wins` | 3 | ≥ 0 | **W** — target wins per batch for M_i urgency factor |
+| `masaniello_use_kelly_overlay` | false | - | When true, cap Masaniello fraction at fractional Kelly bound |
+| `masaniello_batch_size` | 5 | ≥ 1 | **N** - number of trades per batch |
+| `masaniello_target_wins` | 3 | ≥ 0 | **W** - target wins per batch for M_i urgency factor |
 
 All parameters can be overridden via runtime config keys `renko.masaniello_*` (e.g. `renko.masaniello_base_risk`).
 
@@ -631,7 +631,7 @@ Switch the sizing model for a live pipeline. **Admin only.** Rebuilds the pipeli
 
 Only `sizing_mode` is required. All Masaniello-specific fields are optional overrides; omitted fields fall back to runtime config or hardcoded defaults.
 
-**Example — switch to Masaniello with custom batch params:**
+**Example - switch to Masaniello with custom batch params:**
 
 ```bash
 curl -X POST "https://backend/renko/sizing/model?symbol=SPY" \
@@ -680,7 +680,7 @@ Omitted Masaniello parameters fall back to `RenkoConfig` defaults.
 
 ### Comparing Kelly vs Masaniello
 
-Run two separate backtests — one with `sizing_mode=kelly` and one with `sizing_mode=masaniello` — and compare results manually:
+Run two separate backtests - one with `sizing_mode=kelly` and one with `sizing_mode=masaniello` - and compare results manually:
 
 ```bash
 # Kelly backtest
@@ -733,9 +733,9 @@ The optimizer returns results for each combination plus `best_by_sharpe` and `be
 
 ## Deployment
 
-- **Backend**: FastAPI on Render — `https://noble-trader-fastapi-backend.onrender.com`
-- **Frontend**: NextJS v16 on Vercel — `https://noble-trader-agent-frontend.vercel.app`
-- **Database**: Supabase (PostgreSQL) — `ta_renko_snapshot` table
+- **Backend**: FastAPI on Render - `https://noble-trader-fastapi-backend.onrender.com`
+- **Frontend**: NextJS v16 on Vercel - `https://noble-trader-agent-frontend.vercel.app`
+- **Database**: Supabase (PostgreSQL) - `ta_renko_snapshot` table
 - **GitHub**: `lexingtontechus/noble-trader-fastapi-backend` and `lexingtontechus/noble-trader-agent-frontend`
 
 ## Required Environment Variables (Render)
@@ -759,7 +759,7 @@ The backend requires two Supabase environment variables on Render for full funct
 > and does NOT have sufficient permissions for backend operations.
 
 When these variables are not configured, the `/renko/health` endpoint will report:
-- `runtime_config.db_available: false` — Supabase DB not connected
+- `runtime_config.db_available: false` - Supabase DB not connected
 - `supabase_snapshot.ok: false, note: "SUPABASE_URL/KEY not configured"`
 - The pipeline still works with hardcoded defaults, but runtime config changes are not persisted
 

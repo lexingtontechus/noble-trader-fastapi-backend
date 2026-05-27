@@ -10,7 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v6.0.0** — Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
+**v6.0.0** - Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
 
 ---
 
@@ -70,7 +70,7 @@ regime_risk_platform/
 │   │   ├── alpaca_stream.py          Alpaca WebSocket stream manager
 │   │   └── pnl_service.py            P&L analytics (intraday, risk dashboard, alerts)
 │
-├── main.py                           v6.0 — all features (recommended entry point)
+├── main.py                           v6.0 - all features (recommended entry point)
 ├── requirements.txt
 │
 ├── docs/
@@ -105,7 +105,7 @@ regime_risk_platform/
 # 1. Install
 pip install -r requirements.txt
 
-# 2. Start (recommended — all v3.1 features)
+# 2. Start (recommended - all v3.1 features)
 uvicorn main:app --port 8000 --reload
 
 # 3. Swagger UI
@@ -249,17 +249,17 @@ open docs/index.html
 
 ---
 
-## Regime Detection — 4-State HMM
+## Regime Detection - 4-State HMM
 
 Two independent 4-state Gaussian HMMs classify every price bar.
-States are auto-labelled by sorting component means — no manual mapping.
+States are auto-labelled by sorting component means - no manual mapping.
 
 | Dimension | States | Features |
 |-----------|--------|---------|
 | Volatility | `low` · `med_low` · `med_high` · `high` | 20-bar RV, 5-bar RV, \|return\| |
 | Trend | `strong_bear` · `bear` · `bull` · `strong_bull` | return, 10-bar cum, 30-bar cum |
 
-### Risk Multiplier Table — 4×4 = 16 regimes · range [0.10, 1.75]
+### Risk Multiplier Table - 4×4 = 16 regimes · range [0.10, 1.75]
 
 | Vol \ Trend   | Strong Bear | Bear  | Bull  | Strong Bull |
 |--------------|-------------|-------|-------|-------------|
@@ -270,11 +270,11 @@ States are auto-labelled by sorting component means — no manual mapping.
 
 ---
 
-## Position Sizing — Dynamic Masaniello + Kelly
+## Position Sizing - Dynamic Masaniello + Kelly
 
 `core/position_sizer.py` provides two independent sizing paths:
 
-### Path A — Portfolio-fraction Kelly (stateless)
+### Path A - Portfolio-fraction Kelly (stateless)
 Input: historical returns + `RegimeSnapshot`. Output: `recommended_f` ∈ [0, 1].
 
 ```python
@@ -286,13 +286,13 @@ result = PositionSizer().size(PositionRequest(
 print(result.recommended_f)
 ```
 
-### Path B — Dynamic Masaniello (stateful, per-trade)
+### Path B - Dynamic Masaniello (stateful, per-trade)
 
 Formula: **`f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i`**
 
 | Factor | Formula | Clamp | Purpose |
 |--------|---------|-------|---------|
-| β | `base_risk` (default 0.50%) | — | Risk anchor |
+| β | `base_risk` (default 0.50%) | - | Risk anchor |
 | M_i | `(W − w) / (N − i + 1)` | [0.0, 1.5] | Batch urgency |
 | Q_i | `prob_factor × regime_factor × conf_factor` | product | Quality gate |
 | DD_i | `clip(1 − dd/max_dd, 0.25, 1.0)` | [0.25, 1.0] | Drawdown protection |
@@ -321,7 +321,7 @@ sizer.batch.reset(equity=100_625)
 
 ## 24-Feature Observation Vector
 
-`core/obs_builder.py` — `InferenceObservationBuilder`
+`core/obs_builder.py` - `InferenceObservationBuilder`
 
 **Critical rule:** always use the stateful class. Never use a standalone function.
 If Markov features 14–19 show uniform values (~0.33), the uniform-prior bug is active.
@@ -365,14 +365,14 @@ GET /portfolio
 
 ## Testing
 
-Run all suites in order — each layer builds on the previous:
+Run all suites in order - each layer builds on the previous:
 
 ```bash
 # Unit (no server required)
-python test_platform.py           # 3 checks  — smoke: HMM, Kelly, risk
-python test_platform_v4.py        # 5 checks  — 4-state HMM, 16-cell table
-python test_position_sizer.py     # 95 checks — Masaniello factors, gates, Kelly
-python test_obs_builder.py        # 7 checks  — 24-feature builder, Markov guard
+python test_platform.py           # 3 checks  - smoke: HMM, Kelly, risk
+python test_platform_v4.py        # 5 checks  - 4-state HMM, 16-cell table
+python test_position_sizer.py     # 95 checks - Masaniello factors, gates, Kelly
+python test_obs_builder.py        # 7 checks  - 24-feature builder, Markov guard
 
 # Integration (no server required)
 python test_streaming.py          # asyncio: 160 ticks, alerts, subscriber queue
@@ -420,7 +420,7 @@ POST /optimise/full
 export JWT_SECRET_KEY="your-signing-secret"
 export AUTH_USERS="admin:pass:admin,trader:pass123:trader"
 export API_KEYS="svc-key-1"
-export AUTH_ENABLED=false   # dev mode — bypasses all auth
+export AUTH_ENABLED=false   # dev mode - bypasses all auth
 
 # Issue token
 curl -X POST http://localhost:8000/auth/token \
@@ -573,7 +573,7 @@ GET /gpu/capabilities
 # → {"active_device": "cuda", "hmm_backend": "GpuRegimeHMM (pomegranate)"}
 ```
 
-Transparent fallback to hmmlearn on CPU — no code changes required.
+Transparent fallback to hmmlearn on CPU - no code changes required.
 
 ---
 
@@ -604,9 +604,9 @@ Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) f
 | `commission_bps` | 5.0 | 0-50 | Commission in basis points |
 | `slippage_bps` | 2.0 | 0-50 | Slippage in basis points |
 | `max_position_pct` | 0.25 | 0-1.0 | Max position as equity fraction |
-| `risk_check` | true | — | Enable VaR/drawdown risk gates |
-| `regime_gate` | true | — | Only trade in favorable regimes |
-| `save` | true | — | Persist result to Supabase |
+| `risk_check` | true | - | Enable VaR/drawdown risk gates |
+| `regime_gate` | true | - | Only trade in favorable regimes |
+| `save` | true | - | Persist result to Supabase |
 
 ### Optimization (Grid Search)
 
@@ -622,12 +622,12 @@ Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) f
 
 The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 endpoints:
 
-1. **Brick Construction** — Convert ticks to fixed/ATR Renko bricks
-2. **Swing Classification** — Label brick sequences as impulse/correction
-3. **Pattern Detection** — Identify double-top, head-shoulders, etc.
-4. **Signal Filter** — Confirm patterns with volume and trend alignment
-5. **Risk Manager** — Position sizing, stop-loss, take-profit
-6. **Execution** — Paper-trade signal execution with P&L tracking
+1. **Brick Construction** - Convert ticks to fixed/ATR Renko bricks
+2. **Swing Classification** - Label brick sequences as impulse/correction
+3. **Pattern Detection** - Identify double-top, head-shoulders, etc.
+4. **Signal Filter** - Confirm patterns with volume and trend alignment
+5. **Risk Manager** - Position sizing, stop-loss, take-profit
+6. **Execution** - Paper-trade signal execution with P&L tracking
 
 ### Features
 - Supabase caching with 4-hour TTL
@@ -672,8 +672,8 @@ The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 end
 The platform exposes an MCP server at `/mcp` via `fastapi-mcp`, enabling AI agents to invoke read-only and analysis endpoints as tools.
 
 ### Configuration
-- `MCP_AUTH_ENABLED` — Enable/disable MCP authentication (default: false)
-- `MCP_ISSUER` — JWT issuer for MCP tokens
+- `MCP_AUTH_ENABLED` - Enable/disable MCP authentication (default: false)
+- `MCP_ISSUER` - JWT issuer for MCP tokens
 
 ### Excluded Operations (19)
 Auth endpoints, feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
@@ -739,8 +739,8 @@ Circuit breaker stats are reported in the `/health` endpoint.
 ## Notes
 
 - Minimum **81 price bars** required (`min_bars = max(81, n_components × 20)`)
-- `Model is not converging` warnings from hmmlearn are expected on short series — `_sanitize_model()` recovers automatically
-- All position fractions are in `[0, 1]` portfolio-fraction space — multiply by notional externally
-- VaR/CVaR are **historical (empirical)** — more robust for fat-tailed return distributions
+- `Model is not converging` warnings from hmmlearn are expected on short series - `_sanitize_model()` recovers automatically
+- All position fractions are in `[0, 1]` portfolio-fraction space - multiply by notional externally
+- VaR/CVaR are **historical (empirical)** - more robust for fat-tailed return distributions
 - `covariance_type="diag"` used for rolling windows < 300 bars; switch to `"full"` with 500+ seed bars
 - The 4-state HMM produces 4 vol + 4 trend posteriors; the obs builder aggregates these into 3 Markov buckets (indices 14–19), re-normalised after aggregation

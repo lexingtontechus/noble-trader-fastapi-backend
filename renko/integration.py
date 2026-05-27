@@ -1,5 +1,5 @@
 """
-Integration helpers — connects the Renko pipeline with existing
+Integration helpers - connects the Renko pipeline with existing
 Noble Trader Agent modules (HMM regime, Kelly sizing, risk analysis).
 
 Usage from the deployed FastAPI backend::
@@ -71,7 +71,7 @@ class NobleTraderRenkoBridge:
             import httpx
 
             if cb.is_open:
-                logger.warning(f"Circuit [fastapi_regime] OPEN — skipping regime fetch")
+                logger.warning(f"Circuit [fastapi_regime] OPEN - skipping regime fetch")
                 return None
 
             headers = await self._get_headers()
@@ -100,7 +100,7 @@ class NobleTraderRenkoBridge:
                     cb._on_failure(RuntimeError(f"HTTP {resp.status_code}"))
 
         except ImportError:
-            logger.warning("httpx not installed — cannot fetch regime")
+            logger.warning("httpx not installed - cannot fetch regime")
         except Exception as e:
             cb._on_failure(e)
             logger.error(f"Regime fetch failed: {e}")
@@ -122,7 +122,7 @@ class NobleTraderRenkoBridge:
             import httpx
 
             if cb.is_open:
-                logger.warning(f"Circuit [fastapi_kelly] OPEN — skipping Kelly fetch")
+                logger.warning(f"Circuit [fastapi_kelly] OPEN - skipping Kelly fetch")
                 return None
 
             headers = await self._get_headers()
@@ -149,7 +149,7 @@ class NobleTraderRenkoBridge:
                     cb._on_failure(RuntimeError(f"HTTP {resp.status_code}"))
 
         except ImportError:
-            logger.warning("httpx not installed — cannot fetch Kelly")
+            logger.warning("httpx not installed - cannot fetch Kelly")
         except Exception as e:
             cb._on_failure(e)
             logger.error(f"Kelly fetch failed: {e}")
@@ -166,7 +166,7 @@ class NobleTraderRenkoBridge:
         if not self.supabase_url or not self.supabase_key:
             if not self._supabase_warning_logged:
                 logger.warning(
-                    "Supabase not configured — trade data not persisted. "
+                    "Supabase not configured - trade data not persisted. "
                     "Set SUPABASE_URL and SUPABASE_KEY env vars."
                 )
                 self._supabase_warning_logged = True
@@ -198,7 +198,7 @@ class NobleTraderRenkoBridge:
 
         except Exception as e:
             logger.error(
-                "Supabase push failed: %s — trade_data keys=%s",
+                "Supabase push failed: %s - trade_data keys=%s",
                 e,
                 list(trade_data.keys()) if isinstance(trade_data, dict) else "N/A",
             )

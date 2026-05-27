@@ -7,9 +7,9 @@ Uses Clerk's publishable and secret keys from environment variables.
 
 Configuration (environment variables)
 ──────────────────────────────────────
-  CLERK_PUBLISHABLE_KEY  — Clerk publishable key (for client-side)
-  CLERK_SECRET_KEY      — Clerk secret key (for server-side verification)
-  CLERK_JWKS_URL        — Optional: explicit JWKS URL (overrides auto-detection)
+  CLERK_PUBLISHABLE_KEY  - Clerk publishable key (for client-side)
+  CLERK_SECRET_KEY      - Clerk secret key (for server-side verification)
+  CLERK_JWKS_URL        - Optional: explicit JWKS URL (overrides auto-detection)
 
 Clerk Token Verification
 ─────────────────────────
@@ -76,7 +76,7 @@ if not CLERK_AUTH_ENABLED:
     )
 
 # ── Role Cache (privateMetadata lookup) ───────────────────────────────────────
-# Clerk JWTs don't include the user's role by default — it's stored in
+# Clerk JWTs don't include the user's role by default - it's stored in
 # privateMetadata. We look it up via the Clerk REST API and cache it.
 
 _role_cache: dict[str, tuple[str, float]] = {}   # user_id → (role, expiry)
@@ -103,7 +103,7 @@ def _get_role_from_clerk_api(user_id: str) -> str:
             return cached_role
 
     if not CLERK_SECRET_KEY:
-        log.debug("No CLERK_SECRET_KEY — cannot look up role, defaulting to viewer")
+        log.debug("No CLERK_SECRET_KEY - cannot look up role, defaulting to viewer")
         return "viewer"
 
     try:
@@ -556,7 +556,7 @@ def verify_clerk_token(token: str) -> ClerkTokenData:
         org_id = payload.get("org_id")
 
         if not role or role not in ("admin", "trader", "viewer"):
-            # Role not in JWT — look it up from Clerk privateMetadata
+            # Role not in JWT - look it up from Clerk privateMetadata
             role = _get_role_from_clerk_api(sub)
 
         # Extract user metadata if available in token
@@ -745,7 +745,7 @@ def create_local_token(
     """
     Create a locally-signed JWT token (HS256) for the FastAPI backend.
 
-    This does NOT create a Clerk-compatible token — Clerk uses RS256 with
+    This does NOT create a Clerk-compatible token - Clerk uses RS256 with
     asymmetric keys that we don't have. Instead, this creates a token that
     the backend's local JWT auth (jwt_auth.decode_token) can verify.
 
@@ -798,14 +798,14 @@ def create_clerk_compatible_token(
     DEPRECATED: Use create_local_token() instead.
 
     This function previously tried to sign tokens with CLERK_SECRET_KEY
-    using RS256, which is incorrect — CLERK_SECRET_KEY is an API secret
+    using RS256, which is incorrect - CLERK_SECRET_KEY is an API secret
     string, not an RSA private key. The function now delegates to
     create_local_token() which uses HS256 with JWT_SECRET_KEY.
 
     For user-facing auth, always use Clerk-issued tokens via the frontend.
     """
     log.warning(
-        "create_clerk_compatible_token() is deprecated — use create_local_token()"
+        "create_clerk_compatible_token() is deprecated - use create_local_token()"
     )
     return create_local_token(
         sub=sub,

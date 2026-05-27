@@ -1,31 +1,31 @@
 """
-Operational Hardening Router — Phase 8 P0 endpoints.
+Operational Hardening Router - Phase 8 P0 endpoints.
 
 Kill Switch:
-  GET  /operational/kill-switch/status       — Get active halts
-  POST /operational/kill-switch/activate     — Activate a halt (admin only check)
-  POST /operational/kill-switch/deactivate   — Deactivate a halt
-  POST /operational/kill-switch/cancel-all   — Cancel all open orders
-  POST /operational/kill-switch/close-all    — Close all open positions
+  GET  /operational/kill-switch/status       - Get active halts
+  POST /operational/kill-switch/activate     - Activate a halt (admin only check)
+  POST /operational/kill-switch/deactivate   - Deactivate a halt
+  POST /operational/kill-switch/cancel-all   - Cancel all open orders
+  POST /operational/kill-switch/close-all    - Close all open positions
 
 Audit Log:
-  GET  /operational/audit-log               — Query audit events (paginated)
-  GET  /operational/audit-log/summary        — Event count summary
-  GET  /operational/audit-log/export         — Export audit events as CSV
+  GET  /operational/audit-log               - Query audit events (paginated)
+  GET  /operational/audit-log/summary        - Event count summary
+  GET  /operational/audit-log/export         - Export audit events as CSV
 
 Mode Manager:
-  GET  /operational/mode                     — Get current trading mode
-  POST /operational/mode/request             — Request mode change (returns token)
-  POST /operational/mode/confirm             — Confirm mode change with token
-  GET  /operational/mode/health              — Health check current Alpaca environment
+  GET  /operational/mode                     - Get current trading mode
+  POST /operational/mode/request             - Request mode change (returns token)
+  POST /operational/mode/confirm             - Confirm mode change with token
+  GET  /operational/mode/health              - Health check current Alpaca environment
 
 Executor:
-  GET  /operational/executor/status          — Executor mode + health check
+  GET  /operational/executor/status          - Executor mode + health check
 
 Reconciliation:
-  GET  /operational/reconcile/status         — Last reconciliation status
-  POST /operational/reconcile/run            — Run reconciliation now
-  GET  /operational/reconcile/positions      — Position reconciliation
+  GET  /operational/reconcile/status         - Last reconciliation status
+  POST /operational/reconcile/run            - Run reconciliation now
+  GET  /operational/reconcile/positions      - Position reconciliation
 """
 
 from __future__ import annotations

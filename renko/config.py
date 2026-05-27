@@ -82,7 +82,7 @@ class RenkoConfig:
     partial_exit_bricks: int = 3       # Bricks of profit for partial exit
 
     # ── Execution Control ──────────────────────────────────────────
-    dry_run: bool = True               # Default True — never execute real orders without explicit opt-in
+    dry_run: bool = True               # Default True - never execute real orders without explicit opt-in
     live_enabled: bool = False         # Master switch: must be True for any real order submission
 
     # ── Executor ──────────────────────────────────────────────────
@@ -143,7 +143,7 @@ class RenkoConfig:
             if atr_value is None:
                 return self.brick_size  # fallback
             return round(atr_value * self.atr_multiplier, 4)
-        else:  # DYNAMIC — caller must override
+        else:  # DYNAMIC - caller must override
             return self.brick_size
 
     def to_dict(self) -> dict:
@@ -306,10 +306,10 @@ class RenkoConfig:
             getter = getattr(runtime_config, getter_name)
             kwargs[field_name] = await getter(config_key, default=default_val)
 
-        # Handle enum fields — accept enum instances, "ClassName.VALUE" strings, and plain values
+        # Handle enum fields - accept enum instances, "ClassName.VALUE" strings, and plain values
         bsm = kwargs.get("brick_size_mode")
         if isinstance(bsm, BrickSizeMode):
-            # Already an enum instance — use as-is
+            # Already an enum instance - use as-is
             pass
         elif isinstance(bsm, str):
             # Strip "BrickSizeMode." prefix if present (e.g. from str(enum_instance))

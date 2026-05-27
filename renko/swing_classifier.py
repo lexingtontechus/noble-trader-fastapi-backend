@@ -1,9 +1,9 @@
 """
-Swing Classifier — labels each Renko brick with market-structure tags
+Swing Classifier - labels each Renko brick with market-structure tags
 (HH, HL, LH, LL) and detects swing points (local pivots).
 
 On Renko charts, classification is unambiguous because every brick
-has the same size — no wicks, no doji, no interpretation debates.
+has the same size - no wicks, no doji, no interpretation debates.
 
 Swing Label Definitions:
     HH (Higher High) : brick.high  > prev.high  AND brick.low  > prev.low
@@ -34,10 +34,10 @@ from renko.brick_engine import Brick, BrickDirection
 
 class SwingLabel(str, Enum):
     """Market-structure classification for a single brick."""
-    HH = "HH"  # Higher High — bullish continuation
-    HL = "HL"  # Higher Low — bullish consolidation / pullback
-    LH = "LH"  # Lower High — bearish consolidation / pullback
-    LL = "LL"  # Lower Low — bearish continuation
+    HH = "HH"  # Higher High - bullish continuation
+    HL = "HL"  # Higher Low - bullish consolidation / pullback
+    LH = "LH"  # Lower High - bearish consolidation / pullback
+    LL = "LL"  # Lower Low - bearish continuation
 
 
 class SwingType(str, Enum):
@@ -174,7 +174,7 @@ class SwingClassifier:
         """
         Calculate brick velocity (bricks per minute) over recent window.
 
-        Useful as a signal-strength enhancer — fast brick formation
+        Useful as a signal-strength enhancer - fast brick formation
         indicates strong momentum.
         """
         if len(self.classified_history) < 2:
@@ -245,7 +245,7 @@ class SwingClassifier:
         elif cur_high < prev_high and cur_low >= prev_low:
             return SwingLabel.LH
         else:
-            # Equal bricks (rare on Renko) — default to same as direction
+            # Equal bricks (rare on Renko) - default to same as direction
             return SwingLabel.HH if brick.is_bull else SwingLabel.LL
 
     def _detect_swing_point(self, classified: ClassifiedBrick) -> Optional[SwingPoint]:

@@ -1,5 +1,5 @@
 """
-Alpaca Order Executor — places and tracks orders via Alpaca API.
+Alpaca Order Executor - places and tracks orders via Alpaca API.
 
 Supports:
   - Bracket orders (entry + SL + TP in one atomic call)
@@ -9,7 +9,7 @@ Supports:
   - Position reconciliation with Alpaca's position API
 
 Design principles:
-  - All order logic is here — the pipeline never touches Alpaca directly
+  - All order logic is here - the pipeline never touches Alpaca directly
   - Errors are caught and logged, never crash the pipeline
   - Paper trading is the default and must be explicitly overridden
 """
@@ -155,7 +155,7 @@ class AlpacaExecutor:
         # Warn when running in simulation mode
         if self.is_simulation:
             logger.warning(
-                "AlpacaExecutor running in SIMULATION mode — no real orders will be placed. "
+                "AlpacaExecutor running in SIMULATION mode - no real orders will be placed. "
                 "Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable live/paper trading."
             )
 
@@ -169,9 +169,9 @@ class AlpacaExecutor:
         Returns
         -------
         str
-            "live"  — real money, base_url points to api.alpaca.markets
-            "paper" — paper trading, base_url points to paper-api
-            "simulation" — no API keys or alpaca-trade-api not installed
+            "live"  - real money, base_url points to api.alpaca.markets
+            "paper" - paper trading, base_url points to paper-api
+            "simulation" - no API keys or alpaca-trade-api not installed
         """
         if self.api_key is None or self.api_secret is None:
             return "simulation"
@@ -228,7 +228,7 @@ class AlpacaExecutor:
                 active_halt = await kill_switch.get_active_halt(symbol=symbol)
                 halt_info = active_halt.level.value if active_halt else "unknown"
                 logger.error(
-                    f"AlpacaExecutor: BLOCKED by kill switch — "
+                    f"AlpacaExecutor: BLOCKED by kill switch - "
                     f"symbol={symbol} halt_level={halt_info}"
                 )
                 return OrderResult(
@@ -307,7 +307,7 @@ class AlpacaExecutor:
         (circuit breaker does NOT apply to simulation).
         """
         if self.api_key is None or self.api_secret is None:
-            # Simulation mode — no real order placed, no circuit breaker
+            # Simulation mode - no real order placed, no circuit breaker
             sim_id = f"sim_{int(time.time()*1000)}"
             logger.warning(
                 "SIMULATED order '%s': %s %s %s @ %s "
@@ -375,7 +375,7 @@ class AlpacaExecutor:
                         )
 
             except CircuitOpenError:
-                logger.error("Alpaca circuit breaker OPEN — order rejected")
+                logger.error("Alpaca circuit breaker OPEN - order rejected")
                 return OrderResult(
                     status=OrderStatus.REJECTED,
                     error="Alpaca service unavailable (circuit breaker open)",
@@ -452,7 +452,7 @@ class AlpacaExecutor:
                         retryable_exceptions=(ConnectionError, TimeoutError, OSError),
                     )
             except CircuitOpenError:
-                logger.error("Alpaca circuit breaker OPEN — position close rejected")
+                logger.error("Alpaca circuit breaker OPEN - position close rejected")
                 return OrderResult(
                     status=OrderStatus.REJECTED,
                     error="Alpaca service unavailable (circuit breaker open)",
@@ -496,7 +496,7 @@ class AlpacaExecutor:
                         retryable_exceptions=(ConnectionError, TimeoutError, OSError),
                     )
             except CircuitOpenError:
-                logger.error("Alpaca circuit breaker OPEN — account info unavailable")
+                logger.error("Alpaca circuit breaker OPEN - account info unavailable")
                 return None
 
             return {

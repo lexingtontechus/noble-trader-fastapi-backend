@@ -8,7 +8,7 @@ multiple symbols registered in the SessionRegistry.
 Provides:
   • Portfolio-level regime distribution
   • Weighted average risk multiplier
-  • Aggregate VaR / CVaR (assuming independence — conservative)
+  • Aggregate VaR / CVaR (assuming independence - conservative)
   • Per-symbol position summary
   • Portfolio concentration risk flag
 """
@@ -61,7 +61,7 @@ class PortfolioSummary:
     avg_sharpe:                float
 
     # Portfolio-level risk (assuming independence)
-    portfolio_var95:           float            # √(Σ VaR²) — independent assets
+    portfolio_var95:           float            # √(Σ VaR²) - independent assets
     portfolio_cvar95:          float
 
     # Risk flags
@@ -111,7 +111,7 @@ class PortfolioService:
                 # Include as not-ready placeholder
                 symbol_summaries.append(SymbolSummary(
                     symbol=sym, regime_label="pending",
-                    vol_state="—", trend_state="—",
+                    vol_state="-", trend_state="-",
                     confidence=0.0, risk_multiplier=1.0,
                     recommended_f=0.0, var_95=0.0, cvar_95=0.0,
                     sharpe_ratio=0.0, last_price=None, n_bars=0, ready=False,
@@ -180,7 +180,7 @@ class PortfolioService:
         high_risk = sum(1 for s in ready if s.risk_multiplier < 0.5)
         conc_flag = any(s.recommended_f > 0.40 for s in ready)
 
-        # Regime divergence — entropy of vol_state distribution
+        # Regime divergence - entropy of vol_state distribution
         vol_states  = [s.vol_state   for s in ready]
         trend_states = [s.trend_state for s in ready]
         diverg_flag = self._entropy_flag(vol_states, trend_states, n_ready)
@@ -205,7 +205,7 @@ class PortfolioService:
     @staticmethod
     def _entropy_flag(vol_states: list[str], trend_states: list[str], n: int) -> bool:
         """
-        True if regime diversity is high — portfolio spans many regime buckets.
+        True if regime diversity is high - portfolio spans many regime buckets.
         Uses normalised entropy of vol_state distribution.
         Threshold: entropy > 0.8 × log(n_states) → flagged as divergent.
         """

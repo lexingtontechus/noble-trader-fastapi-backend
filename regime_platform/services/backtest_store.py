@@ -53,7 +53,7 @@ async def save_backtest_result(
     Returns (record_id, created_at) on success, (None, None) on failure.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
-        # Supabase not configured — skip persistence silently
+        # Supabase not configured - skip persistence silently
         return None, None
 
     record_id = str(uuid.uuid4())

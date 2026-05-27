@@ -1,11 +1,11 @@
 """
 Real-time streaming endpoints.
 
-  WS  /ws/{symbol}              — full-duplex WebSocket stream
-  GET /sse/pnl                  — SSE stream for real-time P&L updates
-  GET /sse/pnl/status           — Alpaca stream manager status (admin/debug)
-  GET /sse/alerts               — SSE stream for all regime-change alerts
-  GET /sse/{symbol}             — Server-Sent Events one-way stream
+  WS  /ws/{symbol}              - full-duplex WebSocket stream
+  GET /sse/pnl                  - SSE stream for real-time P&L updates
+  GET /sse/pnl/status           - Alpaca stream manager status (admin/debug)
+  GET /sse/alerts               - SSE stream for all regime-change alerts
+  GET /sse/{symbol}             - Server-Sent Events one-way stream
 
 WebSocket protocol (JSON messages):
   Client → Server:
@@ -21,11 +21,11 @@ WebSocket protocol (JSON messages):
     {"type": "alert", ...}
 
 SSE /sse/pnl events:
-  position_update  — triggered by fill or position change
-  price_tick       — real-time quote for held position
-  pnl_snapshot     — aggregate P&L (every 5s)
-  account_update   — equity/cash/buying_power change
-  pnl_alert        — P&L threshold breach alert (severity: info/warning/critical)
+  position_update  - triggered by fill or position change
+  price_tick       - real-time quote for held position
+  pnl_snapshot     - aggregate P&L (every 5s)
+  account_update   - equity/cash/buying_power change
+  pnl_alert        - P&L threshold breach alert (severity: info/warning/critical)
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[st
                     continue
                 session = await registry.get(msg.symbol or symbol)
                 if session is None:
-                    await _send({"type": "error", "detail": "session not seeded — send seed first"})
+                    await _send({"type": "error", "detail": "session not seeded - send seed first"})
                     continue
                 tick = await session.tick(msg.price, msg.ts or time.time())
                 if tick is None:
@@ -149,7 +149,7 @@ async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[st
                     d["trend_probs"] = dict(zip(RegimeHMM.TREND_LABELS,  d["trend_probs"]))
                     await _send(d)
 
-            # ── subscribe (push mode — client just listens) ───────────────────
+            # ── subscribe (push mode - client just listens) ───────────────────
             elif msg.type == "subscribe":
                 session = await registry.get(msg.symbol or symbol)
                 if session is None:
@@ -179,11 +179,11 @@ async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[st
         _log.info(f"WS disconnected: /ws/{symbol}")
 
 
-# ─── SSE — P&L stream (MUST come before /sse/{symbol} to avoid path collision) ─
+# ─── SSE - P&L stream (MUST come before /sse/{symbol} to avoid path collision) ─
 
 @router.get(
     "/sse/pnl",
-    summary="Real-time P&L SSE stream — positions, fills, quotes, snapshots",
+    summary="Real-time P&L SSE stream - positions, fills, quotes, snapshots",
     response_class=StreamingResponse,
 )
 async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
@@ -191,10 +191,10 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
     SSE stream that pushes real-time P&L updates for the authenticated user.
 
     Event types:
-      position_update  — triggered by fill or position change
-      price_tick       — real-time quote for held position (throttled 1/s)
-      pnl_snapshot     — aggregate P&L snapshot (every 5s)
-      account_update   — equity/cash/buying_power change
+      position_update  - triggered by fill or position change
+      price_tick       - real-time quote for held position (throttled 1/s)
+      pnl_snapshot     - aggregate P&L snapshot (every 5s)
+      account_update   - equity/cash/buying_power change
 
     Flow:
       1. Authenticates user via JWT
@@ -232,7 +232,7 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
         except asyncio.CancelledError:
             pass
         finally:
-            # Unsubscribe — stream stops after grace period if no more consumers
+            # Unsubscribe - stream stops after grace period if no more consumers
             await alpaca_stream_manager.unsubscribe(user.sub, q)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -250,7 +250,7 @@ async def sse_pnl_status(user: TokenData = Depends(get_authed_user)):
     return alpaca_stream_manager.status()
 
 
-# ─── SSE — global alerts ─────────────────────────────────────────────────────
+# ─── SSE - global alerts ─────────────────────────────────────────────────────
 
 @router.get(
     "/sse/alerts",
@@ -294,7 +294,7 @@ async def sse_alerts(user: TokenData = Depends(get_authed_user)):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-# ─── SSE — per symbol (MUST come last — {symbol} is a catch-all path param) ────
+# ─── SSE - per symbol (MUST come last - {symbol} is a catch-all path param) ────
 
 @router.get(
     "/sse/{symbol}",

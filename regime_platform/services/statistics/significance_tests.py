@@ -1,5 +1,5 @@
 """
-Strategy Significance Tests — White's Reality Check and Hansen's SPA.
+Strategy Significance Tests - White's Reality Check and Hansen's SPA.
 
 These tests answer the fundamental question: "Is the best strategy from 
 a set of N strategies genuinely better than a benchmark, or is it just 
@@ -203,11 +203,11 @@ def run_significance_tests(
             "both_significant": wrc["is_significant"] and spa["is_significant"],
             "either_significant": wrc["is_significant"] or spa["is_significant"],
             "recommendation": (
-                "Both tests confirm significance — strong evidence of genuine alpha."
+                "Both tests confirm significance - strong evidence of genuine alpha."
                 if wrc["is_significant"] and spa["is_significant"]
-                else "Only one test finds significance — marginal evidence, exercise caution."
+                else "Only one test finds significance - marginal evidence, exercise caution."
                 if wrc["is_significant"] or spa["is_significant"]
-                else "Neither test finds significance — results likely due to data snooping."
+                else "Neither test finds significance - results likely due to data snooping."
             ),
         },
     }

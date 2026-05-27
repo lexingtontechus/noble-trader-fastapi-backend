@@ -1,5 +1,5 @@
 """
-Discord Webhook Notifier — sends rich embed notifications to Discord channels.
+Discord Webhook Notifier - sends rich embed notifications to Discord channels.
 
 Design:
   - Three webhooks: SIGNALS, EXECUTIONS, STATUS (one per Discord channel)
@@ -181,7 +181,7 @@ class DiscordNotifier:
         Send a Discord webhook message with a rich embed.
 
         Returns True if sent successfully, False otherwise.
-        Never raises — all errors are caught and logged.
+        Never raises - all errors are caught and logged.
         """
         url = self._webhooks.get(channel)
         if not url:
@@ -225,7 +225,7 @@ class DiscordNotifier:
                 self._rate_limiter.record_send(url)
                 return True
             elif response.status_code == 429:
-                # Rate limited by Discord — extract retry-after
+                # Rate limited by Discord - extract retry-after
                 retry_after = response.headers.get("Retry-After", "2")
                 logger.warning(
                     f"Discord 429 rate limited on {channel.value}, "
@@ -663,5 +663,5 @@ def _utc_now_iso() -> str:
 
 # ── Singleton ────────────────────────────────────────────────────────────
 
-# Global singleton instance — import and use across the backend
+# Global singleton instance - import and use across the backend
 discord_notifier = DiscordNotifier()

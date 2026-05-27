@@ -1,4 +1,4 @@
-# Backend Supabase Migrations — MOVED
+# Backend Supabase Migrations - MOVED
 
 All Supabase migration files have been consolidated into the **frontend repo** at:
 

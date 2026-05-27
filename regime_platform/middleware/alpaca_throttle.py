@@ -9,8 +9,8 @@ ensures the application never exceeds that rate, with a small burst
 allowance for short spikes.
 
 Configuration (via environment variables or settings):
-  ALPACA_RATE_LIMIT  — tokens per period (default: 200)
-  ALPACA_RATE_PERIOD — period in seconds   (default: 60)
+  ALPACA_RATE_LIMIT  - tokens per period (default: 200)
+  ALPACA_RATE_PERIOD - period in seconds   (default: 60)
 
 Algorithm:
   - Tokens refill continuously at `rate / period` tokens per second.

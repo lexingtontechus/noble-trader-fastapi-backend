@@ -477,7 +477,7 @@ def test_config_defaults():
 def run_all_tests():
     """Run all test functions."""
     print("=" * 60)
-    print("Renko HFT Module — Test Suite")
+    print("Renko HFT Module - Test Suite")
     print("=" * 60)
 
     tests = [

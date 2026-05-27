@@ -1,13 +1,13 @@
 """
 P&L Analytics endpoints.
 
-  GET  /pnl/intraday              — Intraday P&L time-bucketed series
-  GET  /pnl/history               — Historical daily P&L with equity curve
-  GET  /pnl/export                — CSV export of P&L data
-  GET  /pnl/alerts                — List P&L alert thresholds
-  POST /pnl/alerts                — Create P&L alert threshold
-  DELETE /pnl/alerts/{threshold_id} — Delete P&L alert threshold
-  POST /pnl/alerts/check          — Manually evaluate alert thresholds
+  GET  /pnl/intraday              - Intraday P&L time-bucketed series
+  GET  /pnl/history               - Historical daily P&L with equity curve
+  GET  /pnl/export                - CSV export of P&L data
+  GET  /pnl/alerts                - List P&L alert thresholds
+  POST /pnl/alerts                - Create P&L alert threshold
+  DELETE /pnl/alerts/{threshold_id} - Delete P&L alert threshold
+  POST /pnl/alerts/check          - Manually evaluate alert thresholds
 
 All endpoints require JWT authentication.
 """

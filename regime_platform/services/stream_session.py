@@ -1,5 +1,5 @@
 """
-StreamSession — per-symbol stateful streaming engine.
+StreamSession - per-symbol stateful streaming engine.
 
 Responsibilities:
   • Maintains a rolling price deque (configurable window)
@@ -85,7 +85,7 @@ class StreamSession:
       which resolves from the DB → env → hardcoded default chain.
     """
 
-    # Hardcoded fallback — overridden by runtime_config in from_runtime_config()
+    # Hardcoded fallback - overridden by runtime_config in from_runtime_config()
     _DEFAULT_MIN_PRICES_FOR_FIT = 81
     _DEFAULT_SUBSCRIBER_QUEUE_SIZE = 500
 
@@ -212,7 +212,7 @@ class StreamSession:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _refit(self) -> None:
-        """Blocking HMM refit — always called via run_in_executor."""
+        """Blocking HMM refit - always called via run_in_executor."""
         prices = np.array(list(self._prices), dtype=float)
         prices = prices[np.isfinite(prices) & (prices > 0)]
         if len(prices) < self.min_prices_for_fit:
@@ -269,7 +269,7 @@ class StreamSession:
                 f"| risk_mult={snap.risk_multiplier:.2f}× "
                 f"| recommended_f={size_result.recommended_f:.4f}"
             )
-            # Fire alert callbacks (schedule as tasks — we're in a sync context)
+            # Fire alert callbacks (schedule as tasks - we're in a sync context)
             alert = RegimeAlert(
                 symbol=self.symbol,
                 ts=ts,
@@ -315,7 +315,7 @@ class StreamSession:
             try:
                 q.put_nowait(tick)
             except asyncio.QueueFull:
-                pass  # slow consumer — drop tick
+                pass  # slow consumer - drop tick
 
         return tick
 

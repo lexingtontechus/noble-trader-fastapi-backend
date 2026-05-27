@@ -1,5 +1,5 @@
 """
-Operational Hardening Services — Phase 8 P0
+Operational Hardening Services - Phase 8 P0
 
 Provides the operational scaffolding required for live trading:
 - ExecutorFactory: Singleton provider for properly-configured AlpacaExecutor instances

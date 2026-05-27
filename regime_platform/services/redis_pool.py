@@ -34,7 +34,7 @@ logger = logging.getLogger("regime.redis_pool")
 
 
 class RedisConnectionManager:
-    """Shared Redis connection pool manager — singleton.
+    """Shared Redis connection pool manager - singleton.
 
     All services should use `await redis_pool.get_client()` instead of
     creating their own `redis.asyncio.from_url()` connections.
@@ -54,7 +54,7 @@ class RedisConnectionManager:
 
         Returns None if Redis is not configured. The returned client
         is backed by the connection pool and should NOT be closed by
-        callers — the pool manages the connection lifecycle.
+        callers - the pool manages the connection lifecycle.
         """
         if not self._enabled:
             return None

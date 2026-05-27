@@ -439,7 +439,7 @@ class TestDollarStats:
         """dollar_stats should have all required fields when trades exist."""
         stats = self._run_with_trades()
         if stats["total_trades"] == 0:
-            pytest.skip("No trades produced — dollar_stats only computed with trades")
+            pytest.skip("No trades produced - dollar_stats only computed with trades")
 
         ds = stats.get("dollar_stats", {})
         expected_fields = [
