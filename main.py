@@ -485,19 +485,19 @@ Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
 - Snapshot management (save/restore pipeline state)
 
-Agent autonomy (v7.2):
-- POST /renko/warmup - autonomous pipeline warmup (Yahoo fetch + snapshot save)
-- POST /renko/snapshot/save - persist pipeline state (Redis L1 + Supabase L2 dual-write)
-- POST /renko/snapshot/restore - recover from cold start (Redis L1 -> Supabase L2 tiered restore)
-- POST /renko/regime - update HMM regime (auto-saves on change)
-- POST /renko/equity - update account equity (auto-saves on change)
-- POST /renko/tick/batch - batch tick processing (warmup/backtest)
-- POST /renko/sizing/model - switch Kelly <-> Masaniello (auto-saves on change)
-- POST /renko/live/toggle - toggle live execution (auto-saves on change)
-- POST /renko/backtest/run - run isolated backtests
-- POST /renko/backtest/optimize - parameter sweep
-- Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
-
+# Agent autonomy (v7.2):
+# - POST /renko/warmup - autonomous pipeline warmup (Yahoo fetch + snapshot save)
+# - POST /renko/snapshot/save - persist pipeline state (Redis L1 + Supabase L2 dual-write)
+# - POST /renko/snapshot/restore - recover from cold start (Redis L1 -> Supabase L2 tiered restore)
+# - POST /renko/regime - update HMM regime (auto-saves on change)
+# - POST /renko/equity - update account equity (auto-saves on change)
+# - POST /renko/tick/batch - batch tick processing (warmup/backtest)
+# - POST /renko/sizing/model - switch Kelly <-> Masaniello (auto-saves on change)
+# - POST /renko/live/toggle - toggle live execution (auto-saves on change)
+# - POST /renko/backtest/run - run isolated backtests
+# - POST /renko/backtest/optimize - parameter sweep
+# - Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
+# 
 Excluded from MCP (use REST API directly):
 - Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update""",
             exclude_operations=_mcp_excluded_ops,
