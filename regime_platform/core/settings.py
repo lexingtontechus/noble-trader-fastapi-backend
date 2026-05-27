@@ -19,6 +19,7 @@ can be overridden by actual environment variables at runtime.
 from __future__ import annotations
 
 import logging
+import os
 
 from pydantic_settings import BaseSettings
 
@@ -56,8 +57,8 @@ class Settings(BaseSettings):
     CLERK_JWKS_URL: str = ""
 
     # ── Alpaca ──────────────────────────────────────────────────────────────
-    ALPACA_API_KEY: str = ""
-    ALPACA_SECRET_KEY: str = ""
+    ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", os.getenv("ALPACA_APIKEY", ""))
+    ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", os.getenv("ALPACA_SECRETKEY", ""))
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
     ALPACA_LIVE_BASE_URL: str = "https://api.alpaca.markets"
     ALPACA_PAPER_BASE_URL: str = "https://paper-api.alpaca.markets"
