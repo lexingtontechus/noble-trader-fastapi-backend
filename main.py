@@ -257,65 +257,6 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(
-        title="Noble Trader Dynamic Regime Risk Management Platform",
-        description="""
-## Overview
-
-A quantitative trading risk management web service built on:
-
-| Component | Library | Purpose |
-|-----------|---------|---------|
-| **Regime Detection** | `hmmlearn` GaussianHMM | Classify market into volatility x trend regimes |
-| **Position Sizing** | `scipy` + Kelly formula | Fractional Kelly with vol-scaling & regime gating |
-| **Risk Analysis** | `numpy` / `scipy.stats` | VaR, CVaR, drawdown, Sortino, Calmar |
-| **Correlation** | `hmmlearn` + DCC | Portfolio-level correlation regime detection |
-| **Optimisation** | `scipy.optimize` | Drawdown-controlled max-Sharpe portfolio |
-| **Dynamic Masaniello** | Adaptive batch sizing | Progress-dependent position sizing with regime quality overlay |
-| **GPU HMM** | `pomegranate` (optional) | 10-50x HMM speedup on CUDA/MPS |
-| **API Framework** | `FastAPI` + `pydantic v2` | Typed, validated, auto-documented REST API |
-
-## Regime Labels
-
-The HMM produces a **2D regime** combining:
-- **Volatility**: `low` / `med_low` / `med_high` / `high`
-- **Trend**: `strong_bear` / `bear` / `bull` / `strong_bull`
-
-Combined label example: `low_vol_bull`, `high_vol_bear`, etc.
-
-## Risk Multiplier
-
-Each regime maps to a **risk_multiplier** [0.10 – 1.75] that scales the Kelly fraction:
-- `low_vol_strong_bull` -> 1.75x (max risk-on)
-- `high_vol_strong_bear` -> 0.14x (max defensive)
-
-## Authentication
-
-Clerk JWT (primary) -> local JWT -> API key fallback.
-
-## Recommended Workflow
-
-```
-POST /analyse/full  ->  regime + sizing + risk in one call
-POST /correlation/detect  ->  portfolio-level correlation regime
-POST /optimise/full  ->  correlation + optimisation one-shot
-POST /optimise/masaniello  ->  portfolio optimise + per-asset Masaniello sizing
-```
-
-## Dynamic Masaniello (v5.1)
-
-Two-stage pipeline connecting portfolio optimisation to per-trade position sizing:
-
-1. **DrawdownOptimiser** -> regime-adjusted portfolio weights (what to hold)
-2. **DynamicMasanielloSizer** -> per-asset contract sizes (how much to hold)
-
-Formula: `f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i`
-
-- M_i = urgency (wins needed / trades left)
-- Q_i = quality (prob × regime × confidence)
-- DD_i = drawdown scaling (floor 0.25)
-- V_i = volatility adjustment (ATR-based)
-
 app = FastAPI(
     title="Noble Trader Dynamic Regime Risk Management Platform",
     description="""
