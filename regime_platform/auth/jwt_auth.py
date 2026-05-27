@@ -320,9 +320,9 @@ async def get_current_user(
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
             return saas_user
-        # Static API key (service-to-service)
-        if api_key in API_KEYS:
-            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+    # Static API key (service-to-service)
+    if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+        return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
     # JWT check
     if credentials and credentials.scheme.lower() == "bearer":
@@ -424,9 +424,9 @@ async def get_authed_user(
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
             return saas_user
-        # Static API key (service-to-service)
-        if api_key in API_KEYS:
-            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+    # Static API key (service-to-service)
+    if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+        return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
     # No credentials at all
     if not credentials or credentials.scheme.lower() != "bearer":
@@ -518,9 +518,9 @@ async def ws_auth(
     if api_key:
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
-            return saas_user
-        if api_key in API_KEYS:
-            return TokenData(sub=f"apikey:{api_key[:8]}...", role="trader")
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+            return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
     # Query-param JWT / Clerk JWT
     if token:
