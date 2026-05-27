@@ -518,8 +518,9 @@ async def ws_auth(
     if api_key:
         saas_user = _lookup_saas_api_key(api_key)
         if saas_user:
-            # Static API key (service-to-service)
-            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+            return saas_user
+        # Static API key (service-to-service)
+        if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
             return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
     # Query-param JWT / Clerk JWT
