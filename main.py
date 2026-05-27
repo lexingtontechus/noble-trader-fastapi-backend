@@ -257,29 +257,44 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-app = FastAPI(
-    title="Noble Trader Dynamic Regime Risk Management Platform",
-    description="""
-... (truncated for brevity) ...
-    """,
-    version="7.2.0",
-    contact={
-        "name": "Noble Trader Dynamic Regime Risk Platform",
-        "email": "nobletrader@0xdweb.com",
-    },
-    license_info={"name": "MIT"},
-    lifespan=lifespan,
-)
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    log.error(f"FATAL ERROR during request {request.method} {request.url}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
+    app = FastAPI(
+        title="Noble Trader Dynamic Regime Risk Management Platform",
+        description="""Noble Trader Dynamic Regime Risk Management Platform - MCP Server
+        
+        Exposes trading risk management endpoints as MCP tools for full agent autonomy:
+        - Regime detection (HMM-based vol + trend classification)
+        - Position sizing (regime-gated fractional Kelly + Dynamic Masaniello)
+        - Risk analysis (VaR, CVaR, drawdown, stop/TP suggestions)
+        - Full analysis pipeline (regime + sizing + risk in one call)
+        - Monte Carlo simulation (Markov-chain regime transitions)
+        - Portfolio aggregation (multi-symbol regime + risk)
+        - Correlation detection (DCC-based portfolio regime)
+        - Portfolio optimisation (drawdown-controlled max-Sharpe)
+        - Dynamic Masaniello two-stage pipeline
+        - Observation building (24-feature HMM observation vector)
+        - GPU HMM capabilities and benchmarks
+        - Backtesting (walk-forward HMM with 30+ metrics), backtest history, comparison
+        - Strategy signals, TDA features
+        - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
+        - Snapshot management (save/restore pipeline state)
+        """,
+        version="7.2.0",
+        contact={
+            "name": "Noble Trader Dynamic Regime Risk Platform",
+            "email": "nobletrader@0xdweb.com",
+        },
+        license_info={"name": "MIT"},
+        lifespan=lifespan,
     )
 
-    # CORS - restricted to configured origins (never allow_origins=["*"] in production)
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        log.error(f"FATAL ERROR during request {request.method} {request.url}: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
+        )
+
     cors_origins = [
         o.strip()
         for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -289,6 +304,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     if _deploy_env in ("production", "staging") and "*" in cors_origins:
         log.error("FATAL: CORS wildcard not allowed in production/staging. Set CORS_ALLOWED_ORIGINS explicitly.")
         raise RuntimeError("CORS wildcard not allowed in production/staging")
+    
     log.info(f"CORS allowed origins: {cors_origins}")
     app.add_middleware(
         CORSMiddleware,
@@ -297,104 +313,56 @@ async def global_exception_handler(request: Request, exc: Exception):
         allow_headers=["*"],
     )
 
-    # v2.x routers
     for r in [
-        auth_router,
-        regime,
-        sizing,
-        risk,
-        pipeline,
-        stream_rest,
-        stream_ws,
-        simulate,
-        portfolio,
+            auth_router,
+            regime,
+            sizing,
+            risk,
+            pipeline,
+            stream_rest,
+            stream_ws,
+            simulate,
+            portfolio
     ]:
         app.include_router(r.router)
 
-    # v3.0 routers
     app.include_router(gpu.router)
     app.include_router(feeds.router)
     app.include_router(multi_asset.router)
     app.include_router(observation.router)
-
-    # v4.0 Phase 1 routers
     app.include_router(strategy.router)
     app.include_router(backtest.router)
     app.include_router(tda.router)
 
-    # v5.0 Renko HFT pipeline (14 endpoints under /renko/*)
     if renko_router is not None:
         app.include_router(renko_router)
 
-    # Phase 8: Operational Hardening (13 endpoints under /operational/*)
     app.include_router(operational.router)
-
-    # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
     app.include_router(pnl.router)
-
-    # Phase 9: Runtime Configuration (admin-adjustable params)
     app.include_router(config_router_module.config_router)
 
-    # Kill Switch Gate Middleware (blocks order execution when halted)
     app.add_middleware(KillSwitchGateMiddleware)
 
-    # ─── MCP (Model Context Protocol) ──────────────────────────────────────────
-    # Expose READ-ONLY / analysis FastAPI endpoints as MCP tools so AI agents
-    # can discover and call them via the MCP protocol at /mcp.
-    #
-    # Security measures:
-    #   1. AuthConfig with get_authed_user dependency - MCP endpoint requires
-    #      JWT / API-key auth; unauthenticated connections get 401
-    #   2. exclude_operations - dangerous write / infrastructure / auth-circular
-    #      endpoints are NOT exposed as MCP tools
-    #   3. headers=["authorization", "x-api-key"] - forwarded to REST calls so
-    #      per-route Depends() auth is also enforced
     if MCP_AVAILABLE:
-        # Operation IDs to EXCLUDE from MCP exposure
-        #
-        # v7.1 - Full agent autonomy: MCP agents can now warmup, restore,
-        # set regime, set equity, run backtests, switch sizing models,
-        # and toggle live execution. Only genuinely dangerous or
-        # infrastructure-only operations remain excluded.
-        #
-        # Promoted to MCP (v7.1):
-        #   - process_batch: agent needs warmup & backtest
-        #   - set_regime: agent needs HMM regime sync
-        #   - set_equity: agent needs portfolio sync
-        #   - warmup_pipeline: agent needs autonomous cold-start
-        #   - save_snapshot: agent needs to persist state
-        #   - restore_snapshot: agent needs cold-start recovery
-        #   - set_sizing_model: agent needs Kelly <-> Masaniello switching
-        #   - toggle_live: agent needs execution mode control
-        #   - run_backtest / optimize: agent needs strategy testing
         _mcp_excluded_ops = [
-            # ── Auth (circular - MCP clients should already have tokens) ──
             "clerk_config_auth_clerk_config_get",
             "clerk_me_auth_clerk_me_get",
             "verify_clerk_token_endpoint_auth_clerk_verify_post",
             "me_auth_me_get",
             "refresh_auth_refresh_post",
             "login_auth_token_post",
-            # ── Feed adapters (infrastructure control) ──
             "start_feeds_feeds_start_post",
             "stop_feeds_feeds_stop_post",
-            # ── Single tick injection (manipulation risk - use batch/warmup instead) ──
             "process_tick_renko_tick_post",
-            # ── Pipeline reset (destructive - loses all brick history & trades) ──
             "reset_pipeline_renko_reset_post",
-            # ── Config update (destructive - rebuilds pipeline from scratch) ──
             "update_config_renko_config_post",
-            # ── Stream data injection / teardown ──
             "seed_session_stream_seed_post",
             "ingest_tick_stream_tick_post",
             "ingest_ticks_stream_ticks_post",
             "remove_session_stream_session__symbol__delete",
-            # ── Backtest delete (destructive - MCP should run/read, not delete) ──
             "delete_backtest_result_backtest__backtest_id__delete",
         ]
-
-        # Build AuthConfig: require JWT / API-key on the MCP endpoint itself
-        # Only include issuer if MCP_ISSUER is set (avoids empty-string validation issues)
+        
         if settings.MCP_AUTH_ENABLED:
             _mcp_auth_kwargs = dict(dependencies=[Depends(get_authed_user)])
             _mcp_issuer = settings.MCP_ISSUER
@@ -403,200 +371,38 @@ async def global_exception_handler(request: Request, exc: Exception):
             _mcp_auth = AuthConfig(**_mcp_auth_kwargs)
         else:
             _mcp_auth = None
-
+        
         mcp = FastApiMCP(
             app,
             name="Noble Trader MCP",
             description="""Noble Trader Dynamic Regime Risk Management Platform - MCP Server
-
-Exposes trading risk management endpoints as MCP tools for full agent autonomy:
-- Regime detection (HMM-based vol + trend classification)
-- Position sizing (regime-gated fractional Kelly + Dynamic Masaniello)
-- Risk analysis (VaR, CVaR, drawdown, stop/TP suggestions)
-- Full analysis pipeline (regime + sizing + risk in one call)
-- Monte Carlo simulation (Markov-chain regime transitions)
-- Portfolio aggregation (multi-symbol regime + risk)
-- Correlation detection (DCC-based portfolio regime)
-- Portfolio optimisation (drawdown-controlled max-Sharpe)
-- Dynamic Masaniello two-stage pipeline
-- Observation building (24-feature HMM observation vector)
-- GPU HMM capabilities and benchmarks
-- Backtesting (walk-forward HMM with 30+ metrics), backtest history, comparison
-- Strategy signals, TDA features
-- Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
-- Snapshot management (save/restore pipeline state)
-
-# Agent autonomy (v7.2):
-# - POST /renko/warmup - autonomous pipeline warmup (Yahoo fetch + snapshot save)
-# - POST /renko/snapshot/save - persist pipeline state (Redis L1 + Supabase L2 dual-write)
-# - POST /renko/snapshot/restore - recover from cold start (Redis L1 -> Supabase L2 tiered restore)
-# - POST /renko/regime - update HMM regime (auto-saves on change)
-# - POST /renko/equity - update account equity (auto-saves on change)
-# - POST /renko/tick/batch - batch tick processing (warmup/backtest)
-# - POST /renko/sizing/model - switch Kelly <-> Masaniello (auto-saves on change)
-# - POST /renko/live/toggle - toggle live execution (auto-saves on change)
-# - POST /renko/backtest/run - run isolated backtests
-# - POST /renko/backtest/optimize - parameter sweep
-# - Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
-# 
-# Excluded from MCP (use REST API directly):
-# - Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update,
+            
+            Exposes trading risk management endpoints as MCP tools for full agent autonomy:
+            - Regime detection (HMM-based vol + trend classification)
+            - Position sizing (regime-gated fractional Kelly + Dynamic Masaniello)
+            - Risk analysis (VaR, CVaR, drawdown, stop/TP suggestions)
+            - Full analysis pipeline (regime + sizing + risk in one call)
+            - Monte Carlo simulation (Markov-chain regime transitions)
+            - Portfolio aggregation (multi-symbol regime + risk)
+            - Correlation detection (DCC-based portfolio regime)
+            - Portfolio optimisation (drawdown-controlled max-Sharpe)
+            - Dynamic Masaniello two-stage pipeline
+            - Observation building (24-feature HMM observation vector)
+            - GPU HMM capabilities and benchmarks
+            - Backtesting (walk-forward HMM with 30+ metrics), backtest history, comparison
+            - Strategy signals, TDA features
+            - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
+            - Snapshot management (save/restore pipeline state)
+            """,
             exclude_operations=_mcp_excluded_ops,
             auth_config=_mcp_auth,
             headers=["authorization", "x-api-key"],
         )
         mcp.mount_http()
-        _tool_count = len(mcp.tools)
-        _excluded_count = len(_mcp_excluded_ops)
-        _auth_status = "enabled" if _mcp_auth else "DISABLED (dev mode)"
-        log.info(
-            f"MCP server mounted at /mcp - "
-            f"{_tool_count} tools exposed, {_excluded_count} excluded, "
-            f"auth {_auth_status}"
-        )
-    else:
-        log.warning("fastapi-mcp not installed - MCP endpoint disabled")
-
-    @app.get("/", include_in_schema=False)
-    async def root():
-        caps = gpu_capabilities()
-        return JSONResponse(
-            {
-                "service": "Noble Trader Dynamic Regime Risk Management Platform",
-                "version": "7.2.0",
-                "docs": "/docs",
-                "mcp": "/mcp" if MCP_AVAILABLE else "not installed",
-                "gpu": caps,
-                "endpoints": {
-                    "regime_detect": "POST /regime/detect",
-                    "regime_detect_v2": "POST /regime/detect-v2",
-                    "kelly_sizing": "POST /size/kelly",
-                    "risk_analysis": "POST /risk/analyse",
-                    "risk_analyze": "POST /risk/analyze",
-                    "full_pipeline": "POST /analyse/full",
-                    "strategy_signal": "POST /strategy/signal",
-                    "backtest_run": "POST /backtest/run",
-                    "tda_features": "POST /tda/features",
-                    "observation_build": "POST /observation/build",
-                    "observation_build_v2": "POST /observation/build-v2",
-                    "simulate": "POST /simulate/{symbol}",
-                    "portfolio": "GET /portfolio",
-                    "correlation_detect": "POST /correlation/detect",
-                    "optimise": "POST /optimise",
-                    "optimise_full": "POST /optimise/full",
-                    "gpu_capabilities": "GET /gpu/capabilities",
-                    "gpu_benchmark": "POST /gpu/benchmark",
-                    "feeds_start": "POST /feeds/start",
-                    "feeds_status": "GET /feeds/status",
-                    "stream_seed": "POST /stream/seed",
-                    "stream_sessions": "GET /stream/sessions",
-                    "mcp_server": "GET /mcp",
-                    # Renko HFT
-                    "renko_tick": "POST /renko/tick",
-                    "renko_state": "GET /renko/state",
-                    "renko_bricks": "GET /renko/bricks",
-                    "renko_signals": "GET /renko/signals",
-                    "renko_trades": "GET /renko/trades",
-                    "renko_config": "POST /renko/config",
-                    "renko_warmup": "POST /renko/warmup",
-                    "renko_snapshot_save": "POST /renko/snapshot/save",
-                    "renko_snapshot_restore": "POST /renko/snapshot/restore",
-                    "renko_sizing_model": "GET/POST /renko/sizing/model",
-                    "renko_live_toggle": "POST /renko/live/toggle",
-                    "renko_backtest_run": "POST /renko/backtest/run",
-                    "renko_backtest_compare": "POST /renko/backtest/compare",
-                    "renko_backtest_optimize": "POST /renko/backtest/optimize",
-                    # v5.1 Dynamic Masaniello
-                    "masaniello_sizing": "POST /size/masaniello",
-                    "masaniello_batch": "POST /size/masaniello/batch",
-                    "portfolio_masaniello": "POST /optimise/masaniello",
-                    # Phase 9: Runtime Configuration
-                    "config_list": "GET /config/",
-                    "config_category": "GET /config/{category}",
-                    "config_update": "PATCH /config/key/{key}",
-                    "config_reload": "GET /config/reload",
-                },
-            }
-        )
-
-    @app.get("/health", tags=["Health"])
-    async def health():
-        from regime_platform.services.registry import registry
-
-        symbols = await registry.list_symbols()
-        caps = gpu_capabilities()
-
-        # Phase 8: Operational status
-        operational_status = {"kill_switch": "unknown", "trading_mode": "unknown"}
-        try:
-            from regime_platform.services.operational import kill_switch, mode_manager
-            is_halted = await kill_switch.is_halted()
-            current_mode = await mode_manager.get_current_mode()
-            operational_status = {
-                "kill_switch": "HALTED" if is_halted else "clear",
-                "trading_mode": current_mode.value,
-            }
-        except Exception:
-            pass
-
-        # Discord notification status
-        discord_status = {"configured": False, "channels": {}}
-        try:
-            from notifications.discord import discord_notifier
-            discord_status["configured"] = discord_notifier.is_configured
-            discord_status["channels"] = {
-                "signals": bool(settings.DISCORD_WEBHOOK_SIGNALS),
-                "executions": bool(settings.DISCORD_WEBHOOK_EXECUTIONS),
-                "status": bool(settings.DISCORD_WEBHOOK_STATUS),
-            }
-        except ImportError:
-            pass
-
-        # MCP security status
-        mcp_status = {"available": MCP_AVAILABLE}
-        if MCP_AVAILABLE:
-            mcp_status["endpoint"] = "/mcp"
-            mcp_status["auth"] = "enabled" if settings.MCP_AUTH_ENABLED else "disabled"
-            mcp_status["header_forwarding"] = ["authorization", "x-api-key"]
-
-        # Circuit breaker status
-        from regime_platform.core.circuit_breaker import all_circuit_stats
-        circuit_status = all_circuit_stats()
-
-        # Alpaca stream manager status
-        alpaca_stream_status = {"active": False, "users": 0}
-        try:
-            from regime_platform.services.alpaca_stream import alpaca_stream_manager
-            mgr_status = alpaca_stream_manager.status()
-            alpaca_stream_status = {
-                "active": True,
-                "users": mgr_status.get("active_users", 0),
-                "details": mgr_status.get("users", []),
-            }
-        except Exception:
-            pass
-
-        return {
-            "status": "ok",
-            "version": "7.2.0",
-            "sessions": len(symbols),
-            "redis": persistence.enabled,
-            "operational": operational_status,
-            "cors_origins": settings.CORS_ORIGINS,
-            "discord": discord_status,
-            "mcp": mcp_status,
-            "circuit_breakers": circuit_status,
-            "alpaca_stream": alpaca_stream_status,
-            "gpu_backend": caps["hmm_backend"],
-            "device": caps["active_device"],
-            "rate_limits": {
-                "default": RATE_LIMIT_DEFAULT,
-                "compute": RATE_LIMIT_COMPUTE,
-                "write": RATE_LIMIT_WRITE,
-            },
-        }
+        log.info(f"MCP mounted with {len(mcp.tools)} tools. Auth: {'enabled' if _mcp_auth else 'DISABLED'}")
 
     return app
+
 
 
 app = create_app()
