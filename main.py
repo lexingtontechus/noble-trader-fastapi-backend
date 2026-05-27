@@ -316,18 +316,26 @@ Formula: `f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i`
 - DD_i = drawdown scaling (floor 0.25)
 - V_i = volatility adjustment (ATR-based)
 
-Endpoints:
-- `POST /size/masaniello` — single-trade Masaniello sizing
-- `POST /size/masaniello/batch` — batch Masaniello sizing
-- `POST /optimise/masaniello` — full two-stage pipeline
-        """,
-        version="7.2.0",
-        contact={
-            "name": "Noble Trader Dynamic Regime Risk Platform",
-            "email": "nobletrader@0xdweb.com",
-        },
-        license_info={"name": "MIT"},
-        lifespan=lifespan,
+app = FastAPI(
+    title="Noble Trader Dynamic Regime Risk Management Platform",
+    description="""
+... (truncated for brevity) ...
+    """,
+    version="7.2.0",
+    contact={
+        "name": "Noble Trader Dynamic Regime Risk Platform",
+        "email": "nobletrader@0xdweb.com",
+    },
+    license_info={"name": "MIT"},
+    lifespan=lifespan,
+)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    log.error(f"FATAL ERROR during request {request.method} {request.url}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
     )
 
     # CORS — restricted to configured origins (never allow_origins=["*"] in production)
