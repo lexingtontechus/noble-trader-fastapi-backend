@@ -498,8 +498,8 @@ Exposes trading risk management endpoints as MCP tools for full agent autonomy:
 # - POST /renko/backtest/optimize - parameter sweep
 # - Auto-save on: position open/close, regime/equity change, sizing/toggle change, every 100th tick
 # 
-Excluded from MCP (use REST API directly):
-- Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update""",
+# Excluded from MCP (use REST API directly):
+# - Auth endpoints, feed start/stop, single tick injection, pipeline reset, config update,
             exclude_operations=_mcp_excluded_ops,
             auth_config=_mcp_auth,
             headers=["authorization", "x-api-key"],
