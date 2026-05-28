@@ -61,6 +61,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+# urllib3<2.0 compatibility shim for alpaca-trade-api
+import urllib3_compat  # noqa: F401 -- side-effect shim
+
 # Load .env file before any other imports that read env vars
 from dotenv import load_dotenv
 load_dotenv(override=False)  # Don't override already-set env vars (e.g. from Render dashboard)
