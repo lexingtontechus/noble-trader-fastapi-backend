@@ -25,7 +25,17 @@ from typing import Any, Dict, List, Optional
 
 from renko.pattern_detector import SignalDirection
 from renko.signal_filter import FilteredSignal
+from regime_platform.core.settings import settings
 from regime_platform.core.resilience import CircuitBreaker, CircuitOpenError, retry_with_backoff
+
+def _resolve_alpaca_credentials(api_key, api_secret):
+    """Resolve Alpaca credentials from args or global settings fallback."""
+    if api_key and api_secret:
+        return api_key, api_secret
+    # Fallback to global settings (which reads from env vars with our fixes)
+    if settings.ALPACA_API_KEY and settings.ALPACA_SECRET_KEY:
+        return settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
+    return api_key, api_secret
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +153,8 @@ class AlpacaExecutor:
         paper: bool = True,
         use_bracket_orders: bool = True,
     ):
+        # Resolve credentials from global settings if not explicitly provided
+        api_key, api_secret = _resolve_alpaca_credentials(api_key, api_secret)
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = base_url
