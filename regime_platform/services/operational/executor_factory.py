@@ -239,12 +239,13 @@ class ExecutorFactory:
             return None
 
         try:
-            import alpaca_trade_api as tradeapi
+            from alpaca.trading.client import TradingClient
 
-            raw_client = tradeapi.REST(
-                key_id=settings.ALPACA_API_KEY,
-                secret_key=settings.ALPACA_SECRET_KEY,
-                base_url=settings.ALPACA_BASE_URL,
+            is_paper = "paper-api" in settings.ALPACA_BASE_URL
+            raw_client = TradingClient(
+                settings.ALPACA_API_KEY,
+                settings.ALPACA_SECRET_KEY,
+                paper=is_paper,
             )
             # Wrap the raw client with async throttling proxy
             # AsyncThrottledAlpacaREST properly awaits throttle.acquire() in
@@ -257,7 +258,7 @@ class ExecutorFactory:
             )
             return self._api_client
         except ImportError:
-            logger.warning("ExecutorFactory: alpaca-trade-api not installed")
+            logger.warning("ExecutorFactory: alpaca-py not installed")
             return None
         except Exception as e:
             logger.error(f"ExecutorFactory: Failed to create REST client: {e}")
@@ -303,7 +304,7 @@ class ExecutorFactory:
             return {"ok": False, "error": "No Alpaca API keys configured", "mode": "simulation"}
 
         try:
-            import alpaca_trade_api as tradeapi
+            from alpaca.trading.client import TradingClient
             from regime_platform.middleware.alpaca_throttle import get_alpaca_throttle
 
             throttle = get_alpaca_throttle()
@@ -317,24 +318,26 @@ class ExecutorFactory:
                     "mode": self.execution_mode,
                 }
 
-            # Use a raw (unproxied) client for health checks so the
-            # ThrottledAlpacaREST proxy doesn't interfere with async usage
-            raw_client = tradeapi.REST(
-                key_id=settings.ALPACA_API_KEY,
-                secret_key=settings.ALPACA_SECRET_KEY,
-                base_url=settings.ALPACA_BASE_URL,
+            # Use TradingClient for health check
+            is_paper = "paper-api" in settings.ALPACA_BASE_URL
+            raw_client = TradingClient(
+                settings.ALPACA_API_KEY,
+                settings.ALPACA_SECRET_KEY,
+                paper=is_paper,
             )
             loop = asyncio.get_running_loop()
             account = await loop.run_in_executor(None, raw_client.get_account)
 
             return {
                 "ok": True,
-                "account_status": account.status,
+                "account_status": account.account_status,
                 "mode": self.execution_mode,
                 "equity": float(account.equity),
                 "buying_power": float(account.buying_power),
                 "throttle": throttle.get_status(),
             }
+        except ImportError:
+            return {"ok": False, "error": "alpaca-py not installed", "mode": "simulation"}
         except Exception as e:
             return {
                 "ok": False,

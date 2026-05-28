@@ -310,7 +310,7 @@ class AlpacaExecutor:
 
     async def _submit_order(self, params: OrderParams) -> OrderResult:
         """
-        Submit an order to Alpaca. Uses the alpaca-trade-api or
+        Submit an order to Alpaca. Uses the alpaca-py SDK or
         direct REST calls.
 
         In production, this calls the real Alpaca API with circuit
@@ -340,14 +340,18 @@ class AlpacaExecutor:
             )
 
         try:
-            # Attempt to use alpaca-trade-api if available
-            import alpaca_trade_api as tradeapi
+            # Attempt to use alpaca-py (modern SDK)
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import SubmitOrderParams
+            from alpaca.enums import OrderSide, TimeInForce, OrderType, OrderClass
 
             if self._client is None:
-                self._client = tradeapi.REST(
-                    key_id=self.api_key,
-                    secret_key=self.api_secret,
-                    base_url=self.base_url,
+                # alpaca-py uses 'paper' boolean; base_url is auto-selected
+                is_paper = "paper-api" in self.base_url
+                self._client = TradingClient(
+                    self.api_key,
+                    self.api_secret,
+                    paper=is_paper,
                 )
 
             # ── Circuit breaker + retry for real Alpaca API calls ────
@@ -359,12 +363,12 @@ class AlpacaExecutor:
                             lambda: self._client.submit_order(
                                 symbol=params.symbol,
                                 qty=int(params.qty),
-                                side=params.side,
-                                type="market",
-                                time_in_force=params.time_in_force,
-                                order_class="bracket",
-                                stop_loss={"stop_price": str(params.sl_price)},
-                                take_profit={"limit_price": str(params.tp_price)},
+                                side=OrderSide(params.side.upper()),
+                                type=OrderType.MARKET,
+                                time_in_force=TimeInForce(params.time_in_force),
+                                order_class=OrderClass.BRACKET,
+                                stop_loss_params={"stop_price": params.sl_price},
+                                take_profit_params={"limit_price": params.tp_price},
                             ),
                             max_retries=2,
                             base_delay=1.0,
@@ -372,14 +376,16 @@ class AlpacaExecutor:
                         )
                     else:
                         # Simple market/limit order
+                        ord_type = OrderType.MARKET if params.order_type == "market" else OrderType.LIMIT
+                        limit_p = params.limit_price if params.limit_price else None
                         order = await retry_with_backoff(
                             lambda: self._client.submit_order(
                                 symbol=params.symbol,
                                 qty=int(params.qty),
-                                side=params.side,
-                                type=params.order_type,
-                                time_in_force=params.time_in_force,
-                                limit_price=str(params.limit_price) if params.limit_price else None,
+                                side=OrderSide(params.side.upper()),
+                                type=ord_type,
+                                time_in_force=TimeInForce(params.time_in_force),
+                                limit_price=limit_p,
                             ),
                             max_retries=2,
                             base_delay=1.0,
@@ -407,7 +413,7 @@ class AlpacaExecutor:
             sim_id = f"sim_{int(time.time()*1000)}"
             logger.warning(
                 "SIMULATED order '%s': %s %s %s @ %s "
-                "(alpaca-trade-api not installed)",
+                "(alpaca-py not installed)",
                 sim_id,
                 params.side,
                 params.qty,
@@ -445,13 +451,16 @@ class AlpacaExecutor:
             )
 
         try:
-            import alpaca_trade_api as tradeapi
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import ClosePositionRequest
+            from alpaca.trading.enums import QtyQuantityType
 
             if self._client is None:
-                self._client = tradeapi.REST(
-                    key_id=self.api_key,
-                    secret_key=self.api_secret,
-                    base_url=self.base_url,
+                is_paper = "paper-api" in self.base_url
+                self._client = TradingClient(
+                    self.api_key,
+                    self.api_secret,
+                    paper=is_paper,
                 )
 
             # ── Circuit breaker + retry ────────────────────────────
@@ -489,13 +498,14 @@ class AlpacaExecutor:
             return {"equity": 100000, "cash": 100000, "status": "simulation"}
 
         try:
-            import alpaca_trade_api as tradeapi
+            from alpaca.trading.client import TradingClient
 
             if self._client is None:
-                self._client = tradeapi.REST(
-                    key_id=self.api_key,
-                    secret_key=self.api_secret,
-                    base_url=self.base_url,
+                is_paper = "paper-api" in self.base_url
+                self._client = TradingClient(
+                    self.api_key,
+                    self.api_secret,
+                    paper=is_paper,
                 )
 
             # ── Circuit breaker + retry ────────────────────────────

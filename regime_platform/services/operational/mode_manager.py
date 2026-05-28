@@ -357,7 +357,7 @@ class ModeManager:
         """
         try:
             from regime_platform.core.settings import settings
-            import alpaca_trade_api as tradeapi
+            from alpaca.trading.client import TradingClient
 
             if not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY:
                 return {"ok": False, "error": "No Alpaca API keys configured"}
@@ -369,21 +369,22 @@ class ModeManager:
             )
 
             # Temporary client for health check (does not affect factory)
-            temp_client = tradeapi.REST(
-                key_id=settings.ALPACA_API_KEY,
-                secret_key=settings.ALPACA_SECRET_KEY,
-                base_url=target_url,
+            temp_client = TradingClient(
+                settings.ALPACA_API_KEY,
+                settings.ALPACA_SECRET_KEY,
+                paper=target_mode == TradingMode.PAPER,
+                url=target_url,
             )
 
             account = temp_client.get_account()
             return {
                 "ok": True,
-                "account_status": account.status,
+                "account_status": account.account_status,
                 "equity": float(account.equity),
                 "buying_power": float(account.buying_power),
             }
         except ImportError:
-            return {"ok": False, "error": "alpaca-trade-api not installed"}
+            return {"ok": False, "error": "alpaca-py not installed"}
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
 
