@@ -34,15 +34,16 @@ class TradeRecord:
     symbol: str
     direction: SignalDirection
     pattern_type: PatternType
-    entry_price: float
-    exit_price: float
-    entry_ts: float
-    exit_ts: float
-    pnl_bricks: float
-    pnl_dollars: float
-    status: PositionStatus
-    bricks_held: int
-    signal_strength: float
+    qty: float = 1.0
+    entry_price: float = 0.0
+    exit_price: float = 0.0
+    entry_ts: float = 0.0
+    exit_ts: float = 0.0
+    pnl_bricks: float = 0.0
+    pnl_dollars: float = 0.0
+    status: PositionStatus = PositionStatus.CLOSED_MANUAL
+    bricks_held: int = 0
+    signal_strength: float = 0.0
     regime: Optional[str] = None
     regime_aligned: bool = False
     kelly_fraction: float = 0.0
@@ -79,6 +80,7 @@ class TradeRecord:
             "symbol": self.symbol,
             "direction": self.direction.value,
             "pattern_type": self.pattern_type.value,
+            "qty": self.qty,
             "entry_price": self.entry_price,
             "exit_price": self.exit_price,
             "entry_ts": self.entry_ts,
@@ -150,6 +152,7 @@ class TradeJournal:
             symbol=symbol,
             direction=result.direction,
             pattern_type=signal.pattern_type,
+            qty=result.qty if hasattr(result, 'qty') else 1.0,
             entry_price=result.entry_price,
             exit_price=result.exit_price,
             entry_ts=result.entry_ts,

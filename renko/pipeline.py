@@ -585,6 +585,7 @@ class RenkoPipeline:
                     symbol=td["symbol"],
                     direction=SignalDirection(td["direction"]),
                     pattern_type=PatternType(td["pattern_type"]),
+                    qty=td.get("qty", 1.0),
                     entry_price=td["entry_price"],
                     exit_price=td["exit_price"],
                     entry_ts=td["entry_ts"],

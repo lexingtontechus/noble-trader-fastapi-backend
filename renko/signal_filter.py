@@ -163,50 +163,12 @@ class SignalFilter:
     ) -> Optional[FilteredSignal]:
         """
         Evaluate a signal through all filters.
-
-        Parameters
-        ----------
-        signal : PatternSignal
-            Raw signal from PatternDetector.
-        regime : str, optional
-            Current HMM regime name (e.g. "Bullish Trend").
-        brick_velocity : float
-            Current bricks/minute.
-        equity : float
-            Current account equity.
-        brick_size : float
-            Current brick size in dollars.
-        kelly_fraction : float
-            Kelly-derived position sizing fraction.
-        regime_quality : float
-            Regime risk multiplier [0.10, 1.75] - from RegimeSnapshot.
-        regime_confidence : float
-            HMM state confidence [0, 1].
-        current_drawdown : float
-            Current batch drawdown as fraction [0, 1].
-        atr_baseline : float
-            Historical ATR reference value (for Masaniello V_i).
-        atr_current : float
-            Current ATR value (for Masaniello V_i).
-        default_win_rate : float
-            Fallback win rate for Masaniello Q_i.
-        sl_bricks : int
-            Stop-loss in bricks (for Masaniello stop_distance_price).
-        tp_bricks : int
-            Take-profit in bricks (for Masaniello reward_risk).
-
-        Returns
-        -------
-        FilteredSignal or None
-            Filtered signal if it passes, None if rejected.
         """
         now = signal.timestamp
         passed: List[str] = []
         rejection_reason: Optional[str] = None
 
         # In warmup mode, bypass session window, lunch, and cooldown filters.
-        # These are time-based checks that don't apply to batch/backtest
-        # processing where timestamps are synthetic or historical.
         if self._warmup_mode:
             passed.append("session_window_warmup")
             passed.append("cooldown_warmup")
@@ -225,19 +187,19 @@ class SignalFilter:
                 else:
                     passed.append("cooldown")
 
-        # Filter 2: Max trades per session (applies even in warmup - hard risk limit)
+        # Filter 2: Max trades per session
         if rejection_reason is None and self._stats.trades_taken >= self.max_trades_per_session:
             rejection_reason = "max_trades_reached"
         elif rejection_reason is None:
             passed.append("max_trades")
 
-        # Filter 3: Max daily loss (applies even in warmup - hard risk limit)
+        # Filter 3: Max daily loss
         if rejection_reason is None and self._stats.daily_pnl_bricks <= -self.max_daily_loss_bricks:
             rejection_reason = "max_daily_loss"
         elif rejection_reason is None:
             passed.append("daily_loss_limit")
 
-        # Filter 4: Max consecutive losses (applies even in warmup - hard risk limit)
+        # Filter 4: Max consecutive losses
         if rejection_reason is None and self._stats.consecutive_losses >= self.max_consecutive_losses:
             rejection_reason = "max_consecutive_losses"
         elif rejection_reason is None:
@@ -260,7 +222,28 @@ class SignalFilter:
                 passed.append("regime_gate")
         elif rejection_reason is None:
             passed.append("regime_gate_skipped")
-            regime_aligned = True  # No gate = always aligned
+            regime_aligned = True
+
+        # Filter 8: EV Expectancy Gate
+        if rejection_reason is None:
+            try:
+                from regime_platform.services.statistics.ev_engine import EVEngine
+                ev_engine = EVEngine()
+                # We use the sync wrapper to avoid blocking the sync pipeline
+                ev_res = ev_engine.validate_signal_sync(
+                    db_session=None, 
+                    regime=regime or "unknown",
+                    pattern=signal.label,
+                    expected_profit=tp_bricks * brick_size,
+                    expected_loss=sl_bricks * brick_size,
+                )
+                
+                if not ev_res.allowed:
+                    rejection_reason = f"ev_insufficient: {ev_res.reason}"
+                else:
+                    passed.append("ev_filter")
+            except Exception as ev_e:
+                passed.append("ev_filter_skipped_error")
 
         # Rejected
         if rejection_reason is not None:

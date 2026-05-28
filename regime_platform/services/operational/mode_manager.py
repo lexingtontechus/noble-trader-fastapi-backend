@@ -377,9 +377,11 @@ class ModeManager:
             )
 
             account = temp_client.get_account()
+            # alpaca-trade-api 3.x may use account_status or account.status
+            status = getattr(account, 'account_status', getattr(account, 'status', 'UNKNOWN'))
             return {
                 "ok": True,
-                "account_status": account.account_status,
+                "account_status": status,
                 "equity": float(account.equity),
                 "buying_power": float(account.buying_power),
             }

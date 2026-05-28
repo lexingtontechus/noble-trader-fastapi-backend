@@ -202,6 +202,9 @@ class StrategySignalResponse(BaseModel):
     vol_state: str
     trend_state: str
     risk_multiplier: float
+    # EV Metrics
+    entry_ev: float            = Field(default=0.0, description="Expected Value of the trade based on historical pattern stats.")
+    expectancy_ratio: float    = Field(default=0.0, description="RR ratio for the trade (Profit/Loss).")
     # Position sizing
     recommended_f: float
     full_kelly_f: float

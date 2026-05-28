@@ -48,6 +48,8 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
             trend_state = "unknown"
             risk_multiplier = 1.0
             confidence = 0.0
+            entry_ev = 0.0
+            expectancy_ratio = 0.0
         else:
             regime_label = snap.regime_label
             vol_state = snap.vol_state
@@ -65,6 +67,24 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
             else:
                 signal = "flat"
                 signal_strength = confidence * 0.3  # low strength for neutral signals
+
+            # EV Validation Layer
+            try:
+                from regime_platform.services.statistics.ev_engine import EVEngine
+                ev_engine = EVEngine()
+                # Note: db_session should ideally be provided via FastAPI dependency
+                ev_res = await ev_engine.validate_signal(
+                    db_session=None, 
+                    regime=regime_label,
+                    pattern=signal,
+                    expected_profit=5.0, 
+                    expected_loss=2.5,   
+                )
+                entry_ev = ev_res.ev
+                expectancy_ratio = ev_res.rr
+            except Exception as ev_e:
+                entry_ev = 0.0
+                expectancy_ratio = 0.0
 
         # 3. Position sizing
         size_result = sizer.size(PositionRequest(
@@ -84,6 +104,11 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
 
         # 5. Adjust signal based on risk
         notes = list(size_result.notes)
+        
+        # Inject EV Filter results into notes
+        if snap and entry_ev != 0.0:
+            notes.append(f"EV Analysis: EV={entry_ev:.2f}, RR={expectancy_ratio:.2f}")
+
         if risk.risk_budget_used > 1.0:
             notes.append("Risk budget exceeded - consider reducing position size.")
         if signal == "long" and risk.regime_max_loss > req.base_risk_limit:
@@ -103,6 +128,8 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
             vol_state=vol_state,
             trend_state=trend_state,
             risk_multiplier=round(risk_multiplier, 4),
+            entry_ev=round(entry_ev, 4),
+            expectancy_ratio=round(expectancy_ratio, 4),
             recommended_f=size_result.recommended_f,
             full_kelly_f=size_result.full_kelly_f,
             fractional_f=size_result.fractional_f,
@@ -117,3 +144,28 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
         )
     except Exception as e:
         raise_http_exception(e, "strategy signal")
+
+
+@router.post(
+    "/sync-journal",
+    summary="Sync live TradeJournal memory to nt_pattern_stats database"
+)
+async def sync_journal(user: TokenData = Depends(get_authed_user)):
+    """
+    Triggers the EVEngine to extract the current edge from the active backend's 
+    TradeJournal memory and persist it to the database.
+    """
+    try:
+        from regime_platform.services.statistics.ev_engine import EVEngine
+        from ..core.database import get_db_session 
+        
+        ev_engine = EVEngine()
+        async with get_db_session() as session:
+            result = await ev_engine.sync_journal_to_stats(session)
+            
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["message"])
+            
+        return result
+    except Exception as e:
+        raise_http_exception(e, "sync journal")
