@@ -343,6 +343,27 @@ def create_app() -> FastAPI:
 
     app.add_middleware(KillSwitchGateMiddleware)
 
+    @app.get("/health", summary="Health check")
+    async def health():
+        """Return system health status including Renko pipeline mode."""
+        from renko.router import _pipelines
+        from regime_platform.core.settings import settings
+        
+        renko_status = {}
+        for sym, pipe in _pipelines.items():
+            renko_status[sym] = {
+                "execution_mode": pipe.executor.execution_mode if hasattr(pipe, 'executor') else "unknown",
+                "dry_run": getattr(pipe.executor, 'dry_run', True),
+                "live_enabled": getattr(pipe.executor, 'live_enabled', False),
+            }
+        
+        return {
+            "status": "ok",
+            "version": "7.2.0",
+            "mode": "paper" if settings.ALPACA_API_KEY else "live",
+            "renko_pipelines": renko_status,
+        }
+
     if MCP_AVAILABLE:
         _mcp_excluded_ops = [
             "clerk_config_auth_clerk_config_get",
