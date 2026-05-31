@@ -76,6 +76,14 @@ class BatchTickInput(BaseModel):
     symbol: Optional[str] = Field(None, description="Override symbol (defaults to query param)")
 
 
+class WarmupRequest(BaseModel):
+    """Warmup request with mode selection and response options."""
+    symbol: str = Field("SPY", description="Trading symbol")
+    period: str = Field("6mo", description="Yahoo Finance period: 1mo, 3mo, 6mo, 1y, 2y, 5y, max")
+    mode: str = Field("auto", description="Warmup mode: full (always rebuild), incremental (append new data), auto (incremental if warm, full if cold)")
+    include_state: bool = Field(True, description="Include full pipeline data in response (bricks, classified, trades, signals, stats)")
+
+
 class ConfigInput(BaseModel):
     """Pipeline configuration."""
     brick_size: float = Field(0.50, description="Fixed brick size in dollars")
@@ -353,6 +361,30 @@ async def _on_config_changed(key: str, entry) -> None:
 
 
 # ── Router ─────────────────────────────────────────────────────────
+
+
+def _build_full_state(pipeline: RenkoPipeline) -> Dict[str, Any]:
+    """Build a full pipeline state dict for warmup responses.
+
+    Includes bricks, classified, signals, trades, stats, and readiness
+    so the frontend can render the Renko page without making 5+ extra
+    GET calls after a warmup.
+    """
+    bricks = list(pipeline.brick_engine.history)
+    classified = list(pipeline.swing_classifier.classified_history)
+    signals = pipeline.pattern_detector.signals
+    trades = list(pipeline.journal.trades)
+
+    return {
+        "bricks": [b.to_dict() for b in bricks[-500:]],  # Last 500 bricks
+        "classified": [c.to_dict() for c in classified[-500:]],
+        "signals": [s.to_dict() for s in signals[-100:]],
+        "trades": [t.to_dict() for t in trades[-100:]],
+        "stats": pipeline.get_stats(),
+        "readiness": pipeline.readiness,
+        "state": pipeline.get_state().to_dict(),
+    }
+
 
 if FASTAPI_AVAILABLE:
     # Auth imports - conditional since regime_platform may not be on sys.path
@@ -1210,40 +1242,45 @@ if FASTAPI_AVAILABLE:
     @limiter.limit(RATE_LIMIT_WRITE)
     async def warmup_pipeline(
         request: Request,
-        symbol: str = "SPY",
-        period: str = "6mo",
-        chunk_size: int = 150,
+        body: WarmupRequest = WarmupRequest(),
         user: TokenData = Depends(require_write),
     ) -> Dict[str, Any]:
         """
         Warm up a Renko pipeline with historical prices - backend-native warmup.
 
-        This endpoint replaces the BFF (Next.js frontend) warmup, enabling
-        MCP agents to fully operate the pipeline without any frontend dependency.
+        Supports three modes:
+          - ``full``: Always reset and rebuild from scratch (6mo Yahoo data).
+            Use when config changed or data is corrupted.
+          - ``incremental``: Append only new prices since the last brick.
+            Fast (typically <1s). Fails if pipeline is cold (no bricks).
+          - ``auto`` (default): Incremental if pipeline is warm (brick_count > 0),
+            full if cold. This is the recommended mode.
 
-        Flow:
-          1. Check Supabase for a fresh snapshot (<4h) - if found, restore it
-          2. Fetch historical prices from Yahoo Finance (via yfinance)
-          3. Create a fresh pipeline (runtime config)
-          4. Set regime to ``low_vol_bull`` (enables signal generation during warmup)
-          5. Feed prices through the pipeline via backtest (warmup mode)
-          6. Save snapshot to Supabase
-          7. Return the pipeline state
+        Response includes full pipeline state when ``include_state=True`` (default),
+        eliminating the need for separate GET /bricks, /classified, /trades, etc.
 
-        Parameters
-        ----------
-        symbol : str
-            Trading symbol (default: SPY)
-        period : str
-            Yahoo Finance period string: 1mo, 3mo, 6mo, 1y, 2y, 5y, max
-        chunk_size : int
-            Internal batch size for processing (default: 150)
+        Flow (auto mode):
+          1. Try Redis L1 → Supabase L2 snapshot restore (instant if fresh <4h)
+          2. If pipeline is warm → incremental: fetch recent prices, append
+          3. If pipeline is cold → full: fetch 6mo Yahoo, rebuild from scratch
+          4. Save snapshot to Redis L1 + Supabase L2
+          5. Return full pipeline data (bricks, classified, trades, signals, stats)
         """
         import time as _time
+        from datetime import datetime, timezone, timedelta
+
+        symbol = body.symbol
+        period = body.period
+        mode = body.mode
+        include_state = body.include_state
+        user_id = getattr(user, 'sub', None) if user else None
 
         warmup_start = _time.time()
 
-        # ── Step 1: Check for fresh snapshot (<4h) ──
+        # ── Step 1: Try snapshot restore (L1 → L2) ──
+        # This replaces the old inline Supabase check — _get_pipeline_async
+        # already does HydrateOnRequest, but we do an explicit restore here
+        # to get the "snapshot_restore" fast path with age info.
         try:
             from regime_platform.core.settings import settings
             if settings.SUPABASE_URL and settings.SUPABASE_KEY:
@@ -1262,7 +1299,6 @@ if FASTAPI_AVAILABLE:
                         rows = resp.json()
                         if rows and rows[0].get("stats"):
                             updated_at = rows[0].get("updated_at")
-                            # Parse timestamp - could be ISO or epoch
                             from regime_platform.core.runtime_config import _parse_timestamp
                             ts = _parse_timestamp(updated_at) if updated_at else 0
                             age_seconds = _time.time() - ts if ts > 0 else float("inf")
@@ -1270,90 +1306,206 @@ if FASTAPI_AVAILABLE:
                                 # Fresh snapshot - restore it directly
                                 data = rows[0]["stats"]
                                 pipeline = RenkoPipeline.from_snapshot(data)
-                                key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+                                key = _pipeline_key(symbol, user_id)
                                 _pipelines[key] = pipeline
                                 log.info(
                                     f"Warmup: restored fresh snapshot for {symbol} "
                                     f"(age={age_seconds:.0f}s)"
                                 )
-                                return {
+                                resp_data = {
                                     "status": "ok",
                                     "symbol": symbol,
                                     "source": "snapshot_restore",
+                                    "mode": "restore",
                                     "age_seconds": round(age_seconds),
                                     "brick_count": pipeline.brick_engine.brick_count,
-                                    "state": pipeline.get_state().to_dict(),
                                     "elapsed_ms": round((_time.time() - warmup_start) * 1000),
                                 }
+                                if include_state:
+                                    resp_data.update(_build_full_state(pipeline))
+                                return resp_data
         except Exception as e:
             log.debug(f"Warmup snapshot check failed (non-critical): {e}")
 
-        # ── Step 2: Fetch Yahoo Finance prices ──
-        try:
-            prices, timestamps = await _fetch_yahoo_prices(symbol, period)
-        except Exception as e:
-            # If Yahoo fetch fails, try restoring a stale snapshot
-            log.warning(f"Yahoo fetch failed for {symbol}: {e} - trying stale snapshot")
-            restored = await _restore_pipeline_snapshot(symbol)
-            if restored:
-                key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
-                _pipelines[key] = restored
-                return {
-                    "status": "ok",
-                    "symbol": symbol,
-                    "source": "stale_snapshot_restore",
-                    "warning": f"Yahoo fetch failed: {e}",
-                    "brick_count": restored.brick_engine.brick_count,
-                    "state": restored.get_state().to_dict(),
-                    "elapsed_ms": round((_time.time() - warmup_start) * 1000),
-                }
-            raise HTTPException(
-                status_code=502,
-                detail=f"Yahoo Finance fetch failed and no snapshot available: {e}",
+        # ── Step 2: Determine warmup mode ──
+        # Check if there's an existing warm pipeline in memory
+        key = _pipeline_key(symbol, user_id)
+        existing_pipeline = _pipelines.get(key)
+        existing_brick_count = existing_pipeline.brick_engine.brick_count if existing_pipeline else 0
+
+        effective_mode = mode
+        if mode == "auto":
+            effective_mode = "incremental" if existing_brick_count > 0 else "full"
+        elif mode == "incremental" and existing_brick_count == 0:
+            # Can't do incremental on a cold pipeline — fall back to full
+            log.info(
+                f"Warmup: incremental mode requested but pipeline is cold "
+                f"for {symbol} — falling back to full"
             )
+            effective_mode = "full"
 
-        if not prices:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Yahoo Finance returned no price data for {symbol}",
-            )
-
-        # ── Step 3: Create fresh pipeline ──
-        config = await RenkoConfig.from_runtime_config(overrides={"symbol": symbol})
-        pipeline = RenkoPipeline(config)
-
-        # ── Step 4: Set regime for warmup (enables signals) ──
-        pipeline.set_regime("low_vol_bull")
-
-        # ── Step 5: Feed prices (warmup mode via backtest) ──
-        result = pipeline.backtest(
-            prices=prices,
-            timestamps=timestamps,
-            regimes=None,
+        log.info(
+            f"Warmup: {symbol} mode={effective_mode} "
+            f"(requested={mode}, existing_bricks={existing_brick_count})"
         )
 
+        # ── Step 3: Fetch prices ──
+        if effective_mode == "incremental":
+            # Incremental: only fetch prices after the last brick timestamp
+            last_brick = existing_pipeline.brick_engine.last_brick
+            if last_brick and last_brick.timestamp > 0:
+                # Calculate how many days since last brick
+                last_ts = datetime.fromtimestamp(last_brick.timestamp, tz=timezone.utc)
+                days_since = (datetime.now(timezone.utc) - last_ts).days
+                # Map to Yahoo Finance period strings (valid: 1mo, 3mo, 6mo, 1y...)
+                # yfinance with interval="1d" works best with month/year periods
+                if days_since <= 30:
+                    incremental_period = "1mo"
+                elif days_since <= 90:
+                    incremental_period = "3mo"
+                elif days_since <= 180:
+                    incremental_period = "6mo"
+                else:
+                    incremental_period = "1y"
+
+                try:
+                    all_prices, all_timestamps = await _fetch_yahoo_prices(
+                        symbol, incremental_period
+                    )
+                except Exception as e:
+                    log.warning(
+                        f"Incremental Yahoo fetch failed for {symbol}: {e} "
+                        f"— falling back to full warmup"
+                    )
+                    effective_mode = "full"
+                else:
+                    # Filter: only keep prices after the last brick's timestamp
+                    cutoff_ts = last_brick.timestamp
+                    new_prices = []
+                    new_timestamps = []
+                    for p, t in zip(all_prices, all_timestamps):
+                        if t > cutoff_ts:
+                            new_prices.append(p)
+                            new_timestamps.append(t)
+
+                    if not new_prices:
+                        # No new prices — pipeline is already up to date
+                        log.info(
+                            f"Warmup: no new prices for {symbol} since last brick "
+                            f"(cutoff={cutoff_ts})"
+                        )
+                        resp_data = {
+                            "status": "ok",
+                            "symbol": symbol,
+                            "source": "up_to_date",
+                            "mode": "incremental",
+                            "brick_count": existing_brick_count,
+                            "prices_fed": 0,
+                            "new_bricks": 0,
+                            "elapsed_ms": round((_time.time() - warmup_start) * 1000),
+                        }
+                        if include_state:
+                            resp_data.update(_build_full_state(existing_pipeline))
+                        return resp_data
+
+                    prices, timestamps = new_prices, new_timestamps
+                    pipeline = existing_pipeline
+                    log.info(
+                        f"Incremental warmup: {symbol} has {len(prices)} new prices "
+                        f"since last brick (period={incremental_period})"
+                    )
+            else:
+                # No valid last brick timestamp — can't do incremental
+                log.warning(
+                    f"Warmup: no valid last brick timestamp for {symbol} "
+                    f"— falling back to full"
+                )
+                effective_mode = "full"
+
+        if effective_mode == "full":
+            # Full rebuild: fetch Yahoo prices and create fresh pipeline
+            try:
+                prices, timestamps = await _fetch_yahoo_prices(symbol, period)
+            except Exception as e:
+                # If Yahoo fetch fails, try restoring a stale snapshot
+                log.warning(f"Yahoo fetch failed for {symbol}: {e} — trying stale snapshot")
+                restored = await _restore_pipeline_snapshot(symbol, user_id=user_id)
+                if restored:
+                    _pipelines[key] = restored
+                    resp_data = {
+                        "status": "ok",
+                        "symbol": symbol,
+                        "source": "stale_snapshot_restore",
+                        "mode": "full",
+                        "warning": f"Yahoo fetch failed: {e}",
+                        "brick_count": restored.brick_engine.brick_count,
+                        "elapsed_ms": round((_time.time() - warmup_start) * 1000),
+                    }
+                    if include_state:
+                        resp_data.update(_build_full_state(restored))
+                    return resp_data
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Yahoo Finance fetch failed and no snapshot available: {e}",
+                )
+
+            if not prices:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Yahoo Finance returned no price data for {symbol}",
+                )
+
+            # Create fresh pipeline from runtime config
+            config = await RenkoConfig.from_runtime_config(overrides={"symbol": symbol})
+            pipeline = RenkoPipeline(config)
+
+        # ── Step 4: Set regime for warmup (enables signals) ──
+        if not pipeline._current_regime:
+            pipeline.set_regime("low_vol_bull")
+
+        # ── Step 5: Feed prices ──
+        brick_count_before = pipeline.brick_engine.brick_count
+
+        if effective_mode == "incremental":
+            # Append new ticks WITHOUT resetting the pipeline
+            # Use process_tick for each price to preserve existing state
+            pipeline.signal_filter.set_warmup_mode(True)
+            for i, price in enumerate(prices):
+                ts = timestamps[i] if timestamps else float(i)
+                pipeline.process_tick(price, ts)
+            pipeline.signal_filter.set_warmup_mode(False)
+            new_bricks = pipeline.brick_engine.brick_count - brick_count_before
+        else:
+            # Full rebuild: use backtest (which resets and reprocesses)
+            result = pipeline.backtest(
+                prices=prices,
+                timestamps=timestamps,
+                regimes=None,
+            )
+            new_bricks = pipeline.brick_engine.brick_count
+
         # ── Step 6: Save snapshot ──
-        key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
         _pipelines[key] = pipeline
-        await _save_pipeline_snapshot(symbol, pipeline)
+        await _save_pipeline_snapshot(symbol, pipeline, user_id=user_id)
 
         # ── Step 6.5: Prune stale snapshots (housekeeping) ──
         prune_count = await _prune_stale_snapshots(symbol, max_age_hours=24.0)
 
         elapsed = _time.time() - warmup_start
         total_bricks = pipeline.brick_engine.brick_count
-        journal_stats = result.get("stats", {}).get("journal", {})
+        journal_stats = pipeline.journal.get_stats()
 
         # Discord notification
         if DISCORD_AVAILABLE:
             try:
                 asyncio.create_task(discord_notifier.send_status(
-                    message=f"Pipeline warmup complete: {symbol} - {total_bricks} bricks, {len(prices)} prices",
+                    message=f"Pipeline warmup complete: {symbol} — {total_bricks} bricks ({effective_mode})",
                     symbol=symbol,
                     level=AlertLevel.INFO,
                     data={
-                        "source": "backend_warmup",
+                        "source": f"backend_warmup_{effective_mode}",
                         "total_bricks": total_bricks,
+                        "new_bricks": new_bricks,
                         "total_prices": len(prices),
                         "elapsed_seconds": round(elapsed, 1),
                     },
@@ -1362,22 +1514,27 @@ if FASTAPI_AVAILABLE:
                 pass
 
         log.info(
-            f"Warmup complete for {symbol}: {total_bricks} bricks from "
-            f"{len(prices)} prices in {elapsed:.1f}s"
+            f"Warmup complete for {symbol}: {total_bricks} bricks "
+            f"(+{new_bricks} new) from {len(prices)} prices "
+            f"in {elapsed:.1f}s [{effective_mode}]"
         )
 
-        return {
+        resp_data = {
             "status": "ok",
             "symbol": symbol,
             "source": "yahoo_fetch",
+            "mode": effective_mode,
             "prices_fed": len(prices),
             "brick_count": total_bricks,
+            "new_bricks": new_bricks,
             "total_trades": journal_stats.get("total_trades", 0),
             "total_pnl_bricks": journal_stats.get("total_pnl_bricks", 0.0),
             "pruned_snapshots": prune_count,
-            "state": pipeline.get_state().to_dict(),
             "elapsed_ms": round(elapsed * 1000),
         }
+        if include_state:
+            resp_data.update(_build_full_state(pipeline))
+        return resp_data
 
     @renko_router.post("/snapshot/save")
     async def save_snapshot(
