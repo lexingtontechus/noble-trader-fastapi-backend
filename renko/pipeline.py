@@ -446,10 +446,10 @@ class RenkoPipeline:
         sf = self.signal_filter
         signal_filter_state = {
             "warmup_mode": sf._warmup_mode,
-            "session_trades_taken": sf._session_trades_taken,
-            "session_daily_pnl_bricks": sf._session_daily_pnl_bricks,
-            "consecutive_losses": sf._consecutive_losses,
-            "last_trade_ts": sf._last_trade_ts,
+            "session_trades_taken": sf._stats.trades_taken,
+            "session_daily_pnl_bricks": sf._stats.daily_pnl_bricks,
+            "consecutive_losses": sf._stats.consecutive_losses,
+            "last_trade_ts": sf._stats.last_trade_ts,
             # Masaniello batch state (if applicable)
             "masaniello_batch_wins": getattr(sf, '_masaniello_batch_wins', 0),
             "masaniello_batch_losses": getattr(sf, '_masaniello_batch_losses', 0),
@@ -664,10 +664,10 @@ class RenkoPipeline:
         if sf_data and isinstance(sf_data, dict):
             sf = pipeline.signal_filter
             sf._warmup_mode = sf_data.get("warmup_mode", False)
-            sf._session_trades_taken = sf_data.get("session_trades_taken", 0)
-            sf._session_daily_pnl_bricks = sf_data.get("session_daily_pnl_bricks", 0.0)
-            sf._consecutive_losses = sf_data.get("consecutive_losses", 0)
-            sf._last_trade_ts = sf_data.get("last_trade_ts", 0.0)
+            sf._stats.trades_taken = sf_data.get("session_trades_taken", 0)
+            sf._stats.daily_pnl_bricks = sf_data.get("session_daily_pnl_bricks", 0.0)
+            sf._stats.consecutive_losses = sf_data.get("consecutive_losses", 0)
+            sf._stats.last_trade_ts = sf_data.get("last_trade_ts", 0.0)
             # Masaniello batch state
             if hasattr(sf, '_masaniello_batch_wins'):
                 sf._masaniello_batch_wins = sf_data.get("masaniello_batch_wins", 0)
@@ -678,7 +678,7 @@ class RenkoPipeline:
                 sf._masaniello_pnl = sf_data.get("masaniello_pnl", 0.0)
             logger.info(
                 "Hydrated signal filter: warmup=%s, session_trades=%d, consecutive_losses=%d",
-                sf._warmup_mode, sf._session_trades_taken, sf._consecutive_losses,
+                sf._warmup_mode, sf._stats.trades_taken, sf._stats.consecutive_losses,
             )
 
         # ── Hydrate pending signal context (v3.1 - trade journal continuity) ──
