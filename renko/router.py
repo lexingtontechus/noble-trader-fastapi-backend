@@ -177,6 +177,8 @@ class OptimizationRequest(BaseModel):
     brick_sizes: List[float] = Field([0.25, 0.50, 1.00], description="Brick sizes to test")
     sl_bricks_range: List[int] = Field([2, 3, 4], description="SL values to test")
     tp_bricks_range: List[int] = Field([4, 5, 6], description="TP values to test")
+    # Risk-reward filter
+    min_rr: float = Field(0.0, description="Minimum risk-reward ratio (tp_bricks / sl_bricks). Combos below this are skipped. Default 0.0 = no filter.")
     # Phase 2+7 params
     slippage_bps: float = Field(2.0)
     commission_bps: float = Field(5.0)
@@ -1035,7 +1037,12 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/backtest/optimize")
     async def optimize_backtest(request: Request, body: OptimizationRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
-        """Run parameter sweep optimization with Phase 6 statistical rigor."""
+        """Run parameter sweep optimization with Phase 6 statistical rigor.
+        
+        Supports min_rr filter: combos where tp_bricks/sl_bricks < min_rr
+        are skipped entirely, reducing computation and preventing low R:R
+        strategies from contaminating the ranking.
+        """
         import numpy as np
         from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio
         from regime_platform.services.statistics.bootstrap_ci import compute_all_bootstrap_cis
@@ -1043,10 +1050,15 @@ if FASTAPI_AVAILABLE:
 
         symbol = body.symbol or "SPY"
         results = []
+        skipped_rr = 0
 
         for brick_size in body.brick_sizes:
             for sl in body.sl_bricks_range:
                 for tp in body.tp_bricks_range:
+                    # ── R:R filter: skip combos below minimum risk-reward ──
+                    if body.min_rr > 0 and (tp / sl) < body.min_rr:
+                        skipped_rr += 1
+                        continue
                     overrides = {
                         "symbol": symbol,
                         "brick_size": brick_size,
@@ -1126,6 +1138,7 @@ if FASTAPI_AVAILABLE:
 
         return {
             "n_combinations": n_trials,
+            "skipped_rr": skipped_rr,
             "results": results,
             "multiple_testing": mtc,
             "deflated_sharpe": dsr,

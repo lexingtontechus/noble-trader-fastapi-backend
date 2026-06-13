@@ -215,12 +215,15 @@ class TradeJournal:
             if dd > max_dd:
                 max_dd = dd
 
-        # Sharpe estimate (simplified)
+        # Sharpe estimate — using ddof=1 (sample standard deviation)
+        # Previously used ddof=0 (population std) which inflates Sharpe
+        # for small samples. ddof=1 is the correct choice for sample data
+        # and matches industry standard (pandas, quantlib, etc.)
         if len(trades) > 1:
             import numpy as np
             returns = np.array([t.pnl_bricks for t in trades])
             mean_r = returns.mean()
-            std_r = returns.std()
+            std_r = returns.std(ddof=1)  # Sample std — correct for backtested trade samples
             sharpe = mean_r / std_r if std_r > 0 else 0.0
         else:
             sharpe = 0.0
