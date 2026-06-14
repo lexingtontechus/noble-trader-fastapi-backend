@@ -59,6 +59,29 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+# ── Numpy sanitization ────────────────────────────────────────────
+# Pydantic can't serialize numpy.bool_, numpy.int64, numpy.float64, etc.
+# Recursively convert all numpy types to native Python before returning.
+
+def _sanitize_numpy(obj: Any) -> Any:
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {k: _sanitize_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_numpy(v) for v in obj]
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return _sanitize_numpy(obj.tolist())
+    return obj
+
+
 # ── Pydantic models ───────────────────────────────────────────────
 
 
@@ -804,7 +827,7 @@ if FASTAPI_AVAILABLE:
         """Get comprehensive pipeline statistics."""
         try:
             pipeline = await _get_pipeline_async(symbol)
-            return pipeline.get_stats()
+            return _sanitize_numpy(pipeline.get_stats())
         except Exception as e:
             log.error(f"get_stats failed for {symbol}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
@@ -931,7 +954,7 @@ if FASTAPI_AVAILABLE:
     async def backtest_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
         """Get backtest/trading statistics from the journal."""
         pipeline = await _get_pipeline_async(symbol)
-        return pipeline.journal.get_stats()
+        return _sanitize_numpy(pipeline.journal.get_stats())
 
     @renko_router.post("/backtest/run")
     async def run_backtest(request: Request, body: BacktestRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
@@ -999,7 +1022,7 @@ if FASTAPI_AVAILABLE:
                 "mode": "cold_warmup",
             }
 
-        return result
+        return _sanitize_numpy(result)
 
     @renko_router.post("/backtest/run/stream")
     async def run_backtest_stream(request: Request, body: BacktestStreamRequest, user: TokenData = Depends(require_write)):
@@ -1171,7 +1194,7 @@ if FASTAPI_AVAILABLE:
         # Sort by Sharpe descending
         results.sort(key=lambda x: x["sharpe"], reverse=True)
 
-        return {
+        response = {
             "n_combinations": n_trials,
             "skipped_rr": skipped_rr,
             "results": results,
@@ -1179,6 +1202,9 @@ if FASTAPI_AVAILABLE:
             "deflated_sharpe": dsr,
             "best": results[0] if results else None,
         }
+
+        # Sanitize numpy types (numpy.bool_, numpy.int64, etc.) before Pydantic serialization
+        return _sanitize_numpy(response)
 
     @renko_router.post("/statistics/rigor")
     async def statistical_rigor(request: Request, body: StatisticalRigorRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
