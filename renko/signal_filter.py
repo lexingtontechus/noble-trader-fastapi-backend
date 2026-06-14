@@ -160,6 +160,7 @@ class SignalFilter:
         default_win_rate: float = 0.55,
         sl_bricks: int = 3,
         tp_bricks: int = 5,
+        trend_probs: Optional[dict] = None,
     ) -> Optional[FilteredSignal]:
         """
         Evaluate a signal through all filters.
@@ -224,18 +225,25 @@ class SignalFilter:
             passed.append("regime_gate_skipped")
             regime_aligned = True
 
-        # Filter 8: EV Expectancy Gate
+        # Filter 8: EV Expectancy Gate (now with real P_regime when available)
         if rejection_reason is None:
             try:
                 from regime_platform.services.statistics.ev_engine import EVEngine
                 ev_engine = EVEngine()
+                
+                # Determine direction from signal
+                direction = "long" if signal.direction == SignalDirection.LONG else "short"
+                
                 # We use the sync wrapper to avoid blocking the sync pipeline
+                # Pass trend_probs and direction for real P_regime when available
                 ev_res = ev_engine.validate_signal_sync(
                     db_session=None, 
                     regime=regime or "unknown",
                     pattern=signal.label,
                     expected_profit=tp_bricks * brick_size,
                     expected_loss=sl_bricks * brick_size,
+                    trend_probs=trend_probs,  # NEW: pass HMM trend probs
+                    direction=direction,  # NEW: pass direction
                 )
                 
                 if not ev_res.allowed:

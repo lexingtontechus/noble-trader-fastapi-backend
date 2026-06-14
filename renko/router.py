@@ -236,6 +236,41 @@ class SizingModelRequest(BaseModel):
     target_wins: Optional[int] = Field(None, description="W target wins per batch (default 3)")
 
 
+class EVComputeRequest(BaseModel):
+    """Full EV computation request with blended P_win from regime + imbalance + Markov."""
+    prices: List[float] = Field(..., description="Historical price series for Markov chain fitting")
+    symbol: str = Field("SPY", description="Trading symbol")
+    brick_size: float = Field(0.50, description="Brick size in dollars")
+    sl_bricks: int = Field(3, description="Stop-loss in brick units")
+    tp_bricks: int = Field(5, description="Take-profit in brick units")
+    direction: str = Field("long", description="Trade direction: 'long' or 'short'")
+    # Optional signal sources (if not provided, computed from prices)
+    trend_probs: Optional[Dict[str, float]] = Field(None, description="HMM trend posterior probabilities (e.g. {'bear': 0.1, 'neutral': 0.3, 'bull': 0.6})")
+    imbalance_signal: Optional[Dict[str, float]] = Field(None, description="L2 order book imbalance signal with keys: signal, confidence, persistence")
+    base_kelly: float = Field(0.0, description="Base Kelly fraction for EV scaling")
+    markov_window: int = Field(200, description="Rolling window for Markov chain observations")
+
+
+class EVComputeResponse(BaseModel):
+    """Full EV computation response with blended P_win breakdown and execution strategy."""
+    p_win: float
+    p_regime: float
+    p_imbalance: float
+    p_markov: float
+    ev: float
+    ev_per_dollar: float
+    rr: float
+    profit: float
+    stake: float
+    allowed: bool
+    aggression: str
+    ev_scale: float
+    order_type: str
+    patience_bars: int
+    markov_current_state: str
+    markov_n_observations: int
+
+
 # ── Pipeline registry ─────────────────────────────────────────────
 
 # In-memory registry of active pipelines - keyed by composite user_id:symbol
@@ -1777,6 +1812,134 @@ if FASTAPI_AVAILABLE:
             "classified_serialized": len(snap.get("classified", [])),
             "readiness": pipeline.readiness,
         }
+
+    # ── EV Computation Endpoints ──────────────────────────────────────
+
+    @renko_router.post("/ev/compute", response_model=EVComputeResponse, summary="Full EV computation with blended P_win")
+    async def compute_ev(
+        request: Request,
+        req: EVComputeRequest,
+        user: TokenData = Depends(get_authed_user),
+    ) -> EVComputeResponse:
+        """
+        Compute full Expected Value with blended P_win from three signal sources:
+        
+        1. **P_regime** — from HMM trend posteriors (auto-detected if not provided)
+        2. **P_imbalance** — from L2 order book signal (0.50 neutral if not provided)
+        3. **P_markov** — from Markov transition matrix (built from prices)
+        
+        Blended P_win = 0.40 * P_regime + 0.30 * P_imbalance + 0.30 * P_markov
+        
+        Also returns aggression dispatch (passive/mid/aggressive) with order type,
+        limit offset, patience bars, and EV-scaled Kelly factor.
+        """
+        import numpy as np
+        
+        # 1. Detect regime if trend_probs not provided
+        trend_probs = req.trend_probs
+        if trend_probs is None and len(req.prices) >= 20:
+            try:
+                from regime_platform.core.regime_engine import RegimeHMM
+                prices = np.array(req.prices, dtype=float)
+                model = await RegimeHMM.from_runtime_config()
+                model.fit(prices)
+                snap = model.predict(prices)
+                trend_probs = dict(zip(RegimeHMM.TREND_LABELS, snap.trend_probs))
+            except Exception as e:
+                log.debug(f"Regime auto-detection failed for EV compute: {e}")
+        
+        # 2. Build Markov chain from prices
+        from regime_platform.services.statistics.markov_chain import MarkovChain
+        mc = MarkovChain(brick_size=req.brick_size, window=req.markov_window)
+        transition_matrix = mc.fit_from_prices(req.prices) if len(req.prices) >= 3 else None
+        
+        # 3. Compute blended EV
+        from regime_platform.services.statistics.ev_engine import EVEngine
+        ev_engine = EVEngine()
+        ev_result = ev_engine.compute_ev(
+            trend_probs=trend_probs,
+            direction=req.direction,
+            imbalance_signal=req.imbalance_signal,
+            transition_matrix=transition_matrix,
+            current_state=mc.current_state,
+            tp_bricks=req.tp_bricks,
+            sl_bricks=req.sl_bricks,
+            brick_size=req.brick_size,
+        )
+        
+        # 4. Dispatch aggression
+        from regime_platform.services.execution.aggression_dispatcher import AggressionDispatcher
+        dispatcher = AggressionDispatcher()
+        
+        # Determine vol_state for patience scaling
+        vol_state = "med"  # Default
+        if trend_probs:
+            # Infer vol_state from regime label if available
+            # This is a simplified mapping; in production, use actual vol_probs
+            vol_state = "med"
+        
+        dispatch = dispatcher.dispatch(
+            ev_per_dollar=ev_result.ev_per_dollar,
+            vol_state=vol_state,
+            base_kelly=req.base_kelly,
+        )
+        
+        return EVComputeResponse(
+            p_win=ev_result.p_win,
+            p_regime=ev_result.p_regime,
+            p_imbalance=ev_result.p_imbalance,
+            p_markov=ev_result.p_markov,
+            ev=ev_result.ev,
+            ev_per_dollar=ev_result.ev_per_dollar,
+            rr=ev_result.rr,
+            profit=ev_result.profit,
+            stake=ev_result.stake,
+            allowed=ev_result.allowed,
+            aggression=dispatch.aggression,
+            ev_scale=dispatch.ev_scale,
+            order_type=dispatch.order_type,
+            patience_bars=dispatch.patience_bars,
+            markov_current_state=mc.current_state,
+            markov_n_observations=mc.n_observations,
+        )
+
+    @renko_router.post("/ev/sync-journal", summary="Sync trade journal to nt_pattern_stats")
+    async def sync_journal_to_stats(user=Depends(require_write)) -> Dict[str, Any]:
+        """
+        Extract historical trade data from the active TradeJournal memory
+        and upsert aggregated win rates/PnL into nt_pattern_stats.
+        
+        This enables the EV engine's DB lookup path to use real historical
+        win rates instead of defaults.
+        """
+        try:
+            from regime_platform.services.statistics.ev_engine import EVEngine
+            from regime_platform.core.database import get_session
+            
+            ev_engine = EVEngine()
+            async for session in get_session():
+                result = await ev_engine.sync_journal_to_stats(session)
+                return result
+        except ImportError:
+            # Fallback if database module not available
+            try:
+                from regime_platform.services.statistics.ev_engine import EVEngine
+                ev_engine = EVEngine()
+                # Try with a generic session approach
+                from regime_platform.core.settings import settings
+                if settings.DATABASE_URL:
+                    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+                    from sqlalchemy.orm import sessionmaker
+                    engine = create_async_engine(settings.DATABASE_URL)
+                    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+                    async with async_session() as session:
+                        result = await ev_engine.sync_journal_to_stats(session)
+                        return result
+                return {"status": "error", "message": "No database session available"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 else:
     # Stub router for environments without FastAPI

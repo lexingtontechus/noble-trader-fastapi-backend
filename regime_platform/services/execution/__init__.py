@@ -5,6 +5,7 @@ Provides models for realistic execution simulation:
   - Market impact estimation (Almgren-Chriss)
   - Fill probability modeling (limit/stop orders)
   - Borrowing & financing costs (short/leveraged positions)
+  - Aggression Dispatcher: Maps EV → execution strategy (order type, limit offset, patience)
 
 All default parameters are configurable via runtime_config (DB -> env -> hardcoded).
 Use `get_execution_defaults()` to resolve them in async contexts.
@@ -26,6 +27,11 @@ from regime_platform.services.execution.borrow_financing import (
     compute_margin_cost,
     compute_dividend_cost_short,
     compute_total_financing_costs,
+)
+
+from regime_platform.services.execution.aggression_dispatcher import (
+    AggressionDispatcher,
+    DispatchResult,
 )
 
 
@@ -61,7 +67,7 @@ async def get_execution_defaults() -> dict:
         "fill_interp_mid": await runtime_config.get_float("exec.fill_interp_mid", default=0.5),
         "fill_interp_low": await runtime_config.get_float("exec.fill_interp_low", default=0.2),
         # Financing
-        "htb_premium_bps": await runtime_config.get_float("exec.htb_premium_bps", default=500.0),
+        "htc_premium_bps": await runtime_config.get_float("exec.htb_premium_bps", default=500.0),
         "borrow_rate_bps": await runtime_config.get_float("exec.borrow_rate_bps", default=50.0),
         "margin_rate_bps": await runtime_config.get_float("exec.margin_rate_bps", default=150.0),
         "dividend_yield_bps": await runtime_config.get_float("exec.dividend_yield_bps", default=200.0),
@@ -83,6 +89,9 @@ __all__ = [
     "compute_margin_cost",
     "compute_dividend_cost_short",
     "compute_total_financing_costs",
+    # Aggression Dispatcher
+    "AggressionDispatcher",
+    "DispatchResult",
     # Runtime defaults
     "get_execution_defaults",
 ]
