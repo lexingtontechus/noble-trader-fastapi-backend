@@ -90,18 +90,18 @@ const LIGHT_LOCK_TTL_S = 90;             // 1.5 min — light regime lock
 // Light regime is suppressed during these 6 hours to avoid colliding
 // with the heavy sweep cron jobs (which fire at :00/:05/:10/etc).
 // Enforced BOTH in the cron schedule AND here (defense in depth).
-const HEAVY_HOURS_UTC = [2, 6, 10, 14, 18, 22];
+const HEAVY_HOURS_UTC = [20];  // v2: heavy sweeps run daily at 20:00 UTC only
 
 function isHeavyHour(): boolean {
   return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
 }
 
 // Heavy sweep grid ranges (ported from heavy-sweep v4)
-const SWEEP_SL_RANGE = [2, 3, 4, 5];
+const SWEEP_SL_RANGE = [3, 5, 7];    // v2: wider SL range for 90d lookback
 const SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12];
 const MIN_RR = 2.0;
 const MAX_SHARPE = 10.0;
-const MIN_TRADES = 5;
+const MIN_TRADES = 10;
 
 // ─── Upstash Redis helpers ────────────────────────────────────
 // NOTE: UPSTASH_URL and UPSTASH_TOKEN are declared in _shared/utils.ts
@@ -326,7 +326,7 @@ async function runHeavySweepForSymbol(
         kelly_f: kellyF,
         last_update: Date.now(),
         sweep_timestamp: Date.now(),
-        sweep_window: "45d (fallback)",
+        sweep_window: "90d (fallback)",
         signal: tradeSignal.signal,
         entry_price: tradeSignal.entry_price,
         stop_loss: tradeSignal.stop_loss,
@@ -565,7 +565,7 @@ async function runHeavySweepForSymbol(
       kelly_f: kellyF,
       last_update: Date.now(),
       sweep_timestamp: Date.now(),
-      sweep_window: "45d",
+      sweep_window: "90d",
       sweep_sharpe: best.sharpe,
       sweep_trades: best.total_trades,
       signal: tradeSignal.signal,
@@ -652,7 +652,7 @@ async function runHeavySweepForSymbol(
       kelly_f: kellyF,
       markov_p_up: markovPUp,
       markov_p_dn: markovPDn,
-      sweep_window: "45d",
+      sweep_window: "90d",
       sweep_duration_ms: duration,
       n_combos_tested: nCombos,
     });
@@ -1486,7 +1486,7 @@ async function processLightBatch(
     const DEADLINE_MS = 110_000;
     const PER_SYMBOL_DEADLINE_MS = 40_000;
     const startTime = Date.now();
-    const RATE_LIMIT_DELAY_MS = 2000;
+    const RATE_LIMIT_DELAY_MS = 8000;
     let cacheChanged = false;
 
     // ── Vectorized TimesFM: fetch prices + one batched call ──

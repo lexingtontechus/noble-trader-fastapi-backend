@@ -1323,10 +1323,9 @@ export async function fetchAlpacaCandles(
 // Render's 0.5 CPU tier. The /optimize endpoint does HMM fitting + backtesting
 // for each brick×SL×TP combo, which is CPU-bound. On 0.5 CPU this takes 60-90s
 // for 45d; 90d would exceed Supabase's edge function timeout.
-// UPGRADE PATH: When upgrading to ≥1 CPU on Render, change to 90d/2160h for
-// more statistical significance.
-const SWEEP_CANDLE_HOURS = 1080; // 45 days × 24h
-const SWEEP_YAHOO_RANGE = "45d";
+// v2: Upgraded lookback 45d → 90d for more statistical significance.
+const SWEEP_CANDLE_HOURS = 2160; // 90 days × 24h
+const SWEEP_YAHOO_RANGE = "90d";
 
 export async function fetchSweepCandles(
   symbolConfig: SymbolConfig,
@@ -1905,6 +1904,98 @@ export function isVolatilityShift(prevRegime: string, currentRegime: string): bo
   return prevHigh !== currHigh;
 }
 
+// ─── Lead/Lag: Correlation Matrix ───────────────────────────
+function computeCorrelationMatrix(
+  pricesBySymbol: Record<string, number[]>,
+): { matrix: Record<string, Record<string, number>>; leaders: Record<string, string[]> } {
+  const matrix: Record<string, Record<string, number>> = {};
+  const leaders: Record<string, string[]> = {};
+  const symbols = Object.keys(pricesBySymbol).filter(
+    (s) => (pricesBySymbol[s]?.length ?? 0) >= 20,
+  );
+  if (symbols.length < 2) return { matrix, leaders };
+
+  const returns: Record<string, number[]> = {};
+  for (const sym of symbols) {
+    const prices = pricesBySymbol[sym]!;
+    const r: number[] = [];
+    for (let i = prices.length - 19; i < prices.length; i++) {
+      if (prices[i - 1] > 0) r.push(Math.log(prices[i] / prices[i - 1]));
+    }
+    if (r.length >= 19) returns[sym] = r;
+  }
+
+  const validSyms = Object.keys(returns);
+  if (validSyms.length < 2) return { matrix, leaders };
+
+  for (const a of validSyms) {
+    matrix[a] = {};
+    const ra = returns[a]!;
+    const meanA = ra.reduce((s, v) => s + v, 0) / ra.length;
+    for (const b of validSyms) {
+      if (a === b) { matrix[a][b] = 1; continue; }
+      const rb = returns[b]!;
+      const meanB = rb.reduce((s, v) => s + v, 0) / rb.length;
+      let cov = 0, varA = 0, varB = 0;
+      for (let i = 0; i < ra.length; i++) {
+        const da = ra[i] - meanA;
+        const db = rb[i] - meanB;
+        cov += da * db;
+        varA += da * da;
+        varB += db * db;
+      }
+      const denom = Math.sqrt(varA * varB);
+      matrix[a][b] = denom > 0 ? Math.max(-1, Math.min(1, cov / denom)) : 0;
+    }
+  }
+
+  for (const sym of validSyms) {
+    const corrs = Object.entries(matrix[sym]!)
+      .filter(([k, v]) => k !== sym && v > 0.3)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 2)
+      .map(([k]) => k);
+    leaders[sym] = corrs;
+  }
+  return { matrix, leaders };
+}
+
+function adjustLeadLag(
+  symbol: string,
+  pTimesfmMap: Map<string, number | null>,
+  leaders: Record<string, string[]>,
+  selfWeight = 0.7,
+): number | null {
+  const own = pTimesfmMap.get(symbol) ?? null;
+  if (own === null) return null;
+  const leaderSyms = leaders[symbol] ?? [];
+  if (leaderSyms.length === 0) return own;
+  let sum = 0, count = 0;
+  for (const ls of leaderSyms) {
+    const lp = pTimesfmMap.get(ls);
+    if (lp !== null) { sum += lp; count++; }
+  }
+  if (count === 0) return own;
+  return selfWeight * own + (1 - selfWeight) * (sum / count);
+}
+
+// ─── Tail Risk ──────────────────────────────────────────────
+function computeTailRisk(
+  pTimesfm: number | null,
+  regime: string,
+  timesfmConf: number,
+): { score: number; action: string; multiplier: number } {
+  const result = { score: 0, action: "none" as string, multiplier: 1.0 };
+  if (pTimesfm === null || timesfmConf < 0.5) return result;
+  const isExtreme = pTimesfm < 0.2 || pTimesfm > 0.8;
+  const isHighVol = regime.includes("high_vol");
+  const isExtremeConfident = isExtreme && timesfmConf >= 0.7;
+  if (isExtremeConfident && isHighVol) { result.score = 0.85; result.action = "skip"; result.multiplier = 0.0; }
+  else if (isExtremeConfident) { result.score = 0.60; result.action = "reduce_50"; result.multiplier = 0.5; }
+  else if (isExtreme && isHighVol) { result.score = 0.35; result.action = "reduce_25"; result.multiplier = 0.75; }
+  return result;
+}
+
 // ─── Utility ────────────────────────────────────────────────
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1926,18 +2017,18 @@ const LIGHT_LOCK_TTL_S = 90;             // 1.5 min — light regime lock
 // Light regime is suppressed during these 6 hours to avoid colliding
 // with the heavy sweep cron jobs (which fire at :00/:05/:10/etc).
 // Enforced BOTH in the cron schedule AND here (defense in depth).
-const HEAVY_HOURS_UTC = [2, 6, 10, 14, 18, 22];
+const HEAVY_HOURS_UTC = [20];  // v2: heavy sweeps run daily at 20:00 UTC only
 
 function isHeavyHour(): boolean {
   return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
 }
 
 // Heavy sweep grid ranges (ported from heavy-sweep v4)
-const SWEEP_SL_RANGE = [2, 3, 4, 5];
+const SWEEP_SL_RANGE = [3, 5, 7];    // v2: wider SL range for 90d lookback
 const SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12];
 const MIN_RR = 2.0;
 const MAX_SHARPE = 10.0;
-const MIN_TRADES = 5;
+const MIN_TRADES = 10;
 
 // ─── Upstash Redis helpers ────────────────────────────────────
 // NOTE: UPSTASH_URL and UPSTASH_TOKEN are declared in _shared/utils.ts
@@ -2401,7 +2492,7 @@ async function runHeavySweepForSymbol(
       kelly_f: kellyF,
       last_update: Date.now(),
       sweep_timestamp: Date.now(),
-      sweep_window: "45d",
+      sweep_window: "90d",
       sweep_sharpe: best.sharpe,
       sweep_trades: best.total_trades,
       signal: tradeSignal.signal,
@@ -2489,7 +2580,7 @@ async function runHeavySweepForSymbol(
       kelly_f: kellyF,
       markov_p_up: markovPUp,
       markov_p_dn: markovPDn,
-      sweep_window: "45d",
+      sweep_window: "90d",
       sweep_duration_ms: duration,
       n_combos_tested: nCombos,
     });
@@ -3266,20 +3357,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // ── Light mode: process in background, return 202 immediately ──
-    // (preserves the light-regime pattern that avoids pg_net 5s timeout)
-    const symbolsToProcessCaptured = symbolsToProcess;
-    setTimeout(() => processLightBatch(symbolsToProcessCaptured, invocationToken), 0);
+    // ── Light mode: process synchronously (returns actual results) ──
+    const batchResults = await processLightBatch(symbolsToProcess, invocationToken);
 
     return new Response(
       JSON.stringify({
-        status: "accepted",
+        status: "completed",
         mode: "light",
-        message: `Processing ${symbolsToProcess.length} symbols in background`,
+        message: `Processed ${symbolsToProcess.length} symbols`,
         symbols: symbolsToProcess.map(s => s.symbol),
+        results: batchResults,
         timestamp: Date.now(),
       }),
-      { status: 202, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      { headers: { ...corsHeaders(), "Content-Type": "application/json" } },
     );
 
   } catch (err) {
@@ -3307,13 +3397,14 @@ Deno.serve(async (req: Request) => {
 async function processLightBatch(
   symbolsToProcess: SymbolConfig[],
   invocationToken: string,
-): Promise<void> {
+): Promise<{ processed: number; skipped: number; errors: number; cacheChanged: boolean; symbols: Record<string, { regime: string; error?: string }> }> {
+  const result = { processed: 0, skipped: 0, errors: 0, cacheChanged: false, symbols: {} as Record<string, { regime: string; error?: string }> };
   try {
     const regimeCache = await redisLoadRegimeCache();
     const DEADLINE_MS = 110_000;
     const PER_SYMBOL_DEADLINE_MS = 40_000;
     const startTime = Date.now();
-    const RATE_LIMIT_DELAY_MS = 2000;
+    const RATE_LIMIT_DELAY_MS = 8000;
     let cacheChanged = false;
 
     // ── Vectorized TimesFM: fetch prices + one batched call ──
@@ -3357,9 +3448,10 @@ async function processLightBatch(
 
     for (let i = 0; i < symbolsToProcess.length; i++) {
       const elapsed = Date.now() - startTime;
-      if (elapsed > DEADLINE_MS) {
-        console.warn(`[sweep:light] Deadline exceeded (${elapsed}ms). Skipping remaining ${symbolsToProcess.length - i} symbols.`);
-        break;
+	      if (elapsed > DEADLINE_MS) {
+	        console.warn(`[sweep:light] Deadline exceeded (${elapsed}ms). Skipping remaining ${symbolsToProcess.length - i} symbols.`);
+	        result.errors += symbolsToProcess.length - i;
+	        break;
       }
 
       const sym = symbolsToProcess[i];
@@ -3369,10 +3461,12 @@ async function processLightBatch(
       // ── Layer 1: Per-symbol lock ──
       const symbolLockToken = `${invocationToken}:${sym.symbol}`;
       const lockAcquired = await acquireSymbolLock(sym.symbol, "light", symbolLockToken);
-      if (!lockAcquired) {
-        const skipMsg = "skipped: symbol-locked by concurrent invocation (heavy sweep holding lock)";
-        console.warn(`[sweep:light] ${sym.symbol}: SKIPPED — symbol locked by another invocation`);
-        // Fix C: log skip to nt_errors for dashboard visibility
+	      if (!lockAcquired) {
+	        const skipMsg = "skipped: symbol-locked by concurrent invocation (heavy sweep holding lock)";
+	        console.warn(`[sweep:light] ${sym.symbol}: SKIPPED — symbol locked by another invocation`);
+	        result.skipped++;
+	        result.symbols[sym.symbol] = { regime: "skipped_locked", error: skipMsg };
+	        // Fix C: log skip to nt_errors for dashboard visibility
         try {
           await logError(sym.symbol, "sweep-light", skipMsg);
         } catch { /* best effort */ }
@@ -3391,11 +3485,19 @@ async function processLightBatch(
           })),
         ]);
 
-        if (symbolResult.entry) {
-          regimeCache[sym.symbol] = symbolResult.entry;
-          if (symbolResult.regimeShift) cacheChanged = true;
-        }
-      } finally {
+	        if (symbolResult.entry) {
+	          regimeCache[sym.symbol] = symbolResult.entry;
+	          if (symbolResult.regimeShift) cacheChanged = true;
+	        }
+
+	        if (symbolResult.error) {
+	          result.errors++;
+	          result.symbols[sym.symbol] = { regime: symbolResult.regime, error: symbolResult.error };
+	        } else {
+	          result.processed++;
+	          result.symbols[sym.symbol] = { regime: symbolResult.regime };
+	        }
+	      } finally {
         await releaseSymbolLock(sym.symbol, symbolLockToken);
       }
 
@@ -3410,8 +3512,13 @@ async function processLightBatch(
     } else {
       console.log(`[sweep:light] Regime cache unchanged — no write needed`);
     }
+
+    result.cacheChanged = cacheChanged;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[sweep:light] Background processing error: ${errMsg}`);
+    result.errors += symbolsToProcess.length;
   }
+
+  return result;
 }

@@ -8,8 +8,7 @@
 //   - Optimize call: ~40-60s on 0.5 CPU — was ~90-120s at 90d/5 bricks
 //
 //   UPGRADE PATH (≥1 CPU on Render):
-//     1. SWEEP_CANDLE_HOURS: 1080 → 2160 (45d → 90d)
-//     2. SWEEP_YAHOO_RANGE: "45d" → "90d"
+// v2: Upgraded lookback 45d → 90d for more statistical significance.
 //     3. generateBrickSizes: add 0.75× and 3.0× back (3 → 5 bricks)
 //     4. sweep_window labels: "45d" → "90d"
 //     5. Optimize timeout: 90s → 120s (more data = longer compute)
@@ -1305,8 +1304,8 @@ export async function fetchAlpacaCandles(
 // for 45d; 90d would exceed Supabase's edge function timeout.
 // UPGRADE PATH: When upgrading to ≥1 CPU on Render, change to 90d/2160h for
 // more statistical significance.
-const SWEEP_CANDLE_HOURS = 1080; // 45 days × 24h
-const SWEEP_YAHOO_RANGE = "45d";
+const SWEEP_CANDLE_HOURS = 2160; // 90 days × 24h
+const SWEEP_YAHOO_RANGE = "90d";
 
 export async function fetchSweepCandles(
   symbolConfig: SymbolConfig,
