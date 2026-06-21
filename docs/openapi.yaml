@@ -88,6 +88,10 @@ tags:
   - name: Live Stream REST
     description: REST tick ingestion and session management for live streaming
   - name: Health
+  - name: Calibration
+    description: Calibration loop — bias detection and weight adjustment
+  - name: Venue Management
+    description: Venue registry and account snapshot tracking
     description: Service health check
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2987,7 +2991,252 @@ paths:
                   active: { type: boolean }
                   connections: { type: integer }
                   last_update: { type: string, format: date-time, nullable: true }
-                  last_pnl: { type: number, nullable: true }
+	                  last_pnl: { type: number, nullable: true }
+
+  # ── CALIBRATION ───────────────────────────────────────────────────────────
+
+  /calibration/log:
+    post:
+      tags: [Calibration]
+      summary: Log a calibration record
+      description: Record a trade outcome paired with its predicted P_win for calibration bias analysis.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbol, predicted_p_win, outcome, aggression]
+              properties:
+                symbol:             { type: string, description: Trading symbol (e.g. BTC, SPY) }
+                predicted_p_win:    { type: number, minimum: 0, maximum: 1, description: Blended P_win at entry }
+                outcome:            { type: string, enum: [win, loss] }
+                aggression:         { type: string, enum: [passive, mid, aggressive] }
+                actual_pnl:         { type: number, nullable: true }
+                error_source:       { type: string, nullable: true }
+                entry_price:        { type: number, nullable: true }
+                exit_price:         { type: number, nullable: true }
+                p_regime:           { type: number, nullable: true }
+                p_imbalance:        { type: number, nullable: true }
+                p_markov:           { type: number, nullable: true }
+                p_timesfm:          { type: number, nullable: true }
+      responses:
+        "201":
+          description: Calibration record created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:           { type: string }
+                  symbol:       { type: string }
+                  outcome:      { type: string }
+                  created_at:   { type: string, format: date-time }
+
+  /calibration/bias/{symbol}:
+    get:
+      tags: [Calibration]
+      summary: Get calibration bias for a symbol
+      description: Computes avg(predicted_p_win) - actual_win_rate and labels CALIBRATED / OVERCONFIDENT / UNDERCONFIDENT.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Calibration bias result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol:               { type: string }
+                  avg_predicted_p_win:  { type: number }
+                  actual_win_rate:      { type: number }
+                  bias:                 { type: number }
+                  n_records:            { type: integer }
+                  status:               { type: string, enum: [CALIBRATED, OVERCONFIDENT, UNDERCONFIDENT, INSUFFICIENT_DATA] }
+
+  /calibration/status:
+    get:
+      tags: [Calibration]
+      summary: Get daily calibration status for all symbols
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Aggregated calibration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        symbol:               { type: string }
+                        avg_predicted_p_win:  { type: number }
+                        actual_win_rate:      { type: number }
+                        bias:                 { type: number }
+                        n_records:            { type: integer }
+                        status:               { type: string, enum: [CALIBRATED, OVERCONFIDENT, UNDERCONFIDENT, INSUFFICIENT_DATA] }
+                  total_symbols: { type: integer }
+
+  # ── VENUE MANAGEMENT ─────────────────────────────────────────────────────
+
+  /venue/list:
+    get:
+      tags: [Venue Management]
+      summary: List all trading venues
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of configured venues
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  venues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:             { type: string }
+                        name:           { type: string }
+                        venue_type:     { type: string }
+                        supports_stops: { type: boolean }
+                        max_leverage:   { type: number }
+                        is_active:      { type: boolean }
+                  total: { type: integer }
+
+  /venue/{venue_id}/snapshot:
+    post:
+      tags: [Venue Management]
+      summary: Record an account snapshot
+      parameters:
+        - name: venue_id
+          in: path
+          required: true
+          schema: { type: string }
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [equity]
+              properties:
+                equity:           { type: number }
+                cash:             { type: number, nullable: true }
+                margin_used:      { type: number, nullable: true }
+                open_positions:   { type: integer, default: 0 }
+                max_drawdown:     { type: number, nullable: true }
+                unrealized_pnl:   { type: number, nullable: true }
+      responses:
+        "201":
+          description: Snapshot recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:             { type: string }
+                  venue_id:       { type: string }
+                  equity:         { type: number }
+                  cash:           { type: number, nullable: true }
+                  open_positions: { type: integer }
+                  snapshot_at:    { type: string, format: date-time }
+
+  /venue/{venue_id}/snapshots:
+    get:
+      tags: [Venue Management]
+      summary: Get snapshot history for a venue
+      parameters:
+        - name: venue_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Paginated snapshot history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  snapshots:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:             { type: string }
+                        venue_id:       { type: string }
+                        equity:         { type: number }
+                        cash:           { type: number, nullable: true }
+                        open_positions: { type: integer }
+                        snapshot_at:    { type: string, format: date-time }
+                  total:  { type: integer }
+                  offset: { type: integer }
+                  limit:  { type: integer }
+
+  /venue/{venue_id}/status:
+    get:
+      tags: [Venue Management]
+      summary: Get venue health and latest snapshot
+      parameters:
+        - name: venue_id
+          in: path
+          required: true
+          schema: { type: string }
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Venue health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  venue:
+                    type: object
+                    properties:
+                      id:             { type: string }
+                      name:           { type: string }
+                      venue_type:     { type: string }
+                      supports_stops: { type: boolean }
+                      max_leverage:   { type: number }
+                      is_active:      { type: boolean }
+                  latest_snapshot:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:             { type: string }
+                      venue_id:       { type: string }
+                      equity:         { type: number }
+                      cash:           { type: number, nullable: true }
+                      open_positions: { type: integer }
+                      snapshot_at:    { type: string, format: date-time }
+                  snapshot_count: { type: integer }
 
 # ─────────────────────────────────────────────────────────────────────────────
 components:

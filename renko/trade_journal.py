@@ -8,12 +8,17 @@ Tracks:
   - Win rate, profit factor, Sharpe, max drawdown
   - Per-pattern-type breakdowns
   - Rolling statistics for adaptive Kelly sizing
+  - Calibration records (v3) — predicted P_win vs actual outcome
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Deque, Dict, List, Optional
 
 from collections import deque
@@ -21,6 +26,8 @@ from collections import deque
 from renko.pattern_detector import PatternType, SignalDirection
 from renko.risk_manager import PositionStatus, TradeResult
 from renko.signal_filter import FilteredSignal
+
+log = logging.getLogger(__name__)
 
 
 # ── Data types ─────────────────────────────────────────────────────
@@ -66,6 +73,14 @@ class TradeRecord:
     fill_probability: float = 1.0       # Fill probability for this trade's entry
     missed_fill: bool = False           # Whether this trade was a missed fill
 
+    # Calibration fields (v3)
+    predicted_p_win: float = 0.5        # Blended P_win at entry for calibration
+    aggression: str = "mid"             # passive | mid | aggressive
+    p_regime: Optional[float] = None    # P_regime breakdown for calibration
+    p_imbalance: Optional[float] = None # P_imbalance breakdown
+    p_markov: Optional[float] = None    # P_markov breakdown
+    p_timesfm: Optional[float] = None   # TimesFM component
+
     @property
     def is_win(self) -> bool:
         return self.pnl_bricks > 0
@@ -107,6 +122,12 @@ class TradeRecord:
             "total_financing_cost": self.total_financing_cost,
             "fill_probability": self.fill_probability,
             "missed_fill": self.missed_fill,
+            "predicted_p_win": self.predicted_p_win,
+            "aggression": self.aggression,
+            "p_regime": self.p_regime,
+            "p_imbalance": self.p_imbalance,
+            "p_markov": self.p_markov,
+            "p_timesfm": self.p_timesfm,
         }
 
 
@@ -114,6 +135,15 @@ class TradeRecord:
 
 
 class TradeJournal:
+    """
+    Records trades and computes rolling statistics.
+
+    Usage::
+
+        journal = TradeJournal()
+        journal.record(trade_record)
+        stats = journal.get_stats()
+    """
     """
     Records trades and computes rolling statistics.
 
@@ -132,9 +162,11 @@ class TradeJournal:
     # ── Public API ────────────────────────────────────────────────
 
     def record(self, trade: TradeRecord) -> None:
-        """Record a completed trade."""
+        """Record a completed trade and fire calibration log."""
         self.trades.append(trade)
         self._trade_counter += 1
+        # Fire-and-forget calibration record to Supabase
+        asyncio.create_task(_log_calibration_record(trade))
 
     def create_record(
         self,
@@ -385,3 +417,59 @@ class TradeJournal:
     @property
     def total_trades(self) -> int:
         return len(self.trades)
+
+
+# ─── Calibration Record (fire-and-forget) ──────────────────────────────
+
+
+async def _log_calibration_record(trade: TradeRecord) -> None:
+    """
+    Fire-and-forget: log a calibration record to Supabase.
+
+    Called from ``TradeJournal.record()`` on every closed trade.
+    Failures are silently logged — never block the pipeline.
+    """
+    try:
+        from regime_platform.core.settings import settings
+
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+            return
+
+        import httpx
+
+        row = {
+            "id": str(uuid.uuid4()),
+            "symbol": trade.symbol,
+            "predicted_p_win": trade.predicted_p_win,
+            "outcome": "win" if trade.is_win else "loss",
+            "aggression": trade.aggression,
+            "actual_pnl": trade.pnl_dollars,
+            "error_source": trade.status.value if hasattr(trade.status, "value") else str(trade.status),
+            "entry_price": trade.entry_price,
+            "exit_price": trade.exit_price,
+            "p_regime": trade.p_regime,
+            "p_imbalance": trade.p_imbalance,
+            "p_markov": trade.p_markov,
+            "p_timesfm": trade.p_timesfm,
+            "entered_at": datetime.fromtimestamp(trade.entry_ts, tz=timezone.utc).isoformat(),
+            "closed_at": datetime.fromtimestamp(trade.exit_ts, tz=timezone.utc).isoformat(),
+        }
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/nt_calibration_records",
+                headers={
+                    "apikey": settings.SUPABASE_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=row,
+            )
+            if resp.status_code not in (200, 201):
+                log.debug(
+                    "Calibration record HTTP %s for %s: %s",
+                    resp.status_code, trade.symbol, resp.text[:100],
+                )
+
+    except Exception as exc:
+        log.debug("Calibration record failed (non-blocking) for %s: %s", trade.symbol, exc)

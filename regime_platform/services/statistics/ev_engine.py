@@ -1,11 +1,32 @@
-
+	
 import logging
-from typing import Optional, Tuple, Dict
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 # Note: Database connection is handled by the caller (passing a session) 
 # or using the global engine if available. To keep it decoupled, 
 # we define a helper that takes the session.
+
+# ── EV Engine v3 defaults ────────────────────────────────────────────
+# 4-source blend when TimesFM is available
+P_WIN_WEIGHTS_TIMESFM = {
+    "p_regime": 0.35,
+    "p_imbalance": 0.20,
+    "p_markov": 0.20,
+    "p_timesfm": 0.25,
+}
+
+# 3-source fallback when TimesFM is unavailable
+P_WIN_WEIGHTS_FALLBACK = {
+    "p_regime": 0.40,
+    "p_imbalance": 0.30,
+    "p_markov": 0.30,
+}
+
+# Regime shift meta-signal thresholds
+TIMESFM_CONFIDENCE_MIN = 0.50  # Min TimesFM confidence to override HMM
+CALIBRATION_OVERCONFIDENT_THRESHOLD = 0.05
+
 
 @dataclass
 class EVResult:
@@ -18,19 +39,23 @@ class EVResult:
 
 @dataclass
 class EVFullResult:
-    """Full EV computation result with blended P_win breakdown and aggression dispatch."""
+    """Full EV computation result with blended P_win breakdown and aggression dispatch.
+
+    v3: Added ``p_timesfm`` field for the 4-source TimesFM blend.
+    """
     p_win: float
     p_regime: float
     p_imbalance: float
     p_markov: float
-    ev: float
-    ev_per_dollar: float
-    rr: float
-    profit: float
-    stake: float
-    allowed: bool
-    aggression: str  # "passive" | "mid" | "aggressive"
-    ev_scale: float
+    p_timesfm: float = 0.0          # v3: TimesFM forecast component
+    ev: float = 0.0
+    ev_per_dollar: float = 0.0
+    rr: float = 0.0
+    profit: float = 0.0
+    stake: float = 0.0
+    allowed: bool = False
+    aggression: str = "aggressive"   # "passive" | "mid" | "aggressive"
+    ev_scale: float = 0.0
     reason: Optional[str] = None
 
 
@@ -38,12 +63,39 @@ class EVEngine:
     """
     Mathematical edge validation layer.
     Computes Expected Value (EV) based on historical pattern performance
-    and blended P_win from regime posteriors, L2 imbalance, and Markov transitions.
+    and blended P_win from regime posteriors, L2 imbalance, Markov transitions,
+    **and TimesFM foundation model forecasts (v3).**
+    
+    v3 Changes:
+      - ``compute_ev()`` accepts optional ``p_timesfm`` for 4-source blend
+      - ``validate_regime_shift()`` meta-signal gates HMM shifts with TimesFM
+      - Weights configurable via ``set_weights()`` at runtime
     """
     
     def __init__(self, min_ev: float = 0.0, min_rr: float = 2.0):
         self.min_ev = min_ev
         self.min_rr = min_rr
+        # Mutable weights — can be overridden at runtime
+        self._timesfm_weights: Dict[str, float] = dict(P_WIN_WEIGHTS_TIMESFM)
+        self._fallback_weights: Dict[str, float] = dict(P_WIN_WEIGHTS_FALLBACK)
+
+    # ── Runtime weight override ─────────────────────────────────────
+
+    def set_weights(self, weights: Dict[str, float]) -> None:
+        """
+        Override the blended P_win weights at runtime.
+
+        Accepts a dict with any subset of keys:
+        ``p_regime``, ``p_imbalance``, ``p_markov``, ``p_timesfm``.
+        Missing keys keep their current values.
+        """
+        for key in ("p_regime", "p_imbalance", "p_markov", "p_timesfm"):
+            if key in weights:
+                self._timesfm_weights[key] = float(weights[key])
+
+    def get_weights(self) -> Dict[str, float]:
+        """Return the current active P_win weights."""
+        return dict(self._timesfm_weights)
 
     # ── P_regime from HMM posteriors ────────────────────────────────
 
@@ -178,7 +230,7 @@ class EVEngine:
             return min(1.0, ev_per_dollar / 0.50)
         return 0.0
 
-    # ── Core: compute_ev (full blended P_win) ─────────────────────
+    # ── Core: compute_ev (full blended P_win, v3) ─────────────────
 
     def compute_ev(
         self,
@@ -190,20 +242,43 @@ class EVEngine:
         tp_bricks: int = 5,
         sl_bricks: int = 3,
         brick_size: float = 0.50,
+        p_timesfm: Optional[float] = None,
     ) -> EVFullResult:
         """
-        Full EV computation with blended P_win from regime + imbalance + Markov.
-        
-        P_win = 0.40 * P_regime + 0.30 * P_imbalance + 0.30 * P_markov
-        EV = (P_win * profit) - ((1 - P_win) * stake)
+        Full EV computation with blended P_win (v3).
+
+        When ``p_timesfm`` is provided and non-None, a 4-source blend
+        is used::
+
+            P_win = w_r * P_regime + w_i * P_imbalance + w_m * P_markov + w_t * P_timesfm
+
+        Default weights (4-source):  ``(0.35, 0.20, 0.20, 0.25)``
+        Fallback (3-source, no TimesFM): ``(0.40, 0.30, 0.30)``
+
+        Weights can be overridden at runtime via ``set_weights()``.
         """
         # Step 1: Compute individual P_win sources
         p_regime = self.compute_p_regime(trend_probs or {}, direction)
         p_imbalance = self.compute_p_imbalance(imbalance_signal, direction)
         p_markov = self.compute_p_markov(transition_matrix, current_state, direction)
-        
-        # Step 2: Blended P_win
-        p_win = 0.40 * p_regime + 0.30 * p_imbalance + 0.30 * p_markov
+        p_timesfm_actual = p_timesfm if p_timesfm is not None else 0.0
+
+        # Step 2: Blended P_win — 4-source or 3-source fallback
+        if p_timesfm is not None:
+            w = self._timesfm_weights
+            p_win = (
+                w["p_regime"] * p_regime
+                + w["p_imbalance"] * p_imbalance
+                + w["p_markov"] * p_markov
+                + w["p_timesfm"] * p_timesfm
+            )
+        else:
+            w = self._fallback_weights
+            p_win = (
+                w["p_regime"] * p_regime
+                + w["p_imbalance"] * p_imbalance
+                + w["p_markov"] * p_markov
+            )
         
         # Step 3: EV computation
         profit = tp_bricks * brick_size
@@ -230,6 +305,7 @@ class EVEngine:
             p_regime=round(p_regime, 4),
             p_imbalance=round(p_imbalance, 4),
             p_markov=round(p_markov, 4),
+            p_timesfm=round(p_timesfm_actual, 4),
             ev=round(ev, 4),
             ev_per_dollar=round(ev_per_dollar, 4),
             rr=round(rr, 4),
@@ -313,6 +389,131 @@ class EVEngine:
         except Exception as e:
             logging.error(f"EVEngine sync error: {e}")
             return EVResult(p_win=0.5, ev=0.0, rr=0.0, allowed=False, reason="EV_Sync_Calculation_Error")
+
+    # ── v3: Regime Shift Meta-Signal ──────────────────────────────
+
+    @staticmethod
+    def _shift_direction(prev_regime: str, current_regime: str) -> str:
+        """
+        Determine the direction of a regime shift.
+
+        Returns ``"bullish"``, ``"bearish"``, or ``"neutral"`` based on
+        the presence of bull/bear labels in the regime strings.
+        """
+        bull_markers = {"bull", "strong_bull"}
+        bear_markers = {"bear", "strong_bear"}
+
+        prev_bull = any(m in prev_regime for m in bull_markers)
+        prev_bear = any(m in prev_regime for m in bear_markers)
+        curr_bull = any(m in current_regime for m in bull_markers)
+        curr_bear = any(m in current_regime for m in bear_markers)
+
+        if not prev_bull and curr_bull:
+            return "bullish"
+        if not prev_bear and curr_bear:
+            return "bearish"
+        if prev_bull and not curr_bull:
+            return "bearish"
+        if prev_bear and not curr_bear:
+            return "bullish"
+        return "neutral"
+
+    def validate_regime_shift(
+        self,
+        hmm_regime: str,
+        prev_regime: str,
+        p_timesfm: Optional[float] = None,
+        timesfm_confidence: float = 0.0,
+    ) -> tuple:
+        """
+        Validate an HMM regime shift against the TimesFM forecast.
+
+        When TimesFM disagrees with the HMM's detected shift direction,
+        the shift is marked as *unconfirmed* — the caller should
+        preserve the previous regime rather than switching.
+
+        Parameters
+        ----------
+        hmm_regime : str
+            Regime label detected by HMM (e.g. ``"high_vol_bear"``).
+        prev_regime : str
+            The regime before this detection cycle.
+        p_timesfm : float or None
+            TimesFM forecast probability (0–1). ``None`` = no signal.
+        timesfm_confidence : float
+            TimesFM model's own confidence in its forecast (0–1).
+
+        Returns
+        -------
+        (confirmed: bool, reason: str)
+            ``(True, "confirmed_...")`` or ``(False, "unconfirmed_...")``
+        """
+        # No shift detected — always confirmed (nothing to validate)
+        if hmm_regime == prev_regime:
+            return (True, "no_shift")
+
+        # Without TimesFM signal, trust HMM
+        if p_timesfm is None or timesfm_confidence < TIMESFM_CONFIDENCE_MIN:
+            return (True, f"trust_hmm_shift_to_{hmm_regime}")
+
+        shift_dir = self._shift_direction(prev_regime, hmm_regime)
+
+        if shift_dir == "bullish" and p_timesfm >= 0.5:
+            return (True, f"confirmed_bullish_shift_to_{hmm_regime}")
+        elif shift_dir == "bearish" and p_timesfm <= 0.5:
+            return (True, f"confirmed_bearish_shift_to_{hmm_regime}")
+        elif shift_dir == "neutral":
+            # Volatility-only shift (e.g. low_vol → high_vol) — trust HMM
+            return (True, f"confirmed_vol_shift_to_{hmm_regime}")
+        else:
+            # HMM says shift, TimesFM disagrees
+            return (
+                False,
+                f"unconfirmed_shift_hmm={hmm_regime}_timesfm={p_timesfm:.2f}",
+            )
+
+    # ── v3: Tail Risk Assessment ──────────────────────────────
+
+    @staticmethod
+    def compute_tail_risk(
+        p_timesfm: Optional[float],
+        regime: str,
+        timesfm_confidence: float = 0.0,
+    ) -> dict:
+        """
+        Assess tail risk from extreme TimesFM forecasts.
+
+        When TimesFM is extremely confident in one direction during a
+        volatile regime, it may be detecting a tail event (flash crash,
+        regime break). Returns a risk score and position multiplier.
+
+        Returns
+        -------
+        dict with keys: score (0-1), action (str), multiplier (float)
+        """
+        result = {"score": 0.0, "action": "none", "multiplier": 1.0}
+
+        if p_timesfm is None or timesfm_confidence < 0.5:
+            return result
+
+        is_extreme = p_timesfm < 0.2 or p_timesfm > 0.8
+        is_high_vol = "high_vol" in regime
+        is_extreme_confident = is_extreme and timesfm_confidence >= 0.7
+
+        if is_extreme_confident and is_high_vol:
+            result["score"] = 0.85
+            result["action"] = "skip"
+            result["multiplier"] = 0.0
+        elif is_extreme_confident:
+            result["score"] = 0.60
+            result["action"] = "reduce_50"
+            result["multiplier"] = 0.5
+        elif is_extreme and is_high_vol:
+            result["score"] = 0.35
+            result["action"] = "reduce_25"
+            result["multiplier"] = 0.75
+
+        return result
 
     # ── Existing: sync_journal_to_stats ───────────────────────────
 

@@ -116,6 +116,8 @@ from regime_platform.routers import (
 from regime_platform.routers import operational
 # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
 from regime_platform.routers import pnl
+# Phase 10: TimesFM Calibration Loop + Venue Management
+from regime_platform.routers import calibration, venue
 # Phase 9: Runtime Configuration (admin-adjustable params)
 from regime_platform.routers import config as config_router_module
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
@@ -343,6 +345,8 @@ def create_app() -> FastAPI:
     app.include_router(operational.router)
     app.include_router(pnl.router)
     app.include_router(config_router_module.config_router)
+    app.include_router(calibration.router)
+    app.include_router(venue.router)
 
     app.add_middleware(KillSwitchGateMiddleware)
 

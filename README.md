@@ -10,7 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v6.0.0** - Renko HFT Pipeline · Renko Backtest Endpoints · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
+**v7.3.0** — Renko HFT Pipeline · EV Engine v3 (P_timesfm + 4-source blend) · TimesFM Foundation Model Integration · Calibration Loop · Venue Management · Cold-Start Path · Lead/Lag Correlation · Fat-Tail Risk Overlay · Shift-Aware Wakeups · Sweep Fatigue Reduction · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
 
 ---
 
@@ -53,14 +53,19 @@ regime_risk_platform/
 │   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
 │   │   ├── backtest.py            POST /backtest/run | /history | /{id} | /compare | /optimize | /export
 │   │   ├── strategy.py            POST /strategy/signal
-│   │   ├── tda.py                 POST /tda/features
-│   │   └── observation.py          POST /observation/build | /build-v2
-│   ├── services/
-│   │   ├── stream_session.py         Per-symbol stateful streaming engine
-│   │   ├── registry.py               Singleton session store
-│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
-│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
-│   │   └── backtest_store.py      Supabase persistence for backtest results
+	│   │   ├── tda.py                 POST /tda/features
+	│   │   ├── observation.py          POST /observation/build | /build-v2
+	│   │   ├── calibration.py          POST /calibration/log | GET /bias/{symbol} | GET /status
+	│   │   └── venue.py                GET /venue/list | POST /{id}/snapshot | GET /{id}/snapshots | GET /{id}/status
+	│   ├── services/
+	│   │   ├── stream_session.py         Per-symbol stateful streaming engine
+	│   │   ├── registry.py               Singleton session store
+	│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
+	│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
+	│   │   └── backtest_store.py      Supabase persistence for backtest results
+	│   ├── services/statistics/
+	│   │   ├── ev_engine.py              EV Engine v3 — 4-source P_win (regime + imbalance + Markov + TimesFM), tail risk, regime shift validation
+	│   │   └── bayesian_updater.py       Bayesian Updater with TimesFM-enhanced prior
 │   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
 │   ├── notifications/               Discord notifier
 │   ├── middleware/
@@ -78,7 +83,12 @@ regime_risk_platform/
 │   ├── ws-client.html                Interactive WebSocket test client
 │   ├── openapi.yaml                  OpenAPI 3.1 specification
 │   ├── CHANGELOG.md                  Complete version history (v1.0 -> v3.1)
-│   └── deployment.md                 Production operations guide
+│   ├── deployment.md                 Production operations guide
+│   └── TimeFM/                       TimesFM integration requirements & architecture docs (6 documents)
+│
+├── supabase/
+│   ├── functions/                    Edge functions (sweep — unified heavy/light)
+│   └── migrations/                   Database migrations (001–100)
 │
 ├── tests/
 │   ├── test_platform.py              Smoke test: HMM + Kelly + risk
@@ -198,6 +208,23 @@ open docs/index.html
 | `GET` | `/auth/clerk/me` | Clerk user info from JWT |
 | `POST` | `/auth/clerk/verify` | Verify Clerk JWT token |
 | `GET` | `/health` | Service health check |
+
+### Calibration Loop (v3)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/calibration/log` | Log a calibration record (predicted P_win vs actual outcome) | Write |
+| `GET` | `/calibration/bias/{symbol}` | Get calibration bias per symbol | Any |
+| `GET` | `/calibration/status` | Get daily CALIBRATED / OVERCONFIDENT / UNDERCONFIDENT status | Any |
+
+### Venue Management (v3)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/venue/list` | List all trading venues with status | Any |
+| `POST` | `/venue/{venue_id}/snapshot` | Record an account snapshot | Write |
+| `GET` | `/venue/{venue_id}/snapshots` | Get snapshot history (paginated) | Any |
+| `GET` | `/venue/{venue_id}/status` | Venue health check | Any |
 
 ### P&L Analytics
 
