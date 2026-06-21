@@ -354,19 +354,18 @@ async function runHeavySweepForSymbol(
 		      // ── Sweep Fatigue: calibration write for fallback path ──
 		      try {
 		        const cal = await computeCalibrationBias(symbolConfig.symbol);
+		        const bias = cal?.bias ?? 0;
+		        const status = cal?.status ?? "INSUFFICIENT_DATA";
+		        const skipUntil = status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
+		        await sweepRedisPipeline([
+		          ["HSET", `trading:config:${symbolConfig.symbol}`,
+		            "calibration_bias", String(bias),
+		            "calibration_status", status,
+		            "sweep_skip_until", skipUntil,
+		          ],
+		        ]);
 		        if (cal) {
-		          const additionalFields: (string | number)[] = [
-		            "calibration_bias", String(cal.bias),
-		            "calibration_status", cal.status,
-		          ];
-		          if (cal.status === "CALIBRATED") {
-		            additionalFields.push("sweep_skip_until", String(Date.now() + 12 * 3600 * 1000));
-		          } else {
-		            additionalFields.push("sweep_skip_until", "0");
-		          }
-		          await sweepRedisPipeline([
-		            ["HSET", `trading:config:${symbolConfig.symbol}`, ...additionalFields],
-		          ]);
+		          console.log(`[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`);
 		        }
 		      } catch { /* best effort */ }
 
@@ -674,24 +673,17 @@ async function runHeavySweepForSymbol(
 		    // 11. Query calibration bias and write to Redis (v3)
 		    try {
 		      const cal = await computeCalibrationBias(symbolConfig.symbol);
+		      const bias = cal?.bias ?? 0;
+		      const status = cal?.status ?? "INSUFFICIENT_DATA";
+		      const skipUntil = status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
+		      await sweepRedisPipeline([
+		        ["HSET", `trading:config:${symbolConfig.symbol}`,
+		          "calibration_bias", String(bias),
+		          "calibration_status", status,
+		          "sweep_skip_until", skipUntil,
+		        ],
+		      ]);
 		      if (cal) {
-		        const additionalFields: (string | number)[] = [
-		          "calibration_bias", String(cal.bias),
-		          "calibration_status", cal.status,
-		        ];
-
-		        // Sweep Fatigue: skip next 12h if CALIBRATED, clear skip if not
-		        if (cal.status === "CALIBRATED") {
-		          const skipUntil = Date.now() + 12 * 3600 * 1000;
-		          additionalFields.push("sweep_skip_until", String(skipUntil));
-		          console.log(`[sweep:heavy] ${symbolConfig.symbol}: CALIBRATED — skipping next 12h of heavy sweeps`);
-		        } else {
-		          additionalFields.push("sweep_skip_until", "0");
-		        }
-
-		        await sweepRedisPipeline([
-		          ["HSET", `trading:config:${symbolConfig.symbol}`, ...additionalFields],
-		        ]);
 		        console.log(`[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`);
 		      }
 		    } catch (err) {
@@ -900,7 +892,10 @@ async function runLightRegimeForSymbol(
         pTimesfm !== null ? {
           p_timesfm: pTimesfm,
           timesfm_horizon: "12h",
-        } : undefined,
+        } : {
+          p_timesfm: 0.5,
+          timesfm_horizon: "0h",
+        },
         {
           tail_risk_score: tailRisk.score,
           tail_risk_action: tailRisk.action,
@@ -935,8 +930,8 @@ async function runLightRegimeForSymbol(
         prev_regime: prevRegime ?? "",
         shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
         shifts_24h: shifts24h,
-        p_timesfm: pTimesfm ?? undefined,
-        timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
+        p_timesfm: pTimesfm ?? 0.5,
+        timesfm_horizon: pTimesfm !== null ? "12h" : "0h",
         tail_risk_score: tailRisk.score,
         tail_risk_action: tailRisk.action,
       };

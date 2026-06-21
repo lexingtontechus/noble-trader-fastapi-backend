@@ -1,7 +1,7 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 hmmlearn>=0.3.2
-numpy>=1.26.0
+numpy>=2.0.0
 scipy>=1.13.0
 pandas>=2.2.0
 pydantic>=2.11.2
@@ -14,10 +14,13 @@ httpx>=0.28.1
 clerk-backend-api>=0.1.0
 # MCP (Model Context Protocol) - exposes FastAPI endpoints as AI agent tools
 fastapi-mcp>=0.4.0
-# v3.0 optional GPU + feed adapter dependencies
-# GPU HMM (install for 10-50x speedup on large datasets)
+# v3.0 GPU HMM (install for 10-50x speedup on large datasets)
 # pomegranate>=1.0.0
-# torch>=2.0.0
+# TimesFM forecasting service (server.py)
+timesfm>=2.5.0
+torch>=2.4.0
+huggingface-hub>=1.0
+safetensors>=0.6
 # Rate limiting
 slowapi>=0.1.9
 # Centralized settings (pydantic-settings v2+)
