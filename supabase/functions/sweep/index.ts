@@ -901,10 +901,10 @@ async function runLightRegimeForSymbol(
           p_timesfm: pTimesfm,
           timesfm_horizon: "12h",
         } : undefined,
-        tailRisk.score > 0 ? {
+        {
           tail_risk_score: tailRisk.score,
           tail_risk_action: tailRisk.action,
-        } : undefined,
+        },
       );
 
       // 8. Build new cache entry
@@ -937,8 +937,8 @@ async function runLightRegimeForSymbol(
         shifts_24h: shifts24h,
         p_timesfm: pTimesfm ?? undefined,
         timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
-        tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
-        tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
+        tail_risk_score: tailRisk.score,
+        tail_risk_action: tailRisk.action,
       };
 
       // 9. Write full config + cache only on regime shift or initial population

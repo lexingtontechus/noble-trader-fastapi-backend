@@ -671,7 +671,15 @@ export async function countShifts24h(symbol: string): Promise<number> {
 
 // ─── TimesFM Inference ─────────────────────────────────────
 // Calls the Lightning AI TimesFM endpoint from within the edge function.
-// Returns a Map<symbol, p_timesfm> — null entries for failures.
+//
+// API (from openapi.json):
+//   POST /forecast
+//   Header: X-API-Key
+//   Body:   {"horizon": int, "inputs": [[prices...], [prices...], ...]}
+//   Response: {"point_forecast": [[f1,f2,...], ...], "num_series": N, ...}
+//
+// The /forecast endpoint accepts multiple time series in one call (batched by design).
+// p_timesfm is computed from the forecast direction: if point_forecast > last price → bullish.
 export async function timesfmPost(
   symbolsAndPrices: { symbol: string; prices: number[] }[],
   horizon = 12,
@@ -680,16 +688,24 @@ export async function timesfmPost(
     return new Map();
   }
 
+  // Filter out symbols with no prices; build inputs 2D array
+  const valid = symbolsAndPrices.filter((s) => s.prices.length >= 10);
+  if (valid.length === 0) return new Map();
+
+  const inputs = valid.map((s) => s.prices.slice(-500));
+  const symbols = valid.map((s) => s.symbol);
+  const lastPrices = valid.map((s) => s.prices[s.prices.length - 1]);
+
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    const res = await fetch(`${TIMESFM_INFERENCE_URL}/forecast/batch`, {
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    const res = await fetch(`${TIMESFM_INFERENCE_URL}/forecast`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${TIMESFM_API_KEYS}`,
+        "X-API-Key": TIMESFM_API_KEYS,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ symbols: symbolsAndPrices, horizon }),
+      body: JSON.stringify({ inputs, horizon }),
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -699,10 +715,32 @@ export async function timesfmPost(
       return new Map();
     }
 
-    const data = await res.json() as { results?: Array<{ symbol: string; p_timesfm: number }> };
+    const data = await res.json() as {
+      point_forecast?: number[][];
+      num_series?: number;
+    };
+
+    if (!data.point_forecast || data.point_forecast.length === 0) {
+      return new Map();
+    }
+
+    // Convert forecast direction to p_timesfm (0.5 = neutral, >0.5 = bullish)
     const map = new Map<string, number | null>();
-    for (const item of data.results ?? []) {
-      map.set(item.symbol, item.p_timesfm ?? null);
+    for (let i = 0; i < data.point_forecast.length && i < symbols.length; i++) {
+      const forecast = data.point_forecast[i];
+      const lastPrice = lastPrices[i];
+      if (!forecast || forecast.length === 0 || lastPrice <= 0) {
+        map.set(symbols[i], null);
+        continue;
+      }
+      // Average of first 3 forecast steps for stability
+      const avgForecast = forecast.slice(0, Math.min(3, forecast.length)).reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
+      // Directional probability: how far in % the forecast moved, normalized to 0-1
+      const pctChange = (avgForecast - lastPrice) / lastPrice;
+      // Scale: 1% move = 0.50 probability, capped at [0.1, 0.9]
+      const pTimesfm = Math.max(0.1, Math.min(0.9, 0.5 + pctChange * 50));
+      map.set(symbols[i], Math.round(pTimesfm * 10000) / 10000);
+      console.log(`[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`);
     }
     return map;
   } catch (err) {

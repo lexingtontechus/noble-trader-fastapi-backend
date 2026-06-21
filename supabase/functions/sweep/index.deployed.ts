@@ -704,16 +704,23 @@ export async function timesfmPost(
     return new Map();
   }
 
+  const valid = symbolsAndPrices.filter((s) => s.prices.length >= 10);
+  if (valid.length === 0) return new Map();
+
+  const inputs = valid.map((s) => s.prices.slice(-500));
+  const symbols = valid.map((s) => s.symbol);
+  const lastPrices = valid.map((s) => s.prices[s.prices.length - 1]);
+
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    const res = await fetch(`${TIMESFM_INFERENCE_URL}/forecast/batch`, {
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    const res = await fetch(`${TIMESFM_INFERENCE_URL}/forecast`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${TIMESFM_API_KEYS}`,
+        "X-API-Key": TIMESFM_API_KEYS,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ symbols: symbolsAndPrices, horizon }),
+      body: JSON.stringify({ inputs, horizon }),
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -723,10 +730,28 @@ export async function timesfmPost(
       return new Map();
     }
 
-    const data = await res.json() as { results?: Array<{ symbol: string; p_timesfm: number }> };
+    const data = await res.json() as {
+      point_forecast?: number[][];
+      num_series?: number;
+    };
+
+    if (!data.point_forecast || data.point_forecast.length === 0) {
+      return new Map();
+    }
+
     const map = new Map<string, number | null>();
-    for (const item of data.results ?? []) {
-      map.set(item.symbol, item.p_timesfm ?? null);
+    for (let i = 0; i < data.point_forecast.length && i < symbols.length; i++) {
+      const forecast = data.point_forecast[i];
+      const lastPrice = lastPrices[i];
+      if (!forecast || forecast.length === 0 || lastPrice <= 0) {
+        map.set(symbols[i], null);
+        continue;
+      }
+      const avgForecast = forecast.slice(0, Math.min(3, forecast.length)).reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
+      const pctChange = (avgForecast - lastPrice) / lastPrice;
+      const pTimesfm = Math.max(0.1, Math.min(0.9, 0.5 + pctChange * 50));
+      map.set(symbols[i], Math.round(pTimesfm * 10000) / 10000);
+      console.log(`[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`);
     }
     return map;
   } catch (err) {
@@ -2794,6 +2819,9 @@ async function runLightRegimeForSymbol(
       const decimals = cacheEntry?.price_decimals
         ?? PRICE_TICK_DECIMALS[symbolConfig.symbol]
         ?? (symbolConfig.symbol === "BTC" ? 1 : 2);
+      if (pTimesfm !== null) {
+        console.log(`[sweep:light] ${symbolConfig.symbol}: p_timesfm=${pTimesfm} ready for Redis`);
+      }
       await redisUpdateSignal(
         symbolConfig.symbol,
         tradeSignal.signal,
@@ -2819,10 +2847,10 @@ async function runLightRegimeForSymbol(
           p_timesfm: pTimesfm,
           timesfm_horizon: "12h",
         } : undefined,
-        tailRisk.score > 0 ? {
+        {
           tail_risk_score: tailRisk.score,
           tail_risk_action: tailRisk.action,
-        } : undefined,
+        },
       );
 
       // 8. Build new cache entry
@@ -2855,8 +2883,8 @@ async function runLightRegimeForSymbol(
 	        shifts_24h: shifts24h,
 		        p_timesfm: pTimesfm ?? undefined,
 		        timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
-		        tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
-		        tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
+		        tail_risk_score: tailRisk.score,
+		        tail_risk_action: tailRisk.action,
 		      };
 
 	      // 9. Write full config + cache only on regime shift or initial population

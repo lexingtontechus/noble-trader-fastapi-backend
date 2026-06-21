@@ -592,6 +592,105 @@ Without `REDIS_URL`, all state is in-memory with zero overhead.
 
 ---
 
+## Redis Config — `trading:config:{symbol}`
+
+The `trading:config:{symbol}` hash in Upstash Redis is the single source of truth for the trading bot. Written by the sweep edge function (heavy + light modes), read by the trading bot every 15s.
+
+### Core Fields
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `regime` | string | `low_vol_bull` | Light regime | Composite regime label: `{vol}_{trend}` |
+| `regime_conf` | float | `0.85` | Light regime | HMM posterior probability of dominant state |
+| `signal` | string | `buy` | Trade signal | Computed direction: `buy`, `sell`, `neutral` |
+| `signal_conf` | float | `0.72` | Trade signal | Signal confidence (0–1) |
+| `entry_price` | float | `64441.00` | Trade signal | Computed entry price for bracket order |
+| `stop_loss` | float | `63941.00` | Trade signal | Stop-loss price |
+| `take_profit` | float | `65441.00` | Trade signal | Take-profit price |
+| `ev` | float | `0.35` | EV Engine | Expected value |
+| `ev_per_dollar` | float | `0.12` | EV Engine | EV normalized per dollar risked |
+| `p_win` | float | `0.62` | EV Engine | Blended P_win (4-source) |
+| `p_regime` | float | `0.55` | EV Engine | HMM regime component |
+| `p_imbalance` | float | `0.48` | EV Engine | L2 imbalance component |
+| `p_markov` | float | `0.50` | EV Engine | Markov transition component |
+| `aggression` | string | `mid` | Aggression dispatcher | `passive`, `mid`, or `aggressive` |
+| `ev_scale` | float | `0.80` | EV Engine | EV-scaled Kelly multiplier |
+| `effective_kelly` | float | `0.12` | Kelly sizing | Final Kelly fraction |
+| `brick_size` | float | `0.50` | Heavy sweep | Optimal Renko brick size |
+| `tp_bricks` | int | `5` | Heavy sweep | Take-profit in bricks |
+| `sl_bricks` | int | `3` | Heavy sweep | Stop-loss in bricks |
+| `kelly_f` | float | `0.15` | Kelly sizing | Base Kelly fraction |
+| `markov_p_up` | float | `0.52` | Markov chain | Probability of UP transition |
+| `markov_p_dn` | float | `0.48` | Markov chain | Probability of DOWN transition |
+| `markov_current_state` | string | `FLAT` | Markov chain | Current Markov state |
+| `last_update` | timestamp | `1782015223299` | — | Unix ms of last update |
+| `sweep_timestamp` | timestamp | `1782015223299` | Sweep | Unix ms of last sweep |
+
+### Regime Shift Fields
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `regime_shift` | string | `true` | Light regime | `"true"` if regime changed this cycle |
+| `prev_regime` | string | `low_vol_bear` | Light regime | Previous regime before shift |
+| `shift_at` | timestamp | `1782015223299` | Light regime | Unix ms when shift was detected |
+| `shifts_24h` | int | `3` | Light regime | Number of regime shifts in last 24h |
+
+### TimesFM Fields (v3)
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `p_timesfm` | float | `0.48` | TimesFM GPU | Foundation model directional forecast (0–1). >0.5 = bullish, <0.5 = bearish |
+| `timesfm_horizon` | string | `12h` | TimesFM GPU | Forecast window label |
+
+**Example:** `p_timesfm=0.48` for BTC means TimesFM forecasts a slight price decline over the next 12 hours. This feeds into the EV Engine v3 blended P_win:
+
+```
+P_win = 0.35 × P_regime + 0.20 × P_imbalance + 0.20 × P_markov + 0.25 × P_timesfm
+```
+
+When TimesFM is unavailable (API error, timeout), the blend falls back to:
+
+```
+P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
+```
+
+### Tail Risk Fields (v3)
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `tail_risk_score` | float | `0.60` | Light regime | Tail risk level (0 = none, 0.35 = mild, 0.60 = moderate, 0.85 = critical) |
+| `tail_risk_action` | string | `reduce_50` | Light regime | Recommended action: `none`, `reduce_25` (×0.75), `reduce_50` (×0.5), or `skip` (×0.0) |
+
+**Logic:**
+| p_timesfm | Regime | Confidence | Score | Action | Multiplier |
+|---|---|---|---|---|---|
+| <0.2 or >0.8 | high_vol | ≥0.7 | 0.85 | `skip` | 0.0 |
+| <0.2 or >0.8 | any | ≥0.7 | 0.60 | `reduce_50` | 0.5 |
+| <0.2 or >0.8 | high_vol | <0.7 | 0.35 | `reduce_25` | 0.75 |
+
+### Calibration Fields (v3)
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `calibration_bias` | float | `-0.02` | Heavy sweep | avg(predictedPWin) − actual_win_rate (negative = underconfident) |
+| `calibration_status` | string | `CALIBRATED` | Heavy sweep | `CALIBRATED`, `OVERCONFIDENT`, `UNDERCONFIDENT`, or `INSUFFICIENT_DATA` |
+
+**Status thresholds:**
+| Condition | Label |
+|---|---|
+| \|bias\| < 0.05 | `CALIBRATED` — predictions match outcomes |
+| bias ≥ +0.05 | `OVERCONFIDENT` — too optimistic |
+| bias ≤ −0.05 | `UNDERCONFIDENT` — too pessimistic |
+| < 20 records | `INSUFFICIENT_DATA` |
+
+### Sweep Fatigue Fields (v3)
+
+| Field | Type | Example | Source | Description |
+|---|---|---|---|---|
+| `sweep_skip_until` | timestamp | `1782051223299` | Heavy sweep | Unix ms — heavy sweeps are skipped until this time (12h future when CALIBRATED) |
+
+---
+
 ## GPU Acceleration
 
 ```bash
