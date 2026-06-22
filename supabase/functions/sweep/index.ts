@@ -749,6 +749,9 @@ async function runLightRegimeForSymbol(
       console.warn(`[sweep:light] ${symbolConfig.symbol} candle fetch failed: ${err}`);
     }
 
+    // pTimesfm at function scope — used both in >81 bar path AND cold-start (<81 bars)
+    let pTimesfm: number | null = prefetchedTimesfm ?? null;
+
     if (prices.length >= 81) {
       // 2. Detect regime
       console.log(`[sweep:light] ${symbolConfig.symbol}: Detecting regime (${prices.length} bars)...`);
@@ -766,7 +769,6 @@ async function runLightRegimeForSymbol(
       }
 
       // 3b. TimesFM inference (v3) — use prefetched value when available
-      let pTimesfm: number | null = prefetchedTimesfm ?? null;
       if (pTimesfm === null && TIMESFM_INFERENCE_URL && TIMESFM_API_KEYS) {
         try {
           const timesfmMap = await timesfmPost([

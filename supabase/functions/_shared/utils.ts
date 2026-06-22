@@ -1286,7 +1286,9 @@ export async function fetchAlpacaCandles(
   };
 
   const startTime = new Date(Date.now() - hours * 3600000).toISOString();
-  const endTime = new Date().toISOString();
+  // Shift endTime 16 min back so Alpaca's free tier serves SIP data
+  // (free tier blocks real-time SIP — data <15 min old returns 403)
+  const endTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
   const timeframe = interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
 
   try {

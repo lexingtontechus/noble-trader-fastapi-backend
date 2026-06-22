@@ -1294,7 +1294,9 @@ export async function fetchAlpacaCandles(
   };
 
   const startTime = new Date(Date.now() - hours * 3600000).toISOString();
-  const endTime = new Date().toISOString();
+  // Shift endTime 16 min back so Alpaca's free tier serves SIP data
+  // (free tier blocks real-time SIP — data <15 min old returns 403)
+  const endTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
   const timeframe = interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
 
   try {
@@ -2701,6 +2703,9 @@ async function runLightRegimeForSymbol(
       console.warn(`[sweep:light] ${symbolConfig.symbol} candle fetch failed: ${err}`);
     }
 
+    // pTimesfm at function scope — used both in >81 bar path AND cold-start (<81 bars)
+    let pTimesfm: number | null = prefetchedTimesfm ?? null;
+
     if (prices.length >= 81) {
       // 2. Detect regime
       console.log(`[sweep:light] ${symbolConfig.symbol}: Detecting regime (${prices.length} bars)...`);
@@ -2718,7 +2723,6 @@ async function runLightRegimeForSymbol(
       }
 
       // 3b. TimesFM inference (v3) — use prefetched value when available
-      let pTimesfm: number | null = prefetchedTimesfm ?? null;
       if (pTimesfm === null && TIMESFM_INFERENCE_URL && TIMESFM_API_KEYS) {
         try {
           const timesfmMap = await timesfmPost([
