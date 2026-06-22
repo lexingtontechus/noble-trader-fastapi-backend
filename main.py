@@ -193,6 +193,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning(f"Runtime config callback registration failed: {e}")
 
+    # Phase 10: Start L2 order book feeds
+    try:
+        l2_enabled = await runtime_config.get_bool("l2.enabled", default=True)
+        if l2_enabled:
+            from regime_platform.services.l2_feed_manager import L2FeedManager
+            app.state.l2_feed_manager = L2FeedManager(enabled=True)
+
+            # Subscribe to symbols from the pipeline registry
+            symbols = list(getattr(app.state, '_registered_symbols', []))
+            if not symbols:
+                # Fallback: core symbols from Renko pipeline defaults
+                from regime_platform.core.runtime_config import sync_config
+                default_sym = sync_config.get_str("renko.default_symbol", "SPY")
+                symbols = [default_sym, "QQQ", "BTC", "ETH"]
+
+            await app.state.l2_feed_manager.start(symbols)
+            log.info("L2 feed manager started for %d symbol(s): %s", len(symbols), symbols)
+        else:
+            app.state.l2_feed_manager = None
+            log.info("L2 feed manager disabled (l2.enabled=false)")
+    except Exception as e:
+        log.warning(f"L2 feed manager start failed: {e}")
+        app.state.l2_feed_manager = None
+
     yield
 
     # Phase 8: Stop operational services
@@ -216,7 +240,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning(f"Operational services shutdown error: {e}")
 
-    # Close Discord notifier HTTP client
+    # Phase 10: Stop L2 order book feeds
+    l2_mgr = getattr(app.state, 'l2_feed_manager', None)
+    if l2_mgr:
+        try:
+            await l2_mgr.stop()
+            log.info("L2 feed manager stopped")
+        except Exception as e:
+            log.warning(f"L2 feed manager stop error: {e}")
+
+	    # Close Discord notifier HTTP client
     try:
         from notifications.discord import discord_notifier
         await discord_notifier.close()

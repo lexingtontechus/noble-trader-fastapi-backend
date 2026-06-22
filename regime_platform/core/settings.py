@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # ── Binance ─────────────────────────────────────────────────────────────
     BINANCE_TESTNET: bool = False
 
+    # ── Hyperliquid ──────────────────────────────────────────────────────────
+    HL_API_URL: str = "https://api.hyperliquid.xyz"
+    HL_WS_URL: str = "wss://api.hyperliquid.xyz/ws"
+
     # ── Interactive Brokers ─────────────────────────────────────────────────
     IB_HOST: str = "127.0.0.1"
     IB_PORT: int = 7497

@@ -1,6 +1,15 @@
 # EV Engine + Aggression Dispatcher — Full Architecture Plan
 
-## The Short Answer: EV IS Built In, But It's Crippled
+> **⚠️ STATUS: IMPLEMENTED (v7.5.0)**
+> This plan has been executed. See CHANGELOG for the v7.5.0 delta.
+> Key differences from original plan:
+> - Markov chain is a **sizing multiplier** not a P_win blend (was double-counting)
+> - Weights are now **40% Regime + 25% External + 35% TimesFM** (log-odds pooled)
+> - L2 pipeline is **live** (Alpaca + Hyperliquid) not just planned
+> - `p_imbalance` renamed to `p_ext_signal` for honest naming
+> - `CalibrationTracker` added with Brier scores and reliability diagrams
+
+## The Short Answer: EV IS Built In, But It Was Crippled
 
 You're right that EV exists in the system. The problem isn't that it's missing — it's that **what's built is a skeleton with hardcoded defaults**. Here's the reality:
 

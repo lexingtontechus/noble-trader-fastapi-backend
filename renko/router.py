@@ -269,7 +269,7 @@ class EVComputeRequest(BaseModel):
     direction: str = Field("long", description="Trade direction: 'long' or 'short'")
     # Optional signal sources (if not provided, computed from prices)
     trend_probs: Optional[Dict[str, float]] = Field(None, description="HMM trend posterior probabilities (e.g. {'bear': 0.1, 'neutral': 0.3, 'bull': 0.6})")
-    imbalance_signal: Optional[Dict[str, float]] = Field(None, description="L2 order book imbalance signal with keys: signal, confidence, persistence")
+    external_signal: Optional[Dict[str, float]] = Field(None, description="External directional signal vote with keys: signal, confidence, persistence (from any source: L2 order book, sentiment, etc.)")
     base_kelly: float = Field(0.0, description="Base Kelly fraction for EV scaling")
     markov_window: int = Field(200, description="Rolling window for Markov chain observations")
 
@@ -278,7 +278,7 @@ class EVComputeResponse(BaseModel):
     """Full EV computation response with blended P_win breakdown and execution strategy."""
     p_win: float
     p_regime: float
-    p_imbalance: float
+    p_ext_signal: float
     p_markov: float
     ev: float
     ev_per_dollar: float
@@ -288,6 +288,7 @@ class EVComputeResponse(BaseModel):
     allowed: bool
     aggression: str
     ev_scale: float
+    markov_multiplier: float = 1.0  # v4: Markov persistence → sizing multiplier
     order_type: str
     patience_bars: int
     markov_current_state: str
@@ -1848,13 +1849,13 @@ if FASTAPI_AVAILABLE:
         user: TokenData = Depends(get_authed_user),
     ) -> EVComputeResponse:
         """
-        Compute full Expected Value with blended P_win from three signal sources:
-        
-        1. **P_regime** — from HMM trend posteriors (auto-detected if not provided)
-        2. **P_imbalance** — from L2 order book signal (0.50 neutral if not provided)
-        3. **P_markov** — from Markov transition matrix (built from prices)
-        
-        Blended P_win = 0.40 * P_regime + 0.30 * P_imbalance + 0.30 * P_markov
+	        Compute full Expected Value with blended P_win from multiple signal sources:
+	        
+	        1. **P_regime** — from HMM trend posteriors (auto-detected if not provided)
+	        2. **P_ext_signal** — from external directional vote (e.g. L2 order book, sentiment)
+	        3. **P_markov** — from Markov transition matrix (built from prices)
+	        
+	        Blended P_win = w_r * P_regime + w_x * P_ext_signal + w_m * P_markov [+ w_t * P_timesfm]
         
         Also returns aggression dispatch (passive/mid/aggressive) with order type,
         limit offset, patience bars, and EV-scaled Kelly factor.
@@ -1885,7 +1886,7 @@ if FASTAPI_AVAILABLE:
         ev_result = ev_engine.compute_ev(
             trend_probs=trend_probs,
             direction=req.direction,
-            imbalance_signal=req.imbalance_signal,
+            external_signal=req.external_signal,
             transition_matrix=transition_matrix,
             current_state=mc.current_state,
             tp_bricks=req.tp_bricks,
@@ -1913,7 +1914,7 @@ if FASTAPI_AVAILABLE:
         return EVComputeResponse(
             p_win=ev_result.p_win,
             p_regime=ev_result.p_regime,
-            p_imbalance=ev_result.p_imbalance,
+            p_ext_signal=ev_result.p_ext_signal,
             p_markov=ev_result.p_markov,
             ev=ev_result.ev,
             ev_per_dollar=ev_result.ev_per_dollar,
@@ -1923,6 +1924,7 @@ if FASTAPI_AVAILABLE:
             allowed=ev_result.allowed,
             aggression=dispatch.aggression,
             ev_scale=dispatch.ev_scale,
+            markov_multiplier=ev_result.markov_multiplier,
             order_type=dispatch.order_type,
             patience_bars=dispatch.patience_bars,
             markov_current_state=mc.current_state,

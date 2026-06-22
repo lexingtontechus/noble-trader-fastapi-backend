@@ -139,34 +139,34 @@ class RuntimeConfig:
         client = self._get_client()
         try:
             resp = await client.get(
-f"{self._supabase_url}/rest/v1/nt_system_config",
-	                params={"select": "*"},
-	                headers={
-	                    "apikey": self._supabase_key,
-	                    "Authorization": f"Bearer {self._supabase_key}",
-	                    "Content-Type": "application/json",
-	                },
-	            )
-	            resp.raise_for_status()
-	            rows = resp.json()
-	            entries = []
-	            for row in rows:
-	                entry = self._row_to_entry(row)
-	                entries.append(entry)
-	            return entries
-	        except Exception as exc:
-	            log.warning("Failed to fetch config from DB: %s", exc)
-	            return []
+                f"{self._supabase_url}/rest/v1/nt_system_config",
+                params={"select": "*"},
+                headers={
+                    "apikey": self._supabase_key,
+                    "Authorization": f"Bearer {self._supabase_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            entries = []
+            for row in rows:
+                entry = self._row_to_entry(row)
+                entries.append(entry)
+            return entries
+        except Exception as exc:
+            log.warning("Failed to fetch config from DB: %s", exc)
+            return []
 
-	    async def _fetch_category_from_db(self, category: str) -> List[ConfigEntry]:
-	        """Fetch config entries for a specific category."""
-	        if not self._db_available:
-	            return []
+    async def _fetch_category_from_db(self, category: str) -> List[ConfigEntry]:
+        """Fetch config entries for a specific category."""
+        if not self._db_available:
+            return []
 
-	        client = self._get_client()
-	        try:
-	            resp = await client.get(
-	                f"{self._supabase_url}/rest/v1/nt_system_config",
+        client = self._get_client()
+        try:
+            resp = await client.get(
+                f"{self._supabase_url}/rest/v1/nt_system_config",
                 params={"select": "*", "category": f"eq.{category}"},
                 headers={
                     "apikey": self._supabase_key,
@@ -946,6 +946,16 @@ sync_config.register_defaults({
     # Sizing - quality floor (alias for regime_floor, used by MCP tools)
     "sizing.quality_floor": 0.50,
     "renko.quality_floor": 0.50,
-    # Renko - sizing mode (exposed for MCP tool discovery)
-    "renko.sizing_mode": "kelly",
-})
+	    # Renko - sizing mode (exposed for MCP tool discovery)
+	    "renko.sizing_mode": "kelly",
+	    # ── L2 Order Book ───────────────────────────────────────────
+	    "l2.enabled": True,
+	    "l2.levels": 5,
+	    "l2.level_weights": [0.40, 0.25, 0.15, 0.12, 0.08],
+	    "l2.imbalance_threshold": 0.15,
+	    "l2.persistence_window": 20,
+	    # ── EV Engine Calibration ───────────────────────────────────
+	    "ev.calibration_enabled": True,
+	    "ev.calibration_min_records": 20,
+	    "ev.calibration_over_threshold": 0.05,
+	})

@@ -77,7 +77,7 @@ class TradeRecord:
     predicted_p_win: float = 0.5        # Blended P_win at entry for calibration
     aggression: str = "mid"             # passive | mid | aggressive
     p_regime: Optional[float] = None    # P_regime breakdown for calibration
-    p_imbalance: Optional[float] = None # P_imbalance breakdown
+    p_ext_signal: Optional[float] = None # External signal vote breakdown
     p_markov: Optional[float] = None    # P_markov breakdown
     p_timesfm: Optional[float] = None   # TimesFM component
 
@@ -125,7 +125,7 @@ class TradeRecord:
             "predicted_p_win": self.predicted_p_win,
             "aggression": self.aggression,
             "p_regime": self.p_regime,
-            "p_imbalance": self.p_imbalance,
+            "p_ext_signal": self.p_ext_signal,
             "p_markov": self.p_markov,
             "p_timesfm": self.p_timesfm,
         }
@@ -448,7 +448,7 @@ async def _log_calibration_record(trade: TradeRecord) -> None:
             "entry_price": trade.entry_price,
             "exit_price": trade.exit_price,
             "p_regime": trade.p_regime,
-            "p_imbalance": trade.p_imbalance,
+            "p_ext_signal": trade.p_ext_signal,
             "p_markov": trade.p_markov,
             "p_timesfm": trade.p_timesfm,
             "entered_at": datetime.fromtimestamp(trade.entry_ts, tz=timezone.utc).isoformat(),

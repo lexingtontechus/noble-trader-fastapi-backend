@@ -1,7 +1,7 @@
 # Admin Configuration API Reference
 
-**Version:** v7.0.0
-**Last Updated:** 2026-05-24
+**Version:** v7.5.0
+**Last Updated:** 2026-06-22
 **Router:** `regime_platform/routers/config.py`
 **Prefix:** `/config`
 **Auth:** All mutations require `require_admin`; reads require `get_authed_user`
@@ -10,7 +10,7 @@
 
 ## Overview
 
-The Configuration API provides runtime management of all system parameters stored in the `system_config` Supabase table. It enables admins to read, update, and reset configuration values without redeploying the backend. All changes are validated against the config schema (type, range, allowed values), persisted to the database, and recorded in an immutable audit trail.
+The Configuration API provides runtime management of all system parameters stored in the `nt_system_config` Supabase table. It enables admins to read, update, and reset configuration values without redeploying the backend. All changes are validated against the config schema (type, range, allowed values), persisted to the database, and recorded in an immutable audit trail.
 
 The API is the backend half of the Admin Configuration Panel. The frontend panel calls these endpoints through a BFF proxy that injects Clerk JWTs.
 
@@ -229,8 +229,8 @@ The backend validates the value against the config schema before persisting:
 
 **Side Effects:**
 - In-memory cache updated immediately
-- Row upserted to Supabase `system_config` table
-- Audit row inserted to Supabase `system_config_audit` table
+- Row upserted to Supabase `nt_system_config` table
+- Audit row inserted to Supabase `nt_system_config_audit` table
 - On-change callbacks fired (non-blocking)
 
 ---
@@ -278,7 +278,7 @@ Force a full reload of all config entries from the database, ignoring the TTL ca
 ```
 
 **When to Use:**
-- After directly modifying the Supabase `system_config` table (e.g., via SQL editor)
+- After directly modifying the Supabase `nt_system_config` table (e.g., via SQL editor)
 - When you suspect the in-memory cache is stale
 - After deploying a new migration that adds config keys
 
@@ -502,9 +502,9 @@ The config endpoints are not rate-limited separately - they fall under the defau
 
 | Index | Table | Columns | Purpose |
 |-------|-------|---------|---------|
-| `idx_system_config_category` | system_config | (category) | Fast category lookups |
-| `idx_system_config_audit_key` | system_config_audit | (key) | Filter audit by key |
-| `idx_system_config_audit_time` | system_config_audit | (changed_at DESC) | Recent changes first |
+| `idx_nt_system_config_category` | system_config | (category) | Fast category lookups |
+| `idx_nt_system_config_audit_key` | system_config_audit | (key) | Filter audit by key |
+| `idx_nt_system_config_audit_time` | system_config_audit | (changed_at DESC) | Recent changes first |
 
 ### RLS Policies
 
@@ -519,4 +519,4 @@ The config endpoints are not rate-limited separately - they fall under the defau
 
 | Trigger | Table | Function | When |
 |---------|-------|----------|------|
-| `trg_system_config_updated_at` | system_config | `update_system_config_updated_at()` | BEFORE UPDATE - sets `updated_at = now()` |
+| `trg_nt_system_config_updated_at` | system_config | `update_nt_system_config_updated_at()` | BEFORE UPDATE - sets `updated_at = now()` |

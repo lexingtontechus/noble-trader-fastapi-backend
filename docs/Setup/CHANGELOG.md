@@ -1,3 +1,39 @@
+## [7.5.0] - 2026-06-22
+
+### Changed — EV Engine v4 Refactor
+
+- **Renamed `p_imbalance` → `p_ext_signal`** — honest naming: the slot accepts any external directional vote (L2 order book, sentiment, alternative data), not just L2 imbalance specifically
+- **Markov chain relocated** — moved from P_win blend (where it double-counted directionality with HMM) to a position-sizing multiplier applied to `ev_scale`. Markov persistence now scales position size [0.4×–1.0×] instead of being blended into probability
+- **Log-odds pooling** — replaced linear `Σ w_i * p_i` blending with `inv_logit(Σ w_i * logit(p_i))`. Respects probability bounds and prevents overconfidence when signals agree
+- **New weights** — 40% Regime + 25% External + 35% TimesFM (with TimesFM); 55% + 45% (fallback)
+- **Added `CalibrationTracker`** — decile-bin tracker with Brier score, reliability diagrams, and bias detection
+
+### Added — L2 Order Book Data Pipeline
+
+- **`AlpacaL2Adapter`** — WebSocket subscription to Alpaca IEX/SIP order book depth (5–10 levels, ~100ms updates for US equities/crypto)
+- **`HyperliquidL2Adapter`** — WebSocket subscription to Hyperliquid l2Book channel (full depth for crypto perps, no API key required)
+- **`L2ImbalanceComputer`** — multi-level weighted imbalance ratio with sigmoid confidence mapping and persistence tracking over a sliding window
+- **`L2FeedManager`** — symbol→venue router (reads `nt_symbol.data_source` from Supabase, falls back to hardcoded map), manages adapter lifecycle, exposes `get_signal(symbol)` for EV engine consumption
+- **App lifecycle** — L2 pipeline starts automatically at boot if `l2.enabled=true` in runtime config, shuts down gracefully
+
+### Added — Hyperliquid Support
+
+- **`HL_API_URL` and `HL_WS_URL`** settings in `settings.py` (default to Hyperliquid mainnet)
+- **Runtime config keys** — `l2.levels`, `l2.level_weights`, `l2.imbalance_threshold`, `l2.persistence_window`, `l2.enabled`, `ev.calibration_enabled`, `ev.calibration_min_records`, `ev.calibration_over_threshold`
+
+### Changed — Database
+
+- **`nt_calibration_records.p_imbalance` renamed to `p_ext_signal`** — matches the EV engine rename
+- **Added `predicted_p_win_raw` and `calibration_brier` columns** to `nt_calibration_records`
+- **Migration `024_ev_calibration_l2_config.sql`** — seeds all new config keys into `nt_system_config`
+
+### Infrastructure
+
+- **No `.env` changes needed for LightningAI** — secrets injected as env vars are read automatically by `pydantic-settings`
+- **Edge functions** — the Supabase Edge Functions (`sweep`, `heavy-sweep`, `light-regime`) contain a separate TypeScript EV engine implementation that still uses `p_imbalance` internally. These are independent Deno deployments and are unaffected by the Python backend changes
+
+---
+
 ## [7.1.0] - 2026-05-24
 
 ### Fixed - Supabase Environment Variable Configuration

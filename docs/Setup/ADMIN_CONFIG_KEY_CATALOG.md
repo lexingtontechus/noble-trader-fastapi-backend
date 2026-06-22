@@ -1,14 +1,14 @@
 # Admin Configuration Key Catalog
 
-**Version:** v7.0.0
-**Last Updated:** 2026-05-24
-**Total Keys:** 148 across 8 categories
+**Version:** v7.5.0
+**Last Updated:** 2026-06-22
+**Total Keys:** 156 across 9 categories
 
 ---
 
 ## Overview
 
-This document is the complete reference for every runtime-configurable parameter in the Noble Trader platform. Each key is stored in the Supabase `system_config` table, has a type, range constraints, a default value, and a human-readable description. Admins can modify any of these values through the Admin Configuration Panel without redeploying the backend.
+This document is the complete reference for every runtime-configurable parameter in the Noble Trader platform. Each key is stored in the Supabase `nt_system_config` table, has a type, range constraints, a default value, and a human-readable description. Admins can modify any of these values through the Admin Configuration Panel without redeploying the backend.
 
 Values take effect within 30 seconds (TTL cache) across all backend services. Use the "Reload from Database" button for immediate propagation.
 

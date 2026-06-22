@@ -74,7 +74,7 @@ class CalibrationLogRequest(BaseModel):
     entry_price: Optional[float] = Field(None, description="Price at entry")
     exit_price: Optional[float] = Field(None, description="Price at exit")
     p_regime: Optional[float] = Field(None, ge=0, le=1, description="P_regime breakdown")
-    p_imbalance: Optional[float] = Field(None, ge=0, le=1, description="P_imbalance breakdown")
+    p_ext_signal: Optional[float] = Field(None, ge=0, le=1, description="External signal vote breakdown")
     p_markov: Optional[float] = Field(None, ge=0, le=1, description="P_markov breakdown")
     p_timesfm: Optional[float] = Field(None, ge=0, le=1, description="TimesFM forecast at entry")
 
@@ -148,7 +148,7 @@ async def log_calibration(
         "entry_price": req.entry_price,
         "exit_price": req.exit_price,
         "p_regime": req.p_regime,
-        "p_imbalance": req.p_imbalance,
+        "p_ext_signal": req.p_ext_signal,
         "p_markov": req.p_markov,
         "p_timesfm": req.p_timesfm,
         "entered_at": now,

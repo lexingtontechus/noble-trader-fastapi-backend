@@ -1,5 +1,6 @@
 	
 import logging
+import math
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -7,20 +8,41 @@ from dataclasses import dataclass
 # or using the global engine if available. To keep it decoupled, 
 # we define a helper that takes the session.
 
-# ── EV Engine v3 defaults ────────────────────────────────────────────
-# 4-source blend when TimesFM is available
+# ── Log-odds helpers (v4) ─────────────────────────────────────────
+# Log-odds pooling respects probability bounds and prevents
+# overconfidence when independent sources agree.
+
+_LOGIT_CLAMP = 1e-15  # Avoid log(0) and division-by-zero
+
+
+def _logit(p: float) -> float:
+    """Logit function: ln(p / (1-p)). Clamped for numerical stability."""
+    p = max(_LOGIT_CLAMP, min(1.0 - _LOGIT_CLAMP, p))
+    return math.log(p / (1.0 - p))
+
+
+def _inv_logit(x: float) -> float:
+    """Inverse logit (logistic sigmoid): 1 / (1 + exp(-x))."""
+    if x > 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    ex = math.exp(x)
+    return ex / (1.0 + ex)
+
+
+# ── EV Engine v4 defaults ────────────────────────────────────────────
+# 3-source blend when TimesFM is available
+# Markov chain is no longer blended into P_win — it is applied as a
+# position-sizing multiplier after blending (see compute_markov_multiplier).
 P_WIN_WEIGHTS_TIMESFM = {
-    "p_regime": 0.35,
-    "p_imbalance": 0.20,
-    "p_markov": 0.20,
-    "p_timesfm": 0.25,
+    "p_regime": 0.40,
+    "p_ext_signal": 0.25,
+    "p_timesfm": 0.35,
 }
 
-# 3-source fallback when TimesFM is unavailable
+# 2-source fallback when TimesFM is unavailable
 P_WIN_WEIGHTS_FALLBACK = {
-    "p_regime": 0.40,
-    "p_imbalance": 0.30,
-    "p_markov": 0.30,
+    "p_regime": 0.55,
+    "p_ext_signal": 0.45,
 }
 
 # Regime shift meta-signal thresholds
@@ -41,21 +63,24 @@ class EVResult:
 class EVFullResult:
     """Full EV computation result with blended P_win breakdown and aggression dispatch.
 
-    v3: Added ``p_timesfm`` field for the 4-source TimesFM blend.
+    v4: Markov chain moved from P_win blend to position-sizing multiplier.
+        ``p_markov`` is returned for reporting/calibration but no longer
+        blended into ``p_win``. ``markov_multiplier`` scales ``ev_scale``.
     """
     p_win: float
     p_regime: float
-    p_imbalance: float
-    p_markov: float
-    p_timesfm: float = 0.0          # v3: TimesFM forecast component
+    p_ext_signal: float
+    p_markov: float               # Reported for calibration; NOT blended into p_win
+    p_timesfm: float = 0.0
     ev: float = 0.0
     ev_per_dollar: float = 0.0
     rr: float = 0.0
     profit: float = 0.0
     stake: float = 0.0
     allowed: bool = False
-    aggression: str = "aggressive"   # "passive" | "mid" | "aggressive"
+    aggression: str = "aggressive"
     ev_scale: float = 0.0
+    markov_multiplier: float = 1.0  # v4: Markov persistence → sizing multiplier
     reason: Optional[str] = None
 
 
@@ -63,12 +88,13 @@ class EVEngine:
     """
     Mathematical edge validation layer.
     Computes Expected Value (EV) based on historical pattern performance
-    and blended P_win from regime posteriors, L2 imbalance, Markov transitions,
-    **and TimesFM foundation model forecasts (v3).**
+    and blended P_win from regime posteriors, external signals,
+    **and TimesFM foundation model forecasts (v4).**
     
-    v3 Changes:
-      - ``compute_ev()`` accepts optional ``p_timesfm`` for 4-source blend
-      - ``validate_regime_shift()`` meta-signal gates HMM shifts with TimesFM
+    v4 Changes:
+      - Markov chain moved from P_win blend → sizing multiplier
+      - ``compute_ev()`` accepts ``external_signal`` instead of ``imbalance_signal``
+      - ``compute_markov_multiplier()`` returns position-sizing factor
       - Weights configurable via ``set_weights()`` at runtime
     """
     
@@ -82,16 +108,21 @@ class EVEngine:
     # ── Runtime weight override ─────────────────────────────────────
 
     def set_weights(self, weights: Dict[str, float]) -> None:
-        """
-        Override the blended P_win weights at runtime.
+	        """
+	        Override the blended P_win weights at runtime.
 
-        Accepts a dict with any subset of keys:
-        ``p_regime``, ``p_imbalance``, ``p_markov``, ``p_timesfm``.
-        Missing keys keep their current values.
-        """
-        for key in ("p_regime", "p_imbalance", "p_markov", "p_timesfm"):
-            if key in weights:
-                self._timesfm_weights[key] = float(weights[key])
+	        Accepts a dict with any subset of keys:
+	        ``p_regime``, ``p_ext_signal``, ``p_timesfm``.
+	        Missing keys keep their current values.
+	        """
+	        for key in ("p_regime", "p_ext_signal", "p_timesfm"):
+	            if key in weights:
+	                self._timesfm_weights[key] = float(weights[key])
+	        # Also update fallback weights for consistency
+	        if "p_regime" in self._timesfm_weights:
+	            self._fallback_weights["p_regime"] = self._timesfm_weights["p_regime"]
+	        if "p_ext_signal" in self._timesfm_weights:
+	            self._fallback_weights["p_ext_signal"] = self._timesfm_weights["p_ext_signal"]
 
     def get_weights(self) -> Dict[str, float]:
         """Return the current active P_win weights."""
@@ -130,25 +161,29 @@ class EVEngine:
         else:
             return 0.50
 
-    # ── P_imbalance from L2 order book ─────────────────────────────
+    # ── P_ext_signal from external directional vote ────────────────
 
     @staticmethod
-    def compute_p_imbalance(imbalance_signal: Optional[Dict], direction: str) -> float:
+    def compute_p_external(external_signal: Optional[Dict], direction: str) -> float:
         """
-        Compute P_imbalance from L2 order book signal.
+        Compute P_ext_signal from external directional vote.
+        
+        Accepts a dict produced by any upstream signal source
+        (L2 order book imbalance, sentiment, alternative data, etc.)
+        with keys: signal, confidence, persistence.
         
         If aligned with direction: confidence * (0.6 + 0.4 * persistence_bonus)
         If flat: 0.50 (neutral)
         If opposed: 1.0 - confidence
-        Default when no L2 data: 0.50
+        Default when no external signal: 0.50
         """
-        if not imbalance_signal:
+        if not external_signal:
             return 0.50
         
         try:
-            signal = imbalance_signal.get("signal", "flat")
-            confidence = float(imbalance_signal.get("confidence", 0.5))
-            persistence = float(imbalance_signal.get("persistence", 0.0))
+            signal = external_signal.get("signal", "flat")
+            confidence = float(external_signal.get("confidence", 0.5))
+            persistence = float(external_signal.get("persistence", 0.0))
             
             # Normalize confidence to [0, 1]
             confidence = max(0.0, min(1.0, confidence))
@@ -184,32 +219,50 @@ class EVEngine:
         except Exception:
             return 0.50
 
-    # ── P_markov from Markov transition matrix ─────────────────────
+    # ── Markov multiplier for position sizing (v4) ────────────────
+    # The Markov chain measures state persistence — how likely the
+    # current direction continues. This feeds into position sizing,
+    # NOT into P_win (which would double-count directionality with HMM).
 
     @staticmethod
-    def compute_p_markov(
+    def compute_markov_multiplier(
         transition_matrix: Optional[Dict[str, Dict[str, float]]],
         current_state: str,
         direction: str,
     ) -> float:
         """
-        Compute P_markov from Markov transition matrix.
-        
-        P_markov = T[current_state][target_state]
-        e.g. T["UP"]["UP"] for long, T["UP"]["DOWN"] for short
-        Default when no Markov data: 0.50
+        Compute a position-sizing multiplier from Markov state persistence.
+
+        Reads T[current_state][target_state] — e.g. T["UP"]["UP"] for long —
+        and maps persistence [0.5, 1.0] → sizing multiplier [0.6, 1.0].
+
+        When persistence is weak (< 0.5) the multiplier drops below 0.6,
+        reducing position size in low-conviction environments.
+
+        Returns 1.0 (no adjustment) when no Markov data is available.
         """
         if not transition_matrix or not current_state:
-            return 0.50
-        
+            return 1.0
+
         try:
             target_state = "UP" if direction == "long" else "DOWN"
             state_probs = transition_matrix.get(current_state, {})
             if not state_probs:
-                return 0.50
-            return float(state_probs.get(target_state, 1.0 / 3))
+                return 1.0
+
+            persistence = float(state_probs.get(target_state, 0.5))
+            # Clamp to [0.0, 1.0]
+            persistence = max(0.0, min(1.0, persistence))
+
+            # Map persistence:
+            #   0.0 → 0.40 (strong reversal signal, reduce by 60%)
+            #   0.5 → 0.60 (random walk, slight reduction)
+            #   0.75 → 0.80 (typical trending)
+            #   1.0 → 1.00 (near-certain persistence, no reduction)
+            multiplier = 0.40 + 0.60 * persistence
+            return round(multiplier, 4)
         except Exception:
-            return 0.50
+            return 1.0
 
     # ── Aggression Dispatcher ──────────────────────────────────────
 
@@ -230,13 +283,16 @@ class EVEngine:
             return min(1.0, ev_per_dollar / 0.50)
         return 0.0
 
-    # ── Core: compute_ev (full blended P_win, v3) ─────────────────
+    # ── Core: compute_ev (full blended P_win, v4) ─────────────────
+    # v4 changes:
+    #   - Markov chain moved from P_win blend → sizing multiplier
+    #   - p_markov still computed for calibration reporting
 
     def compute_ev(
         self,
         trend_probs: Optional[Dict[str, float]] = None,
         direction: str = "long",
-        imbalance_signal: Optional[Dict] = None,
+        external_signal: Optional[Dict] = None,
         transition_matrix: Optional[Dict[str, Dict[str, float]]] = None,
         current_state: str = "FLAT",
         tp_bricks: int = 5,
@@ -245,53 +301,67 @@ class EVEngine:
         p_timesfm: Optional[float] = None,
     ) -> EVFullResult:
         """
-        Full EV computation with blended P_win (v3).
+        Full EV computation with blended P_win (v4).
 
-        When ``p_timesfm`` is provided and non-None, a 4-source blend
-        is used::
+        The Markov chain is no longer blended into P_win — it is applied
+	        as a position-sizing multiplier after blending::
 
-            P_win = w_r * P_regime + w_i * P_imbalance + w_m * P_markov + w_t * P_timesfm
+	                  _                                 _
+	                 |  Σ w_i * logit(p_i)  if TimesFM   |
+	            P_win = |_ Σ w_i * logit(p_i)  otherwise _|
 
-        Default weights (4-source):  ``(0.35, 0.20, 0.20, 0.25)``
-        Fallback (3-source, no TimesFM): ``(0.40, 0.30, 0.30)``
+	            ev_scale = kelly(P_win) * markov_multiplier
 
-        Weights can be overridden at runtime via ``set_weights()``.
+	        Default weights (with TimesFM): ``(0.40, 0.25, 0.35)``
+	        Fallback (no TimesFM):          ``(0.55, 0.45)``
+
+	        Weights can be overridden at runtime via ``set_weights()``.
+	        Calibration is tracked via ``CalibrationTracker`` (see ``calibration.py``).
         """
         # Step 1: Compute individual P_win sources
         p_regime = self.compute_p_regime(trend_probs or {}, direction)
-        p_imbalance = self.compute_p_imbalance(imbalance_signal, direction)
-        p_markov = self.compute_p_markov(transition_matrix, current_state, direction)
+        p_ext_signal = self.compute_p_external(external_signal, direction)
         p_timesfm_actual = p_timesfm if p_timesfm is not None else 0.0
 
-        # Step 2: Blended P_win — 4-source or 3-source fallback
+        # Step 2: Markov multiplier (v4 — not blended into P_win)
+        p_markov = 0.5  # neutral default for reporting
+        markov_multiplier = self.compute_markov_multiplier(
+            transition_matrix, current_state, direction
+        )
+
+        # Step 3: Blended P_win — log-odds pooling (v4)
+        # Log-odds pooling: logit(P) = Σ w_i * logit(p_i)
+        # This respects probability bounds better than linear pooling
+        # and prevents overconfidence when sources agree.
         if p_timesfm is not None:
             w = self._timesfm_weights
-            p_win = (
-                w["p_regime"] * p_regime
-                + w["p_imbalance"] * p_imbalance
-                + w["p_markov"] * p_markov
-                + w["p_timesfm"] * p_timesfm
+            logit_sum = (
+                w["p_regime"] * _logit(p_regime)
+                + w["p_ext_signal"] * _logit(p_ext_signal)
+                + w["p_timesfm"] * _logit(p_timesfm)
             )
+            p_win = _inv_logit(logit_sum)
         else:
             w = self._fallback_weights
-            p_win = (
-                w["p_regime"] * p_regime
-                + w["p_imbalance"] * p_imbalance
-                + w["p_markov"] * p_markov
+            logit_sum = (
+                w["p_regime"] * _logit(p_regime)
+                + w["p_ext_signal"] * _logit(p_ext_signal)
             )
-        
-        # Step 3: EV computation
+            p_win = _inv_logit(logit_sum)
+
+        # Step 4: EV computation
         profit = tp_bricks * brick_size
         stake = sl_bricks * brick_size
         ev = (p_win * profit) - ((1.0 - p_win) * stake)
         ev_per_dollar = ev / stake if stake > 0 else 0.0
         rr = profit / stake if stake > 0 else 0.0
-        
-        # Step 4: Aggression dispatch
+
+        # Step 5: Aggression dispatch with Markov multiplier
         aggression = self.compute_aggression(ev_per_dollar)
         ev_scale = self.compute_ev_scale(ev_per_dollar)
-        
-        # Step 5: Allow/deny gate
+        ev_scale = round(ev_scale * markov_multiplier, 4)
+
+        # Step 6: Allow/deny gate
         allowed = (ev > self.min_ev) and (rr >= self.min_rr)
         reason = None
         if not allowed:
@@ -299,11 +369,11 @@ class EVEngine:
                 f"EV=${ev:.2f}, RR={rr:.2f}, ev/$={ev_per_dollar:.3f} "
                 f"(Min EV={self.min_ev}, Min RR={self.min_rr})"
             )
-        
+
         return EVFullResult(
             p_win=round(p_win, 4),
             p_regime=round(p_regime, 4),
-            p_imbalance=round(p_imbalance, 4),
+            p_ext_signal=round(p_ext_signal, 4),
             p_markov=round(p_markov, 4),
             p_timesfm=round(p_timesfm_actual, 4),
             ev=round(ev, 4),
@@ -314,6 +384,7 @@ class EVEngine:
             allowed=allowed,
             aggression=aggression,
             ev_scale=round(ev_scale, 4),
+            markov_multiplier=round(markov_multiplier, 4),
             reason=reason,
         )
 

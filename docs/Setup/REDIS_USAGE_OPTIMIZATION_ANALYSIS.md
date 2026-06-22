@@ -142,12 +142,12 @@ Replace the three KEYS command usages with either SCAN-based iteration (for `lis
 
 ### 4.3 Tier 3: Shift to Supabase (Cost Optimization)
 
-Several categories of data currently stored in Redis are better suited to Supabase because they are read infrequently, have no sub-millisecond latency requirement, and would benefit from the durability and queryability of a relational database. Since the platform already has a Supabase instance with a `system_config` table containing 148 keys, extending it for these use cases is straightforward.
+Several categories of data currently stored in Redis are better suited to Supabase because they are read infrequently, have no sub-millisecond latency requirement, and would benefit from the durability and queryability of a relational database. Since the platform already has a Supabase instance with a `nt_system_config` table containing 148 keys, extending it for these use cases is straightforward.
 
 | Current Redis Key | Access Pattern | Recommended Migration Storage | Priority |
 |-------------------|---------------|-------------------------------|----------|
-| `noble:trading:mode` | Read on startup + cache in memory | Supabase `system_config` | High |
-| `noble:reconciliation:last_run` | Write after reconciliation | Supabase `system_config` | High |
+| `noble:trading:mode` | Read on startup + cache in memory | Supabase `nt_system_config` | High |
+| `noble:reconciliation:last_run` | Write after reconciliation | Supabase `nt_system_config` | High |
 | `regime:meta:{symbol}` | Read on session creation | Supabase `session_config` | Medium |
 | `noble:halt:*` | Write-through for audit trail | Keep in Redis + Supabase audit | Low* |
 | `bt:{prefix}:{sha256}` | Already optimal for cache | Keep in Redis (1h TTL) | None |

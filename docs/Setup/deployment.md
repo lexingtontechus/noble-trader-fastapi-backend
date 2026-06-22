@@ -74,8 +74,8 @@ docker run -p 8000:8000 regime-platform
 > will fail. The `/renko/health` diagnostic endpoint can be used to verify connectivity.
 >
 > **There is NO `SUPABASE_PUBLISHABLE_KEY` variable on the backend.** The backend requires
-> the **service_role** key because it needs full database access for `system_config`,
-> `ta_renko_snapshot`, `api_keys`, `system_config_audit`, and `rate_limit_violations` tables.
+> the **service_role** key because it needs full database access for `nt_system_config`,
+> `ta_renko_snapshot`, `api_keys`, `nt_system_config_audit`, and `rate_limit_violations` tables.
 > The anon/publishable key (`NEXT_PUBLIC_SUPABASE_ANON_KEY`) is for the **frontend only**
 > (Next.js on Vercel) and does NOT have sufficient permissions for backend operations.
 >

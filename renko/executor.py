@@ -165,11 +165,11 @@ class AlpacaExecutor:
         self._client: Any = None
 
         # Legacy simulation mode indicator (frontend project artifact)
-	        if self.is_simulation:
-	            logger.debug(
-	                "AlpacaExecutor running in SIMULATION mode - no real orders will be placed. "
-	                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable live/paper trading."
-	            )
+        if self.is_simulation:
+            logger.debug(
+                "AlpacaExecutor running in SIMULATION mode - no real orders will be placed. "
+                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable live/paper trading."
+            )
 
     # ── Execution Mode ────────────────────────────────────────────
 

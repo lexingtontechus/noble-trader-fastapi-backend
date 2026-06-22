@@ -514,7 +514,7 @@ curl -X POST https://backend/renko/sizing/model?symbol=SPY \
 
 ### 3. Runtime Config Key
 
-Set `renko.sizing_mode` in the `system_config` Supabase table (or via `POST /renko/config`):
+Set `renko.sizing_mode` in the `nt_system_config` Supabase table (or via `POST /renko/config`):
 
 ```bash
 curl -X POST https://backend/renko/config \
@@ -749,10 +749,10 @@ The backend requires two Supabase environment variables on Render for full funct
 
 > **IMPORTANT**: There is no `SUPABASE_PUBLISHABLE_KEY` variable. The backend uses `SUPABASE_KEY`
 > which must be the **service role** key because it needs full database access for:
-> - Reading/writing `system_config` table (runtime config)
+> - Reading/writing `nt_system_config` table (runtime config)
 > - Reading/writing `ta_renko_snapshot` table (pipeline persistence)
 > - Looking up `api_keys` table (SaaS API key authentication)
-> - Writing to `system_config_audit` table (config change logs)
+> - Writing to `nt_system_config_audit` table (config change logs)
 > - Writing to `rate_limit_violations` table
 >
 > The anon/publishable key is for frontend use only (`NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
@@ -772,7 +772,7 @@ When these variables are not configured, the `/renko/health` endpoint will repor
 
 | Issue | Root Cause | Fix |
 |-------|-----------|-----|
-| HTTP 500 on all `/renko/*` GET endpoints (Supabase config) | `SUPABASE_URL` / `SUPABASE_KEY` not configured on Render, causing `runtime_config` to fail when reading config from Supabase `system_config` table | Set both `SUPABASE_URL` and `SUPABASE_KEY` (service role) in Render Environment settings; verify with `GET /renko/health` |
+| HTTP 500 on all `/renko/*` GET endpoints (Supabase config) | `SUPABASE_URL` / `SUPABASE_KEY` not configured on Render, causing `runtime_config` to fail when reading config from Supabase `nt_system_config` table | Set both `SUPABASE_URL` and `SUPABASE_KEY` (service role) in Render Environment settings; verify with `GET /renko/health` |
 | HTTP 500 on all `/renko/*` GET endpoints (Enum bug) | `runtime_config.get_str()` called `str()` on `BrickSizeMode.FIXED` enum default, producing `'BrickSizeMode.FIXED'` instead of `'fixed'`. `BrickSizeMode()` constructor then raised `ValueError` | `get_str()` now checks for Enum and returns `.value`; `from_runtime_config()` strips `ClassName.` prefix from enum strings (commit `0735a6d`) |
 | No bricks on frontend | Tick button sent random prices, direction case mismatch, no warm-up | Real price fetch + `.toUpperCase()` + Warm Up button |
 | Symbol switching shows no data | `fetchAllData()` used stale `symbol` from React closure | Added `symbolOverride` parameter |

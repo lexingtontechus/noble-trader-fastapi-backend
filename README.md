@@ -10,7 +10,7 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v7.4.0** — TimesFM Self-Hosted · Three-Layer Gateway Proxy · Confidence-Gated Heavy Sweeps · Brick Sizes 3→5 · 90d Lookback · Cron Schedules Reduced 2x/3x per Week · EV Engine v3 · P&L Analytics · Calibration Loop · Venue Management · MCP Server
+**v7.5.0** — TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling) · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
 
 ---
 
