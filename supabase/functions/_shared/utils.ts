@@ -18,8 +18,8 @@ const UPSTASH_URL = Deno.env.get("UPSTASH_REDIS_REST_URL")!;
 const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "https://noble-trader-fastapi-backend.onrender.com";
-const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? "";
+const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
+const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? NOBLE_TRADER_URL || "";
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
 
 // ─── Types ──────────────────────────────────────────────────

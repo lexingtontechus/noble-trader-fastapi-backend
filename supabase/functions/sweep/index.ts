@@ -61,6 +61,8 @@ import {
   safeParseFloat,
   safeParseInt,
   PRICE_TICK_DECIMALS,
+  NOBLE_TRADER_URL,
+  TIMESFM_INFERENCE_URL,
   type SymbolConfig,
   type RedisConfig,
   type RegimeCache,
@@ -69,14 +71,14 @@ import {
   type KellyResult,
   type OptimizeComboResult,
   type EVResult,
-	  timesfmPost,
-	  computeCalibrationBias,
-	  computeCorrelationMatrix,
-	  adjustLeadLag,
-	  computeTailRisk,
-	  isVolatilityShift,
-	  type CorrelationResult,
-	  type TailRiskResult,
+  timesfmPost,
+  computeCalibrationBias,
+  computeCorrelationMatrix,
+  adjustLeadLag,
+  computeTailRisk,
+  isVolatilityShift,
+  type CorrelationResult,
+  type TailRiskResult,
 } from "../_shared/utils.ts";
 
 // ─── Concurrency Control Constants ────────────────────────────
@@ -1104,7 +1106,7 @@ async function runLightRegimeForSymbol(
 
 // ─── Noble Trader Backend Warmup ──────────────────────────────
 async function warmupNobleTrader(): Promise<void> {
-  const url = Deno.env.get("NOBLE_TRADER_URL") ?? "https://noble-trader-fastapi-backend.onrender.com";
+  const url = NOBLE_TRADER_URL || Deno.env.get("NOBLE_TRADER_URL") || "http://127.0.0.1:8001";
   try {
     console.log("[sweep] Warming up Noble Trader backend...");
     const controller = new AbortController();
@@ -1204,6 +1206,7 @@ const REQUIRED_ENV_VARS = [
   "UPSTASH_REDIS_REST_TOKEN",
   "SB_URL",
   "SB_SERVICE_ROLE_KEY",
+  "NOBLE_TRADER_URL",
 ];
 
 const MISSING_ENV_VARS = REQUIRED_ENV_VARS.filter((v) => !Deno.env.get(v));
