@@ -99,21 +99,21 @@ class ModeManager:
     async def get_current_mode(self, org_id: Optional[str] = None) -> TradingMode:
         """Get current trading mode. Defaults to PAPER if not set.
 
-        v7.3: Reads from Supabase system_config first (durable source of truth),
-        then falls back to Redis (L1 cache), then Alpaca config inference.
+        v7.3: Reads from Supabase nt_system_config first (durable source of truth),
+	        then falls back to Redis (L1 cache), then Alpaca config inference.
         """
         # Check in-memory cache first (O(1), zero latency)
         if self._cached_state:
             return self._cached_state.current_mode
 
-        # Try Supabase system_config (L2 - durable, authoritative)
+        # Try Supabase nt_system_config (L2 - durable, authoritative)
         try:
             from regime_platform.core.settings import settings
             if settings.SUPABASE_URL and settings.SUPABASE_KEY:
                 import httpx
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(
-                        f"{settings.SUPABASE_URL}/rest/v1/system_config",
+                        f"{settings.SUPABASE_URL}/rest/v1/nt_system_config",
                         headers={
                             "apikey": settings.SUPABASE_KEY,
                             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
@@ -308,14 +308,14 @@ class ModeManager:
         except Exception as e:
             logger.error(f"ModeManager: Failed to persist mode change to Redis: {e}")
 
-        # v7.3: Write-through to Supabase system_config (L2 - durable)
+        # v7.3: Write-through to Supabase nt_system_config (L2 - durable)
         try:
             from regime_platform.core.settings import settings as _settings
             if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
                 import httpx
                 async with httpx.AsyncClient(timeout=5.0) as sb_client:
                     resp = await sb_client.post(
-                        f"{_settings.SUPABASE_URL}/rest/v1/system_config",
+                        f"{_settings.SUPABASE_URL}/rest/v1/nt_system_config",
                         headers={
                             "apikey": _settings.SUPABASE_KEY,
                             "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
@@ -329,7 +329,7 @@ class ModeManager:
                         },
                     )
                     if resp.status_code in (200, 201, 204):
-                        logger.info("ModeManager: Mode state written to Supabase system_config")
+                        logger.info("ModeManager: Mode state written to Supabase nt_system_config")
                     else:
                         logger.warning(f"ModeManager: Supabase write failed: {resp.status_code}")
         except Exception as e:

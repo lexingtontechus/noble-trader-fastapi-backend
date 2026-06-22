@@ -272,14 +272,14 @@ class ReconciliationService:
                 except Exception:
                     pass
 
-            # v7.3: Also persist last_run to Supabase system_config (durable)
+            # v7.3: Also persist last_run to Supabase nt_system_config (durable)
             try:
                 from regime_platform.core.settings import settings as _settings
                 if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
                     import httpx
                     async with httpx.AsyncClient(timeout=5.0) as sb_client:
                         resp = await sb_client.post(
-                            f"{_settings.SUPABASE_URL}/rest/v1/system_config",
+                            f"{_settings.SUPABASE_URL}/rest/v1/nt_system_config",
                             headers={
                                 "apikey": _settings.SUPABASE_KEY,
                                 "Authorization": f"Bearer {_settings.SUPABASE_KEY}",

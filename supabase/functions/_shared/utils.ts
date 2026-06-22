@@ -17,9 +17,12 @@
 const UPSTASH_URL = Deno.env.get("UPSTASH_REDIS_REST_URL")!;
 const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SUPABASE_SERVICE_ROLE =
+  Deno.env.get("SB_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
-const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
+const TIMESFM_INFERENCE_URL =
+  Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
 
 // ─── Types ──────────────────────────────────────────────────
@@ -27,10 +30,10 @@ export interface SymbolConfig {
   id: number;
   symbol: string;
   asset_class: string;
-  data_source: string;        // "hyperliquid" | "alpaca" | "yahoo"
+  data_source: string; // "hyperliquid" | "alpaca" | "yahoo"
   yahoo_ticker: string | null;
   hyperliquid_coin: string | null;
-  alpaca_symbol: string | null;  // e.g. "AAPL", "BTC/USD", "GLD"
+  alpaca_symbol: string | null; // e.g. "AAPL", "BTC/USD", "GLD"
   sweep_cron: string;
   regime_cron: string;
   active: boolean;
@@ -51,45 +54,45 @@ export interface RedisConfig {
   sweep_window?: string;
   sweep_sharpe?: number;
   sweep_trades?: number;
-  signal?: string;        // "buy" | "sell" | "neutral"
-  entry_price?: number;   // Current market price at signal
-  stop_loss?: number;     // Price if market goes against signal
-  take_profit?: number;   // Price if market goes in favor
+  signal?: string; // "buy" | "sell" | "neutral"
+  entry_price?: number; // Current market price at signal
+  stop_loss?: number; // Price if market goes against signal
+  take_profit?: number; // Price if market goes in favor
   price_decimals?: number; // Tick-size decimal places for this symbol
 
   // EV Engine outputs (NEW)
-  ev?: number;                // Raw EV in price units
-  ev_per_dollar?: number;     // Normalized EV per $1 risked
-  p_win?: number;             // Blended P_win (0-1)
-  p_regime?: number;          // Regime component of P_win
-  p_imbalance?: number;       // L2 imbalance component (0.50 if no data)
-  p_markov?: number;          // Markov transition component
-  aggression?: string;        // "passive" | "mid" | "aggressive"
-  ev_scale?: number;          // Kelly scaling factor from EV
-  effective_kelly?: number;   // kelly_f * ev_scale
-  markov_current_state?: string;  // Current Markov state ("UP"/"DOWN"/"FLAT")
+  ev?: number; // Raw EV in price units
+  ev_per_dollar?: number; // Normalized EV per $1 risked
+  p_win?: number; // Blended P_win (0-1)
+  p_regime?: number; // Regime component of P_win
+  p_imbalance?: number; // L2 imbalance component (0.50 if no data)
+  p_markov?: number; // Markov transition component
+  aggression?: string; // "passive" | "mid" | "aggressive"
+  ev_scale?: number; // Kelly scaling factor from EV
+  effective_kelly?: number; // kelly_f * ev_scale
+  markov_current_state?: string; // Current Markov state ("UP"/"DOWN"/"FLAT")
 
   // Regime Shift fields (v2.3 — Shift-Aware EV)
-  regime_shift?: string;      // "true" | "false" — did a shift occur this cycle?
-  prev_regime?: string;       // Regime we transitioned FROM (e.g. "low_vol_bull")
-  shift_at?: number;          // Unix ms when shift was detected (timestamp approach)
-  shifts_24h?: number;        // Count of shifts in last 24h (volatility meta-signal)
+  regime_shift?: string; // "true" | "false" — did a shift occur this cycle?
+  prev_regime?: string; // Regime we transitioned FROM (e.g. "low_vol_bull")
+  shift_at?: number; // Unix ms when shift was detected (timestamp approach)
+  shifts_24h?: number; // Count of shifts in last 24h (volatility meta-signal)
 
   // TimesFM fields (v3)
-  p_timesfm?: number;         // Raw TimesFM forecast probability (0-1)
-  timesfm_horizon?: string;   // Forecast window label (e.g. "12h")
-  timesfm_conf?: number;      // TimesFM model confidence (0-1)
+  p_timesfm?: number; // Raw TimesFM forecast probability (0-1)
+  timesfm_horizon?: string; // Forecast window label (e.g. "12h")
+  timesfm_conf?: number; // TimesFM model confidence (0-1)
 
   // Calibration fields (v3)
-  calibration_bias?: number;   // avg(predictedPWin) - actual_win_rate
+  calibration_bias?: number; // avg(predictedPWin) - actual_win_rate
   calibration_status?: string; // "CALIBRATED" | "OVERCONFIDENT" | "UNDERCONFIDENT"
 
   // Tail risk fields (v3)
-  tail_risk_score?: number;    // 0.0 (none) - 1.0 (critical)
-  tail_risk_action?: string;   // "none" | "reduce_25" | "reduce_50" | "skip"
+  tail_risk_score?: number; // 0.0 (none) - 1.0 (critical)
+  tail_risk_action?: string; // "none" | "reduce_25" | "reduce_50" | "skip"
 
   // Sweep fatigue fields (v3)
-  sweep_skip_until?: number;   // epoch ms — skip heavy sweeps until this time
+  sweep_skip_until?: number; // epoch ms — skip heavy sweeps until this time
 }
 
 // Noble Trader /regime/detect actual response
@@ -97,11 +100,11 @@ export interface RegimeResult {
   symbol: string;
   vol_probs: Record<string, number>;
   trend_probs: Record<string, number>;
-  vol_state: string;           // "low" | "med_low" | "med_high" | "high"
-  trend_state: string;         // "strong_bear" | "bear" | "neutral" | "bull" | "strong_bull"
-  regime_label: string;        // e.g. "high_vol_strong_bull"
-  confidence: number;          // 0.0 - 1.0
-  risk_multiplier: number;     // 0.2 - 1.0
+  vol_state: string; // "low" | "med_low" | "med_high" | "high"
+  trend_state: string; // "strong_bear" | "bear" | "neutral" | "bull" | "strong_bull"
+  regime_label: string; // e.g. "high_vol_strong_bull"
+  confidence: number; // 0.0 - 1.0
+  risk_multiplier: number; // 0.2 - 1.0
   n_bars_fitted: number;
 }
 
@@ -133,7 +136,12 @@ export interface BacktestResult {
   avg_pnl_bricks: number;
   avg_win_bricks: number;
   avg_loss_bricks: number;
-  kelly_inputs: { win_rate: number; avg_win: number; avg_loss: number; implied_kelly: number };
+  kelly_inputs: {
+    win_rate: number;
+    avg_win: number;
+    avg_loss: number;
+    implied_kelly: number;
+  };
   raw: Record<string, unknown>;
 }
 
@@ -151,17 +159,23 @@ export interface BacktestResult {
 // Max decimal places per symbol (for toFixed formatting)
 export const PRICE_TICK_DECIMALS: Record<string, number> = {
   // ── Hyperliquid perps: max_decimals = 6 - szDecimals ──
-  BTC:   1,    // szDecimals=5 → max 1 decimal,  5 sig figs
-  ETH:   2,    // szDecimals=4 → max 2 decimals, 5 sig figs
-  SOL:   4,    // szDecimals=2 → max 4 decimals, 5 sig figs
+  BTC: 1, // szDecimals=5 → max 1 decimal,  5 sig figs
+  ETH: 2, // szDecimals=4 → max 2 decimals, 5 sig figs
+  SOL: 4, // szDecimals=2 → max 4 decimals, 5 sig figs
   // ── US stocks (penny ticks) ──
-  AAPL:  2, AMZN: 2, GOOGL: 2, META: 2,
-  MSFT:  2, NVDA:  2, TSLA:  2,
-  SPY:   2, QQQ:   2,
+  AAPL: 2,
+  AMZN: 2,
+  GOOGL: 2,
+  META: 2,
+  MSFT: 2,
+  NVDA: 2,
+  TSLA: 2,
+  SPY: 2,
+  QQQ: 2,
   // ── Alpaca crypto spot ──
-  BTCUSD: 1,   // same tick as BTC perp
-  ETHUSD: 2,   // same tick as ETH perp
-  SOLUSD: 4,   // same tick as SOL perp
+  BTCUSD: 1, // same tick as BTC perp
+  ETHUSD: 2, // same tick as ETH perp
+  SOLUSD: 4, // same tick as SOL perp
 };
 
 /** Set of Hyperliquid perp symbols for sig-fig rounding */
@@ -169,9 +183,9 @@ const HL_PERP_SYMBOLS = new Set(["BTC", "ETH", "SOL"]);
 
 /** Default decimal places by asset class (fallback if symbol not in map) */
 const DEFAULT_TICK_DECIMALS: Record<string, number> = {
-  crypto:      6,    // Hyperliquid max for low-priced perps
-  stocks:      2,
-  forex:       5,
+  crypto: 6, // Hyperliquid max for low-priced perps
+  stocks: 2,
+  forex: 5,
   commodities: 2,
 };
 
@@ -228,12 +242,15 @@ function roundHyperliquidPrice(price: number, maxDecimals: number): number {
  * - Crypto (Hyperliquid): 5 significant figures, max (6 - szDecimals) decimals
  * - Other assets: simple decimal rounding
  */
-export function roundPrice(price: number, symbol: string, assetClass?: string): number {
+export function roundPrice(
+  price: number,
+  symbol: string,
+  assetClass?: string,
+): number {
   if (price === 0) return 0;
 
-  const maxDecimals = PRICE_TICK_DECIMALS[symbol]
-    ?? DEFAULT_TICK_DECIMALS[assetClass ?? ""]
-    ?? 2;
+  const maxDecimals =
+    PRICE_TICK_DECIMALS[symbol] ?? DEFAULT_TICK_DECIMALS[assetClass ?? ""] ?? 2;
 
   // Hyperliquid perps use sig-fig rules
   if (HL_PERP_SYMBOLS.has(symbol)) {
@@ -249,7 +266,8 @@ export function roundPrice(price: number, symbol: string, assetClass?: string): 
 export function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -273,7 +291,10 @@ async function redisPipeline(commands: unknown[][]): Promise<unknown> {
   return res.json();
 }
 
-async function redisCommand(cmd: string, ...args: (string | number)[]): Promise<unknown> {
+async function redisCommand(
+  cmd: string,
+  ...args: (string | number)[]
+): Promise<unknown> {
   const res = await fetch(`${UPSTASH_URL}/${cmd}/${args.join("/")}`, {
     headers: {
       Authorization: `Bearer ${UPSTASH_TOKEN}`,
@@ -289,12 +310,16 @@ async function redisCommand(cmd: string, ...args: (string | number)[]): Promise<
   return data.result;
 }
 
-export async function redisSetConfig(symbol: string, config: RedisConfig): Promise<void> {
+export async function redisSetConfig(
+  symbol: string,
+  config: RedisConfig,
+): Promise<void> {
   // Determine tick-size decimals for this symbol (for price formatting)
-  const decimals = config.price_decimals
-    ?? PRICE_TICK_DECIMALS[symbol]
-    ?? DEFAULT_TICK_DECIMALS["crypto"] // fallback
-    ?? 2;
+  const decimals =
+    config.price_decimals ??
+    PRICE_TICK_DECIMALS[symbol] ??
+    DEFAULT_TICK_DECIMALS["crypto"] ?? // fallback
+    2;
 
   // ── NaN Guard: never write NaN to Redis ──
   // NaN in Redis creates a feedback loop — "NaN" is truthy so
@@ -309,7 +334,9 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     markov_p_up: Number.isNaN(config.markov_p_up) ? 0.5 : config.markov_p_up,
     markov_p_dn: Number.isNaN(config.markov_p_dn) ? 0.5 : config.markov_p_dn,
     kelly_f: Number.isNaN(config.kelly_f) ? 0 : config.kelly_f,
-    last_update: Number.isNaN(config.last_update) ? Date.now() : config.last_update,
+    last_update: Number.isNaN(config.last_update)
+      ? Date.now()
+      : config.last_update,
   };
 
   const fields: (string | number)[] = [];
@@ -329,7 +356,10 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
   if (config.sweep_timestamp !== undefined) {
     // Guard against NaN / negative / zero timestamps — replace with Date.now()
     const ts = config.sweep_timestamp;
-    entries.push(["sweep_timestamp", (Number.isNaN(ts) || ts <= 0) ? Date.now() : ts]);
+    entries.push([
+      "sweep_timestamp",
+      Number.isNaN(ts) || ts <= 0 ? Date.now() : ts,
+    ]);
   }
   if (config.sweep_window !== undefined) {
     entries.push(["sweep_window", config.sweep_window]);
@@ -359,28 +389,46 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     entries.push(["ev", Number.isNaN(config.ev) ? 0 : config.ev]);
   }
   if (config.ev_per_dollar !== undefined) {
-    entries.push(["ev_per_dollar", Number.isNaN(config.ev_per_dollar) ? 0 : config.ev_per_dollar]);
+    entries.push([
+      "ev_per_dollar",
+      Number.isNaN(config.ev_per_dollar) ? 0 : config.ev_per_dollar,
+    ]);
   }
   if (config.p_win !== undefined) {
     entries.push(["p_win", Number.isNaN(config.p_win) ? 0 : config.p_win]);
   }
   if (config.p_regime !== undefined) {
-    entries.push(["p_regime", Number.isNaN(config.p_regime) ? 0 : config.p_regime]);
+    entries.push([
+      "p_regime",
+      Number.isNaN(config.p_regime) ? 0 : config.p_regime,
+    ]);
   }
   if (config.p_imbalance !== undefined) {
-    entries.push(["p_imbalance", Number.isNaN(config.p_imbalance) ? 0 : config.p_imbalance]);
+    entries.push([
+      "p_imbalance",
+      Number.isNaN(config.p_imbalance) ? 0 : config.p_imbalance,
+    ]);
   }
   if (config.p_markov !== undefined) {
-    entries.push(["p_markov", Number.isNaN(config.p_markov) ? 0 : config.p_markov]);
+    entries.push([
+      "p_markov",
+      Number.isNaN(config.p_markov) ? 0 : config.p_markov,
+    ]);
   }
   if (config.aggression !== undefined) {
     entries.push(["aggression", config.aggression]);
   }
   if (config.ev_scale !== undefined) {
-    entries.push(["ev_scale", Number.isNaN(config.ev_scale) ? 0 : config.ev_scale]);
+    entries.push([
+      "ev_scale",
+      Number.isNaN(config.ev_scale) ? 0 : config.ev_scale,
+    ]);
   }
   if (config.effective_kelly !== undefined) {
-    entries.push(["effective_kelly", Number.isNaN(config.effective_kelly) ? 0 : config.effective_kelly]);
+    entries.push([
+      "effective_kelly",
+      Number.isNaN(config.effective_kelly) ? 0 : config.effective_kelly,
+    ]);
   }
   if (config.markov_current_state !== undefined) {
     entries.push(["markov_current_state", config.markov_current_state]);
@@ -394,26 +442,43 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     entries.push(["prev_regime", config.prev_regime]);
   }
   if (config.shift_at !== undefined) {
-    entries.push(["shift_at", Number.isNaN(config.shift_at) || config.shift_at <= 0 ? 0 : config.shift_at]);
+    entries.push([
+      "shift_at",
+      Number.isNaN(config.shift_at) || config.shift_at <= 0
+        ? 0
+        : config.shift_at,
+    ]);
   }
   if (config.shifts_24h !== undefined) {
-    entries.push(["shifts_24h", Number.isNaN(config.shifts_24h) ? 0 : config.shifts_24h]);
+    entries.push([
+      "shifts_24h",
+      Number.isNaN(config.shifts_24h) ? 0 : config.shifts_24h,
+    ]);
   }
 
   // TimesFM fields (v3)
   if (config.p_timesfm !== undefined) {
-    entries.push(["p_timesfm", Number.isNaN(config.p_timesfm) ? 0 : config.p_timesfm]);
+    entries.push([
+      "p_timesfm",
+      Number.isNaN(config.p_timesfm) ? 0 : config.p_timesfm,
+    ]);
   }
   if (config.timesfm_horizon !== undefined) {
     entries.push(["timesfm_horizon", config.timesfm_horizon]);
   }
   if (config.timesfm_conf !== undefined) {
-    entries.push(["timesfm_conf", Number.isNaN(config.timesfm_conf) ? 0 : config.timesfm_conf]);
+    entries.push([
+      "timesfm_conf",
+      Number.isNaN(config.timesfm_conf) ? 0 : config.timesfm_conf,
+    ]);
   }
 
   // Calibration fields (v3)
   if (config.calibration_bias !== undefined) {
-    entries.push(["calibration_bias", Number.isNaN(config.calibration_bias) ? 0 : config.calibration_bias]);
+    entries.push([
+      "calibration_bias",
+      Number.isNaN(config.calibration_bias) ? 0 : config.calibration_bias,
+    ]);
   }
   if (config.calibration_status !== undefined) {
     entries.push(["calibration_status", config.calibration_status]);
@@ -421,7 +486,10 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
 
   // Tail risk fields (v3)
   if (config.tail_risk_score !== undefined) {
-    entries.push(["tail_risk_score", Number.isNaN(config.tail_risk_score) ? 0 : config.tail_risk_score]);
+    entries.push([
+      "tail_risk_score",
+      Number.isNaN(config.tail_risk_score) ? 0 : config.tail_risk_score,
+    ]);
   }
   if (config.tail_risk_action !== undefined) {
     entries.push(["tail_risk_action", config.tail_risk_action]);
@@ -429,21 +497,33 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
 
   // Sweep fatigue fields (v3)
   if (config.sweep_skip_until !== undefined) {
-    entries.push(["sweep_skip_until", Number.isNaN(config.sweep_skip_until) || config.sweep_skip_until <= 0 ? 0 : config.sweep_skip_until]);
+    entries.push([
+      "sweep_skip_until",
+      Number.isNaN(config.sweep_skip_until) || config.sweep_skip_until <= 0
+        ? 0
+        : config.sweep_skip_until,
+    ]);
   }
 
   for (const [k, v] of entries) {
     fields.push(k, String(v));
   }
 
-  await redisPipeline([
-    ["HSET", `trading:config:${symbol}`, ...fields],
-  ]);
+  await redisPipeline([["HSET", `trading:config:${symbol}`, ...fields]]);
 }
 
-export async function redisSetHeartbeat(symbol: string, ttlSeconds: number): Promise<void> {
+export async function redisSetHeartbeat(
+  symbol: string,
+  ttlSeconds: number,
+): Promise<void> {
   await redisPipeline([
-    ["SET", `trading:heartbeat:${symbol}`, String(Date.now()), "EX", String(ttlSeconds)],
+    [
+      "SET",
+      `trading:heartbeat:${symbol}`,
+      String(Date.now()),
+      "EX",
+      String(ttlSeconds),
+    ],
   ]);
 }
 
@@ -480,15 +560,15 @@ export interface RegimeCacheEntry {
   markov_current_state?: string;
 
   // Regime Shift fields (v2.3 — Shift-Aware EV)
-  regime_shift?: string;      // "true" | "false" — persisted to Redis
-  prev_regime?: string;       // Regime transitioned FROM
-  shift_at?: number;          // Unix ms when shift detected
-  shifts_24h?: number;        // Count of shifts in last 24h
+  regime_shift?: string; // "true" | "false" — persisted to Redis
+  prev_regime?: string; // Regime transitioned FROM
+  shift_at?: number; // Unix ms when shift detected
+  shifts_24h?: number; // Count of shifts in last 24h
 
   // TimesFM fields (v3)
-  p_timesfm?: number;         // TimesFM forecast probability
-  timesfm_horizon?: string;   // Forecast window label
-  timesfm_conf?: number;      // TimesFM confidence
+  p_timesfm?: number; // TimesFM forecast probability
+  timesfm_horizon?: string; // Forecast window label
+  timesfm_conf?: number; // TimesFM confidence
 
   // Calibration fields (v3)
   calibration_bias?: number;
@@ -522,9 +602,7 @@ export async function redisLoadRegimeCache(): Promise<RegimeCache> {
 
 export async function redisSaveRegimeCache(cache: RegimeCache): Promise<void> {
   try {
-    await redisPipeline([
-      ["SET", REGIME_CACHE_KEY, JSON.stringify(cache)],
-    ]);
+    await redisPipeline([["SET", REGIME_CACHE_KEY, JSON.stringify(cache)]]);
   } catch (err) {
     console.warn(`[redisSaveRegimeCache] Failed to save cache: ${err}`);
   }
@@ -572,61 +650,82 @@ export async function redisUpdateSignal(
   },
 ): Promise<void> {
   const fields: (string | number)[] = [
-    "signal", signal,
-    "entry_price", entryPrice.toFixed(decimals),
-    "stop_loss", stopLoss.toFixed(decimals),
-    "take_profit", takeProfit.toFixed(decimals),
-    "last_update", String(Date.now()),
-    "sweep_timestamp", String(Date.now()),  // Refresh on every light-regime cycle too
+    "signal",
+    signal,
+    "entry_price",
+    entryPrice.toFixed(decimals),
+    "stop_loss",
+    stopLoss.toFixed(decimals),
+    "take_profit",
+    takeProfit.toFixed(decimals),
+    "last_update",
+    String(Date.now()),
+    "sweep_timestamp",
+    String(Date.now()), // Refresh on every light-regime cycle too
   ];
 
   // Add EV fields if provided
   if (evFields) {
     if (evFields.ev !== undefined) fields.push("ev", String(evFields.ev));
-    if (evFields.ev_per_dollar !== undefined) fields.push("ev_per_dollar", String(evFields.ev_per_dollar));
-    if (evFields.p_win !== undefined) fields.push("p_win", String(evFields.p_win));
-    if (evFields.aggression !== undefined) fields.push("aggression", evFields.aggression);
-    if (evFields.ev_scale !== undefined) fields.push("ev_scale", String(evFields.ev_scale));
-    if (evFields.effective_kelly !== undefined) fields.push("effective_kelly", String(evFields.effective_kelly));
+    if (evFields.ev_per_dollar !== undefined)
+      fields.push("ev_per_dollar", String(evFields.ev_per_dollar));
+    if (evFields.p_win !== undefined)
+      fields.push("p_win", String(evFields.p_win));
+    if (evFields.aggression !== undefined)
+      fields.push("aggression", evFields.aggression);
+    if (evFields.ev_scale !== undefined)
+      fields.push("ev_scale", String(evFields.ev_scale));
+    if (evFields.effective_kelly !== undefined)
+      fields.push("effective_kelly", String(evFields.effective_kelly));
   }
 
   // Add TimesFM fields if provided
   if (timesfmFields) {
-    if (timesfmFields.p_timesfm !== undefined) fields.push("p_timesfm", String(timesfmFields.p_timesfm));
-    if (timesfmFields.timesfm_horizon !== undefined) fields.push("timesfm_horizon", timesfmFields.timesfm_horizon);
-    if (timesfmFields.timesfm_conf !== undefined) fields.push("timesfm_conf", String(timesfmFields.timesfm_conf));
+    if (timesfmFields.p_timesfm !== undefined)
+      fields.push("p_timesfm", String(timesfmFields.p_timesfm));
+    if (timesfmFields.timesfm_horizon !== undefined)
+      fields.push("timesfm_horizon", timesfmFields.timesfm_horizon);
+    if (timesfmFields.timesfm_conf !== undefined)
+      fields.push("timesfm_conf", String(timesfmFields.timesfm_conf));
   }
 
   // Add calibration fields if provided
   if (calibrationFields) {
-    if (calibrationFields.calibration_bias !== undefined) fields.push("calibration_bias", String(calibrationFields.calibration_bias));
-    if (calibrationFields.calibration_status !== undefined) fields.push("calibration_status", calibrationFields.calibration_status);
+    if (calibrationFields.calibration_bias !== undefined)
+      fields.push(
+        "calibration_bias",
+        String(calibrationFields.calibration_bias),
+      );
+    if (calibrationFields.calibration_status !== undefined)
+      fields.push("calibration_status", calibrationFields.calibration_status);
   }
 
   // Add tail risk fields if provided
   if (tailRiskFields) {
-    if (tailRiskFields.tail_risk_score !== undefined) fields.push("tail_risk_score", String(tailRiskFields.tail_risk_score));
-    if (tailRiskFields.tail_risk_action !== undefined) fields.push("tail_risk_action", tailRiskFields.tail_risk_action);
+    if (tailRiskFields.tail_risk_score !== undefined)
+      fields.push("tail_risk_score", String(tailRiskFields.tail_risk_score));
+    if (tailRiskFields.tail_risk_action !== undefined)
+      fields.push("tail_risk_action", tailRiskFields.tail_risk_action);
   }
 
   // Add regime shift fields if provided
   if (shiftFields) {
-    if (shiftFields.regime_shift !== undefined) fields.push("regime_shift", shiftFields.regime_shift);
-    if (shiftFields.prev_regime !== undefined) fields.push("prev_regime", shiftFields.prev_regime);
-    if (shiftFields.shift_at !== undefined) fields.push("shift_at", String(shiftFields.shift_at));
-    if (shiftFields.shifts_24h !== undefined) fields.push("shifts_24h", String(shiftFields.shifts_24h));
+    if (shiftFields.regime_shift !== undefined)
+      fields.push("regime_shift", shiftFields.regime_shift);
+    if (shiftFields.prev_regime !== undefined)
+      fields.push("prev_regime", shiftFields.prev_regime);
+    if (shiftFields.shift_at !== undefined)
+      fields.push("shift_at", String(shiftFields.shift_at));
+    if (shiftFields.shifts_24h !== undefined)
+      fields.push("shifts_24h", String(shiftFields.shifts_24h));
   }
 
-  await redisPipeline([
-    [
-      "HSET",
-      `trading:config:${symbol}`,
-      ...fields,
-    ],
-  ]);
+  await redisPipeline([["HSET", `trading:config:${symbol}`, ...fields]]);
 }
 
-export async function redisGetConfig(symbol: string): Promise<Record<string, string> | null> {
+export async function redisGetConfig(
+  symbol: string,
+): Promise<Record<string, string> | null> {
   const result = await redisCommand("HGETALL", `trading:config:${symbol}`);
   if (!result || !Array.isArray(result) || result.length === 0) return null;
 
@@ -637,7 +736,11 @@ export async function redisGetConfig(symbol: string): Promise<Record<string, str
   return obj;
 }
 
-export async function redisPushError(symbol: string, fnName: string, errorMsg: string): Promise<void> {
+export async function redisPushError(
+  symbol: string,
+  fnName: string,
+  errorMsg: string,
+): Promise<void> {
   const entry = JSON.stringify({
     ts: Date.now(),
     fn: fnName,
@@ -655,7 +758,9 @@ export async function redisPushError(symbol: string, fnName: string, errorMsg: s
 // Returns 0 if query fails (fail-open, never block the pipeline).
 export async function countShifts24h(symbol: string): Promise<number> {
   try {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const twentyFourHoursAgo = new Date(
+      Date.now() - 24 * 60 * 60 * 1000,
+    ).toISOString();
     const data = await supabaseRest(
       "nt_regime_log",
       "GET",
@@ -711,11 +816,13 @@ export async function timesfmPost(
     clearTimeout(timer);
 
     if (!res.ok) {
-      console.warn(`[timesfm] HTTP ${res.status} — ${await res.text().catch(() => "")}`);
+      console.warn(
+        `[timesfm] HTTP ${res.status} — ${await res.text().catch(() => "")}`,
+      );
       return new Map();
     }
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       point_forecast?: number[][];
       num_series?: number;
     };
@@ -734,17 +841,24 @@ export async function timesfmPost(
         continue;
       }
       // Average of first 3 forecast steps for stability
-      const avgForecast = forecast.slice(0, Math.min(3, forecast.length)).reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
+      const avgForecast =
+        forecast
+          .slice(0, Math.min(3, forecast.length))
+          .reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
       // Directional probability: how far in % the forecast moved, normalized to 0-1
       const pctChange = (avgForecast - lastPrice) / lastPrice;
       // Scale: 1% move = 0.50 probability, capped at [0.1, 0.9]
       const pTimesfm = Math.max(0.1, Math.min(0.9, 0.5 + pctChange * 50));
       map.set(symbols[i], Math.round(pTimesfm * 10000) / 10000);
-      console.log(`[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`);
+      console.log(
+        `[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`,
+      );
     }
     return map;
   } catch (err) {
-    console.warn(`[timesfm] Request failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(
+      `[timesfm] Request failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return new Map();
   }
 }
@@ -764,7 +878,7 @@ export async function computeCalibrationBias(
       `symbol=eq.${symbol}&select=predicted_p_win,outcome`,
     );
     if (!Array.isArray(data) || data.length < 20) {
-      return null;  // Insufficient data
+      return null; // Insufficient data
     }
 
     const n = data.length;
@@ -791,7 +905,12 @@ export async function computeCalibrationBias(
 }
 
 // ─── Supabase PostgREST ────────────────────────────────────
-export async function supabaseRest(table: string, method: string, body?: unknown, query?: string): Promise<unknown> {
+export async function supabaseRest(
+  table: string,
+  method: string,
+  body?: unknown,
+  query?: string,
+): Promise<unknown> {
   const url = `${SUPABASE_URL}/rest/v1/${table}${query ? `?${query}` : ""}`;
   const headers: Record<string, string> = {
     apikey: SUPABASE_SERVICE_ROLE,
@@ -822,15 +941,28 @@ export async function supabaseRest(table: string, method: string, body?: unknown
  * Same as supabaseRest but with 1 retry on transient errors (503, connection reset).
  * Used for symbol lookups where a momentary PostgREST blip causes false 404s.
  */
-async function supabaseRestWithRetry(table: string, method: string, body?: unknown, query?: string, retries = 1): Promise<unknown> {
+async function supabaseRestWithRetry(
+  table: string,
+  method: string,
+  body?: unknown,
+  query?: string,
+  retries = 1,
+): Promise<unknown> {
   try {
     return await supabaseRest(table, method, body, query);
   } catch (err) {
     if (retries <= 0) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     // Only retry on transient errors (503, connection, network), not 404/400
-    if (msg.includes("503") || msg.includes("connection") || msg.includes("network") || msg.includes("reset")) {
-      console.warn(`[supabaseRestWithRetry] ${table} transient error, retrying: ${msg}`);
+    if (
+      msg.includes("503") ||
+      msg.includes("connection") ||
+      msg.includes("network") ||
+      msg.includes("reset")
+    ) {
+      console.warn(
+        `[supabaseRestWithRetry] ${table} transient error, retrying: ${msg}`,
+      );
       await sleep(1000);
       return supabaseRest(table, method, body, query);
     }
@@ -838,7 +970,9 @@ async function supabaseRestWithRetry(table: string, method: string, body?: unkno
   }
 }
 
-export async function getSymbolsByAssetClass(assetClass: string): Promise<SymbolConfig[]> {
+export async function getSymbolsByAssetClass(
+  assetClass: string,
+): Promise<SymbolConfig[]> {
   const data = await supabaseRestWithRetry(
     "nt_symbol",
     "GET",
@@ -848,7 +982,9 @@ export async function getSymbolsByAssetClass(assetClass: string): Promise<Symbol
   return data as SymbolConfig[];
 }
 
-export async function getSymbolByName(symbol: string): Promise<SymbolConfig | null> {
+export async function getSymbolByName(
+  symbol: string,
+): Promise<SymbolConfig | null> {
   const data = await supabaseRestWithRetry(
     "nt_symbol",
     "GET",
@@ -869,15 +1005,23 @@ export async function getAllActiveSymbols(): Promise<SymbolConfig[]> {
   return data as SymbolConfig[];
 }
 
-export async function logSweepResult(result: Record<string, unknown>): Promise<void> {
-  await supabaseRest("nt_sweep_results", "POST", result);
+export async function logSweepResult(
+  result: Record<string, unknown>,
+): Promise<void> {
+  await supabaseRest("nt_sweep_result", "POST", result);
 }
 
-export async function logRegimeEntry(entry: Record<string, unknown>): Promise<void> {
+export async function logRegimeEntry(
+  entry: Record<string, unknown>,
+): Promise<void> {
   await supabaseRest("nt_regime_log", "POST", entry);
 }
 
-export async function logError(symbol: string, fnName: string, errorMsg: string): Promise<void> {
+export async function logError(
+  symbol: string,
+  fnName: string,
+  errorMsg: string,
+): Promise<void> {
   await supabaseRest("nt_errors", "POST", {
     symbol,
     fn_name: fnName,
@@ -895,9 +1039,13 @@ export async function logError(symbol: string, fnName: string, errorMsg: string)
 // will try again in 15 min anyway). 1 retry on transient errors
 // only, with short backoff.
 
-async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): Promise<unknown> {
-  const maxRetries = 2;          // 1 initial + 1 retry (down from 3)
-  const baseDelayMs = 2000;      // 2s base (down from 5s)
+async function nobleTraderPost(
+  path: string,
+  body: unknown,
+  timeoutMs = 30000,
+): Promise<unknown> {
+  const maxRetries = 2; // 1 initial + 1 retry (down from 3)
+  const baseDelayMs = 2000; // 2s base (down from 5s)
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -918,7 +1066,7 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
         const retryAfter = res.headers.get("Retry-After");
         lastError = new Error(
           `Noble Trader ${path}: 429 rate limited (attempt ${attempt + 1}/${maxRetries}). ` +
-          `Skipping — next cron cycle will retry. Retry-After: ${retryAfter ?? "unknown"}`
+            `Skipping — next cron cycle will retry. Retry-After: ${retryAfter ?? "unknown"}`,
         );
         console.warn(lastError.message);
         clearTimeout(timer);
@@ -937,7 +1085,7 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
       if (attempt < maxRetries - 1) {
         const delayMs = baseDelayMs * Math.pow(2, attempt);
         console.warn(
-          `[nobleTraderPost] ${path}: attempt ${attempt + 1} failed, retrying in ${delayMs}ms — ${lastError.message}`
+          `[nobleTraderPost] ${path}: attempt ${attempt + 1} failed, retrying in ${delayMs}ms — ${lastError.message}`,
         );
         await sleep(delayMs);
         continue;
@@ -948,7 +1096,10 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
     }
   }
 
-  throw lastError || new Error(`Noble Trader ${path}: all ${maxRetries} retries exhausted`);
+  throw (
+    lastError ||
+    new Error(`Noble Trader ${path}: all ${maxRetries} retries exhausted`)
+  );
 }
 
 export async function runRenkoBacktest(
@@ -959,7 +1110,7 @@ export async function runRenkoBacktest(
   tpBricks: number,
   initialCapital = 100000,
 ): Promise<BacktestResult> {
-  const raw = await nobleTraderPost("/renko/backtest/run", {
+  const raw = (await nobleTraderPost("/renko/backtest/run", {
     prices,
     symbol,
     brick_size: brickSize,
@@ -968,7 +1119,7 @@ export async function runRenkoBacktest(
     initial_capital: initialCapital,
     commission_bps: 5,
     slippage_bps: 2,
-  }) as Record<string, unknown>;
+  })) as Record<string, unknown>;
 
   const stats = (raw as any).stats ?? {};
   const journal = stats.journal ?? {};
@@ -981,12 +1132,18 @@ export async function runRenkoBacktest(
     total_return_pct: dollarStats.net_return_pct ?? 0,
     sharpe_estimate: journal.sharpe_estimate ?? -999,
     max_drawdown_bricks: journal.max_drawdown_bricks ?? 0,
-    total_pnl_bricks: journal.total_pnl_bricks ?? stats.state?.total_pnl_bricks ?? 0,
+    total_pnl_bricks:
+      journal.total_pnl_bricks ?? stats.state?.total_pnl_bricks ?? 0,
     profit_factor: journal.profit_factor ?? 0,
     avg_pnl_bricks: journal.avg_pnl_bricks ?? 0,
     avg_win_bricks: journal.avg_win_bricks ?? 0,
     avg_loss_bricks: journal.avg_loss_bricks ?? 0,
-    kelly_inputs: journal.kelly_inputs ?? { win_rate: 0, avg_win: 0, avg_loss: 0, implied_kelly: 0 },
+    kelly_inputs: journal.kelly_inputs ?? {
+      win_rate: 0,
+      avg_win: 0,
+      avg_loss: 0,
+      implied_kelly: 0,
+    },
     raw,
   };
 }
@@ -1043,9 +1200,9 @@ export async function runRenkoOptimize(
   // Pre-filter: only send combos with R:R >= minRR
   // The MCP server doesn't have min_rr yet, so we filter client-side
   const filteredSl = slBricksRange;
-  const filteredTp = tpBricksRange.filter(tp => {
+  const filteredTp = tpBricksRange.filter((tp) => {
     // At least one SL in range produces R:R >= minRR with this TP
-    return filteredSl.some(sl => tp / sl >= minRR);
+    return filteredSl.some((sl) => tp / sl >= minRR);
   });
 
   if (filteredTp.length === 0) {
@@ -1055,30 +1212,37 @@ export async function runRenkoOptimize(
       results: [],
       best: null,
       multiple_testing: { summary: { raw_significant: 0 } },
-      deflated_sharpe: { dsr: 0.0, interpretation: "No combos with R:R >= " + minRR },
+      deflated_sharpe: {
+        dsr: 0.0,
+        interpretation: "No combos with R:R >= " + minRR,
+      },
     };
   }
 
-  const raw = await nobleTraderPost("/renko/backtest/optimize", {
-    prices,
-    symbol,
-    brick_sizes: brickSizes,
-    sl_bricks_range: filteredSl,
-    tp_bricks_range: filteredTp,
-    min_rr: minRR,  // Server-side R:R filter (new field)
-    commission_bps: 5,
-    slippage_bps: 2,
-    spread_bps: 1,
-    confidence_level: 0.95,
-    multiple_testing_alpha: 0.05,
-  }, 90000) as OptimizeResult;  // 90s timeout — optimize is the bottleneck, runs in parallel with regime/kelly
+  const raw = (await nobleTraderPost(
+    "/renko/backtest/optimize",
+    {
+      prices,
+      symbol,
+      brick_sizes: brickSizes,
+      sl_bricks_range: filteredSl,
+      tp_bricks_range: filteredTp,
+      min_rr: minRR, // Server-side R:R filter (new field)
+      commission_bps: 5,
+      slippage_bps: 2,
+      spread_bps: 1,
+      confidence_level: 0.95,
+      multiple_testing_alpha: 0.05,
+    },
+    90000,
+  )) as OptimizeResult; // 90s timeout — optimize is the bottleneck, runs in parallel with regime/kelly
 
   return raw;
 }
 
 /**
  * Detect regime via Noble Trader /regime/detect
- * 
+ *
  * Response structure:
  *   regime_label: "high_vol_strong_bull"  (the primary regime identifier)
  *   confidence: 1.0                       (0-1, probability of dominant state)
@@ -1090,19 +1254,23 @@ export async function detectRegime(
   prices: number[],
   symbol: string,
 ): Promise<RegimeResult> {
-  return nobleTraderPost("/regime/detect", {
-    prices,
-    symbol,
-    window: 200,
-    kelly_fraction: 0.5,
-    target_vol: 0.15,
-    base_risk_limit: 0.02,
-  }, 20000) as Promise<RegimeResult>;  // 20s (down from 30s — parallel with optimize)
+  return nobleTraderPost(
+    "/regime/detect",
+    {
+      prices,
+      symbol,
+      window: 200,
+      kelly_fraction: 0.5,
+      target_vol: 0.15,
+      base_risk_limit: 0.02,
+    },
+    20000,
+  ) as Promise<RegimeResult>; // 20s (down from 30s — parallel with optimize)
 }
 
 /**
  * Compute Kelly fraction via Noble Trader /size/kelly
- * 
+ *
  * Response structure:
  *   recommended_f: 0.0     (final Kelly fraction after all adjustments)
  *   full_kelly_f: 0.0      (raw Kelly)
@@ -1117,13 +1285,17 @@ export async function computeKelly(
   prices: number[],
   symbol: string,
 ): Promise<KellyResult> {
-  return nobleTraderPost("/size/kelly", {
-    prices,
-    symbol,
-    kelly_fraction: 0.5,
-    target_vol: 0.15,
-    use_regime: true,
-  }, 20000) as Promise<KellyResult>;  // 20s (down from 30s — parallel with optimize)
+  return nobleTraderPost(
+    "/size/kelly",
+    {
+      prices,
+      symbol,
+      kelly_fraction: 0.5,
+      target_vol: 0.15,
+      use_regime: true,
+    },
+    20000,
+  ) as Promise<KellyResult>; // 20s (down from 30s — parallel with optimize)
 }
 
 // ─── Data Sources ───────────────────────────────────────────
@@ -1139,7 +1311,8 @@ export async function fetchHyperLiquidCandles(
   interval = "1h",
 ): Promise<number[]> {
   const startTime = Date.now() - hours * 3600000;
-  const HL_MAINNET_URL = Deno.env.get("HL_API_URL") || "https://api.hyperliquid.xyz";
+  const HL_MAINNET_URL =
+    Deno.env.get("HL_API_URL") || "https://api.hyperliquid.xyz";
 
   const res = await fetch(`${HL_MAINNET_URL}/info`, {
     method: "POST",
@@ -1152,7 +1325,9 @@ export async function fetchHyperLiquidCandles(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HyperLiquid candle fetch failed for ${coin}: ${res.status} — ${text.substring(0, 200)}`);
+    throw new Error(
+      `HyperLiquid candle fetch failed for ${coin}: ${res.status} — ${text.substring(0, 200)}`,
+    );
   }
 
   const candles = await res.json();
@@ -1199,44 +1374,65 @@ export async function fetchYahooCandles(
 
         if (res.status === 429 || res.status === 401) {
           // Rate limited or blocked — try next user agent
-          console.warn(`[yahoo] ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}... — trying next`);
-          lastError = new Error(`Yahoo Finance ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}...`);
+          console.warn(
+            `[yahoo] ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}... — trying next`,
+          );
+          lastError = new Error(
+            `Yahoo Finance ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}...`,
+          );
           // Small delay before trying next UA
           await sleep(500);
           continue;
         }
 
-      if (!res.ok) {
-        throw new Error(`Yahoo Finance fetch failed for ${ticker} (${tryInterval}): ${res.status}`);
+        if (!res.ok) {
+          throw new Error(
+            `Yahoo Finance fetch failed for ${ticker} (${tryInterval}): ${res.status}`,
+          );
+        }
+
+        const data = await res.json();
+
+        // Check for Yahoo API error
+        if (data?.chart?.error) {
+          throw new Error(
+            `Yahoo API error for ${ticker} (${tryInterval}): ${data.chart.error.description || JSON.stringify(data.chart.error)}`,
+          );
+        }
+
+        const quotes = data?.chart?.result?.[0]?.indicators?.quote?.[0];
+        if (!quotes?.close) {
+          throw new Error(
+            `No close prices returned from Yahoo for ${ticker} (${tryInterval})`,
+          );
+        }
+
+        const prices = quotes.close.filter(
+          (p: number | null) => p !== null && !isNaN(p as number),
+        );
+
+        if (prices.length > 0) {
+          console.log(
+            `[yahoo] ${ticker}: Got ${prices.length} prices (${tryInterval}, UA=${ua.substring(0, 20)}...)`,
+          );
+          return prices;
+        }
+
+        lastError = new Error(
+          `Yahoo returned 0 valid prices for ${ticker} (${tryInterval})`,
+        );
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
       }
-
-      const data = await res.json();
-
-      // Check for Yahoo API error
-      if (data?.chart?.error) {
-        throw new Error(`Yahoo API error for ${ticker} (${tryInterval}): ${data.chart.error.description || JSON.stringify(data.chart.error)}`);
-      }
-
-      const quotes = data?.chart?.result?.[0]?.indicators?.quote?.[0];
-      if (!quotes?.close) {
-        throw new Error(`No close prices returned from Yahoo for ${ticker} (${tryInterval})`);
-      }
-
-      const prices = quotes.close.filter((p: number | null) => p !== null && !isNaN(p as number));
-
-      if (prices.length > 0) {
-        console.log(`[yahoo] ${ticker}: Got ${prices.length} prices (${tryInterval}, UA=${ua.substring(0, 20)}...)`);
-        return prices;
-      }
-
-      lastError = new Error(`Yahoo returned 0 valid prices for ${ticker} (${tryInterval})`);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    }
-  } // end UA loop
+    } // end UA loop
   } // end interval loop
 
-  throw lastError || new Error(`Yahoo Finance fetch failed for ${ticker} after all retries (UAs + intervals)`);
+  throw (
+    lastError ||
+    new Error(
+      `Yahoo Finance fetch failed for ${ticker} after all retries (UAs + intervals)`,
+    )
+  );
 }
 
 // Fetch Alpaca Market Data bars (stocks, ETFs, crypto spot, commodities ETFs)
@@ -1253,12 +1449,19 @@ const ALPACA_SYMBOL_MAP: Record<string, string> = {
   ETHUSD: "ETH/USD",
   SOLUSD: "SOL/USD",
   // Equities
-  AAPL: "AAPL", AMZN: "AMZN", GOOGL: "GOOGL", META: "META",
-  MSFT: "MSFT", NVDA: "NVDA", TSLA: "TSLA", SPY: "SPY", QQQ: "QQQ",
+  AAPL: "AAPL",
+  AMZN: "AMZN",
+  GOOGL: "GOOGL",
+  META: "META",
+  MSFT: "MSFT",
+  NVDA: "NVDA",
+  TSLA: "TSLA",
+  SPY: "SPY",
+  QQQ: "QQQ",
 };
 
 function isAlpacaCrypto(alpacaSymbol: string): boolean {
-  return alpacaSymbol.includes("/");  // e.g. "BTC/USD"
+  return alpacaSymbol.includes("/"); // e.g. "BTC/USD"
 }
 
 export async function fetchAlpacaCandles(
@@ -1271,13 +1474,23 @@ export async function fetchAlpacaCandles(
   const secretKey = Deno.env.get("ALPACA_SECRET_KEY");
 
   if (!apiKey || !secretKey) {
-    console.warn(`[alpaca] No API credentials set, falling back to Yahoo for ${symbol}`);
+    console.warn(
+      `[alpaca] No API credentials set, falling back to Yahoo for ${symbol}`,
+    );
     // Fall back to Yahoo — derive the yahoo ticker from the symbol
-    const yahooTicker = symbol === "BTCUSD" ? "BTC-USD" :
-                        symbol === "ETHUSD" ? "ETH-USD" :
-                        symbol === "SOLUSD" ? "SOL-USD" :
-                        symbol;
-    return fetchYahooCandles(yahooTicker, hours <= 1080 ? "45d" : "90d", interval);
+    const yahooTicker =
+      symbol === "BTCUSD"
+        ? "BTC-USD"
+        : symbol === "ETHUSD"
+          ? "ETH-USD"
+          : symbol === "SOLUSD"
+            ? "SOL-USD"
+            : symbol;
+    return fetchYahooCandles(
+      yahooTicker,
+      hours <= 1080 ? "45d" : "90d",
+      interval,
+    );
   }
 
   const headers: Record<string, string> = {
@@ -1289,7 +1502,8 @@ export async function fetchAlpacaCandles(
   // Shift endTime 16 min back so Alpaca's free tier serves SIP data
   // (free tier blocks real-time SIP — data <15 min old returns 403)
   const endTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
-  const timeframe = interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
+  const timeframe =
+    interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
 
   try {
     if (isAlpacaCrypto(alpacaSymbol)) {
@@ -1298,15 +1512,23 @@ export async function fetchAlpacaCandles(
       const res = await fetch(url, { headers });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Alpaca crypto bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`);
+        throw new Error(
+          `Alpaca crypto bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`,
+        );
       }
-      const data = await res.json() as { bars?: Record<string, Array<{ c: number }>> };
+      const data = (await res.json()) as {
+        bars?: Record<string, Array<{ c: number }>>;
+      };
       const bars = data?.bars?.[alpacaSymbol];
       if (!bars || bars.length === 0) {
         throw new Error(`Alpaca returned no crypto bars for ${alpacaSymbol}`);
       }
-      const prices = bars.map((b) => parseFloat(String(b.c))).filter((p) => !isNaN(p));
-      console.log(`[alpaca-crypto] ${alpacaSymbol}: Got ${prices.length} prices`);
+      const prices = bars
+        .map((b) => parseFloat(String(b.c)))
+        .filter((p) => !isNaN(p));
+      console.log(
+        `[alpaca-crypto] ${alpacaSymbol}: Got ${prices.length} prices`,
+      );
       return prices;
     } else {
       // Stock/ETF bars: /v2/stocks/{symbol}/bars
@@ -1314,26 +1536,40 @@ export async function fetchAlpacaCandles(
       const res = await fetch(url, { headers });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Alpaca stock bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`);
+        throw new Error(
+          `Alpaca stock bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`,
+        );
       }
-      const data = await res.json() as { bars?: Array<{ c: number }> };
+      const data = (await res.json()) as { bars?: Array<{ c: number }> };
       const bars = data?.bars;
       if (!bars || bars.length === 0) {
         throw new Error(`Alpaca returned no stock bars for ${alpacaSymbol}`);
       }
-      const prices = bars.map((b) => parseFloat(String(b.c))).filter((p) => !isNaN(p));
-      console.log(`[alpaca-stock] ${alpacaSymbol}: Got ${prices.length} prices`);
+      const prices = bars
+        .map((b) => parseFloat(String(b.c)))
+        .filter((p) => !isNaN(p));
+      console.log(
+        `[alpaca-stock] ${alpacaSymbol}: Got ${prices.length} prices`,
+      );
       return prices;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[alpaca] ${symbol}: ${msg} — falling back to Yahoo`);
     // Fall back to Yahoo
-    const yahooTicker = symbol === "BTCUSD" ? "BTC-USD" :
-                        symbol === "ETHUSD" ? "ETH-USD" :
-                        symbol === "SOLUSD" ? "SOL-USD" :
-                        symbol;
-    return fetchYahooCandles(yahooTicker, hours <= 1080 ? "45d" : "90d", interval);
+    const yahooTicker =
+      symbol === "BTCUSD"
+        ? "BTC-USD"
+        : symbol === "ETHUSD"
+          ? "ETH-USD"
+          : symbol === "SOLUSD"
+            ? "SOL-USD"
+            : symbol;
+    return fetchYahooCandles(
+      yahooTicker,
+      hours <= 1080 ? "45d" : "90d",
+      interval,
+    );
   }
 }
 
@@ -1351,12 +1587,28 @@ export async function fetchSweepCandles(
   symbolConfig: SymbolConfig,
 ): Promise<number[]> {
   if (symbolConfig.data_source === "hyperliquid") {
-    return fetchHyperLiquidCandles(symbolConfig.hyperliquid_coin!, SWEEP_CANDLE_HOURS, "1h");
+    return fetchHyperLiquidCandles(
+      symbolConfig.hyperliquid_coin!,
+      SWEEP_CANDLE_HOURS,
+      "1h",
+    );
   } else if (symbolConfig.data_source === "alpaca") {
-    const alpacaSymbol = symbolConfig.alpaca_symbol || ALPACA_SYMBOL_MAP[symbolConfig.symbol] || symbolConfig.symbol;
-    return fetchAlpacaCandles(symbolConfig.symbol, alpacaSymbol, SWEEP_CANDLE_HOURS, "1h");
+    const alpacaSymbol =
+      symbolConfig.alpaca_symbol ||
+      ALPACA_SYMBOL_MAP[symbolConfig.symbol] ||
+      symbolConfig.symbol;
+    return fetchAlpacaCandles(
+      symbolConfig.symbol,
+      alpacaSymbol,
+      SWEEP_CANDLE_HOURS,
+      "1h",
+    );
   } else {
-    return fetchYahooCandles(symbolConfig.yahoo_ticker!, SWEEP_YAHOO_RANGE, "1h");
+    return fetchYahooCandles(
+      symbolConfig.yahoo_ticker!,
+      SWEEP_YAHOO_RANGE,
+      "1h",
+    );
   }
 }
 
@@ -1370,24 +1622,40 @@ export async function fetchLatestCandles(
     const hours = Math.min(nBars, 500);
     return fetchHyperLiquidCandles(symbolConfig.hyperliquid_coin!, hours, "1h");
   } else if (symbolConfig.data_source === "alpaca") {
-    const alpacaSymbol = symbolConfig.alpaca_symbol || ALPACA_SYMBOL_MAP[symbolConfig.symbol] || symbolConfig.symbol;
-    return fetchAlpacaCandles(symbolConfig.symbol, alpacaSymbol, Math.min(nBars, 500), "1h");
+    const alpacaSymbol =
+      symbolConfig.alpaca_symbol ||
+      ALPACA_SYMBOL_MAP[symbolConfig.symbol] ||
+      symbolConfig.symbol;
+    return fetchAlpacaCandles(
+      symbolConfig.symbol,
+      alpacaSymbol,
+      Math.min(nBars, 500),
+      "1h",
+    );
   } else {
     // Try hourly first (more granular for regime detection)
     const range = nBars <= 390 ? "5d" : "90d";
-    let prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, range, "1h");
+    let prices = await fetchYahooCandles(
+      symbolConfig.yahoo_ticker!,
+      range,
+      "1h",
+    );
 
     // Noble Trader /regime/detect requires >= 81 prices.
     // Fallback to daily interval if hourly returned insufficient data
     // (common outside market hours for stocks/ETFs/commodities)
     if (prices.length < 100) {
-      console.log(`[fetchLatestCandles] ${symbolConfig.symbol}: hourly returned ${prices.length} bars (need >=81 for regime), falling back to daily`);
+      console.log(
+        `[fetchLatestCandles] ${symbolConfig.symbol}: hourly returned ${prices.length} bars (need >=81 for regime), falling back to daily`,
+      );
       prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "1y", "1d");
     }
 
     // Final safety: if daily also failed, try 2y daily for more history
     if (prices.length < 100) {
-      console.log(`[fetchLatestCandles] ${symbolConfig.symbol}: daily 1y returned ${prices.length} bars, trying 2y daily`);
+      console.log(
+        `[fetchLatestCandles] ${symbolConfig.symbol}: daily 1y returned ${prices.length} bars, trying 2y daily`,
+      );
       prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "2y", "1d");
     }
 
@@ -1421,29 +1689,29 @@ export function generateBrickSizes(atr: number, price: number): number[] {
 
   // Target brick as % of price, scaled by volatility regime
   // Professional daily Renko: bricks should be ~0.5-1.0% of price
-  const volPct = (atr / price) * 100;  // e.g. BTC ~2.7% daily vol
+  const volPct = (atr / price) * 100; // e.g. BTC ~2.7% daily vol
   let baseBrickPct: number;
   if (volPct > 3.0) {
-    baseBrickPct = 0.75;   // High vol (crypto, TSLA): 0.75% of price
+    baseBrickPct = 0.75; // High vol (crypto, TSLA): 0.75% of price
   } else if (volPct > 1.5) {
-    baseBrickPct = 0.60;   // Medium vol (most stocks): 0.60% of price
+    baseBrickPct = 0.6; // Medium vol (most stocks): 0.60% of price
   } else if (volPct > 0.5) {
-    baseBrickPct = 0.40;   // Low vol (indices, commodities): 0.40% of price
+    baseBrickPct = 0.4; // Low vol (indices, commodities): 0.40% of price
   } else {
-    baseBrickPct = 0.25;   // Forex: 0.25% of price
+    baseBrickPct = 0.25; // Forex: 0.25% of price
   }
 
-  const base = price * baseBrickPct / 100;
+  const base = (price * baseBrickPct) / 100;
   // 5 brick sizes — TimesFM gates ~70% of heavy sweeps, so the CPU budget
   // is available for a wider grid (120 combos vs 72). The extra 0.75× and
   // 3.0× bricks capture fine-grain and coarse-grain Renko regimes that
   // the middle 3 bricks miss.
   const bricks = [
     Math.round(base * 0.75 * 10000) / 10000,
-    Math.round(base * 1.0  * 10000) / 10000,
-    Math.round(base * 1.5  * 10000) / 10000,
-    Math.round(base * 2.0  * 10000) / 10000,
-    Math.round(base * 3.0  * 10000) / 10000,
+    Math.round(base * 1.0 * 10000) / 10000,
+    Math.round(base * 1.5 * 10000) / 10000,
+    Math.round(base * 2.0 * 10000) / 10000,
+    Math.round(base * 3.0 * 10000) / 10000,
   ];
 
   // Deduplicate (forex can produce identical bricks after rounding)
@@ -1500,7 +1768,10 @@ export function parseRegimeLabel(result: RegimeResult): string {
  * Extract Markov transition probabilities from regime state.
  * These are directional priors the Executor blends with L2 data.
  */
-export function computeMarkovProbs(regimeLabel: string): { pUp: number; pDn: number } {
+export function computeMarkovProbs(regimeLabel: string): {
+  pUp: number;
+  pDn: number;
+} {
   const lower = regimeLabel.toLowerCase();
   const isBullish = lower.includes("bull");
   const isBearish = lower.includes("bear");
@@ -1526,17 +1797,17 @@ export function computeMarkovProbs(regimeLabel: string): { pUp: number; pDn: num
 
 export interface EVInput {
   // From HMM regime detection (required)
-  trendProbs: Record<string, number>;  // e.g. { strong_bull: 0.10, bull: 0.65, bear: 0.15, strong_bear: 0.05, neutral: 0.05 }
+  trendProbs: Record<string, number>; // e.g. { strong_bull: 0.10, bull: 0.65, bear: 0.15, strong_bear: 0.05, neutral: 0.05 }
   // From L2 imbalance engine (optional — 0.50 default if missing)
   imbalanceSignal?: {
     signal: "long" | "short" | "flat";
-    confidence: number;  // 0-1
+    confidence: number; // 0-1
     persistence: number; // bars
   };
   // From Markov transition matrix (optional — 0.50 default if missing)
   markovTransition?: {
     current_state: "UP" | "DOWN" | "FLAT";
-    p_up: number;  // P(UP | current_state)
+    p_up: number; // P(UP | current_state)
     p_down: number; // P(DOWN | current_state)
   };
   // Trade parameters (required)
@@ -1555,7 +1826,7 @@ export interface EVResult {
   p_regime: number;
   p_imbalance: number;
   p_markov: number;
-  p_timesfm: number;           // v3: TimesFM component (0 if unused)
+  p_timesfm: number; // v3: TimesFM component (0 if unused)
   ev: number;
   ev_per_dollar: number;
   rr: number;
@@ -1587,9 +1858,9 @@ export function computePRegime(
 
   for (const [key, val] of Object.entries(trendProbs)) {
     const lower = key.toLowerCase();
-    if (bullKeys.some(k => lower.includes(k))) pBull += val;
-    else if (bearKeys.some(k => lower.includes(k))) pBear += val;
-    else if (neutralKeys.some(k => lower.includes(k))) pNeutral += val;
+    if (bullKeys.some((k) => lower.includes(k))) pBull += val;
+    else if (bearKeys.some((k) => lower.includes(k))) pBear += val;
+    else if (neutralKeys.some((k) => lower.includes(k))) pNeutral += val;
   }
 
   if (direction === "long") {
@@ -1609,15 +1880,18 @@ export function computePImbalance(
   imbalanceSignal: EVInput["imbalanceSignal"],
   direction: "long" | "short",
 ): number {
-  if (!imbalanceSignal) return 0.50;  // No data → neutral
+  if (!imbalanceSignal) return 0.5; // No data → neutral
 
   const minPersistenceTarget = 5;
 
   if (imbalanceSignal.signal === direction) {
-    const persistenceBonus = Math.min(1.0, imbalanceSignal.persistence / minPersistenceTarget);
+    const persistenceBonus = Math.min(
+      1.0,
+      imbalanceSignal.persistence / minPersistenceTarget,
+    );
     return imbalanceSignal.confidence * (0.6 + 0.4 * persistenceBonus);
   } else if (imbalanceSignal.signal === "flat") {
-    return 0.50;
+    return 0.5;
   } else {
     // Opposing signal
     return 1.0 - imbalanceSignal.confidence;
@@ -1633,7 +1907,7 @@ export function computePMarkov(
   markovTransition: EVInput["markovTransition"],
   direction: "long" | "short",
 ): number {
-  if (!markovTransition) return 0.50;  // No data → neutral
+  if (!markovTransition) return 0.5; // No data → neutral
 
   if (direction === "long") {
     return markovTransition.p_up;
@@ -1662,32 +1936,32 @@ export function computeEV(input: EVInput): EVResult {
   // Blended P_win — 4-source or 3-source fallback
   let pWin: number;
   if (pTimesfm !== null) {
-    pWin = 0.35 * pRegime + 0.20 * pImbalance + 0.20 * pMarkov + 0.25 * pTimesfm;
+    pWin = 0.35 * pRegime + 0.2 * pImbalance + 0.2 * pMarkov + 0.25 * pTimesfm;
   } else {
-    pWin = 0.40 * pRegime + 0.30 * pImbalance + 0.30 * pMarkov;
+    pWin = 0.4 * pRegime + 0.3 * pImbalance + 0.3 * pMarkov;
   }
 
   // EV computation
   const profit = input.tpBricks * input.brickSize;
   const stake = input.slBricks * input.brickSize;
   const pLoss = 1 - pWin;
-  const ev = (pWin * profit) - (pLoss * stake);
+  const ev = pWin * profit - pLoss * stake;
   const evPerDollar = stake > 0 ? ev / stake : 0;
   const rr = stake > 0 ? profit / stake : 0;
 
   // Aggression dispatcher
   let aggression: "passive" | "mid" | "aggressive";
-  if (evPerDollar > 0.40) aggression = "passive";
+  if (evPerDollar > 0.4) aggression = "passive";
   else if (evPerDollar > 0.15) aggression = "mid";
   else aggression = "aggressive";
 
   // EV-scaled Kelly
-  const evScale = evPerDollar > 0 ? Math.min(1.0, evPerDollar / 0.50) : 0;
+  const evScale = evPerDollar > 0 ? Math.min(1.0, evPerDollar / 0.5) : 0;
   const baseKelly = input.baseKelly ?? 0;
   const effectiveKelly = baseKelly * evScale;
 
   // Min EV gate
-  const MIN_EV = 0.0;   // Accept any positive EV
+  const MIN_EV = 0.0; // Accept any positive EV
   const MIN_RR = 2.0;
   const allowed = ev > MIN_EV && rr >= MIN_RR;
 
@@ -1735,7 +2009,13 @@ export function computeMarkovTransition(
   brickSize: number,
 ): MarkovTransitionResult {
   if (prices.length < 10) {
-    return { current_state: "FLAT", p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: 0 };
+    return {
+      current_state: "FLAT",
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: 0,
+    };
   }
 
   // Classify each price change into a state
@@ -1748,7 +2028,13 @@ export function computeMarkovTransition(
   }
 
   if (states.length < 2) {
-    return { current_state: states[0] ?? "FLAT", p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: states.length };
+    return {
+      current_state: states[0] ?? "FLAT",
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: states.length,
+    };
   }
 
   // Count transitions
@@ -1770,7 +2056,13 @@ export function computeMarkovTransition(
   const total = fromCounts.UP + fromCounts.DOWN + fromCounts.FLAT;
 
   if (total === 0) {
-    return { current_state: currentState, p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: states.length - 1 };
+    return {
+      current_state: currentState,
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: states.length - 1,
+    };
   }
 
   return {
@@ -1794,7 +2086,8 @@ export function parseKellyF(result: KellyResult): number {
   if (result.recommended_f > 0) f = result.recommended_f;
   else if (result.regime_gated_f > 0) f = result.regime_gated_f;
   else if (result.fractional_f > 0) f = result.fractional_f;
-  else if (result.full_kelly_f > 0) f = result.full_kelly_f * 0.5; // Never use full Kelly raw
+  else if (result.full_kelly_f > 0)
+    f = result.full_kelly_f * 0.5; // Never use full Kelly raw
   else return 0.1; // fallback minimum
   return Math.min(f, KELLY_CAP);
 }
@@ -1804,8 +2097,8 @@ export function parseKellyF(result: KellyResult): number {
 // Expressed as minimum % distance from entry price.
 const MIN_SL_PCT: Record<string, number> = {
   // Crypto: higher noise, need wider stops
-  BTC: 0.5,   // ~$320 at $64k — above 1-min noise
-  ETH: 0.5,   // ~$8.50 at $1,700
+  BTC: 0.5, // ~$320 at $64k — above 1-min noise
+  ETH: 0.5, // ~$8.50 at $1,700
   SOL: 0.8,
   AVAX: 0.8,
   ARB: 1.0,
@@ -1814,14 +2107,26 @@ const MIN_SL_PCT: Record<string, number> = {
   XRP: 0.8,
   WIF: 1.0,
   // Stocks: moderate noise
-  AAPL: 0.3, AMZN: 0.3, GOOGL: 0.3, META: 0.3,
-  MSFT: 0.3, NVDA: 0.5,  TSLA: 0.5,
-  SPY: 0.3,  QQQ: 0.3,
+  AAPL: 0.3,
+  AMZN: 0.3,
+  GOOGL: 0.3,
+  META: 0.3,
+  MSFT: 0.3,
+  NVDA: 0.5,
+  TSLA: 0.5,
+  SPY: 0.3,
+  QQQ: 0.3,
   // Forex: tight spreads but still need room
-  EURUSD: 0.3, GBPUSD: 0.3, USDJPY: 0.3,
-  AUDUSD: 0.3, USDCAD: 0.3,
+  EURUSD: 0.3,
+  GBPUSD: 0.3,
+  USDJPY: 0.3,
+  AUDUSD: 0.3,
+  USDCAD: 0.3,
   // Commodities
-  GOLD: 0.3, SILVER: 0.3, OIL: 0.5, COPPER: 0.5,
+  GOLD: 0.3,
+  SILVER: 0.3,
+  OIL: 0.5,
+  COPPER: 0.5,
 };
 const DEFAULT_MIN_SL_PCT = 0.3;
 
@@ -1853,7 +2158,12 @@ export function computeTradeSignal(
   tpBricks: number,
   symbol: string,
   assetClass?: string,
-): { signal: string; entry_price: number; stop_loss: number; take_profit: number } {
+): {
+  signal: string;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+} {
   const lower = regime.toLowerCase();
   const isBullish = lower.includes("bull");
   const isBearish = lower.includes("bear");
@@ -1864,11 +2174,11 @@ export function computeTradeSignal(
   // ── Minimum SL distance guard ──
   // If SL is too tight (< MIN_SL_PCT of price), widen it
   const minSlPct = MIN_SL_PCT[symbol] ?? DEFAULT_MIN_SL_PCT;
-  const minSlDistance = currentPrice * minSlPct / 100;
+  const minSlDistance = (currentPrice * minSlPct) / 100;
   if (slDistance < minSlDistance) {
     console.warn(
-      `[computeTradeSignal] ${symbol}: SL too tight (${(slDistance/currentPrice*100).toFixed(3)}% < ${minSlPct}%), ` +
-      `widening from ${slBricks} bricks ($${slDistance.toFixed(2)}) to $${minSlDistance.toFixed(2)} (${Math.ceil(minSlDistance / brickSize)} bricks)`
+      `[computeTradeSignal] ${symbol}: SL too tight (${((slDistance / currentPrice) * 100).toFixed(3)}% < ${minSlPct}%), ` +
+        `widening from ${slBricks} bricks ($${slDistance.toFixed(2)}) to $${minSlDistance.toFixed(2)} (${Math.ceil(minSlDistance / brickSize)} bricks)`,
     );
     slDistance = minSlDistance;
   }
@@ -1879,22 +2189,34 @@ export function computeTradeSignal(
     return {
       signal: "buy",
       entry_price: entry,
-      stop_loss:  roundPrice(Math.max(entry * 0.01, entry - slDistance), symbol, assetClass),  // Floor at 1% of entry, never $0
+      stop_loss: roundPrice(
+        Math.max(entry * 0.01, entry - slDistance),
+        symbol,
+        assetClass,
+      ), // Floor at 1% of entry, never $0
       take_profit: roundPrice(entry + tpDistance, symbol, assetClass),
     };
   } else if (isBearish) {
     return {
       signal: "sell",
       entry_price: entry,
-      stop_loss:  roundPrice(entry + slDistance, symbol, assetClass),
-      take_profit: roundPrice(Math.max(entry * 0.01, entry - tpDistance), symbol, assetClass), // Floor at 1% of entry, never $0
+      stop_loss: roundPrice(entry + slDistance, symbol, assetClass),
+      take_profit: roundPrice(
+        Math.max(entry * 0.01, entry - tpDistance),
+        symbol,
+        assetClass,
+      ), // Floor at 1% of entry, never $0
     };
   } else {
     // Neutral / unknown / market_closed — still compute entry for reference
     return {
       signal: "neutral",
       entry_price: entry,
-      stop_loss:  roundPrice(Math.max(entry * 0.01, entry - slDistance), symbol, assetClass),
+      stop_loss: roundPrice(
+        Math.max(entry * 0.01, entry - slDistance),
+        symbol,
+        assetClass,
+      ),
       take_profit: roundPrice(entry + tpDistance, symbol, assetClass),
     };
   }
@@ -1906,13 +2228,19 @@ export function computeTradeSignal(
 // the NaN feedback loop where NaN gets read from Redis, stays NaN,
 // and gets written back forever.
 
-export function safeParseFloat(val: string | undefined | null, fallback: number): number {
+export function safeParseFloat(
+  val: string | undefined | null,
+  fallback: number,
+): number {
   if (!val) return fallback;
   const n = parseFloat(val);
   return Number.isNaN(n) ? fallback : n;
 }
 
-export function safeParseInt(val: string | undefined | null, fallback: number): number {
+export function safeParseInt(
+  val: string | undefined | null,
+  fallback: number,
+): number {
   if (!val) return fallback;
   const n = parseInt(val, 10);
   return Number.isNaN(n) ? fallback : n;
@@ -1922,11 +2250,11 @@ export function safeParseInt(val: string | undefined | null, fallback: number): 
 // Computes rolling Pearson correlation between symbols from
 // recent price returns. Used to adjust TimesFM forecasts for
 // correlated leaders (e.g. BTC → ETH, SPY → QQQ).
-const CORRELATION_WINDOW = 20;  // bars
+const CORRELATION_WINDOW = 20; // bars
 
 export interface CorrelationResult {
-  matrix: Record<string, Record<string, number>>;  // sym → sym → r
-  leaders: Record<string, string[]>;                // sym → [leader, ...]
+  matrix: Record<string, Record<string, number>>; // sym → sym → r
+  leaders: Record<string, string[]>; // sym → [leader, ...]
 }
 
 /**
@@ -1950,7 +2278,11 @@ export function computeCorrelationMatrix(
   for (const sym of symbols) {
     const prices = pricesBySymbol[sym]!;
     const r: number[] = [];
-    for (let i = prices.length - CORRELATION_WINDOW + 1; i < prices.length; i++) {
+    for (
+      let i = prices.length - CORRELATION_WINDOW + 1;
+      i < prices.length;
+      i++
+    ) {
       if (prices[i - 1] > 0) r.push(Math.log(prices[i] / prices[i - 1]));
     }
     if (r.length >= CORRELATION_WINDOW - 1) returns[sym] = r;
@@ -1965,10 +2297,15 @@ export function computeCorrelationMatrix(
     const ra = returns[a]!;
     const meanA = ra.reduce((s, v) => s + v, 0) / ra.length;
     for (const b of validSyms) {
-      if (a === b) { matrix[a][b] = 1; continue; }
+      if (a === b) {
+        matrix[a][b] = 1;
+        continue;
+      }
       const rb = returns[b]!;
       const meanB = rb.reduce((s, v) => s + v, 0) / rb.length;
-      let cov = 0, varA = 0, varB = 0;
+      let cov = 0,
+        varA = 0,
+        varB = 0;
       for (let i = 0; i < ra.length; i++) {
         const da = ra[i] - meanA;
         const db = rb[i] - meanB;
@@ -2017,7 +2354,10 @@ export function adjustLeadLag(
   let count = 0;
   for (const ls of leaderSyms) {
     const lp = pTimesfmMap.get(ls);
-    if (lp !== null) { sum += lp; count++; }
+    if (lp !== null) {
+      sum += lp;
+      count++;
+    }
   }
 
   if (count === 0) return own;
@@ -2029,9 +2369,9 @@ export function adjustLeadLag(
 // Converts extreme TimesFM forecasts into a risk-reduction signal.
 // High tail risk = extreme p_timesfm (<0.2 or >0.8) + high_vol regime.
 export interface TailRiskResult {
-  score: number;       // 0.0 (none) – 1.0 (critical)
-  action: string;      // "none" | "reduce_50" | "skip"
-  multiplier: number;  // position size multiplier (1.0 = no change)
+  score: number; // 0.0 (none) – 1.0 (critical)
+  action: string; // "none" | "reduce_50" | "skip"
+  multiplier: number; // position size multiplier (1.0 = no change)
 }
 
 export function computeTailRisk(
@@ -2054,7 +2394,7 @@ export function computeTailRisk(
     result.multiplier = 0.0;
   } else if (isExtremeConfident) {
     // Extreme forecast in normal vol → reduce
-    result.score = 0.60;
+    result.score = 0.6;
     result.action = "reduce_50";
     result.multiplier = 0.5;
   } else if (isExtreme && isHighVol) {
@@ -2071,7 +2411,10 @@ export function computeTailRisk(
 // Returns true if a regime change involves a volatility transition
 // (e.g., low_vol → high_vol or vice versa). Used for Shift-Aware
 // Wakeups — trigger emergency heavy sweep on vol shifts.
-export function isVolatilityShift(prevRegime: string, currentRegime: string): boolean {
+export function isVolatilityShift(
+  prevRegime: string,
+  currentRegime: string,
+): boolean {
   if (!prevRegime || !currentRegime) return false;
   const prevHigh = prevRegime.includes("high_vol");
   const currHigh = currentRegime.includes("high_vol");

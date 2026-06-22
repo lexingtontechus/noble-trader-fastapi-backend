@@ -29,7 +29,6 @@
 // Trigger: pg_cron via direct net.http_post (see migration 015)
 // Or direct: POST with the body shapes above.
 
-
 // ════════════════════════════════════════════════════════════════
 // SECTION 1: Inlined _shared/utils.ts
 // ════════════════════════════════════════════════════════════════
@@ -54,9 +53,12 @@
 const UPSTASH_URL = Deno.env.get("UPSTASH_REDIS_REST_URL")!;
 const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SUPABASE_SERVICE_ROLE =
+  Deno.env.get("SB_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
-const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
+const TIMESFM_INFERENCE_URL =
+  Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
 
 // ─── Types ──────────────────────────────────────────────────
@@ -64,10 +66,10 @@ export interface SymbolConfig {
   id: number;
   symbol: string;
   asset_class: string;
-  data_source: string;        // "hyperliquid" | "alpaca" | "yahoo"
+  data_source: string; // "hyperliquid" | "alpaca" | "yahoo"
   yahoo_ticker: string | null;
   hyperliquid_coin: string | null;
-  alpaca_symbol: string | null;  // e.g. "AAPL", "BTC/USD", "GLD"
+  alpaca_symbol: string | null; // e.g. "AAPL", "BTC/USD", "GLD"
   sweep_cron: string;
   regime_cron: string;
   active: boolean;
@@ -88,42 +90,42 @@ export interface RedisConfig {
   sweep_window?: string;
   sweep_sharpe?: number;
   sweep_trades?: number;
-  signal?: string;        // "buy" | "sell" | "neutral"
-  entry_price?: number;   // Current market price at signal
-  stop_loss?: number;     // Price if market goes against signal
-  take_profit?: number;   // Price if market goes in favor
+  signal?: string; // "buy" | "sell" | "neutral"
+  entry_price?: number; // Current market price at signal
+  stop_loss?: number; // Price if market goes against signal
+  take_profit?: number; // Price if market goes in favor
   price_decimals?: number; // Tick-size decimal places for this symbol
 
   // EV Engine outputs (NEW)
-  ev?: number;                // Raw EV in price units
-  ev_per_dollar?: number;     // Normalized EV per $1 risked
-  p_win?: number;             // Blended P_win (0-1)
-  p_regime?: number;          // Regime component of P_win
-  p_imbalance?: number;       // L2 imbalance component (0.50 if no data)
-  p_markov?: number;          // Markov transition component
-  aggression?: string;        // "passive" | "mid" | "aggressive"
-  ev_scale?: number;          // Kelly scaling factor from EV
-  effective_kelly?: number;   // kelly_f * ev_scale
-  markov_current_state?: string;  // Current Markov state ("UP"/"DOWN"/"FLAT")
+  ev?: number; // Raw EV in price units
+  ev_per_dollar?: number; // Normalized EV per $1 risked
+  p_win?: number; // Blended P_win (0-1)
+  p_regime?: number; // Regime component of P_win
+  p_imbalance?: number; // L2 imbalance component (0.50 if no data)
+  p_markov?: number; // Markov transition component
+  aggression?: string; // "passive" | "mid" | "aggressive"
+  ev_scale?: number; // Kelly scaling factor from EV
+  effective_kelly?: number; // kelly_f * ev_scale
+  markov_current_state?: string; // Current Markov state ("UP"/"DOWN"/"FLAT")
 
   // Regime Shift fields (v2.3 — Shift-Aware EV)
-  regime_shift?: string;      // "true" | "false" — did a shift occur this cycle?
-  prev_regime?: string;       // Regime we transitioned FROM (e.g. "low_vol_bull")
-  shift_at?: number;          // Unix ms when shift was detected (timestamp approach)
-  shifts_24h?: number;        // Count of shifts in last 24h (volatility meta-signal)
+  regime_shift?: string; // "true" | "false" — did a shift occur this cycle?
+  prev_regime?: string; // Regime we transitioned FROM (e.g. "low_vol_bull")
+  shift_at?: number; // Unix ms when shift was detected (timestamp approach)
+  shifts_24h?: number; // Count of shifts in last 24h (volatility meta-signal)
 
   // TimesFM fields (v3)
-  p_timesfm?: number;         // Raw TimesFM forecast probability (0-1)
-  timesfm_horizon?: string;   // Forecast window label (e.g. "12h")
-  timesfm_conf?: number;      // TimesFM model confidence (0-1)
+  p_timesfm?: number; // Raw TimesFM forecast probability (0-1)
+  timesfm_horizon?: string; // Forecast window label (e.g. "12h")
+  timesfm_conf?: number; // TimesFM model confidence (0-1)
 
   // Calibration fields (v3)
-  calibration_bias?: number;   // avg(predictedPWin) - actual_win_rate
+  calibration_bias?: number; // avg(predictedPWin) - actual_win_rate
   calibration_status?: string; // "CALIBRATED" | "OVERCONFIDENT" | "UNDERCONFIDENT"
 
   // Tail risk fields (v3)
-  tail_risk_score?: number;    // 0.0 (none) - 1.0 (critical)
-  tail_risk_action?: string;   // "none" | "reduce_25" | "reduce_50" | "skip"
+  tail_risk_score?: number; // 0.0 (none) - 1.0 (critical)
+  tail_risk_action?: string; // "none" | "reduce_25" | "reduce_50" | "skip"
 }
 
 // Noble Trader /regime/detect actual response
@@ -131,11 +133,11 @@ export interface RegimeResult {
   symbol: string;
   vol_probs: Record<string, number>;
   trend_probs: Record<string, number>;
-  vol_state: string;           // "low" | "med_low" | "med_high" | "high"
-  trend_state: string;         // "strong_bear" | "bear" | "neutral" | "bull" | "strong_bull"
-  regime_label: string;        // e.g. "high_vol_strong_bull"
-  confidence: number;          // 0.0 - 1.0
-  risk_multiplier: number;     // 0.2 - 1.0
+  vol_state: string; // "low" | "med_low" | "med_high" | "high"
+  trend_state: string; // "strong_bear" | "bear" | "neutral" | "bull" | "strong_bull"
+  regime_label: string; // e.g. "high_vol_strong_bull"
+  confidence: number; // 0.0 - 1.0
+  risk_multiplier: number; // 0.2 - 1.0
   n_bars_fitted: number;
 }
 
@@ -167,7 +169,12 @@ export interface BacktestResult {
   avg_pnl_bricks: number;
   avg_win_bricks: number;
   avg_loss_bricks: number;
-  kelly_inputs: { win_rate: number; avg_win: number; avg_loss: number; implied_kelly: number };
+  kelly_inputs: {
+    win_rate: number;
+    avg_win: number;
+    avg_loss: number;
+    implied_kelly: number;
+  };
   raw: Record<string, unknown>;
 }
 
@@ -185,17 +192,23 @@ export interface BacktestResult {
 // Max decimal places per symbol (for toFixed formatting)
 export const PRICE_TICK_DECIMALS: Record<string, number> = {
   // ── Hyperliquid perps: max_decimals = 6 - szDecimals ──
-  BTC:   1,    // szDecimals=5 → max 1 decimal,  5 sig figs
-  ETH:   2,    // szDecimals=4 → max 2 decimals, 5 sig figs
-  SOL:   4,    // szDecimals=2 → max 4 decimals, 5 sig figs
+  BTC: 1, // szDecimals=5 → max 1 decimal,  5 sig figs
+  ETH: 2, // szDecimals=4 → max 2 decimals, 5 sig figs
+  SOL: 4, // szDecimals=2 → max 4 decimals, 5 sig figs
   // ── US stocks (penny ticks) ──
-  AAPL:  2, AMZN: 2, GOOGL: 2, META: 2,
-  MSFT:  2, NVDA:  2, TSLA:  2,
-  SPY:   2, QQQ:   2,
+  AAPL: 2,
+  AMZN: 2,
+  GOOGL: 2,
+  META: 2,
+  MSFT: 2,
+  NVDA: 2,
+  TSLA: 2,
+  SPY: 2,
+  QQQ: 2,
   // ── Alpaca crypto spot ──
-  BTCUSD: 1,   // same tick as BTC perp
-  ETHUSD: 2,   // same tick as ETH perp
-  SOLUSD: 4,   // same tick as SOL perp
+  BTCUSD: 1, // same tick as BTC perp
+  ETHUSD: 2, // same tick as ETH perp
+  SOLUSD: 4, // same tick as SOL perp
 };
 
 /** Set of Hyperliquid perp symbols for sig-fig rounding */
@@ -203,9 +216,9 @@ const HL_PERP_SYMBOLS = new Set(["BTC", "ETH", "SOL"]);
 
 /** Default decimal places by asset class (fallback if symbol not in map) */
 const DEFAULT_TICK_DECIMALS: Record<string, number> = {
-  crypto:      6,    // Hyperliquid max for low-priced perps
-  stocks:      2,
-  forex:       5,
+  crypto: 6, // Hyperliquid max for low-priced perps
+  stocks: 2,
+  forex: 5,
   commodities: 2,
 };
 
@@ -262,12 +275,15 @@ function roundHyperliquidPrice(price: number, maxDecimals: number): number {
  * - Crypto (Hyperliquid): 5 significant figures, max (6 - szDecimals) decimals
  * - Other assets: simple decimal rounding
  */
-export function roundPrice(price: number, symbol: string, assetClass?: string): number {
+export function roundPrice(
+  price: number,
+  symbol: string,
+  assetClass?: string,
+): number {
   if (price === 0) return 0;
 
-  const maxDecimals = PRICE_TICK_DECIMALS[symbol]
-    ?? DEFAULT_TICK_DECIMALS[assetClass ?? ""]
-    ?? 2;
+  const maxDecimals =
+    PRICE_TICK_DECIMALS[symbol] ?? DEFAULT_TICK_DECIMALS[assetClass ?? ""] ?? 2;
 
   // Hyperliquid perps use sig-fig rules
   if (HL_PERP_SYMBOLS.has(symbol)) {
@@ -283,7 +299,8 @@ export function roundPrice(price: number, symbol: string, assetClass?: string): 
 export function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -307,7 +324,10 @@ async function redisPipeline(commands: unknown[][]): Promise<unknown> {
   return res.json();
 }
 
-async function redisCommand(cmd: string, ...args: (string | number)[]): Promise<unknown> {
+async function redisCommand(
+  cmd: string,
+  ...args: (string | number)[]
+): Promise<unknown> {
   const res = await fetch(`${UPSTASH_URL}/${cmd}/${args.join("/")}`, {
     headers: {
       Authorization: `Bearer ${UPSTASH_TOKEN}`,
@@ -323,12 +343,16 @@ async function redisCommand(cmd: string, ...args: (string | number)[]): Promise<
   return data.result;
 }
 
-export async function redisSetConfig(symbol: string, config: RedisConfig): Promise<void> {
+export async function redisSetConfig(
+  symbol: string,
+  config: RedisConfig,
+): Promise<void> {
   // Determine tick-size decimals for this symbol (for price formatting)
-  const decimals = config.price_decimals
-    ?? PRICE_TICK_DECIMALS[symbol]
-    ?? DEFAULT_TICK_DECIMALS["crypto"] // fallback
-    ?? 2;
+  const decimals =
+    config.price_decimals ??
+    PRICE_TICK_DECIMALS[symbol] ??
+    DEFAULT_TICK_DECIMALS["crypto"] ?? // fallback
+    2;
 
   // ── NaN Guard: never write NaN to Redis ──
   // NaN in Redis creates a feedback loop — "NaN" is truthy so
@@ -343,7 +367,9 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     markov_p_up: Number.isNaN(config.markov_p_up) ? 0.5 : config.markov_p_up,
     markov_p_dn: Number.isNaN(config.markov_p_dn) ? 0.5 : config.markov_p_dn,
     kelly_f: Number.isNaN(config.kelly_f) ? 0 : config.kelly_f,
-    last_update: Number.isNaN(config.last_update) ? Date.now() : config.last_update,
+    last_update: Number.isNaN(config.last_update)
+      ? Date.now()
+      : config.last_update,
   };
 
   const fields: (string | number)[] = [];
@@ -363,7 +389,10 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
   if (config.sweep_timestamp !== undefined) {
     // Guard against NaN / negative / zero timestamps — replace with Date.now()
     const ts = config.sweep_timestamp;
-    entries.push(["sweep_timestamp", (Number.isNaN(ts) || ts <= 0) ? Date.now() : ts]);
+    entries.push([
+      "sweep_timestamp",
+      Number.isNaN(ts) || ts <= 0 ? Date.now() : ts,
+    ]);
   }
   if (config.sweep_window !== undefined) {
     entries.push(["sweep_window", config.sweep_window]);
@@ -393,28 +422,46 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     entries.push(["ev", Number.isNaN(config.ev) ? 0 : config.ev]);
   }
   if (config.ev_per_dollar !== undefined) {
-    entries.push(["ev_per_dollar", Number.isNaN(config.ev_per_dollar) ? 0 : config.ev_per_dollar]);
+    entries.push([
+      "ev_per_dollar",
+      Number.isNaN(config.ev_per_dollar) ? 0 : config.ev_per_dollar,
+    ]);
   }
   if (config.p_win !== undefined) {
     entries.push(["p_win", Number.isNaN(config.p_win) ? 0 : config.p_win]);
   }
   if (config.p_regime !== undefined) {
-    entries.push(["p_regime", Number.isNaN(config.p_regime) ? 0 : config.p_regime]);
+    entries.push([
+      "p_regime",
+      Number.isNaN(config.p_regime) ? 0 : config.p_regime,
+    ]);
   }
   if (config.p_imbalance !== undefined) {
-    entries.push(["p_imbalance", Number.isNaN(config.p_imbalance) ? 0 : config.p_imbalance]);
+    entries.push([
+      "p_imbalance",
+      Number.isNaN(config.p_imbalance) ? 0 : config.p_imbalance,
+    ]);
   }
   if (config.p_markov !== undefined) {
-    entries.push(["p_markov", Number.isNaN(config.p_markov) ? 0 : config.p_markov]);
+    entries.push([
+      "p_markov",
+      Number.isNaN(config.p_markov) ? 0 : config.p_markov,
+    ]);
   }
   if (config.aggression !== undefined) {
     entries.push(["aggression", config.aggression]);
   }
   if (config.ev_scale !== undefined) {
-    entries.push(["ev_scale", Number.isNaN(config.ev_scale) ? 0 : config.ev_scale]);
+    entries.push([
+      "ev_scale",
+      Number.isNaN(config.ev_scale) ? 0 : config.ev_scale,
+    ]);
   }
   if (config.effective_kelly !== undefined) {
-    entries.push(["effective_kelly", Number.isNaN(config.effective_kelly) ? 0 : config.effective_kelly]);
+    entries.push([
+      "effective_kelly",
+      Number.isNaN(config.effective_kelly) ? 0 : config.effective_kelly,
+    ]);
   }
   if (config.markov_current_state !== undefined) {
     entries.push(["markov_current_state", config.markov_current_state]);
@@ -428,26 +475,43 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     entries.push(["prev_regime", config.prev_regime]);
   }
   if (config.shift_at !== undefined) {
-    entries.push(["shift_at", Number.isNaN(config.shift_at) || config.shift_at <= 0 ? 0 : config.shift_at]);
+    entries.push([
+      "shift_at",
+      Number.isNaN(config.shift_at) || config.shift_at <= 0
+        ? 0
+        : config.shift_at,
+    ]);
   }
   if (config.shifts_24h !== undefined) {
-    entries.push(["shifts_24h", Number.isNaN(config.shifts_24h) ? 0 : config.shifts_24h]);
+    entries.push([
+      "shifts_24h",
+      Number.isNaN(config.shifts_24h) ? 0 : config.shifts_24h,
+    ]);
   }
 
   // TimesFM fields (v3)
   if (config.p_timesfm !== undefined) {
-    entries.push(["p_timesfm", Number.isNaN(config.p_timesfm) ? 0 : config.p_timesfm]);
+    entries.push([
+      "p_timesfm",
+      Number.isNaN(config.p_timesfm) ? 0 : config.p_timesfm,
+    ]);
   }
   if (config.timesfm_horizon !== undefined) {
     entries.push(["timesfm_horizon", config.timesfm_horizon]);
   }
   if (config.timesfm_conf !== undefined) {
-    entries.push(["timesfm_conf", Number.isNaN(config.timesfm_conf) ? 0 : config.timesfm_conf]);
+    entries.push([
+      "timesfm_conf",
+      Number.isNaN(config.timesfm_conf) ? 0 : config.timesfm_conf,
+    ]);
   }
 
   // Calibration fields (v3)
   if (config.calibration_bias !== undefined) {
-    entries.push(["calibration_bias", Number.isNaN(config.calibration_bias) ? 0 : config.calibration_bias]);
+    entries.push([
+      "calibration_bias",
+      Number.isNaN(config.calibration_bias) ? 0 : config.calibration_bias,
+    ]);
   }
   if (config.calibration_status !== undefined) {
     entries.push(["calibration_status", config.calibration_status]);
@@ -455,7 +519,10 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
 
   // Tail risk fields (v3)
   if (config.tail_risk_score !== undefined) {
-    entries.push(["tail_risk_score", Number.isNaN(config.tail_risk_score) ? 0 : config.tail_risk_score]);
+    entries.push([
+      "tail_risk_score",
+      Number.isNaN(config.tail_risk_score) ? 0 : config.tail_risk_score,
+    ]);
   }
   if (config.tail_risk_action !== undefined) {
     entries.push(["tail_risk_action", config.tail_risk_action]);
@@ -465,14 +532,21 @@ export async function redisSetConfig(symbol: string, config: RedisConfig): Promi
     fields.push(k, String(v));
   }
 
-  await redisPipeline([
-    ["HSET", `trading:config:${symbol}`, ...fields],
-  ]);
+  await redisPipeline([["HSET", `trading:config:${symbol}`, ...fields]]);
 }
 
-export async function redisSetHeartbeat(symbol: string, ttlSeconds: number): Promise<void> {
+export async function redisSetHeartbeat(
+  symbol: string,
+  ttlSeconds: number,
+): Promise<void> {
   await redisPipeline([
-    ["SET", `trading:heartbeat:${symbol}`, String(Date.now()), "EX", String(ttlSeconds)],
+    [
+      "SET",
+      `trading:heartbeat:${symbol}`,
+      String(Date.now()),
+      "EX",
+      String(ttlSeconds),
+    ],
   ]);
 }
 
@@ -509,10 +583,10 @@ export interface RegimeCacheEntry {
   markov_current_state?: string;
 
   // Regime Shift fields (v2.3 — Shift-Aware EV)
-  regime_shift?: string;      // "true" | "false" — persisted to Redis
-  prev_regime?: string;       // Regime transitioned FROM
-  shift_at?: number;          // Unix ms when shift detected
-  shifts_24h?: number;        // Count of shifts in last 24h
+  regime_shift?: string; // "true" | "false" — persisted to Redis
+  prev_regime?: string; // Regime transitioned FROM
+  shift_at?: number; // Unix ms when shift detected
+  shifts_24h?: number; // Count of shifts in last 24h
 
   // TimesFM fields (v3)
   p_timesfm?: number;
@@ -548,9 +622,7 @@ export async function redisLoadRegimeCache(): Promise<RegimeCache> {
 
 export async function redisSaveRegimeCache(cache: RegimeCache): Promise<void> {
   try {
-    await redisPipeline([
-      ["SET", REGIME_CACHE_KEY, JSON.stringify(cache)],
-    ]);
+    await redisPipeline([["SET", REGIME_CACHE_KEY, JSON.stringify(cache)]]);
   } catch (err) {
     console.warn(`[redisSaveRegimeCache] Failed to save cache: ${err}`);
   }
@@ -598,61 +670,82 @@ export async function redisUpdateSignal(
   },
 ): Promise<void> {
   const fields: (string | number)[] = [
-    "signal", signal,
-    "entry_price", entryPrice.toFixed(decimals),
-    "stop_loss", stopLoss.toFixed(decimals),
-    "take_profit", takeProfit.toFixed(decimals),
-    "last_update", String(Date.now()),
-    "sweep_timestamp", String(Date.now()),  // Refresh on every light-regime cycle too
+    "signal",
+    signal,
+    "entry_price",
+    entryPrice.toFixed(decimals),
+    "stop_loss",
+    stopLoss.toFixed(decimals),
+    "take_profit",
+    takeProfit.toFixed(decimals),
+    "last_update",
+    String(Date.now()),
+    "sweep_timestamp",
+    String(Date.now()), // Refresh on every light-regime cycle too
   ];
 
   // Add EV fields if provided
   if (evFields) {
     if (evFields.ev !== undefined) fields.push("ev", String(evFields.ev));
-    if (evFields.ev_per_dollar !== undefined) fields.push("ev_per_dollar", String(evFields.ev_per_dollar));
-    if (evFields.p_win !== undefined) fields.push("p_win", String(evFields.p_win));
-    if (evFields.aggression !== undefined) fields.push("aggression", evFields.aggression);
-    if (evFields.ev_scale !== undefined) fields.push("ev_scale", String(evFields.ev_scale));
-    if (evFields.effective_kelly !== undefined) fields.push("effective_kelly", String(evFields.effective_kelly));
+    if (evFields.ev_per_dollar !== undefined)
+      fields.push("ev_per_dollar", String(evFields.ev_per_dollar));
+    if (evFields.p_win !== undefined)
+      fields.push("p_win", String(evFields.p_win));
+    if (evFields.aggression !== undefined)
+      fields.push("aggression", evFields.aggression);
+    if (evFields.ev_scale !== undefined)
+      fields.push("ev_scale", String(evFields.ev_scale));
+    if (evFields.effective_kelly !== undefined)
+      fields.push("effective_kelly", String(evFields.effective_kelly));
   }
 
   // Add TimesFM fields if provided
   if (timesfmFields) {
-    if (timesfmFields.p_timesfm !== undefined) fields.push("p_timesfm", String(timesfmFields.p_timesfm));
-    if (timesfmFields.timesfm_horizon !== undefined) fields.push("timesfm_horizon", timesfmFields.timesfm_horizon);
-    if (timesfmFields.timesfm_conf !== undefined) fields.push("timesfm_conf", String(timesfmFields.timesfm_conf));
+    if (timesfmFields.p_timesfm !== undefined)
+      fields.push("p_timesfm", String(timesfmFields.p_timesfm));
+    if (timesfmFields.timesfm_horizon !== undefined)
+      fields.push("timesfm_horizon", timesfmFields.timesfm_horizon);
+    if (timesfmFields.timesfm_conf !== undefined)
+      fields.push("timesfm_conf", String(timesfmFields.timesfm_conf));
   }
 
   // Add calibration fields if provided
   if (calibrationFields) {
-    if (calibrationFields.calibration_bias !== undefined) fields.push("calibration_bias", String(calibrationFields.calibration_bias));
-    if (calibrationFields.calibration_status !== undefined) fields.push("calibration_status", calibrationFields.calibration_status);
+    if (calibrationFields.calibration_bias !== undefined)
+      fields.push(
+        "calibration_bias",
+        String(calibrationFields.calibration_bias),
+      );
+    if (calibrationFields.calibration_status !== undefined)
+      fields.push("calibration_status", calibrationFields.calibration_status);
   }
 
   // Add tail risk fields if provided
   if (tailRiskFields) {
-    if (tailRiskFields.tail_risk_score !== undefined) fields.push("tail_risk_score", String(tailRiskFields.tail_risk_score));
-    if (tailRiskFields.tail_risk_action !== undefined) fields.push("tail_risk_action", tailRiskFields.tail_risk_action);
+    if (tailRiskFields.tail_risk_score !== undefined)
+      fields.push("tail_risk_score", String(tailRiskFields.tail_risk_score));
+    if (tailRiskFields.tail_risk_action !== undefined)
+      fields.push("tail_risk_action", tailRiskFields.tail_risk_action);
   }
 
   // Add regime shift fields if provided
   if (shiftFields) {
-    if (shiftFields.regime_shift !== undefined) fields.push("regime_shift", shiftFields.regime_shift);
-    if (shiftFields.prev_regime !== undefined) fields.push("prev_regime", shiftFields.prev_regime);
-    if (shiftFields.shift_at !== undefined) fields.push("shift_at", String(shiftFields.shift_at));
-    if (shiftFields.shifts_24h !== undefined) fields.push("shifts_24h", String(shiftFields.shifts_24h));
+    if (shiftFields.regime_shift !== undefined)
+      fields.push("regime_shift", shiftFields.regime_shift);
+    if (shiftFields.prev_regime !== undefined)
+      fields.push("prev_regime", shiftFields.prev_regime);
+    if (shiftFields.shift_at !== undefined)
+      fields.push("shift_at", String(shiftFields.shift_at));
+    if (shiftFields.shifts_24h !== undefined)
+      fields.push("shifts_24h", String(shiftFields.shifts_24h));
   }
 
-  await redisPipeline([
-    [
-      "HSET",
-      `trading:config:${symbol}`,
-      ...fields,
-    ],
-  ]);
+  await redisPipeline([["HSET", `trading:config:${symbol}`, ...fields]]);
 }
 
-export async function redisGetConfig(symbol: string): Promise<Record<string, string> | null> {
+export async function redisGetConfig(
+  symbol: string,
+): Promise<Record<string, string> | null> {
   const result = await redisCommand("HGETALL", `trading:config:${symbol}`);
   if (!result || !Array.isArray(result) || result.length === 0) return null;
 
@@ -663,7 +756,11 @@ export async function redisGetConfig(symbol: string): Promise<Record<string, str
   return obj;
 }
 
-export async function redisPushError(symbol: string, fnName: string, errorMsg: string): Promise<void> {
+export async function redisPushError(
+  symbol: string,
+  fnName: string,
+  errorMsg: string,
+): Promise<void> {
   const entry = JSON.stringify({
     ts: Date.now(),
     fn: fnName,
@@ -681,7 +778,9 @@ export async function redisPushError(symbol: string, fnName: string, errorMsg: s
 // Returns 0 if query fails (fail-open, never block the pipeline).
 export async function countShifts24h(symbol: string): Promise<number> {
   try {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const twentyFourHoursAgo = new Date(
+      Date.now() - 24 * 60 * 60 * 1000,
+    ).toISOString();
     const data = await supabaseRest(
       "nt_regime_log",
       "GET",
@@ -726,11 +825,13 @@ export async function timesfmPost(
     clearTimeout(timer);
 
     if (!res.ok) {
-      console.warn(`[timesfm] HTTP ${res.status} — ${await res.text().catch(() => "")}`);
+      console.warn(
+        `[timesfm] HTTP ${res.status} — ${await res.text().catch(() => "")}`,
+      );
       return new Map();
     }
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       point_forecast?: number[][];
       num_series?: number;
     };
@@ -747,15 +848,22 @@ export async function timesfmPost(
         map.set(symbols[i], null);
         continue;
       }
-      const avgForecast = forecast.slice(0, Math.min(3, forecast.length)).reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
+      const avgForecast =
+        forecast
+          .slice(0, Math.min(3, forecast.length))
+          .reduce((a, b) => a + b, 0) / Math.min(3, forecast.length);
       const pctChange = (avgForecast - lastPrice) / lastPrice;
       const pTimesfm = Math.max(0.1, Math.min(0.9, 0.5 + pctChange * 50));
       map.set(symbols[i], Math.round(pTimesfm * 10000) / 10000);
-      console.log(`[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`);
+      console.log(
+        `[timesfm] ${symbols[i]}: price=${lastPrice.toFixed(2)} → forecast=${avgForecast.toFixed(2)} (p=${pTimesfm.toFixed(4)})`,
+      );
     }
     return map;
   } catch (err) {
-    console.warn(`[timesfm] Request failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(
+      `[timesfm] Request failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return new Map();
   }
 }
@@ -799,7 +907,12 @@ export async function computeCalibrationBias(
 }
 
 // ─── Supabase PostgREST ────────────────────────────────────
-export async function supabaseRest(table: string, method: string, body?: unknown, query?: string): Promise<unknown> {
+export async function supabaseRest(
+  table: string,
+  method: string,
+  body?: unknown,
+  query?: string,
+): Promise<unknown> {
   const url = `${SUPABASE_URL}/rest/v1/${table}${query ? `?${query}` : ""}`;
   const headers: Record<string, string> = {
     apikey: SUPABASE_SERVICE_ROLE,
@@ -830,15 +943,28 @@ export async function supabaseRest(table: string, method: string, body?: unknown
  * Same as supabaseRest but with 1 retry on transient errors (503, connection reset).
  * Used for symbol lookups where a momentary PostgREST blip causes false 404s.
  */
-async function supabaseRestWithRetry(table: string, method: string, body?: unknown, query?: string, retries = 1): Promise<unknown> {
+async function supabaseRestWithRetry(
+  table: string,
+  method: string,
+  body?: unknown,
+  query?: string,
+  retries = 1,
+): Promise<unknown> {
   try {
     return await supabaseRest(table, method, body, query);
   } catch (err) {
     if (retries <= 0) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     // Only retry on transient errors (503, connection, network), not 404/400
-    if (msg.includes("503") || msg.includes("connection") || msg.includes("network") || msg.includes("reset")) {
-      console.warn(`[supabaseRestWithRetry] ${table} transient error, retrying: ${msg}`);
+    if (
+      msg.includes("503") ||
+      msg.includes("connection") ||
+      msg.includes("network") ||
+      msg.includes("reset")
+    ) {
+      console.warn(
+        `[supabaseRestWithRetry] ${table} transient error, retrying: ${msg}`,
+      );
       await sleep(1000);
       return supabaseRest(table, method, body, query);
     }
@@ -846,7 +972,9 @@ async function supabaseRestWithRetry(table: string, method: string, body?: unkno
   }
 }
 
-export async function getSymbolsByAssetClass(assetClass: string): Promise<SymbolConfig[]> {
+export async function getSymbolsByAssetClass(
+  assetClass: string,
+): Promise<SymbolConfig[]> {
   const data = await supabaseRestWithRetry(
     "nt_symbol",
     "GET",
@@ -856,7 +984,9 @@ export async function getSymbolsByAssetClass(assetClass: string): Promise<Symbol
   return data as SymbolConfig[];
 }
 
-export async function getSymbolByName(symbol: string): Promise<SymbolConfig | null> {
+export async function getSymbolByName(
+  symbol: string,
+): Promise<SymbolConfig | null> {
   const data = await supabaseRestWithRetry(
     "nt_symbol",
     "GET",
@@ -877,15 +1007,23 @@ export async function getAllActiveSymbols(): Promise<SymbolConfig[]> {
   return data as SymbolConfig[];
 }
 
-export async function logSweepResult(result: Record<string, unknown>): Promise<void> {
-  await supabaseRest("nt_sweep_results", "POST", result);
+export async function logSweepResult(
+  result: Record<string, unknown>,
+): Promise<void> {
+  await supabaseRest("nt_sweep_result", "POST", result);
 }
 
-export async function logRegimeEntry(entry: Record<string, unknown>): Promise<void> {
+export async function logRegimeEntry(
+  entry: Record<string, unknown>,
+): Promise<void> {
   await supabaseRest("nt_regime_log", "POST", entry);
 }
 
-export async function logError(symbol: string, fnName: string, errorMsg: string): Promise<void> {
+export async function logError(
+  symbol: string,
+  fnName: string,
+  errorMsg: string,
+): Promise<void> {
   await supabaseRest("nt_errors", "POST", {
     symbol,
     fn_name: fnName,
@@ -903,9 +1041,13 @@ export async function logError(symbol: string, fnName: string, errorMsg: string)
 // will try again in 15 min anyway). 1 retry on transient errors
 // only, with short backoff.
 
-async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): Promise<unknown> {
-  const maxRetries = 2;          // 1 initial + 1 retry (down from 3)
-  const baseDelayMs = 2000;      // 2s base (down from 5s)
+async function nobleTraderPost(
+  path: string,
+  body: unknown,
+  timeoutMs = 30000,
+): Promise<unknown> {
+  const maxRetries = 2; // 1 initial + 1 retry (down from 3)
+  const baseDelayMs = 2000; // 2s base (down from 5s)
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -926,7 +1068,7 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
         const retryAfter = res.headers.get("Retry-After");
         lastError = new Error(
           `Noble Trader ${path}: 429 rate limited (attempt ${attempt + 1}/${maxRetries}). ` +
-          `Skipping — next cron cycle will retry. Retry-After: ${retryAfter ?? "unknown"}`
+            `Skipping — next cron cycle will retry. Retry-After: ${retryAfter ?? "unknown"}`,
         );
         console.warn(lastError.message);
         clearTimeout(timer);
@@ -945,7 +1087,7 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
       if (attempt < maxRetries - 1) {
         const delayMs = baseDelayMs * Math.pow(2, attempt);
         console.warn(
-          `[nobleTraderPost] ${path}: attempt ${attempt + 1} failed, retrying in ${delayMs}ms — ${lastError.message}`
+          `[nobleTraderPost] ${path}: attempt ${attempt + 1} failed, retrying in ${delayMs}ms — ${lastError.message}`,
         );
         await sleep(delayMs);
         continue;
@@ -956,7 +1098,10 @@ async function nobleTraderPost(path: string, body: unknown, timeoutMs = 30000): 
     }
   }
 
-  throw lastError || new Error(`Noble Trader ${path}: all ${maxRetries} retries exhausted`);
+  throw (
+    lastError ||
+    new Error(`Noble Trader ${path}: all ${maxRetries} retries exhausted`)
+  );
 }
 
 export async function runRenkoBacktest(
@@ -967,7 +1112,7 @@ export async function runRenkoBacktest(
   tpBricks: number,
   initialCapital = 100000,
 ): Promise<BacktestResult> {
-  const raw = await nobleTraderPost("/renko/backtest/run", {
+  const raw = (await nobleTraderPost("/renko/backtest/run", {
     prices,
     symbol,
     brick_size: brickSize,
@@ -976,7 +1121,7 @@ export async function runRenkoBacktest(
     initial_capital: initialCapital,
     commission_bps: 5,
     slippage_bps: 2,
-  }) as Record<string, unknown>;
+  })) as Record<string, unknown>;
 
   const stats = (raw as any).stats ?? {};
   const journal = stats.journal ?? {};
@@ -989,12 +1134,18 @@ export async function runRenkoBacktest(
     total_return_pct: dollarStats.net_return_pct ?? 0,
     sharpe_estimate: journal.sharpe_estimate ?? -999,
     max_drawdown_bricks: journal.max_drawdown_bricks ?? 0,
-    total_pnl_bricks: journal.total_pnl_bricks ?? stats.state?.total_pnl_bricks ?? 0,
+    total_pnl_bricks:
+      journal.total_pnl_bricks ?? stats.state?.total_pnl_bricks ?? 0,
     profit_factor: journal.profit_factor ?? 0,
     avg_pnl_bricks: journal.avg_pnl_bricks ?? 0,
     avg_win_bricks: journal.avg_win_bricks ?? 0,
     avg_loss_bricks: journal.avg_loss_bricks ?? 0,
-    kelly_inputs: journal.kelly_inputs ?? { win_rate: 0, avg_win: 0, avg_loss: 0, implied_kelly: 0 },
+    kelly_inputs: journal.kelly_inputs ?? {
+      win_rate: 0,
+      avg_win: 0,
+      avg_loss: 0,
+      implied_kelly: 0,
+    },
     raw,
   };
 }
@@ -1051,9 +1202,9 @@ export async function runRenkoOptimize(
   // Pre-filter: only send combos with R:R >= minRR
   // The MCP server doesn't have min_rr yet, so we filter client-side
   const filteredSl = slBricksRange;
-  const filteredTp = tpBricksRange.filter(tp => {
+  const filteredTp = tpBricksRange.filter((tp) => {
     // At least one SL in range produces R:R >= minRR with this TP
-    return filteredSl.some(sl => tp / sl >= minRR);
+    return filteredSl.some((sl) => tp / sl >= minRR);
   });
 
   if (filteredTp.length === 0) {
@@ -1063,30 +1214,37 @@ export async function runRenkoOptimize(
       results: [],
       best: null,
       multiple_testing: { summary: { raw_significant: 0 } },
-      deflated_sharpe: { dsr: 0.0, interpretation: "No combos with R:R >= " + minRR },
+      deflated_sharpe: {
+        dsr: 0.0,
+        interpretation: "No combos with R:R >= " + minRR,
+      },
     };
   }
 
-  const raw = await nobleTraderPost("/renko/backtest/optimize", {
-    prices,
-    symbol,
-    brick_sizes: brickSizes,
-    sl_bricks_range: filteredSl,
-    tp_bricks_range: filteredTp,
-    min_rr: minRR,  // Server-side R:R filter (new field)
-    commission_bps: 5,
-    slippage_bps: 2,
-    spread_bps: 1,
-    confidence_level: 0.95,
-    multiple_testing_alpha: 0.05,
-  }, 90000) as OptimizeResult;  // 90s timeout — optimize is the bottleneck, runs in parallel with regime/kelly
+  const raw = (await nobleTraderPost(
+    "/renko/backtest/optimize",
+    {
+      prices,
+      symbol,
+      brick_sizes: brickSizes,
+      sl_bricks_range: filteredSl,
+      tp_bricks_range: filteredTp,
+      min_rr: minRR, // Server-side R:R filter (new field)
+      commission_bps: 5,
+      slippage_bps: 2,
+      spread_bps: 1,
+      confidence_level: 0.95,
+      multiple_testing_alpha: 0.05,
+    },
+    90000,
+  )) as OptimizeResult; // 90s timeout — optimize is the bottleneck, runs in parallel with regime/kelly
 
   return raw;
 }
 
 /**
  * Detect regime via Noble Trader /regime/detect
- * 
+ *
  * Response structure:
  *   regime_label: "high_vol_strong_bull"  (the primary regime identifier)
  *   confidence: 1.0                       (0-1, probability of dominant state)
@@ -1098,19 +1256,23 @@ export async function detectRegime(
   prices: number[],
   symbol: string,
 ): Promise<RegimeResult> {
-  return nobleTraderPost("/regime/detect", {
-    prices,
-    symbol,
-    window: 200,
-    kelly_fraction: 0.5,
-    target_vol: 0.15,
-    base_risk_limit: 0.02,
-  }, 20000) as Promise<RegimeResult>;  // 20s (down from 30s — parallel with optimize)
+  return nobleTraderPost(
+    "/regime/detect",
+    {
+      prices,
+      symbol,
+      window: 200,
+      kelly_fraction: 0.5,
+      target_vol: 0.15,
+      base_risk_limit: 0.02,
+    },
+    20000,
+  ) as Promise<RegimeResult>; // 20s (down from 30s — parallel with optimize)
 }
 
 /**
  * Compute Kelly fraction via Noble Trader /size/kelly
- * 
+ *
  * Response structure:
  *   recommended_f: 0.0     (final Kelly fraction after all adjustments)
  *   full_kelly_f: 0.0      (raw Kelly)
@@ -1125,13 +1287,17 @@ export async function computeKelly(
   prices: number[],
   symbol: string,
 ): Promise<KellyResult> {
-  return nobleTraderPost("/size/kelly", {
-    prices,
-    symbol,
-    kelly_fraction: 0.5,
-    target_vol: 0.15,
-    use_regime: true,
-  }, 20000) as Promise<KellyResult>;  // 20s (down from 30s — parallel with optimize)
+  return nobleTraderPost(
+    "/size/kelly",
+    {
+      prices,
+      symbol,
+      kelly_fraction: 0.5,
+      target_vol: 0.15,
+      use_regime: true,
+    },
+    20000,
+  ) as Promise<KellyResult>; // 20s (down from 30s — parallel with optimize)
 }
 
 // ─── Data Sources ───────────────────────────────────────────
@@ -1147,7 +1313,8 @@ export async function fetchHyperLiquidCandles(
   interval = "1h",
 ): Promise<number[]> {
   const startTime = Date.now() - hours * 3600000;
-  const HL_MAINNET_URL = Deno.env.get("HL_API_URL") || "https://api.hyperliquid.xyz";
+  const HL_MAINNET_URL =
+    Deno.env.get("HL_API_URL") || "https://api.hyperliquid.xyz";
 
   const res = await fetch(`${HL_MAINNET_URL}/info`, {
     method: "POST",
@@ -1160,7 +1327,9 @@ export async function fetchHyperLiquidCandles(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HyperLiquid candle fetch failed for ${coin}: ${res.status} — ${text.substring(0, 200)}`);
+    throw new Error(
+      `HyperLiquid candle fetch failed for ${coin}: ${res.status} — ${text.substring(0, 200)}`,
+    );
   }
 
   const candles = await res.json();
@@ -1207,44 +1376,65 @@ export async function fetchYahooCandles(
 
         if (res.status === 429 || res.status === 401) {
           // Rate limited or blocked — try next user agent
-          console.warn(`[yahoo] ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}... — trying next`);
-          lastError = new Error(`Yahoo Finance ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}...`);
+          console.warn(
+            `[yahoo] ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}... — trying next`,
+          );
+          lastError = new Error(
+            `Yahoo Finance ${res.status} for ${ticker} (${tryInterval}) with UA ${ua.substring(0, 30)}...`,
+          );
           // Small delay before trying next UA
           await sleep(500);
           continue;
         }
 
-      if (!res.ok) {
-        throw new Error(`Yahoo Finance fetch failed for ${ticker} (${tryInterval}): ${res.status}`);
+        if (!res.ok) {
+          throw new Error(
+            `Yahoo Finance fetch failed for ${ticker} (${tryInterval}): ${res.status}`,
+          );
+        }
+
+        const data = await res.json();
+
+        // Check for Yahoo API error
+        if (data?.chart?.error) {
+          throw new Error(
+            `Yahoo API error for ${ticker} (${tryInterval}): ${data.chart.error.description || JSON.stringify(data.chart.error)}`,
+          );
+        }
+
+        const quotes = data?.chart?.result?.[0]?.indicators?.quote?.[0];
+        if (!quotes?.close) {
+          throw new Error(
+            `No close prices returned from Yahoo for ${ticker} (${tryInterval})`,
+          );
+        }
+
+        const prices = quotes.close.filter(
+          (p: number | null) => p !== null && !isNaN(p as number),
+        );
+
+        if (prices.length > 0) {
+          console.log(
+            `[yahoo] ${ticker}: Got ${prices.length} prices (${tryInterval}, UA=${ua.substring(0, 20)}...)`,
+          );
+          return prices;
+        }
+
+        lastError = new Error(
+          `Yahoo returned 0 valid prices for ${ticker} (${tryInterval})`,
+        );
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
       }
-
-      const data = await res.json();
-
-      // Check for Yahoo API error
-      if (data?.chart?.error) {
-        throw new Error(`Yahoo API error for ${ticker} (${tryInterval}): ${data.chart.error.description || JSON.stringify(data.chart.error)}`);
-      }
-
-      const quotes = data?.chart?.result?.[0]?.indicators?.quote?.[0];
-      if (!quotes?.close) {
-        throw new Error(`No close prices returned from Yahoo for ${ticker} (${tryInterval})`);
-      }
-
-      const prices = quotes.close.filter((p: number | null) => p !== null && !isNaN(p as number));
-
-      if (prices.length > 0) {
-        console.log(`[yahoo] ${ticker}: Got ${prices.length} prices (${tryInterval}, UA=${ua.substring(0, 20)}...)`);
-        return prices;
-      }
-
-      lastError = new Error(`Yahoo returned 0 valid prices for ${ticker} (${tryInterval})`);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    }
-  } // end UA loop
+    } // end UA loop
   } // end interval loop
 
-  throw lastError || new Error(`Yahoo Finance fetch failed for ${ticker} after all retries (UAs + intervals)`);
+  throw (
+    lastError ||
+    new Error(
+      `Yahoo Finance fetch failed for ${ticker} after all retries (UAs + intervals)`,
+    )
+  );
 }
 
 // Fetch Alpaca Market Data bars (stocks, ETFs, crypto spot, commodities ETFs)
@@ -1261,12 +1451,19 @@ const ALPACA_SYMBOL_MAP: Record<string, string> = {
   ETHUSD: "ETH/USD",
   SOLUSD: "SOL/USD",
   // Equities
-  AAPL: "AAPL", AMZN: "AMZN", GOOGL: "GOOGL", META: "META",
-  MSFT: "MSFT", NVDA: "NVDA", TSLA: "TSLA", SPY: "SPY", QQQ: "QQQ",
+  AAPL: "AAPL",
+  AMZN: "AMZN",
+  GOOGL: "GOOGL",
+  META: "META",
+  MSFT: "MSFT",
+  NVDA: "NVDA",
+  TSLA: "TSLA",
+  SPY: "SPY",
+  QQQ: "QQQ",
 };
 
 function isAlpacaCrypto(alpacaSymbol: string): boolean {
-  return alpacaSymbol.includes("/");  // e.g. "BTC/USD"
+  return alpacaSymbol.includes("/"); // e.g. "BTC/USD"
 }
 
 export async function fetchAlpacaCandles(
@@ -1279,13 +1476,23 @@ export async function fetchAlpacaCandles(
   const secretKey = Deno.env.get("ALPACA_SECRET_KEY");
 
   if (!apiKey || !secretKey) {
-    console.warn(`[alpaca] No API credentials set, falling back to Yahoo for ${symbol}`);
+    console.warn(
+      `[alpaca] No API credentials set, falling back to Yahoo for ${symbol}`,
+    );
     // Fall back to Yahoo — derive the yahoo ticker from the symbol
-    const yahooTicker = symbol === "BTCUSD" ? "BTC-USD" :
-                        symbol === "ETHUSD" ? "ETH-USD" :
-                        symbol === "SOLUSD" ? "SOL-USD" :
-                        symbol;
-    return fetchYahooCandles(yahooTicker, hours <= 1080 ? "45d" : "90d", interval);
+    const yahooTicker =
+      symbol === "BTCUSD"
+        ? "BTC-USD"
+        : symbol === "ETHUSD"
+          ? "ETH-USD"
+          : symbol === "SOLUSD"
+            ? "SOL-USD"
+            : symbol;
+    return fetchYahooCandles(
+      yahooTicker,
+      hours <= 1080 ? "45d" : "90d",
+      interval,
+    );
   }
 
   const headers: Record<string, string> = {
@@ -1297,7 +1504,8 @@ export async function fetchAlpacaCandles(
   // Shift endTime 16 min back so Alpaca's free tier serves SIP data
   // (free tier blocks real-time SIP — data <15 min old returns 403)
   const endTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
-  const timeframe = interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
+  const timeframe =
+    interval === "1h" ? "1Hour" : interval === "1d" ? "1Day" : "1Hour";
 
   try {
     if (isAlpacaCrypto(alpacaSymbol)) {
@@ -1306,15 +1514,23 @@ export async function fetchAlpacaCandles(
       const res = await fetch(url, { headers });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Alpaca crypto bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`);
+        throw new Error(
+          `Alpaca crypto bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`,
+        );
       }
-      const data = await res.json() as { bars?: Record<string, Array<{ c: number }>> };
+      const data = (await res.json()) as {
+        bars?: Record<string, Array<{ c: number }>>;
+      };
       const bars = data?.bars?.[alpacaSymbol];
       if (!bars || bars.length === 0) {
         throw new Error(`Alpaca returned no crypto bars for ${alpacaSymbol}`);
       }
-      const prices = bars.map((b) => parseFloat(String(b.c))).filter((p) => !isNaN(p));
-      console.log(`[alpaca-crypto] ${alpacaSymbol}: Got ${prices.length} prices`);
+      const prices = bars
+        .map((b) => parseFloat(String(b.c)))
+        .filter((p) => !isNaN(p));
+      console.log(
+        `[alpaca-crypto] ${alpacaSymbol}: Got ${prices.length} prices`,
+      );
       return prices;
     } else {
       // Stock/ETF bars: /v2/stocks/{symbol}/bars
@@ -1322,26 +1538,40 @@ export async function fetchAlpacaCandles(
       const res = await fetch(url, { headers });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Alpaca stock bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`);
+        throw new Error(
+          `Alpaca stock bars failed for ${alpacaSymbol}: ${res.status} — ${text.substring(0, 200)}`,
+        );
       }
-      const data = await res.json() as { bars?: Array<{ c: number }> };
+      const data = (await res.json()) as { bars?: Array<{ c: number }> };
       const bars = data?.bars;
       if (!bars || bars.length === 0) {
         throw new Error(`Alpaca returned no stock bars for ${alpacaSymbol}`);
       }
-      const prices = bars.map((b) => parseFloat(String(b.c))).filter((p) => !isNaN(p));
-      console.log(`[alpaca-stock] ${alpacaSymbol}: Got ${prices.length} prices`);
+      const prices = bars
+        .map((b) => parseFloat(String(b.c)))
+        .filter((p) => !isNaN(p));
+      console.log(
+        `[alpaca-stock] ${alpacaSymbol}: Got ${prices.length} prices`,
+      );
       return prices;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[alpaca] ${symbol}: ${msg} — falling back to Yahoo`);
     // Fall back to Yahoo
-    const yahooTicker = symbol === "BTCUSD" ? "BTC-USD" :
-                        symbol === "ETHUSD" ? "ETH-USD" :
-                        symbol === "SOLUSD" ? "SOL-USD" :
-                        symbol;
-    return fetchYahooCandles(yahooTicker, hours <= 1080 ? "45d" : "90d", interval);
+    const yahooTicker =
+      symbol === "BTCUSD"
+        ? "BTC-USD"
+        : symbol === "ETHUSD"
+          ? "ETH-USD"
+          : symbol === "SOLUSD"
+            ? "SOL-USD"
+            : symbol;
+    return fetchYahooCandles(
+      yahooTicker,
+      hours <= 1080 ? "45d" : "90d",
+      interval,
+    );
   }
 }
 
@@ -1358,12 +1588,28 @@ export async function fetchSweepCandles(
   symbolConfig: SymbolConfig,
 ): Promise<number[]> {
   if (symbolConfig.data_source === "hyperliquid") {
-    return fetchHyperLiquidCandles(symbolConfig.hyperliquid_coin!, SWEEP_CANDLE_HOURS, "1h");
+    return fetchHyperLiquidCandles(
+      symbolConfig.hyperliquid_coin!,
+      SWEEP_CANDLE_HOURS,
+      "1h",
+    );
   } else if (symbolConfig.data_source === "alpaca") {
-    const alpacaSymbol = symbolConfig.alpaca_symbol || ALPACA_SYMBOL_MAP[symbolConfig.symbol] || symbolConfig.symbol;
-    return fetchAlpacaCandles(symbolConfig.symbol, alpacaSymbol, SWEEP_CANDLE_HOURS, "1h");
+    const alpacaSymbol =
+      symbolConfig.alpaca_symbol ||
+      ALPACA_SYMBOL_MAP[symbolConfig.symbol] ||
+      symbolConfig.symbol;
+    return fetchAlpacaCandles(
+      symbolConfig.symbol,
+      alpacaSymbol,
+      SWEEP_CANDLE_HOURS,
+      "1h",
+    );
   } else {
-    return fetchYahooCandles(symbolConfig.yahoo_ticker!, SWEEP_YAHOO_RANGE, "1h");
+    return fetchYahooCandles(
+      symbolConfig.yahoo_ticker!,
+      SWEEP_YAHOO_RANGE,
+      "1h",
+    );
   }
 }
 
@@ -1377,24 +1623,40 @@ export async function fetchLatestCandles(
     const hours = Math.min(nBars, 500);
     return fetchHyperLiquidCandles(symbolConfig.hyperliquid_coin!, hours, "1h");
   } else if (symbolConfig.data_source === "alpaca") {
-    const alpacaSymbol = symbolConfig.alpaca_symbol || ALPACA_SYMBOL_MAP[symbolConfig.symbol] || symbolConfig.symbol;
-    return fetchAlpacaCandles(symbolConfig.symbol, alpacaSymbol, Math.min(nBars, 500), "1h");
+    const alpacaSymbol =
+      symbolConfig.alpaca_symbol ||
+      ALPACA_SYMBOL_MAP[symbolConfig.symbol] ||
+      symbolConfig.symbol;
+    return fetchAlpacaCandles(
+      symbolConfig.symbol,
+      alpacaSymbol,
+      Math.min(nBars, 500),
+      "1h",
+    );
   } else {
     // Try hourly first (more granular for regime detection)
     const range = nBars <= 390 ? "5d" : "90d";
-    let prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, range, "1h");
+    let prices = await fetchYahooCandles(
+      symbolConfig.yahoo_ticker!,
+      range,
+      "1h",
+    );
 
     // Noble Trader /regime/detect requires >= 81 prices.
     // Fallback to daily interval if hourly returned insufficient data
     // (common outside market hours for stocks/ETFs/commodities)
     if (prices.length < 100) {
-      console.log(`[fetchLatestCandles] ${symbolConfig.symbol}: hourly returned ${prices.length} bars (need >=81 for regime), falling back to daily`);
+      console.log(
+        `[fetchLatestCandles] ${symbolConfig.symbol}: hourly returned ${prices.length} bars (need >=81 for regime), falling back to daily`,
+      );
       prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "1y", "1d");
     }
 
     // Final safety: if daily also failed, try 2y daily for more history
     if (prices.length < 100) {
-      console.log(`[fetchLatestCandles] ${symbolConfig.symbol}: daily 1y returned ${prices.length} bars, trying 2y daily`);
+      console.log(
+        `[fetchLatestCandles] ${symbolConfig.symbol}: daily 1y returned ${prices.length} bars, trying 2y daily`,
+      );
       prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "2y", "1d");
     }
 
@@ -1428,29 +1690,29 @@ export function generateBrickSizes(atr: number, price: number): number[] {
 
   // Target brick as % of price, scaled by volatility regime
   // Professional daily Renko: bricks should be ~0.5-1.0% of price
-  const volPct = (atr / price) * 100;  // e.g. BTC ~2.7% daily vol
+  const volPct = (atr / price) * 100; // e.g. BTC ~2.7% daily vol
   let baseBrickPct: number;
   if (volPct > 3.0) {
-    baseBrickPct = 0.75;   // High vol (crypto, TSLA): 0.75% of price
+    baseBrickPct = 0.75; // High vol (crypto, TSLA): 0.75% of price
   } else if (volPct > 1.5) {
-    baseBrickPct = 0.60;   // Medium vol (most stocks): 0.60% of price
+    baseBrickPct = 0.6; // Medium vol (most stocks): 0.60% of price
   } else if (volPct > 0.5) {
-    baseBrickPct = 0.40;   // Low vol (indices, commodities): 0.40% of price
+    baseBrickPct = 0.4; // Low vol (indices, commodities): 0.40% of price
   } else {
-    baseBrickPct = 0.25;   // Forex: 0.25% of price
+    baseBrickPct = 0.25; // Forex: 0.25% of price
   }
 
-  const base = price * baseBrickPct / 100;
+  const base = (price * baseBrickPct) / 100;
   // 5 brick sizes — TimesFM gates ~70% of heavy sweeps, so the CPU budget
   // is available for a wider grid (120 combos vs 72). The extra 0.75× and
   // 3.0× bricks capture fine-grain and coarse-grain Renko regimes that
   // the middle 3 bricks miss.
   const bricks = [
     Math.round(base * 0.75 * 10000) / 10000,
-    Math.round(base * 1.0  * 10000) / 10000,
-    Math.round(base * 1.5  * 10000) / 10000,
-    Math.round(base * 2.0  * 10000) / 10000,
-    Math.round(base * 3.0  * 10000) / 10000,
+    Math.round(base * 1.0 * 10000) / 10000,
+    Math.round(base * 1.5 * 10000) / 10000,
+    Math.round(base * 2.0 * 10000) / 10000,
+    Math.round(base * 3.0 * 10000) / 10000,
   ];
 
   // Deduplicate (forex can produce identical bricks after rounding)
@@ -1507,7 +1769,10 @@ export function parseRegimeLabel(result: RegimeResult): string {
  * Extract Markov transition probabilities from regime state.
  * These are directional priors the Executor blends with L2 data.
  */
-export function computeMarkovProbs(regimeLabel: string): { pUp: number; pDn: number } {
+export function computeMarkovProbs(regimeLabel: string): {
+  pUp: number;
+  pDn: number;
+} {
   const lower = regimeLabel.toLowerCase();
   const isBullish = lower.includes("bull");
   const isBearish = lower.includes("bear");
@@ -1533,17 +1798,17 @@ export function computeMarkovProbs(regimeLabel: string): { pUp: number; pDn: num
 
 export interface EVInput {
   // From HMM regime detection (required)
-  trendProbs: Record<string, number>;  // e.g. { strong_bull: 0.10, bull: 0.65, bear: 0.15, strong_bear: 0.05, neutral: 0.05 }
+  trendProbs: Record<string, number>; // e.g. { strong_bull: 0.10, bull: 0.65, bear: 0.15, strong_bear: 0.05, neutral: 0.05 }
   // From L2 imbalance engine (optional — 0.50 default if missing)
   imbalanceSignal?: {
     signal: "long" | "short" | "flat";
-    confidence: number;  // 0-1
+    confidence: number; // 0-1
     persistence: number; // bars
   };
   // From Markov transition matrix (optional — 0.50 default if missing)
   markovTransition?: {
     current_state: "UP" | "DOWN" | "FLAT";
-    p_up: number;  // P(UP | current_state)
+    p_up: number; // P(UP | current_state)
     p_down: number; // P(DOWN | current_state)
   };
   // Trade parameters (required)
@@ -1562,7 +1827,7 @@ export interface EVResult {
   p_regime: number;
   p_imbalance: number;
   p_markov: number;
-  p_timesfm: number;           // v3: TimesFM component (0 if unused)
+  p_timesfm: number; // v3: TimesFM component (0 if unused)
   ev: number;
   ev_per_dollar: number;
   rr: number;
@@ -1594,9 +1859,9 @@ export function computePRegime(
 
   for (const [key, val] of Object.entries(trendProbs)) {
     const lower = key.toLowerCase();
-    if (bullKeys.some(k => lower.includes(k))) pBull += val;
-    else if (bearKeys.some(k => lower.includes(k))) pBear += val;
-    else if (neutralKeys.some(k => lower.includes(k))) pNeutral += val;
+    if (bullKeys.some((k) => lower.includes(k))) pBull += val;
+    else if (bearKeys.some((k) => lower.includes(k))) pBear += val;
+    else if (neutralKeys.some((k) => lower.includes(k))) pNeutral += val;
   }
 
   if (direction === "long") {
@@ -1616,15 +1881,18 @@ export function computePImbalance(
   imbalanceSignal: EVInput["imbalanceSignal"],
   direction: "long" | "short",
 ): number {
-  if (!imbalanceSignal) return 0.50;  // No data → neutral
+  if (!imbalanceSignal) return 0.5; // No data → neutral
 
   const minPersistenceTarget = 5;
 
   if (imbalanceSignal.signal === direction) {
-    const persistenceBonus = Math.min(1.0, imbalanceSignal.persistence / minPersistenceTarget);
+    const persistenceBonus = Math.min(
+      1.0,
+      imbalanceSignal.persistence / minPersistenceTarget,
+    );
     return imbalanceSignal.confidence * (0.6 + 0.4 * persistenceBonus);
   } else if (imbalanceSignal.signal === "flat") {
-    return 0.50;
+    return 0.5;
   } else {
     // Opposing signal
     return 1.0 - imbalanceSignal.confidence;
@@ -1640,7 +1908,7 @@ export function computePMarkov(
   markovTransition: EVInput["markovTransition"],
   direction: "long" | "short",
 ): number {
-  if (!markovTransition) return 0.50;  // No data → neutral
+  if (!markovTransition) return 0.5; // No data → neutral
 
   if (direction === "long") {
     return markovTransition.p_up;
@@ -1669,32 +1937,32 @@ export function computeEV(input: EVInput): EVResult {
   // Blended P_win — 4-source or 3-source fallback
   let pWin: number;
   if (pTimesfm !== null) {
-    pWin = 0.35 * pRegime + 0.20 * pImbalance + 0.20 * pMarkov + 0.25 * pTimesfm;
+    pWin = 0.35 * pRegime + 0.2 * pImbalance + 0.2 * pMarkov + 0.25 * pTimesfm;
   } else {
-    pWin = 0.40 * pRegime + 0.30 * pImbalance + 0.30 * pMarkov;
+    pWin = 0.4 * pRegime + 0.3 * pImbalance + 0.3 * pMarkov;
   }
 
   // EV computation
   const profit = input.tpBricks * input.brickSize;
   const stake = input.slBricks * input.brickSize;
   const pLoss = 1 - pWin;
-  const ev = (pWin * profit) - (pLoss * stake);
+  const ev = pWin * profit - pLoss * stake;
   const evPerDollar = stake > 0 ? ev / stake : 0;
   const rr = stake > 0 ? profit / stake : 0;
 
   // Aggression dispatcher
   let aggression: "passive" | "mid" | "aggressive";
-  if (evPerDollar > 0.40) aggression = "passive";
+  if (evPerDollar > 0.4) aggression = "passive";
   else if (evPerDollar > 0.15) aggression = "mid";
   else aggression = "aggressive";
 
   // EV-scaled Kelly
-  const evScale = evPerDollar > 0 ? Math.min(1.0, evPerDollar / 0.50) : 0;
+  const evScale = evPerDollar > 0 ? Math.min(1.0, evPerDollar / 0.5) : 0;
   const baseKelly = input.baseKelly ?? 0;
   const effectiveKelly = baseKelly * evScale;
 
   // Min EV gate
-  const MIN_EV = 0.0;   // Accept any positive EV
+  const MIN_EV = 0.0; // Accept any positive EV
   const MIN_RR = 2.0;
   const allowed = ev > MIN_EV && rr >= MIN_RR;
 
@@ -1742,7 +2010,13 @@ export function computeMarkovTransition(
   brickSize: number,
 ): MarkovTransitionResult {
   if (prices.length < 10) {
-    return { current_state: "FLAT", p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: 0 };
+    return {
+      current_state: "FLAT",
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: 0,
+    };
   }
 
   // Classify each price change into a state
@@ -1755,7 +2029,13 @@ export function computeMarkovTransition(
   }
 
   if (states.length < 2) {
-    return { current_state: states[0] ?? "FLAT", p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: states.length };
+    return {
+      current_state: states[0] ?? "FLAT",
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: states.length,
+    };
   }
 
   // Count transitions
@@ -1777,7 +2057,13 @@ export function computeMarkovTransition(
   const total = fromCounts.UP + fromCounts.DOWN + fromCounts.FLAT;
 
   if (total === 0) {
-    return { current_state: currentState, p_up: 0.33, p_down: 0.33, p_flat: 0.34, n_observations: states.length - 1 };
+    return {
+      current_state: currentState,
+      p_up: 0.33,
+      p_down: 0.33,
+      p_flat: 0.34,
+      n_observations: states.length - 1,
+    };
   }
 
   return {
@@ -1801,7 +2087,8 @@ export function parseKellyF(result: KellyResult): number {
   if (result.recommended_f > 0) f = result.recommended_f;
   else if (result.regime_gated_f > 0) f = result.regime_gated_f;
   else if (result.fractional_f > 0) f = result.fractional_f;
-  else if (result.full_kelly_f > 0) f = result.full_kelly_f * 0.5; // Never use full Kelly raw
+  else if (result.full_kelly_f > 0)
+    f = result.full_kelly_f * 0.5; // Never use full Kelly raw
   else return 0.1; // fallback minimum
   return Math.min(f, KELLY_CAP);
 }
@@ -1811,8 +2098,8 @@ export function parseKellyF(result: KellyResult): number {
 // Expressed as minimum % distance from entry price.
 const MIN_SL_PCT: Record<string, number> = {
   // Crypto: higher noise, need wider stops
-  BTC: 0.5,   // ~$320 at $64k — above 1-min noise
-  ETH: 0.5,   // ~$8.50 at $1,700
+  BTC: 0.5, // ~$320 at $64k — above 1-min noise
+  ETH: 0.5, // ~$8.50 at $1,700
   SOL: 0.8,
   AVAX: 0.8,
   ARB: 1.0,
@@ -1821,14 +2108,26 @@ const MIN_SL_PCT: Record<string, number> = {
   XRP: 0.8,
   WIF: 1.0,
   // Stocks: moderate noise
-  AAPL: 0.3, AMZN: 0.3, GOOGL: 0.3, META: 0.3,
-  MSFT: 0.3, NVDA: 0.5,  TSLA: 0.5,
-  SPY: 0.3,  QQQ: 0.3,
+  AAPL: 0.3,
+  AMZN: 0.3,
+  GOOGL: 0.3,
+  META: 0.3,
+  MSFT: 0.3,
+  NVDA: 0.5,
+  TSLA: 0.5,
+  SPY: 0.3,
+  QQQ: 0.3,
   // Forex: tight spreads but still need room
-  EURUSD: 0.3, GBPUSD: 0.3, USDJPY: 0.3,
-  AUDUSD: 0.3, USDCAD: 0.3,
+  EURUSD: 0.3,
+  GBPUSD: 0.3,
+  USDJPY: 0.3,
+  AUDUSD: 0.3,
+  USDCAD: 0.3,
   // Commodities
-  GOLD: 0.3, SILVER: 0.3, OIL: 0.5, COPPER: 0.5,
+  GOLD: 0.3,
+  SILVER: 0.3,
+  OIL: 0.5,
+  COPPER: 0.5,
 };
 const DEFAULT_MIN_SL_PCT = 0.3;
 
@@ -1860,7 +2159,12 @@ export function computeTradeSignal(
   tpBricks: number,
   symbol: string,
   assetClass?: string,
-): { signal: string; entry_price: number; stop_loss: number; take_profit: number } {
+): {
+  signal: string;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+} {
   const lower = regime.toLowerCase();
   const isBullish = lower.includes("bull");
   const isBearish = lower.includes("bear");
@@ -1871,11 +2175,11 @@ export function computeTradeSignal(
   // ── Minimum SL distance guard ──
   // If SL is too tight (< MIN_SL_PCT of price), widen it
   const minSlPct = MIN_SL_PCT[symbol] ?? DEFAULT_MIN_SL_PCT;
-  const minSlDistance = currentPrice * minSlPct / 100;
+  const minSlDistance = (currentPrice * minSlPct) / 100;
   if (slDistance < minSlDistance) {
     console.warn(
-      `[computeTradeSignal] ${symbol}: SL too tight (${(slDistance/currentPrice*100).toFixed(3)}% < ${minSlPct}%), ` +
-      `widening from ${slBricks} bricks ($${slDistance.toFixed(2)}) to $${minSlDistance.toFixed(2)} (${Math.ceil(minSlDistance / brickSize)} bricks)`
+      `[computeTradeSignal] ${symbol}: SL too tight (${((slDistance / currentPrice) * 100).toFixed(3)}% < ${minSlPct}%), ` +
+        `widening from ${slBricks} bricks ($${slDistance.toFixed(2)}) to $${minSlDistance.toFixed(2)} (${Math.ceil(minSlDistance / brickSize)} bricks)`,
     );
     slDistance = minSlDistance;
   }
@@ -1886,22 +2190,34 @@ export function computeTradeSignal(
     return {
       signal: "buy",
       entry_price: entry,
-      stop_loss:  roundPrice(Math.max(entry * 0.01, entry - slDistance), symbol, assetClass),  // Floor at 1% of entry, never $0
+      stop_loss: roundPrice(
+        Math.max(entry * 0.01, entry - slDistance),
+        symbol,
+        assetClass,
+      ), // Floor at 1% of entry, never $0
       take_profit: roundPrice(entry + tpDistance, symbol, assetClass),
     };
   } else if (isBearish) {
     return {
       signal: "sell",
       entry_price: entry,
-      stop_loss:  roundPrice(entry + slDistance, symbol, assetClass),
-      take_profit: roundPrice(Math.max(entry * 0.01, entry - tpDistance), symbol, assetClass), // Floor at 1% of entry, never $0
+      stop_loss: roundPrice(entry + slDistance, symbol, assetClass),
+      take_profit: roundPrice(
+        Math.max(entry * 0.01, entry - tpDistance),
+        symbol,
+        assetClass,
+      ), // Floor at 1% of entry, never $0
     };
   } else {
     // Neutral / unknown / market_closed — still compute entry for reference
     return {
       signal: "neutral",
       entry_price: entry,
-      stop_loss:  roundPrice(Math.max(entry * 0.01, entry - slDistance), symbol, assetClass),
+      stop_loss: roundPrice(
+        Math.max(entry * 0.01, entry - slDistance),
+        symbol,
+        assetClass,
+      ),
       take_profit: roundPrice(entry + tpDistance, symbol, assetClass),
     };
   }
@@ -1913,20 +2229,29 @@ export function computeTradeSignal(
 // the NaN feedback loop where NaN gets read from Redis, stays NaN,
 // and gets written back forever.
 
-export function safeParseFloat(val: string | undefined | null, fallback: number): number {
+export function safeParseFloat(
+  val: string | undefined | null,
+  fallback: number,
+): number {
   if (!val) return fallback;
   const n = parseFloat(val);
   return Number.isNaN(n) ? fallback : n;
 }
 
-export function safeParseInt(val: string | undefined | null, fallback: number): number {
+export function safeParseInt(
+  val: string | undefined | null,
+  fallback: number,
+): number {
   if (!val) return fallback;
   const n = parseInt(val, 10);
   return Number.isNaN(n) ? fallback : n;
 }
 
 // ─── Volatility Shift Detection ────────────────────────────
-export function isVolatilityShift(prevRegime: string, currentRegime: string): boolean {
+export function isVolatilityShift(
+  prevRegime: string,
+  currentRegime: string,
+): boolean {
   if (!prevRegime || !currentRegime) return false;
   const prevHigh = prevRegime.includes("high_vol");
   const currHigh = currentRegime.includes("high_vol");
@@ -1934,9 +2259,10 @@ export function isVolatilityShift(prevRegime: string, currentRegime: string): bo
 }
 
 // ─── Lead/Lag: Correlation Matrix ───────────────────────────
-function computeCorrelationMatrix(
-  pricesBySymbol: Record<string, number[]>,
-): { matrix: Record<string, Record<string, number>>; leaders: Record<string, string[]> } {
+function computeCorrelationMatrix(pricesBySymbol: Record<string, number[]>): {
+  matrix: Record<string, Record<string, number>>;
+  leaders: Record<string, string[]>;
+} {
   const matrix: Record<string, Record<string, number>> = {};
   const leaders: Record<string, string[]> = {};
   const symbols = Object.keys(pricesBySymbol).filter(
@@ -1962,10 +2288,15 @@ function computeCorrelationMatrix(
     const ra = returns[a]!;
     const meanA = ra.reduce((s, v) => s + v, 0) / ra.length;
     for (const b of validSyms) {
-      if (a === b) { matrix[a][b] = 1; continue; }
+      if (a === b) {
+        matrix[a][b] = 1;
+        continue;
+      }
       const rb = returns[b]!;
       const meanB = rb.reduce((s, v) => s + v, 0) / rb.length;
-      let cov = 0, varA = 0, varB = 0;
+      let cov = 0,
+        varA = 0,
+        varB = 0;
       for (let i = 0; i < ra.length; i++) {
         const da = ra[i] - meanA;
         const db = rb[i] - meanB;
@@ -1999,10 +2330,14 @@ function adjustLeadLag(
   if (own === null) return null;
   const leaderSyms = leaders[symbol] ?? [];
   if (leaderSyms.length === 0) return own;
-  let sum = 0, count = 0;
+  let sum = 0,
+    count = 0;
   for (const ls of leaderSyms) {
     const lp = pTimesfmMap.get(ls);
-    if (lp !== null) { sum += lp; count++; }
+    if (lp !== null) {
+      sum += lp;
+      count++;
+    }
   }
   if (count === 0) return own;
   return selfWeight * own + (1 - selfWeight) * (sum / count);
@@ -2019,9 +2354,19 @@ function computeTailRisk(
   const isExtreme = pTimesfm < 0.2 || pTimesfm > 0.8;
   const isHighVol = regime.includes("high_vol");
   const isExtremeConfident = isExtreme && timesfmConf >= 0.7;
-  if (isExtremeConfident && isHighVol) { result.score = 0.85; result.action = "skip"; result.multiplier = 0.0; }
-  else if (isExtremeConfident) { result.score = 0.60; result.action = "reduce_50"; result.multiplier = 0.5; }
-  else if (isExtreme && isHighVol) { result.score = 0.35; result.action = "reduce_25"; result.multiplier = 0.75; }
+  if (isExtremeConfident && isHighVol) {
+    result.score = 0.85;
+    result.action = "skip";
+    result.multiplier = 0.0;
+  } else if (isExtremeConfident) {
+    result.score = 0.6;
+    result.action = "reduce_50";
+    result.multiplier = 0.5;
+  } else if (isExtreme && isHighVol) {
+    result.score = 0.35;
+    result.action = "reduce_25";
+    result.multiplier = 0.75;
+  }
   return result;
 }
 
@@ -2030,17 +2375,16 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-
 // ════════════════════════════════════════════════════════════════
 // SECTION 2: Sweep Function Logic
 // ════════════════════════════════════════════════════════════════
 
 // ─── Concurrency Control Constants ────────────────────────────
-const GLOBAL_CAP = 4;                    // max concurrent sweep invocations
-const GLOBAL_STALE_MS = 300_000;         // 5 min — evict stale slots
-const GLOBAL_EXPIRE_S = 330;             // safety net EXPIRE on sorted set
-const HEAVY_LOCK_TTL_S = 360;            // 6 min — heavy sweep lock
-const LIGHT_LOCK_TTL_S = 90;             // 1.5 min — light regime lock
+const GLOBAL_CAP = 4; // max concurrent sweep invocations
+const GLOBAL_STALE_MS = 300_000; // 5 min — evict stale slots
+const GLOBAL_EXPIRE_S = 330; // safety net EXPIRE on sorted set
+const HEAVY_LOCK_TTL_S = 360; // 6 min — heavy sweep lock
+const LIGHT_LOCK_TTL_S = 90; // 1.5 min — light regime lock
 
 // ─── F-Lite-1: Heavy Hours (UTC) ──────────────────────────────
 // Light regime is suppressed during these hours to avoid colliding
@@ -2055,7 +2399,7 @@ function isHeavyHour(): boolean {
 }
 
 // Heavy sweep grid ranges (ported from heavy-sweep v4)
-const SWEEP_SL_RANGE = [3, 5, 7];    // v2: wider SL range for 90d lookback
+const SWEEP_SL_RANGE = [3, 5, 7]; // v2: wider SL range for 90d lookback
 const SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12];
 const MIN_RR = 2.0;
 const MAX_SHARPE = 10.0;
@@ -2086,10 +2430,16 @@ async function sweepRedisPipeline(commands: unknown[][]): Promise<unknown[]> {
   return data as unknown[];
 }
 
-async function sweepRedisGet(cmd: string, ...args: (string | number)[]): Promise<unknown> {
-  const res = await fetch(`${UPSTASH_URL}/${cmd}/${args.map(String).join("/")}`, {
-    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-  });
+async function sweepRedisGet(
+  cmd: string,
+  ...args: (string | number)[]
+): Promise<unknown> {
+  const res = await fetch(
+    `${UPSTASH_URL}/${cmd}/${args.map(String).join("/")}`,
+    {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    },
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Redis ${cmd} error: ${res.status} — ${text}`);
@@ -2127,7 +2477,8 @@ async function releaseSymbolLock(symbol: string, token: string): Promise<void> {
   try {
     // Lua-style check: only DEL if value === token
     // Upstash /eval POST form: { script, args }
-    const script = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
+    const script =
+      "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
     await fetch(`${UPSTASH_URL}/eval`, {
       method: "POST",
       headers: sweepRedisHeaders(),
@@ -2176,7 +2527,14 @@ async function releaseGlobalSlot(token: string): Promise<void> {
 // ─── Heavy Sweep Logic (ported from heavy-sweep v4) ───────────
 async function runHeavySweepForSymbol(
   symbolConfig: SymbolConfig,
-): Promise<{ best: OptimizeComboResult | null; regime: unknown; kelly: unknown; duration: number; nCombos: number; error?: string }> {
+): Promise<{
+  best: OptimizeComboResult | null;
+  regime: unknown;
+  kelly: unknown;
+  duration: number;
+  nCombos: number;
+  error?: string;
+}> {
   const startTime = Date.now();
 
   try {
@@ -2186,25 +2544,36 @@ async function runHeavySweepForSymbol(
       if (prevCfg) {
         const skipUntil = safeParseFloat(prevCfg.sweep_skip_until ?? "0", 0);
         if (skipUntil > Date.now()) {
-          console.log(`[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — sweep_skip_until=${new Date(skipUntil).toISOString()} (symbol is well-calibrated)`);
+          console.log(
+            `[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — sweep_skip_until=${new Date(skipUntil).toISOString()} (symbol is well-calibrated)`,
+          );
           return {
-            best: null, regime: null, kelly: null,
-            duration: 0, nCombos: 0,
+            best: null,
+            regime: null,
+            kelly: null,
+            duration: 0,
+            nCombos: 0,
             error: `Skipped — sweep_skip_until active`,
           };
         }
       }
-    } catch { /* best effort — proceed with sweep */ }
+    } catch {
+      /* best effort — proceed with sweep */
+    }
 
     // 1. Fetch candles
     console.log(`[sweep:heavy] Fetching candles for ${symbolConfig.symbol}...`);
     const prices = await fetchSweepCandles(symbolConfig);
 
     if (prices.length < 100) {
-      throw new Error(`Insufficient candle data: ${prices.length} bars (need >= 100)`);
+      throw new Error(
+        `Insufficient candle data: ${prices.length} bars (need >= 100)`,
+      );
     }
 
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: ${prices.length} candles loaded`);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: ${prices.length} candles loaded`,
+    );
 
     // 1.5. TimesFM confidence gate — skip heavy if forecast is confident
     try {
@@ -2215,17 +2584,26 @@ async function runHeavySweepForSymbol(
       if (pTimesfm !== null && pTimesfm !== undefined) {
         const confidence = Math.abs(pTimesfm - 0.5);
         if (confidence > 0.1) {
-          console.log(`[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — TimesFM confident (p_timesfm=${pTimesfm.toFixed(4)}, confidence=${confidence.toFixed(4)} threshold=0.1)`);
+          console.log(
+            `[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — TimesFM confident (p_timesfm=${pTimesfm.toFixed(4)}, confidence=${confidence.toFixed(4)} threshold=0.1)`,
+          );
           return {
-            best: null, regime: null, kelly: null,
-            duration: 0, nCombos: 0,
+            best: null,
+            regime: null,
+            kelly: null,
+            duration: 0,
+            nCombos: 0,
             error: `TimesFM-stable (p=${pTimesfm.toFixed(4)})`,
           };
         }
-        console.log(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM uncertain (p_timesfm=${pTimesfm.toFixed(4)}) — running full sweep`);
+        console.log(
+          `[sweep:heavy] ${symbolConfig.symbol}: TimesFM uncertain (p_timesfm=${pTimesfm.toFixed(4)}) — running full sweep`,
+        );
       }
     } catch (e) {
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM gate failed (${e instanceof Error ? e.message : String(e)}) — proceeding without gate`);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol}: TimesFM gate failed (${e instanceof Error ? e.message : String(e)}) — proceeding without gate`,
+      );
     }
 
     // 2. Compute ATR and generate brick sizes
@@ -2233,17 +2611,29 @@ async function runHeavySweepForSymbol(
     const currentPrice = prices[prices.length - 1];
     const brickSizes = generateBrickSizes(atr, currentPrice);
 
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: ATR=${atr.toFixed(4)}, price=${currentPrice.toFixed(2)}, bricks=[${brickSizes.map(b => b.toFixed(4)).join(",")}]`);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: ATR=${atr.toFixed(4)}, price=${currentPrice.toFixed(2)}, bricks=[${brickSizes.map((b) => b.toFixed(4)).join(",")}]`,
+    );
 
     // 3. Run optimize + regime + Kelly IN PARALLEL
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: Running optimize + regime + Kelly in parallel...`);
-    const [optResultRaw, regimeResultRaw, kellyResultRaw] = await Promise.allSettled([
-      runRenkoOptimize(prices, symbolConfig.symbol, brickSizes, SWEEP_SL_RANGE, SWEEP_TP_RANGE, MIN_RR),
-      prices.length >= 81
-        ? detectRegime(prices, symbolConfig.symbol)
-        : Promise.reject(new Error(`Only ${prices.length} bars (need >=81)`)),
-      computeKelly(prices, symbolConfig.symbol),
-    ]);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: Running optimize + regime + Kelly in parallel...`,
+    );
+    const [optResultRaw, regimeResultRaw, kellyResultRaw] =
+      await Promise.allSettled([
+        runRenkoOptimize(
+          prices,
+          symbolConfig.symbol,
+          brickSizes,
+          SWEEP_SL_RANGE,
+          SWEEP_TP_RANGE,
+          MIN_RR,
+        ),
+        prices.length >= 81
+          ? detectRegime(prices, symbolConfig.symbol)
+          : Promise.reject(new Error(`Only ${prices.length} bars (need >=81)`)),
+        computeKelly(prices, symbolConfig.symbol),
+      ]);
 
     // ── Graceful fallback: if optimize timed out but regime/kelly succeeded ──
     const optimizeFailed = optResultRaw.status === "rejected";
@@ -2251,8 +2641,13 @@ async function runHeavySweepForSymbol(
     const kellyOk = kellyResultRaw.status === "fulfilled";
 
     if (optimizeFailed) {
-      const reason = optResultRaw.reason instanceof Error ? optResultRaw.reason.message : String(optResultRaw.reason);
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: Optimization failed: ${reason}`);
+      const reason =
+        optResultRaw.reason instanceof Error
+          ? optResultRaw.reason.message
+          : String(optResultRaw.reason);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol}: Optimization failed: ${reason}`,
+      );
 
       let cachedBrick = brickSizes[0];
       let cachedSl = 3;
@@ -2261,26 +2656,50 @@ async function runHeavySweepForSymbol(
       try {
         const cachedCfg = await redisGetConfig(symbolConfig.symbol);
         if (cachedCfg) {
-          cachedBrick = safeParseFloat(cachedCfg.brick_size ?? "", brickSizes[0]);
+          cachedBrick = safeParseFloat(
+            cachedCfg.brick_size ?? "",
+            brickSizes[0],
+          );
           cachedSl = safeParseInt(cachedCfg.sl_bricks ?? "", 3);
           cachedTp = safeParseInt(cachedCfg.tp_bricks ?? "", 5);
           prevPTimesfm = safeParseFloat(cachedCfg.p_timesfm ?? "", NaN);
           if (isNaN(prevPTimesfm)) prevPTimesfm = undefined;
-          console.log(`[sweep:heavy] ${symbolConfig.symbol}: Using cached brick params (brick=${cachedBrick}, sl=${cachedSl}, tp=${cachedTp})`);
+          console.log(
+            `[sweep:heavy] ${symbolConfig.symbol}: Using cached brick params (brick=${cachedBrick}, sl=${cachedSl}, tp=${cachedTp})`,
+          );
         }
-      } catch { /* use defaults */ }
+      } catch {
+        /* use defaults */
+      }
 
       if (!regimeOk) {
-        throw new Error(`Optimize + regime both failed. Optimize: ${reason}, Regime: ${regimeResultRaw.status === "rejected" ? regimeResultRaw.reason : "n/a"}`);
+        throw new Error(
+          `Optimize + regime both failed. Optimize: ${reason}, Regime: ${regimeResultRaw.status === "rejected" ? regimeResultRaw.reason : "n/a"}`,
+        );
       }
 
       const regimeResult = regimeResultRaw.value as RegimeResult;
       const combinedRegime = parseRegimeLabel(regimeResult);
       const regimeConf = regimeResult.confidence ?? 0;
-      const { pUp: markovPUp, pDn: markovPDn } = computeMarkovProbs(combinedRegime);
-      const kellyF = kellyOk ? parseKellyF(kellyResultRaw.value as KellyResult) : 0.1;
-      const tradeSignal = computeTradeSignal(combinedRegime, currentPrice, cachedBrick, cachedSl, cachedTp, symbolConfig.symbol, symbolConfig.asset_class);
-      const direction: "long" | "short" = combinedRegime.toLowerCase().includes("bear") ? "short" : "long";
+      const { pUp: markovPUp, pDn: markovPDn } =
+        computeMarkovProbs(combinedRegime);
+      const kellyF = kellyOk
+        ? parseKellyF(kellyResultRaw.value as KellyResult)
+        : 0.1;
+      const tradeSignal = computeTradeSignal(
+        combinedRegime,
+        currentPrice,
+        cachedBrick,
+        cachedSl,
+        cachedTp,
+        symbolConfig.symbol,
+        symbolConfig.asset_class,
+      );
+      const direction: "long" | "short" = combinedRegime
+        .toLowerCase()
+        .includes("bear")
+        ? "short"
+        : "long";
       const markovTransition = computeMarkovTransition(prices, cachedBrick);
       const evResult = computeEV({
         trendProbs: regimeResult.trend_probs ?? {},
@@ -2289,11 +2708,20 @@ async function runHeavySweepForSymbol(
         slBricks: cachedSl,
         tpBricks: cachedTp,
         baseKelly: kellyF,
-        markovTransition: { current_state: markovTransition.current_state, p_up: markovTransition.p_up, p_down: markovTransition.p_down },
+        markovTransition: {
+          current_state: markovTransition.current_state,
+          p_up: markovTransition.p_up,
+          p_down: markovTransition.p_down,
+        },
       });
-      const effectiveKelly = evResult.effective_kelly > 0 ? Math.min(evResult.effective_kelly, 0.5) : kellyF;
+      const effectiveKelly =
+        evResult.effective_kelly > 0
+          ? Math.min(evResult.effective_kelly, 0.5)
+          : kellyF;
 
-      console.log(`[sweep:heavy] ${symbolConfig.symbol}: FALLBACK — regime=${combinedRegime}, cached brick=${cachedBrick}, signal=${tradeSignal.signal}`);
+      console.log(
+        `[sweep:heavy] ${symbolConfig.symbol}: FALLBACK — regime=${combinedRegime}, cached brick=${cachedBrick}, signal=${tradeSignal.signal}`,
+      );
 
       const redisConfig: RedisConfig = {
         regime: combinedRegime,
@@ -2321,96 +2749,148 @@ async function runHeavySweepForSymbol(
         ev_scale: evResult.ev_scale,
         effective_kelly: effectiveKelly,
         markov_current_state: evResult.markov_current_state,
-	        regime_shift: "false",
-	        prev_regime: "",
-	        shift_at: 0,
-	        shifts_24h: 0,
-	        p_timesfm: prevPTimesfm,
-	        timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-	      };
-		      await redisSetConfig(symbolConfig.symbol, redisConfig);
-		      await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
+        regime_shift: "false",
+        prev_regime: "",
+        shift_at: 0,
+        shifts_24h: 0,
+        p_timesfm: prevPTimesfm,
+        timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
+      };
+      await redisSetConfig(symbolConfig.symbol, redisConfig);
+      await redisSetHeartbeat(
+        symbolConfig.symbol,
+        symbolConfig.heartbeat_ttl_seconds,
+      );
 
-		      // ── Sweep Fatigue: calibration write for fallback path ──
-		      try {
-		        const cal = await computeCalibrationBias(symbolConfig.symbol);
-		        const bias = cal?.bias ?? 0;
-		        const status = cal?.status ?? "INSUFFICIENT_DATA";
-		        const skipUntil = status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
-		        await sweepRedisPipeline([
-		          ["HSET", `trading:config:${symbolConfig.symbol}`,
-		            "calibration_bias", String(bias),
-		            "calibration_status", status,
-		            "sweep_skip_until", skipUntil,
-		          ],
-		        ]);
-		        if (cal) {
-		          console.log(`[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`);
-		        }
-		      } catch { /* best effort */ }
+      // ── Sweep Fatigue: calibration write for fallback path ──
+      try {
+        const cal = await computeCalibrationBias(symbolConfig.symbol);
+        const bias = cal?.bias ?? 0;
+        const status = cal?.status ?? "INSUFFICIENT_DATA";
+        const skipUntil =
+          status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
+        await sweepRedisPipeline([
+          [
+            "HSET",
+            `trading:config:${symbolConfig.symbol}`,
+            "calibration_bias",
+            String(bias),
+            "calibration_status",
+            status,
+            "sweep_skip_until",
+            skipUntil,
+          ],
+        ]);
+        if (cal) {
+          console.log(
+            `[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`,
+          );
+        }
+      } catch {
+        /* best effort */
+      }
 
-		      try {
-		        const cache = await redisLoadRegimeCache();
-	        cache[symbolConfig.symbol] = {
-          regime: combinedRegime, regime_conf: regimeConf,
-          brick_size: cachedBrick, sl_bricks: cachedSl, tp_bricks: cachedTp,
-          kelly_f: kellyF, last_update: Date.now(),
-          signal: tradeSignal.signal, entry_price: tradeSignal.entry_price,
-          stop_loss: tradeSignal.stop_loss, take_profit: tradeSignal.take_profit,
+      try {
+        const cache = await redisLoadRegimeCache();
+        cache[symbolConfig.symbol] = {
+          regime: combinedRegime,
+          regime_conf: regimeConf,
+          brick_size: cachedBrick,
+          sl_bricks: cachedSl,
+          tp_bricks: cachedTp,
+          kelly_f: kellyF,
+          last_update: Date.now(),
+          signal: tradeSignal.signal,
+          entry_price: tradeSignal.entry_price,
+          stop_loss: tradeSignal.stop_loss,
+          take_profit: tradeSignal.take_profit,
           price_decimals: 2,
-          ev: evResult.ev, ev_per_dollar: evResult.ev_per_dollar, p_win: evResult.p_win,
-          p_regime: evResult.p_regime, p_imbalance: evResult.p_imbalance,
-          p_markov: evResult.p_markov, aggression: evResult.aggression,
-          ev_scale: evResult.ev_scale, effective_kelly: effectiveKelly,
+          ev: evResult.ev,
+          ev_per_dollar: evResult.ev_per_dollar,
+          p_win: evResult.p_win,
+          p_regime: evResult.p_regime,
+          p_imbalance: evResult.p_imbalance,
+          p_markov: evResult.p_markov,
+          aggression: evResult.aggression,
+          ev_scale: evResult.ev_scale,
+          effective_kelly: effectiveKelly,
           markov_current_state: evResult.markov_current_state,
-	          regime_shift: "false", prev_regime: "", shift_at: 0, shifts_24h: 0,
-	          p_timesfm: prevPTimesfm,
-	          timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-	        };
+          regime_shift: "false",
+          prev_regime: "",
+          shift_at: 0,
+          shifts_24h: 0,
+          p_timesfm: prevPTimesfm,
+          timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
+        };
         await redisSaveRegimeCache(cache);
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       await logRegimeEntry({
-        symbol: symbolConfig.symbol, source: "sweep-heavy-fallback",
-        regime: combinedRegime, regime_conf: regimeConf,
-        markov_p_up: markovPUp, markov_p_dn: markovPDn,
-        kelly_f: kellyF, prev_regime: null, regime_shift: false,
+        symbol: symbolConfig.symbol,
+        source: "sweep-heavy-fallback",
+        regime: combinedRegime,
+        regime_conf: regimeConf,
+        markov_p_up: markovPUp,
+        markov_p_dn: markovPDn,
+        kelly_f: kellyF,
+        prev_regime: null,
+        regime_shift: false,
       });
 
       return {
-        best: null, regime: { regime_label: combinedRegime, confidence: regimeConf },
-        kelly: { kelly_f: kellyF }, duration: Date.now() - startTime,
-        nCombos: 0, error: `Optimize failed (fallback): ${reason}`,
+        best: null,
+        regime: { regime_label: combinedRegime, confidence: regimeConf },
+        kelly: { kelly_f: kellyF },
+        duration: Date.now() - startTime,
+        nCombos: 0,
+        error: `Optimize failed (fallback): ${reason}`,
       };
     }
 
-    const optResult = optResultRaw.value as { n_combinations: number; results: OptimizeComboResult[]; deflated_sharpe?: Record<string, unknown> };
+    const optResult = optResultRaw.value as {
+      n_combinations: number;
+      results: OptimizeComboResult[];
+      deflated_sharpe?: Record<string, unknown>;
+    };
     const nCombos = optResult.n_combinations;
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: Optimization complete — ${nCombos} combinations tested`);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: Optimization complete — ${nCombos} combinations tested`,
+    );
 
     // 4. Rank results
-    const validResults = (optResult.results || []).filter((r: OptimizeComboResult) => {
-      if (r.total_trades < MIN_TRADES) return false;
-      const rr = r.tp_bricks / r.sl_bricks;
-      if (rr < MIN_RR) return false;
-      if (r.sharpe > MAX_SHARPE) {
-        console.warn(`[sweep:heavy] ${symbolConfig.symbol}: Rejecting combo ${r.brick_size}/${r.sl_bricks}/${r.tp_bricks} — Sharpe ${r.sharpe.toFixed(2)} > ${MAX_SHARPE} (likely overfit)`);
-        return false;
-      }
-      return true;
-    });
+    const validResults = (optResult.results || []).filter(
+      (r: OptimizeComboResult) => {
+        if (r.total_trades < MIN_TRADES) return false;
+        const rr = r.tp_bricks / r.sl_bricks;
+        if (rr < MIN_RR) return false;
+        if (r.sharpe > MAX_SHARPE) {
+          console.warn(
+            `[sweep:heavy] ${symbolConfig.symbol}: Rejecting combo ${r.brick_size}/${r.sl_bricks}/${r.tp_bricks} — Sharpe ${r.sharpe.toFixed(2)} > ${MAX_SHARPE} (likely overfit)`,
+          );
+          return false;
+        }
+        return true;
+      },
+    );
 
     let rankedResults = validResults;
     if (rankedResults.length === 0) {
-      const anyTrades = (optResult.results || []).filter((r: OptimizeComboResult) =>
-        r.total_trades > 0 && r.sharpe <= MAX_SHARPE
+      const anyTrades = (optResult.results || []).filter(
+        (r: OptimizeComboResult) =>
+          r.total_trades > 0 && r.sharpe <= MAX_SHARPE,
       );
       if (anyTrades.length === 0) {
-        throw new Error(`No backtest combinations produced valid trades (R:R >= ${MIN_RR}, Sharpe <= ${MAX_SHARPE})`);
+        throw new Error(
+          `No backtest combinations produced valid trades (R:R >= ${MIN_RR}, Sharpe <= ${MAX_SHARPE})`,
+        );
       }
       anyTrades.sort((a, b) => b.sharpe - a.sharpe);
       rankedResults = anyTrades;
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: Strict filter eliminated all results, using best available (R:R=${(rankedResults[0].tp_bricks / rankedResults[0].sl_bricks).toFixed(2)}x)`);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol}: Strict filter eliminated all results, using best available (R:R=${(rankedResults[0].tp_bricks / rankedResults[0].sl_bricks).toFixed(2)}x)`,
+      );
     }
 
     rankedResults.sort((a, b) => b.sharpe - a.sharpe);
@@ -2419,12 +2899,16 @@ async function runHeavySweepForSymbol(
 
     console.log(
       `[sweep:heavy] ${symbolConfig.symbol} best: brick=${best.brick_size}, sl=${best.sl_bricks}, ` +
-      `tp=${best.tp_bricks}, R:R=${bestRR.toFixed(2)}x, sharpe=${best.sharpe.toFixed(2)}, trades=${best.total_trades}`
+        `tp=${best.tp_bricks}, R:R=${bestRR.toFixed(2)}x, sharpe=${best.sharpe.toFixed(2)}, trades=${best.total_trades}`,
     );
 
-    const dsr = optResult.deflated_sharpe as Record<string, unknown> | undefined;
+    const dsr = optResult.deflated_sharpe as
+      | Record<string, unknown>
+      | undefined;
     if (dsr && typeof dsr.dsr === "number") {
-      console.log(`[sweep:heavy] ${symbolConfig.symbol}: DSR=${dsr.dsr.toFixed(4)} (${dsr.interpretation || ""})`);
+      console.log(
+        `[sweep:heavy] ${symbolConfig.symbol}: DSR=${dsr.dsr.toFixed(4)} (${dsr.interpretation || ""})`,
+      );
     }
 
     // 5. Unpack regime result
@@ -2438,7 +2922,9 @@ async function runHeavySweepForSymbol(
       regimeConf = regimeResult.confidence ?? 0;
       riskMultiplier = regimeResult.risk_multiplier ?? 1.0;
     } else {
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol} regime detection failed: ${regimeResultRaw.reason}`);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol} regime detection failed: ${regimeResultRaw.reason}`,
+      );
     }
 
     // GUARD: preserve previous valid regime if detection returned "unknown"
@@ -2446,12 +2932,20 @@ async function runHeavySweepForSymbol(
       try {
         const prevCfg = await redisGetConfig(symbolConfig.symbol);
         const prevRegime = prevCfg?.regime;
-        if (prevRegime && prevRegime !== "unknown" && prevRegime !== "market_closed") {
-          console.warn(`[sweep:heavy] ${symbolConfig.symbol}: Regime detection returned "unknown" — preserving previous regime "${prevRegime}"`);
+        if (
+          prevRegime &&
+          prevRegime !== "unknown" &&
+          prevRegime !== "market_closed"
+        ) {
+          console.warn(
+            `[sweep:heavy] ${symbolConfig.symbol}: Regime detection returned "unknown" — preserving previous regime "${prevRegime}"`,
+          );
           combinedRegime = prevRegime;
           regimeConf = safeParseFloat(String(prevCfg?.regime_conf ?? ""), 0);
         }
-      } catch { /* use "unknown" if Redis read fails */ }
+      } catch {
+        /* use "unknown" if Redis read fails */
+      }
     }
 
     // 6. Unpack Kelly result
@@ -2459,11 +2953,18 @@ async function runHeavySweepForSymbol(
     if (kellyResultRaw.status === "fulfilled") {
       kellyF = parseKellyF(kellyResultRaw.value as KellyResult);
     } else {
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol} Kelly computation failed, using default: ${kellyResultRaw.reason}`);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol} Kelly computation failed, using default: ${kellyResultRaw.reason}`,
+      );
     }
 
-    const { pUp: markovPUp, pDn: markovPDn } = computeMarkovProbs(combinedRegime);
-    const direction: "long" | "short" = combinedRegime.toLowerCase().includes("bear") ? "short" : "long";
+    const { pUp: markovPUp, pDn: markovPDn } =
+      computeMarkovProbs(combinedRegime);
+    const direction: "long" | "short" = combinedRegime
+      .toLowerCase()
+      .includes("bear")
+      ? "short"
+      : "long";
     const markovTransition = computeMarkovTransition(prices, best.brick_size);
 
     const evResult = computeEV({
@@ -2480,12 +2981,15 @@ async function runHeavySweepForSymbol(
       },
     });
 
-    const effectiveKelly = evResult.effective_kelly > 0 ? Math.min(evResult.effective_kelly, 0.5) : kellyF;
+    const effectiveKelly =
+      evResult.effective_kelly > 0
+        ? Math.min(evResult.effective_kelly, 0.5)
+        : kellyF;
 
     console.log(
       `[sweep:heavy] ${symbolConfig.symbol}: EV=${evResult.ev.toFixed(2)} ($${evResult.ev_per_dollar.toFixed(3)}/$risk), ` +
-      `P_win=${evResult.p_win.toFixed(3)} (regime=${evResult.p_regime.toFixed(3)}, markov=${evResult.p_markov.toFixed(3)}), ` +
-      `aggression=${evResult.aggression}, effective_kelly=${effectiveKelly.toFixed(3)}`
+        `P_win=${evResult.p_win.toFixed(3)} (regime=${evResult.p_regime.toFixed(3)}, markov=${evResult.p_markov.toFixed(3)}), ` +
+        `aggression=${evResult.aggression}, effective_kelly=${effectiveKelly.toFixed(3)}`,
     );
 
     const duration = Date.now() - startTime;
@@ -2503,18 +3007,27 @@ async function runHeavySweepForSymbol(
         prevPTimesfm = safeParseFloat(prevCfg.p_timesfm ?? "", NaN);
         if (isNaN(prevPTimesfm)) prevPTimesfm = undefined;
         if (
-          combinedRegime !== "unknown" && combinedRegime !== "market_closed" &&
-          prevRegime && prevRegime !== "unknown" && prevRegime !== "market_closed" &&
+          combinedRegime !== "unknown" &&
+          combinedRegime !== "market_closed" &&
+          prevRegime &&
+          prevRegime !== "unknown" &&
+          prevRegime !== "market_closed" &&
           prevRegime !== combinedRegime
         ) {
           regimeShift = true;
-          console.log(`[sweep:heavy] ${symbolConfig.symbol}: REGIME SHIFT ${prevRegime} → ${combinedRegime}`);
+          console.log(
+            `[sweep:heavy] ${symbolConfig.symbol}: REGIME SHIFT ${prevRegime} → ${combinedRegime}`,
+          );
         }
       }
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
 
     const shifts24h = await countShifts24h(symbolConfig.symbol);
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: shifts_24h=${shifts24h}, shift=${regimeShift}`);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: shifts_24h=${shifts24h}, shift=${regimeShift}`,
+    );
 
     // 8. Compute trade signal
     const tradeSignal = computeTradeSignal(
@@ -2529,7 +3042,7 @@ async function runHeavySweepForSymbol(
 
     console.log(
       `[sweep:heavy] ${symbolConfig.symbol}: Signal=${tradeSignal.signal}, Entry=${tradeSignal.entry_price.toFixed(2)}, ` +
-      `SL=${tradeSignal.stop_loss.toFixed(2)}, TP=${tradeSignal.take_profit.toFixed(2)}`
+        `SL=${tradeSignal.stop_loss.toFixed(2)}, TP=${tradeSignal.take_profit.toFixed(2)}`,
     );
 
     // 9. Write to Redis
@@ -2605,13 +3118,22 @@ async function runHeavySweepForSymbol(
         timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
       };
       await redisSaveRegimeCache(cache);
-      console.log(`[sweep:heavy] ${symbolConfig.symbol}: regime cache updated with optimized brick params`);
+      console.log(
+        `[sweep:heavy] ${symbolConfig.symbol}: regime cache updated with optimized brick params`,
+      );
     } catch (err) {
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: regime cache save failed: ${err}`);
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol}: regime cache save failed: ${err}`,
+      );
     }
 
-    await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
-    console.log(`[sweep:heavy] ${symbolConfig.symbol}: Redis config updated (regime=${combinedRegime}, kelly=${kellyF.toFixed(3)})`);
+    await redisSetHeartbeat(
+      symbolConfig.symbol,
+      symbolConfig.heartbeat_ttl_seconds,
+    );
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: Redis config updated (regime=${combinedRegime}, kelly=${kellyF.toFixed(3)})`,
+    );
 
     // 10. Log to Supabase
     await logSweepResult({
@@ -2649,31 +3171,51 @@ async function runHeavySweepForSymbol(
       regime_shift: regimeShift,
     });
 
-	    console.log(`[sweep:heavy] ${symbolConfig.symbol}: Complete in ${duration}ms (${nCombos} combos, 1 API call)`);
+    console.log(
+      `[sweep:heavy] ${symbolConfig.symbol}: Complete in ${duration}ms (${nCombos} combos, 1 API call)`,
+    );
 
-	    // 11. Query calibration bias and write to Redis (v3)
-		    try {
-		      const cal = await computeCalibrationBias(symbolConfig.symbol);
-		      const bias = cal?.bias ?? 0;
-		      const status = cal?.status ?? "INSUFFICIENT_DATA";
-		      const skipUntil = status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
-		      await sweepRedisPipeline([
-		        [
-		          "HSET", `trading:config:${symbolConfig.symbol}`,
-		          "calibration_bias", String(bias),
-		          "calibration_status", status,
-		          "sweep_skip_until", skipUntil,
-		        ],
-		      ]);
-		      if (cal) {
-		        console.log(`[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`);
-		      }
-		    } catch (err) {
-		      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: calibration write failed: ${err}`);
-		    }
+    // 11. Query calibration bias and write to Redis (v3)
+    try {
+      const cal = await computeCalibrationBias(symbolConfig.symbol);
+      const bias = cal?.bias ?? 0;
+      const status = cal?.status ?? "INSUFFICIENT_DATA";
+      const skipUntil =
+        status === "CALIBRATED" ? String(Date.now() + 12 * 3600 * 1000) : "0";
+      await sweepRedisPipeline([
+        [
+          "HSET",
+          `trading:config:${symbolConfig.symbol}`,
+          "calibration_bias",
+          String(bias),
+          "calibration_status",
+          status,
+          "sweep_skip_until",
+          skipUntil,
+        ],
+      ]);
+      if (cal) {
+        console.log(
+          `[sweep:heavy] ${symbolConfig.symbol}: calibration_bias=${cal.bias} (${cal.status})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[sweep:heavy] ${symbolConfig.symbol}: calibration write failed: ${err}`,
+      );
+    }
 
-	    return { best, regime: { regime_label: combinedRegime, confidence: regimeConf, risk_multiplier: riskMultiplier }, kelly: { kelly_f: kellyF }, duration, nCombos };
-
+    return {
+      best,
+      regime: {
+        regime_label: combinedRegime,
+        confidence: regimeConf,
+        risk_multiplier: riskMultiplier,
+      },
+      kelly: { kelly_f: kellyF },
+      duration,
+      nCombos,
+    };
   } catch (err) {
     const duration = Date.now() - startTime;
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -2682,7 +3224,14 @@ async function runHeavySweepForSymbol(
     await redisPushError(symbolConfig.symbol, "sweep-heavy", errMsg);
     await logError(symbolConfig.symbol, "sweep-heavy", errMsg);
 
-    return { best: null, regime: null, kelly: null, duration, nCombos: 0, error: errMsg };
+    return {
+      best: null,
+      regime: null,
+      kelly: null,
+      duration,
+      nCombos: 0,
+      error: errMsg,
+    };
   }
 }
 
@@ -2691,7 +3240,12 @@ async function runLightRegimeForSymbol(
   symbolConfig: SymbolConfig,
   cacheEntry: RegimeCacheEntry | undefined,
   prefetchedTimesfm?: number,
-): Promise<{ regime: string; regimeShift: boolean; entry: RegimeCacheEntry | null; error?: string }> {
+): Promise<{
+  regime: string;
+  regimeShift: boolean;
+  entry: RegimeCacheEntry | null;
+  error?: string;
+}> {
   try {
     const marketOpen = isMarketOpen(symbolConfig.asset_class);
 
@@ -2700,7 +3254,9 @@ async function runLightRegimeForSymbol(
     try {
       prices = await fetchLatestCandles(symbolConfig, 200);
     } catch (err) {
-      console.warn(`[sweep:light] ${symbolConfig.symbol} candle fetch failed: ${err}`);
+      console.warn(
+        `[sweep:light] ${symbolConfig.symbol} candle fetch failed: ${err}`,
+      );
     }
 
     // pTimesfm at function scope — used both in >81 bar path AND cold-start (<81 bars)
@@ -2708,18 +3264,28 @@ async function runLightRegimeForSymbol(
 
     if (prices.length >= 81) {
       // 2. Detect regime
-      console.log(`[sweep:light] ${symbolConfig.symbol}: Detecting regime (${prices.length} bars)...`);
-      const regimeResult: RegimeResult = await detectRegime(prices, symbolConfig.symbol);
+      console.log(
+        `[sweep:light] ${symbolConfig.symbol}: Detecting regime (${prices.length} bars)...`,
+      );
+      const regimeResult: RegimeResult = await detectRegime(
+        prices,
+        symbolConfig.symbol,
+      );
       const combinedRegime = parseRegimeLabel(regimeResult);
       const regimeConf = regimeResult.confidence ?? 0;
 
       // 3. Compute Kelly
       let kellyF = cacheEntry?.kelly_f ?? 0.1;
       try {
-        const kellyResult: KellyResult = await computeKelly(prices, symbolConfig.symbol);
+        const kellyResult: KellyResult = await computeKelly(
+          prices,
+          symbolConfig.symbol,
+        );
         kellyF = parseKellyF(kellyResult);
       } catch (err) {
-        console.warn(`[sweep:light] ${symbolConfig.symbol} Kelly failed: ${err}`);
+        console.warn(
+          `[sweep:light] ${symbolConfig.symbol} Kelly failed: ${err}`,
+        );
       }
 
       // 3b. TimesFM inference (v3) — use prefetched value when available
@@ -2730,13 +3296,19 @@ async function runLightRegimeForSymbol(
           ]);
           pTimesfm = timesfmMap.get(symbolConfig.symbol) ?? null;
           if (pTimesfm !== null) {
-            console.log(`[sweep:light] ${symbolConfig.symbol}: TimesFM=${pTimesfm.toFixed(4)} (direct call)`);
+            console.log(
+              `[sweep:light] ${symbolConfig.symbol}: TimesFM=${pTimesfm.toFixed(4)} (direct call)`,
+            );
           }
         } catch (err) {
-          console.warn(`[sweep:light] ${symbolConfig.symbol} TimesFM failed: ${err}`);
+          console.warn(
+            `[sweep:light] ${symbolConfig.symbol} TimesFM failed: ${err}`,
+          );
         }
       } else if (pTimesfm !== null) {
-        console.log(`[sweep:light] ${symbolConfig.symbol}: TimesFM=${pTimesfm.toFixed(4)} (vectorized)`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: TimesFM=${pTimesfm.toFixed(4)} (vectorized)`,
+        );
       }
 
       // 4. Detect regime shift from cache entry
@@ -2744,20 +3316,36 @@ async function runLightRegimeForSymbol(
       let effectiveRegime = combinedRegime;
       let effectiveRegimeConf = regimeConf;
       let regimeDegraded = false;
-      if (combinedRegime === "unknown" && prevRegime && prevRegime !== "unknown" && prevRegime !== "market_closed") {
-        console.warn(`[sweep:light] ${symbolConfig.symbol}: Regime detection returned "unknown" — falling back to previous regime "${prevRegime}" for downstream computations`);
+      if (
+        combinedRegime === "unknown" &&
+        prevRegime &&
+        prevRegime !== "unknown" &&
+        prevRegime !== "market_closed"
+      ) {
+        console.warn(
+          `[sweep:light] ${symbolConfig.symbol}: Regime detection returned "unknown" — falling back to previous regime "${prevRegime}" for downstream computations`,
+        );
         effectiveRegime = prevRegime;
         effectiveRegimeConf = cacheEntry?.regime_conf ?? 0;
         regimeDegraded = true;
       }
-      const regimeShift = !regimeDegraded && prevRegime !== null && prevRegime !== "unknown" && prevRegime !== "market_closed" && prevRegime !== combinedRegime;
+      const regimeShift =
+        !regimeDegraded &&
+        prevRegime !== null &&
+        prevRegime !== "unknown" &&
+        prevRegime !== "market_closed" &&
+        prevRegime !== combinedRegime;
 
       if (regimeShift) {
-        console.log(`[sweep:light] ${symbolConfig.symbol}: REGIME SHIFT ${prevRegime} → ${combinedRegime}`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: REGIME SHIFT ${prevRegime} → ${combinedRegime}`,
+        );
 
         // ── Shift-Aware Wakeup: trigger emergency heavy sweep on vol shift ──
         if (isVolatilityShift(prevRegime ?? "", combinedRegime)) {
-          console.log(`[sweep:light] ${symbolConfig.symbol}: Volatility shift detected — triggering emergency heavy sweep`);
+          console.log(
+            `[sweep:light] ${symbolConfig.symbol}: Volatility shift detected — triggering emergency heavy sweep`,
+          );
           try {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 5_000);
@@ -2767,42 +3355,58 @@ async function runLightRegimeForSymbol(
                 Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify({ mode: "heavy", symbol: symbolConfig.symbol }),
+              body: JSON.stringify({
+                mode: "heavy",
+                symbol: symbolConfig.symbol,
+              }),
               signal: controller.signal,
             });
             clearTimeout(timer);
           } catch (err) {
-            console.warn(`[sweep:light] Emergency heavy sweep trigger failed: ${err}`);
+            console.warn(
+              `[sweep:light] Emergency heavy sweep trigger failed: ${err}`,
+            );
           }
         }
       }
 
       // 5. Compute Markov probabilities
-      const { pUp: markovPUp, pDn: markovPDn } = computeMarkovProbs(effectiveRegime);
+      const { pUp: markovPUp, pDn: markovPDn } =
+        computeMarkovProbs(effectiveRegime);
       const riskMultiplier = regimeResult.risk_multiplier ?? 1.0;
 
       // 6. Load brick params — prefer cache, fall back to Redis config
       let brickSize = cacheEntry?.brick_size ?? NaN;
-      let slBricks  = (cacheEntry?.sl_bricks as number) ?? NaN;
-      let tpBricks  = (cacheEntry?.tp_bricks as number) ?? NaN;
+      let slBricks = (cacheEntry?.sl_bricks as number) ?? NaN;
+      let tpBricks = (cacheEntry?.tp_bricks as number) ?? NaN;
       if (isNaN(brickSize) || isNaN(slBricks) || isNaN(tpBricks)) {
         try {
           const fullCfg = await redisGetConfig(symbolConfig.symbol);
           if (fullCfg) {
             brickSize = safeParseFloat(String(fullCfg.brick_size ?? ""), 0.5);
-            slBricks  = safeParseInt(String(fullCfg.sl_bricks ?? ""), 3);
-            tpBricks  = safeParseInt(String(fullCfg.tp_bricks ?? ""), 5);
-            console.log(`[sweep:light] ${symbolConfig.symbol}: cold cache — loaded brick params from Redis config (brick=${brickSize}, sl=${slBricks}, tp=${tpBricks})`);
+            slBricks = safeParseInt(String(fullCfg.sl_bricks ?? ""), 3);
+            tpBricks = safeParseInt(String(fullCfg.tp_bricks ?? ""), 5);
+            console.log(
+              `[sweep:light] ${symbolConfig.symbol}: cold cache — loaded brick params from Redis config (brick=${brickSize}, sl=${slBricks}, tp=${tpBricks})`,
+            );
           } else {
-            brickSize = 0.5; slBricks = 3; tpBricks = 5;
+            brickSize = 0.5;
+            slBricks = 3;
+            tpBricks = 5;
           }
         } catch {
-          brickSize = 0.5; slBricks = 3; tpBricks = 5;
+          brickSize = 0.5;
+          slBricks = 3;
+          tpBricks = 5;
         }
       }
 
       // 6b. Compute EV
-      const direction: "long" | "short" = effectiveRegime.toLowerCase().includes("bear") ? "short" : "long";
+      const direction: "long" | "short" = effectiveRegime
+        .toLowerCase()
+        .includes("bear")
+        ? "short"
+        : "long";
       const markovTransition = computeMarkovTransition(prices, brickSize);
 
       const evResult = computeEV({
@@ -2820,12 +3424,15 @@ async function runLightRegimeForSymbol(
         pTimesfm: pTimesfm ?? undefined,
       });
 
-      const effectiveKelly = evResult.effective_kelly > 0 ? Math.min(evResult.effective_kelly, 0.5) : kellyF;
+      const effectiveKelly =
+        evResult.effective_kelly > 0
+          ? Math.min(evResult.effective_kelly, 0.5)
+          : kellyF;
 
       console.log(
         `[sweep:light] ${symbolConfig.symbol}: EV=${evResult.ev.toFixed(2)} ($${evResult.ev_per_dollar.toFixed(3)}/$risk), ` +
-        `P_win=${evResult.p_win.toFixed(3)}${pTimesfm !== null ? `, timesfm=${pTimesfm?.toFixed(3)}` : ""}, ` +
-        `aggression=${evResult.aggression}, effective_kelly=${effectiveKelly.toFixed(3)}`
+          `P_win=${evResult.p_win.toFixed(3)}${pTimesfm !== null ? `, timesfm=${pTimesfm?.toFixed(3)}` : ""}, ` +
+          `aggression=${evResult.aggression}, effective_kelly=${effectiveKelly.toFixed(3)}`,
       );
 
       // 6d. Tail risk assessment (v3)
@@ -2835,25 +3442,40 @@ async function runLightRegimeForSymbol(
         evResult.p_timesfm > 0 ? 0.8 : 0,
       );
       if (tailRisk.score > 0) {
-        console.log(`[sweep:light] ${symbolConfig.symbol}: tail_risk=${tailRisk.score.toFixed(2)} (${tailRisk.action})`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: tail_risk=${tailRisk.score.toFixed(2)} (${tailRisk.action})`,
+        );
       }
 
       // 6c. Compute shifts_24h
       let shifts24h = cacheEntry?.shifts_24h ?? 0;
       if (regimeShift) {
         shifts24h = await countShifts24h(symbolConfig.symbol);
-        console.log(`[sweep:light] ${symbolConfig.symbol}: shifts_24h=${shifts24h} (fresh count)`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: shifts_24h=${shifts24h} (fresh count)`,
+        );
       }
 
       // 7. Compute trade signal
       const currentPrice = prices[prices.length - 1];
-      const tradeSignal = computeTradeSignal(effectiveRegime, currentPrice, brickSize, slBricks, tpBricks, symbolConfig.symbol, symbolConfig.asset_class);
+      const tradeSignal = computeTradeSignal(
+        effectiveRegime,
+        currentPrice,
+        brickSize,
+        slBricks,
+        tpBricks,
+        symbolConfig.symbol,
+        symbolConfig.asset_class,
+      );
 
-      const decimals = cacheEntry?.price_decimals
-        ?? PRICE_TICK_DECIMALS[symbolConfig.symbol]
-        ?? (symbolConfig.symbol === "BTC" ? 1 : 2);
+      const decimals =
+        cacheEntry?.price_decimals ??
+        PRICE_TICK_DECIMALS[symbolConfig.symbol] ??
+        (symbolConfig.symbol === "BTC" ? 1 : 2);
       if (pTimesfm !== null) {
-        console.log(`[sweep:light] ${symbolConfig.symbol}: p_timesfm=${pTimesfm} ready for Redis`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: p_timesfm=${pTimesfm} ready for Redis`,
+        );
       }
       await redisUpdateSignal(
         symbolConfig.symbol,
@@ -2876,13 +3498,15 @@ async function runLightRegimeForSymbol(
           shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
           shifts_24h: shifts24h,
         },
-        pTimesfm !== null ? {
-          p_timesfm: pTimesfm,
-          timesfm_horizon: "12h",
-        } : {
-          p_timesfm: 0.5,
-          timesfm_horizon: "0h",
-        },
+        pTimesfm !== null
+          ? {
+              p_timesfm: pTimesfm,
+              timesfm_horizon: "12h",
+            }
+          : {
+              p_timesfm: 0.5,
+              timesfm_horizon: "0h",
+            },
         {
           tail_risk_score: tailRisk.score,
           tail_risk_action: tailRisk.action,
@@ -2890,41 +3514,44 @@ async function runLightRegimeForSymbol(
       );
 
       // 8. Build new cache entry
-	      const newEntry: RegimeCacheEntry = {
-	        regime: effectiveRegime,
-	        regime_conf: effectiveRegimeConf,
-	        brick_size: brickSize,
-	        sl_bricks: slBricks,
-	        tp_bricks: tpBricks,
-	        kelly_f: kellyF,
-	        last_update: Date.now(),
-	        signal: tradeSignal.signal,
-	        entry_price: tradeSignal.entry_price,
-	        stop_loss: tradeSignal.stop_loss,
-	        take_profit: tradeSignal.take_profit,
-	        price_decimals: decimals,
-	        ev: evResult.ev,
-	        ev_per_dollar: evResult.ev_per_dollar,
-	        p_win: evResult.p_win,
-	        p_regime: evResult.p_regime,
-	        p_imbalance: evResult.p_imbalance,
-	        p_markov: evResult.p_markov,
-	        aggression: evResult.aggression,
-	        ev_scale: evResult.ev_scale,
-	        effective_kelly: effectiveKelly,
-	        markov_current_state: evResult.markov_current_state,
-	        regime_shift: regimeShift ? "true" : "false",
-	        prev_regime: prevRegime ?? "",
-	        shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
-	        shifts_24h: shifts24h,
-		        p_timesfm: pTimesfm ?? 0.5,
-		        timesfm_horizon: pTimesfm !== null ? "12h" : "0h",
-		        tail_risk_score: tailRisk.score,
-		        tail_risk_action: tailRisk.action,
-		      };
+      const newEntry: RegimeCacheEntry = {
+        regime: effectiveRegime,
+        regime_conf: effectiveRegimeConf,
+        brick_size: brickSize,
+        sl_bricks: slBricks,
+        tp_bricks: tpBricks,
+        kelly_f: kellyF,
+        last_update: Date.now(),
+        signal: tradeSignal.signal,
+        entry_price: tradeSignal.entry_price,
+        stop_loss: tradeSignal.stop_loss,
+        take_profit: tradeSignal.take_profit,
+        price_decimals: decimals,
+        ev: evResult.ev,
+        ev_per_dollar: evResult.ev_per_dollar,
+        p_win: evResult.p_win,
+        p_regime: evResult.p_regime,
+        p_imbalance: evResult.p_imbalance,
+        p_markov: evResult.p_markov,
+        aggression: evResult.aggression,
+        ev_scale: evResult.ev_scale,
+        effective_kelly: effectiveKelly,
+        markov_current_state: evResult.markov_current_state,
+        regime_shift: regimeShift ? "true" : "false",
+        prev_regime: prevRegime ?? "",
+        shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
+        shifts_24h: shifts24h,
+        p_timesfm: pTimesfm ?? 0.5,
+        timesfm_horizon: pTimesfm !== null ? "12h" : "0h",
+        tail_risk_score: tailRisk.score,
+        tail_risk_action: tailRisk.action,
+      };
 
-	      // 9. Write full config + cache only on regime shift or initial population
-      const isInitialWrite = cacheEntry === undefined || cacheEntry.regime === "unknown" || cacheEntry.regime === "market_closed";
+      // 9. Write full config + cache only on regime shift or initial population
+      const isInitialWrite =
+        cacheEntry === undefined ||
+        cacheEntry.regime === "unknown" ||
+        cacheEntry.regime === "market_closed";
       if (regimeShift || isInitialWrite) {
         const redisConfig: RedisConfig = {
           regime: effectiveRegime,
@@ -2951,16 +3578,16 @@ async function runLightRegimeForSymbol(
           ev_scale: evResult.ev_scale,
           effective_kelly: effectiveKelly,
           markov_current_state: evResult.markov_current_state,
-	          regime_shift: regimeShift ? "true" : "false",
-	          prev_regime: prevRegime ?? "",
-	          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
-	          shifts_24h: shifts24h,
-	          p_timesfm: pTimesfm ?? undefined,
-	          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
-	          tail_risk_score: tailRisk.score,
-	          tail_risk_action: tailRisk.action,
-	        };
-	        await redisSetConfig(symbolConfig.symbol, redisConfig);
+          regime_shift: regimeShift ? "true" : "false",
+          prev_regime: prevRegime ?? "",
+          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
+          shifts_24h: shifts24h,
+          p_timesfm: pTimesfm ?? undefined,
+          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
+          tail_risk_score: tailRisk.score,
+          tail_risk_action: tailRisk.action,
+        };
+        await redisSetConfig(symbolConfig.symbol, redisConfig);
 
         await logRegimeEntry({
           symbol: symbolConfig.symbol,
@@ -2977,65 +3604,83 @@ async function runLightRegimeForSymbol(
 
       console.log(
         `[sweep:light] ${symbolConfig.symbol}: regime=${effectiveRegime}${regimeDegraded ? " (degraded)" : ""}, conf=${effectiveRegimeConf.toFixed(2)}, ` +
-        `kelly=${kellyF.toFixed(3)}, risk_mult=${riskMultiplier}, shift=${regimeShift}`,
+          `kelly=${kellyF.toFixed(3)}, risk_mult=${riskMultiplier}, shift=${regimeShift}`,
       );
 
       return { regime: effectiveRegime, regimeShift, entry: newEntry };
+    } else {
+      // No data available or cold start
+      if (prices.length >= 20 && pTimesfm !== null && TIMESFM_INFERENCE_URL) {
+        // ── Cold-start: TimesFM only (not enough bars for HMM) ──
+        const currentPrice = prices[prices.length - 1];
+        const brickSize = cacheEntry?.brick_size ?? 0.5;
+        const slBricks = cacheEntry?.sl_bricks ?? 3;
+        const tpBricks = cacheEntry?.tp_bricks ?? 5;
+        const tradeSignal = computeTradeSignal(
+          "warming_up",
+          currentPrice,
+          brickSize,
+          slBricks,
+          tpBricks,
+          symbolConfig.symbol,
+          symbolConfig.asset_class,
+        );
+        const decimals = PRICE_TICK_DECIMALS[symbolConfig.symbol] ?? 2;
 
-	    } else {
-	      // No data available or cold start
-	      if (prices.length >= 20 && pTimesfm !== null && TIMESFM_INFERENCE_URL) {
-	        // ── Cold-start: TimesFM only (not enough bars for HMM) ──
-	        const currentPrice = prices[prices.length - 1];
-	        const brickSize = cacheEntry?.brick_size ?? 0.5;
-	        const slBricks = cacheEntry?.sl_bricks ?? 3;
-	        const tpBricks = cacheEntry?.tp_bricks ?? 5;
-	        const tradeSignal = computeTradeSignal("warming_up", currentPrice, brickSize, slBricks, tpBricks, symbolConfig.symbol, symbolConfig.asset_class);
-	        const decimals = PRICE_TICK_DECIMALS[symbolConfig.symbol] ?? 2;
+        const redisConfig: RedisConfig = {
+          regime: "warming_up",
+          regime_conf: 0,
+          brick_size: brickSize,
+          tp_bricks: tpBricks,
+          sl_bricks: slBricks,
+          markov_p_up: 0.5,
+          markov_p_dn: 0.5,
+          kelly_f: 0.05,
+          last_update: Date.now(),
+          sweep_timestamp: Date.now(),
+          signal: tradeSignal.signal,
+          entry_price: tradeSignal.entry_price,
+          stop_loss: tradeSignal.stop_loss,
+          take_profit: tradeSignal.take_profit,
+          p_timesfm: pTimesfm,
+          timesfm_horizon: "12h",
+        };
+        await redisSetConfig(symbolConfig.symbol, redisConfig);
+        await redisSetHeartbeat(
+          symbolConfig.symbol,
+          symbolConfig.heartbeat_ttl_seconds,
+        );
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: warm_up — TimesFM=${pTimesfm.toFixed(4)} (${prices.length} bars, need >=81 for HMM)`,
+        );
 
-	        const redisConfig: RedisConfig = {
-	          regime: "warming_up",
-	          regime_conf: 0,
-	          brick_size: brickSize,
-	          tp_bricks: tpBricks,
-	          sl_bricks: slBricks,
-	          markov_p_up: 0.5,
-	          markov_p_dn: 0.5,
-	          kelly_f: 0.05,
-	          last_update: Date.now(),
-	          sweep_timestamp: Date.now(),
-	          signal: tradeSignal.signal,
-	          entry_price: tradeSignal.entry_price,
-	          stop_loss: tradeSignal.stop_loss,
-	          take_profit: tradeSignal.take_profit,
-	          p_timesfm: pTimesfm,
-	          timesfm_horizon: "12h",
-	        };
-	        await redisSetConfig(symbolConfig.symbol, redisConfig);
-	        await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
-	        console.log(`[sweep:light] ${symbolConfig.symbol}: warm_up — TimesFM=${pTimesfm.toFixed(4)} (${prices.length} bars, need >=81 for HMM)`);
+        const newEntry: RegimeCacheEntry = {
+          regime: "warming_up",
+          regime_conf: 0,
+          brick_size: brickSize,
+          sl_bricks: slBricks,
+          tp_bricks: tpBricks,
+          kelly_f: 0.05,
+          last_update: Date.now(),
+          signal: tradeSignal.signal,
+          entry_price: tradeSignal.entry_price,
+          stop_loss: tradeSignal.stop_loss,
+          take_profit: tradeSignal.take_profit,
+          price_decimals: decimals,
+          p_timesfm: pTimesfm,
+          timesfm_horizon: "12h",
+        };
+        return {
+          regime: "warming_up",
+          regimeShift: cacheEntry?.regime !== "warming_up",
+          entry: newEntry,
+        };
+      }
 
-	        const newEntry: RegimeCacheEntry = {
-	          regime: "warming_up",
-	          regime_conf: 0,
-	          brick_size: brickSize,
-	          sl_bricks: slBricks,
-	          tp_bricks: tpBricks,
-	          kelly_f: 0.05,
-	          last_update: Date.now(),
-	          signal: tradeSignal.signal,
-	          entry_price: tradeSignal.entry_price,
-	          stop_loss: tradeSignal.stop_loss,
-	          take_profit: tradeSignal.take_profit,
-	          price_decimals: decimals,
-	          p_timesfm: pTimesfm,
-	          timesfm_horizon: "12h",
-	        };
-	        return { regime: "warming_up", regimeShift: cacheEntry?.regime !== "warming_up", entry: newEntry };
-	      }
-
-	      if (!cacheEntry) {
-	        console.log(`[sweep:light] ${symbolConfig.symbol}: Initial market_closed write`);
+      if (!cacheEntry) {
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: Initial market_closed write`,
+        );
         const brickSize = safeParseFloat(undefined, 0.5);
         const slBricks = safeParseInt(undefined, 3);
         const tpBricks = safeParseInt(undefined, 5);
@@ -3053,11 +3698,12 @@ async function runLightRegimeForSymbol(
         };
         await redisSetConfig(symbolConfig.symbol, redisConfig);
       } else {
-        console.log(`[sweep:light] ${symbolConfig.symbol}: market_closed — FILTERED (already exists)`);
+        console.log(
+          `[sweep:light] ${symbolConfig.symbol}: market_closed — FILTERED (already exists)`,
+        );
       }
       return { regime: "market_closed", regimeShift: false, entry: null };
     }
-
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[sweep:light] ${symbolConfig.symbol} FAILED: ${errMsg}`);
@@ -3081,7 +3727,9 @@ async function runLightRegimeForSymbol(
         };
         await redisSetConfig(symbolConfig.symbol, redisConfig);
       }
-    } catch { /* Best effort */ }
+    } catch {
+      /* Best effort */
+    }
 
     await redisPushError(symbolConfig.symbol, "sweep-light", errMsg);
     await logError(symbolConfig.symbol, "sweep-light", errMsg);
@@ -3091,7 +3739,10 @@ async function runLightRegimeForSymbol(
 
 // ─── Noble Trader Backend Warmup ──────────────────────────────
 async function warmupNobleTrader(): Promise<void> {
-  const url = NOBLE_TRADER_URL || Deno.env.get("NOBLE_TRADER_URL") || "http://127.0.0.1:8001";
+  const url =
+    NOBLE_TRADER_URL ||
+    Deno.env.get("NOBLE_TRADER_URL") ||
+    "http://127.0.0.1:8001";
   try {
     console.log("[sweep] Warming up Noble Trader backend...");
     const controller = new AbortController();
@@ -3104,7 +3755,9 @@ async function warmupNobleTrader(): Promise<void> {
       console.warn(`[sweep] Noble Trader warmup returned ${res.status}`);
     }
   } catch (err) {
-    console.warn(`[sweep] Noble Trader warmup failed (cold start likely): ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(
+      `[sweep] Noble Trader warmup failed (cold start likely): ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -3116,8 +3769,13 @@ async function syncAllowlist(): Promise<Response> {
     const alpacaSymbols: string[] = [];
     const venueMapCommands: unknown[][] = [];
 
-    const allSymbols = await supabaseRest("nt_symbol", "GET", undefined, "select=symbol,active") as { symbol: string; active: boolean }[];
-    const deactivated = allSymbols.filter(s => !s.active);
+    const allSymbols = (await supabaseRest(
+      "nt_symbol",
+      "GET",
+      undefined,
+      "select=symbol,active",
+    )) as { symbol: string; active: boolean }[];
+    const deactivated = allSymbols.filter((s) => !s.active);
     for (const s of deactivated) {
       venueMapCommands.push(["DEL", `trading:venue_map:${s.symbol}`]);
     }
@@ -3126,16 +3784,22 @@ async function syncAllowlist(): Promise<Response> {
       if (sym.data_source === "hyperliquid") {
         hlSymbols.push(sym.symbol);
         venueMapCommands.push([
-          "HSET", `trading:venue_map:${sym.symbol}`,
-          "venueId", "hyperliquid",
-          "assetClass", sym.asset_class,
+          "HSET",
+          `trading:venue_map:${sym.symbol}`,
+          "venueId",
+          "hyperliquid",
+          "assetClass",
+          sym.asset_class,
         ]);
       } else if (sym.data_source === "alpaca") {
         alpacaSymbols.push(sym.symbol);
         venueMapCommands.push([
-          "HSET", `trading:venue_map:${sym.symbol}`,
-          "venueId", "alpaca",
-          "assetClass", sym.asset_class,
+          "HSET",
+          `trading:venue_map:${sym.symbol}`,
+          "venueId",
+          "alpaca",
+          "assetClass",
+          sym.asset_class,
           ...(sym.alpaca_symbol ? ["alpacaSymbol", sym.alpaca_symbol] : []),
         ]);
       }
@@ -3178,10 +3842,10 @@ async function syncAllowlist(): Promise<Response> {
     );
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    return new Response(
-      JSON.stringify({ error: errMsg }),
-      { status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: errMsg }), {
+      status: 500,
+      headers: { ...corsHeaders(), "Content-Type": "application/json" },
+    });
   }
 }
 
@@ -3198,7 +3862,7 @@ const MISSING_ENV_VARS = REQUIRED_ENV_VARS.filter((v) => !Deno.env.get(v));
 if (MISSING_ENV_VARS.length > 0) {
   console.error(
     `[sweep] FATAL: Missing required env vars: ${MISSING_ENV_VARS.join(", ")}. ` +
-    `Set them in Supabase Dashboard → Edge Functions → Secrets.`
+      `Set them in Supabase Dashboard → Edge Functions → Secrets.`,
   );
 }
 
@@ -3215,7 +3879,11 @@ Deno.serve(async (req: Request) => {
   if (warmup === true) {
     await warmupNobleTrader();
     return new Response(
-      JSON.stringify({ status: "warmup", message: "Worker booted + Noble Trader warmed", timestamp: Date.now() }),
+      JSON.stringify({
+        status: "warmup",
+        message: "Worker booted + Noble Trader warmed",
+        timestamp: Date.now(),
+      }),
       { headers: { ...corsHeaders(), "Content-Type": "application/json" } },
     );
   }
@@ -3235,24 +3903,31 @@ Deno.serve(async (req: Request) => {
         if (cal) {
           await sweepRedisPipeline([
             [
-              "HSET", `trading:config:${sym.symbol}`,
-              "calibration_bias", String(cal.bias),
-              "calibration_status", cal.status,
+              "HSET",
+              `trading:config:${sym.symbol}`,
+              "calibration_bias",
+              String(cal.bias),
+              "calibration_status",
+              cal.status,
             ],
           ]);
           updated++;
         }
       }
       return new Response(
-        JSON.stringify({ status: "ok", symbols_checked: activeSymbols.length, symbols_updated: updated }),
+        JSON.stringify({
+          status: "ok",
+          symbols_checked: activeSymbols.length,
+          symbols_updated: updated,
+        }),
         { headers: { ...corsHeaders(), "Content-Type": "application/json" } },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return new Response(
-        JSON.stringify({ error: msg }),
-        { status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ error: msg }), {
+        status: 500,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      });
     }
   }
 
@@ -3263,15 +3938,24 @@ Deno.serve(async (req: Request) => {
         error: `Missing required env vars: ${MISSING_ENV_VARS.join(", ")}`,
         hint: "Set them in Supabase Dashboard → Edge Functions → Secrets",
       }),
-      { status: 503, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      {
+        status: 503,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      },
     );
   }
 
   // ── Validate mode ──
   if (mode !== "heavy" && mode !== "light") {
     return new Response(
-      JSON.stringify({ error: "Provide 'mode' (heavy|light), 'action', or 'warmup' in request body" }),
-      { status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      JSON.stringify({
+        error:
+          "Provide 'mode' (heavy|light), 'action', or 'warmup' in request body",
+      }),
+      {
+        status: 400,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -3281,24 +3965,40 @@ Deno.serve(async (req: Request) => {
   // schedule (retry-stale-symbols pre-migration-017, manual curl, etc).
   if (mode === "light" && isHeavyHour()) {
     const hourUTC = new Date().getUTCHours();
-    const syms = symbol ?? (Array.isArray(batch) ? batch.join(",") : (Array.isArray(symbols) ? symbols.join(",") : "?"));
-    console.log(`[sweep] mode=light SUPPRESSED — heavy hour ${hourUTC} UTC (F-Lite-1). symbols=[${syms}]`);
+    const syms =
+      symbol ??
+      (Array.isArray(batch)
+        ? batch.join(",")
+        : Array.isArray(symbols)
+          ? symbols.join(",")
+          : "?");
+    console.log(
+      `[sweep] mode=light SUPPRESSED — heavy hour ${hourUTC} UTC (F-Lite-1). symbols=[${syms}]`,
+    );
     return new Response(
       JSON.stringify({
         status: "suppressed",
         reason: "f-lite-1",
         hour: hourUTC,
         symbols: syms,
-        message: "Light regime suppressed during heavy sweep hour — defer to heavy sweep cron",
+        message:
+          "Light regime suppressed during heavy sweep hour — defer to heavy sweep cron",
         timestamp: Date.now(),
       }),
-      { status: 202, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      {
+        status: 202,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      },
     );
   }
 
   // ── Resolve symbols from symbol, batch, or symbols array ──
   // batch and symbols are aliases (batch is the new name; symbols kept for back-compat)
-  const batchArray = Array.isArray(batch) ? batch : (Array.isArray(symbols) ? symbols : null);
+  const batchArray = Array.isArray(batch)
+    ? batch
+    : Array.isArray(symbols)
+      ? symbols
+      : null;
   const isBatch = batchArray !== null && batchArray.length > 0;
 
   let symbolsToProcess: SymbolConfig[];
@@ -3307,7 +4007,10 @@ Deno.serve(async (req: Request) => {
     if (!found) {
       return new Response(
         JSON.stringify({ error: `Symbol ${symbol} not found in registry` }),
-        { status: 404, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+        {
+          status: 404,
+          headers: { ...corsHeaders(), "Content-Type": "application/json" },
+        },
       );
     }
     symbolsToProcess = [found];
@@ -3320,15 +4023,23 @@ Deno.serve(async (req: Request) => {
     }
     if (found.length === 0) {
       return new Response(
-        JSON.stringify({ error: "None of the provided symbols were found in registry" }),
-        { status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+        JSON.stringify({
+          error: "None of the provided symbols were found in registry",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders(), "Content-Type": "application/json" },
+        },
       );
     }
     symbolsToProcess = found;
   } else {
     return new Response(
       JSON.stringify({ error: "Provide 'symbol' or 'batch' in request body" }),
-      { status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      {
+        status: 400,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -3336,18 +4047,23 @@ Deno.serve(async (req: Request) => {
   const invocationToken = crypto.randomUUID();
   const globalSlotAcquired = await acquireGlobalSlot(invocationToken);
   if (!globalSlotAcquired) {
-    console.warn(`[sweep] mode=${mode} symbols=[${symbolsToProcess.map(s => s.symbol).join(",")}]: DEFERRED — global cap (${GLOBAL_CAP}) reached. retry-stale-symbols will pick this up.`);
+    console.warn(
+      `[sweep] mode=${mode} symbols=[${symbolsToProcess.map((s) => s.symbol).join(",")}]: DEFERRED — global cap (${GLOBAL_CAP}) reached. retry-stale-symbols will pick this up.`,
+    );
     return new Response(
       JSON.stringify({
         status: "deferred",
         reason: "concurrency-cap",
         cap: GLOBAL_CAP,
         mode,
-        symbols: symbolsToProcess.map(s => s.symbol),
+        symbols: symbolsToProcess.map((s) => s.symbol),
         message: `Global concurrency cap (${GLOBAL_CAP}) reached. retry-stale-symbols will re-invoke shortly.`,
         timestamp: Date.now(),
       }),
-      { status: 202, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
+      {
+        status: 202,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -3357,7 +4073,9 @@ Deno.serve(async (req: Request) => {
       await warmupNobleTrader();
     }
 
-    console.log(`[sweep] mode=${mode} processing ${symbolsToProcess.length} symbols: [${symbolsToProcess.map(s => s.symbol).join(",")}]`);
+    console.log(
+      `[sweep] mode=${mode} processing ${symbolsToProcess.length} symbols: [${symbolsToProcess.map((s) => s.symbol).join(",")}]`,
+    );
 
     // ── Heavy mode: process sequentially with deadline ──
     if (mode === "heavy") {
@@ -3368,9 +4086,13 @@ Deno.serve(async (req: Request) => {
       for (let i = 0; i < symbolsToProcess.length; i++) {
         const elapsed = Date.now() - startTime;
         if (elapsed > DEADLINE_MS) {
-          console.warn(`[sweep:heavy] Deadline exceeded (${elapsed}ms > ${DEADLINE_MS}ms). Skipping remaining.`);
+          console.warn(
+            `[sweep:heavy] Deadline exceeded (${elapsed}ms > ${DEADLINE_MS}ms). Skipping remaining.`,
+          );
           for (let j = i; j < symbolsToProcess.length; j++) {
-            results[symbolsToProcess[j].symbol] = { error: "Deadline exceeded — skipped" };
+            results[symbolsToProcess[j].symbol] = {
+              error: "Deadline exceeded — skipped",
+            };
           }
           break;
         }
@@ -3379,20 +4101,35 @@ Deno.serve(async (req: Request) => {
 
         // ── Layer 1: Per-symbol lock ──
         const symbolLockToken = `${invocationToken}:${sym.symbol}`;
-        const lockAcquired = await acquireSymbolLock(sym.symbol, "heavy", symbolLockToken);
+        const lockAcquired = await acquireSymbolLock(
+          sym.symbol,
+          "heavy",
+          symbolLockToken,
+        );
         if (!lockAcquired) {
-          const skipMsg = "skipped: symbol-locked by concurrent invocation (likely retry-stale light during heavy hour)";
-          console.warn(`[sweep:heavy] ${sym.symbol}: SKIPPED — symbol locked by another invocation`);
+          const skipMsg =
+            "skipped: symbol-locked by concurrent invocation (likely retry-stale light during heavy hour)";
+          console.warn(
+            `[sweep:heavy] ${sym.symbol}: SKIPPED — symbol locked by another invocation`,
+          );
           // Fix C: log skip to nt_errors for dashboard visibility
           try {
             await logError(sym.symbol, "sweep-heavy", skipMsg);
-          } catch { /* best effort — don't let logging fail the sweep */ }
-          results[sym.symbol] = { skipped: true, reason: "symbol-locked", message: skipMsg };
+          } catch {
+            /* best effort — don't let logging fail the sweep */
+          }
+          results[sym.symbol] = {
+            skipped: true,
+            reason: "symbol-locked",
+            message: skipMsg,
+          };
           continue;
         }
 
         try {
-          console.log(`[sweep:heavy] Starting sweep for ${sym.symbol} (${i + 1}/${symbolsToProcess.length}, ${elapsed}ms elapsed)...`);
+          console.log(
+            `[sweep:heavy] Starting sweep for ${sym.symbol} (${i + 1}/${symbolsToProcess.length}, ${elapsed}ms elapsed)...`,
+          );
           const result = await runHeavySweepForSymbol(sym);
           results[sym.symbol] = result;
         } finally {
@@ -3404,9 +4141,15 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      const successCount = Object.values(results).filter((r: any) => !r.error && !r.skipped).length;
-      const failCount = Object.values(results).filter((r: any) => r.error).length;
-      const skipCount = Object.values(results).filter((r: any) => r.skipped).length;
+      const successCount = Object.values(results).filter(
+        (r: any) => !r.error && !r.skipped,
+      ).length;
+      const failCount = Object.values(results).filter(
+        (r: any) => r.error,
+      ).length;
+      const skipCount = Object.values(results).filter(
+        (r: any) => r.skipped,
+      ).length;
 
       return new Response(
         JSON.stringify({
@@ -3423,27 +4166,29 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Light mode: process synchronously (returns actual results) ──
-    const batchResults = await processLightBatch(symbolsToProcess, invocationToken);
+    const batchResults = await processLightBatch(
+      symbolsToProcess,
+      invocationToken,
+    );
 
     return new Response(
       JSON.stringify({
         status: "completed",
         mode: "light",
         message: `Processed ${symbolsToProcess.length} symbols`,
-        symbols: symbolsToProcess.map(s => s.symbol),
+        symbols: symbolsToProcess.map((s) => s.symbol),
         results: batchResults,
         timestamp: Date.now(),
       }),
       { headers: { ...corsHeaders(), "Content-Type": "application/json" } },
     );
-
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[sweep] Fatal error: ${errMsg}`);
-    return new Response(
-      JSON.stringify({ error: errMsg }),
-      { status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: errMsg }), {
+      status: 500,
+      headers: { ...corsHeaders(), "Content-Type": "application/json" },
+    });
   } finally {
     // ── Release global slot (Layer 2) ──
     // NOTE: For light mode, we return 202 immediately but background processing
@@ -3462,8 +4207,20 @@ Deno.serve(async (req: Request) => {
 async function processLightBatch(
   symbolsToProcess: SymbolConfig[],
   invocationToken: string,
-): Promise<{ processed: number; skipped: number; errors: number; cacheChanged: boolean; symbols: Record<string, { regime: string; error?: string }> }> {
-  const result = { processed: 0, skipped: 0, errors: 0, cacheChanged: false, symbols: {} as Record<string, { regime: string; error?: string }> };
+): Promise<{
+  processed: number;
+  skipped: number;
+  errors: number;
+  cacheChanged: boolean;
+  symbols: Record<string, { regime: string; error?: string }>;
+}> {
+  const result = {
+    processed: 0,
+    skipped: 0,
+    errors: 0,
+    cacheChanged: false,
+    symbols: {} as Record<string, { regime: string; error?: string }>,
+  };
   try {
     const regimeCache = await redisLoadRegimeCache();
     const DEADLINE_MS = 110_000;
@@ -3482,13 +4239,17 @@ async function processLightBatch(
             let prices: number[] = [];
             try {
               prices = await fetchLatestCandles(sym, 200);
-            } catch { /* best effort */ }
+            } catch {
+              /* best effort */
+            }
             pricesBySymbol[sym.symbol] = prices;
             return { symbol: sym.symbol, prices: prices.slice(-500) };
           }),
         );
         timesfmMap = await timesfmPost(priceInputs);
-        console.log(`[sweep:light] Vectorized TimesFM: ${timesfmMap.size} symbols processed`);
+        console.log(
+          `[sweep:light] Vectorized TimesFM: ${timesfmMap.size} symbols processed`,
+        );
 
         // ── Lead/Lag: correlation adjustment ──
         const { leaders } = computeCorrelationMatrix(pricesBySymbol);
@@ -3503,7 +4264,9 @@ async function processLightBatch(
             }
           }
           if (adjustedCount > 0) {
-            console.log(`[sweep:light] Lead/Lag adjusted ${adjustedCount}/${symbolsToProcess.length} symbols`);
+            console.log(
+              `[sweep:light] Lead/Lag adjusted ${adjustedCount}/${symbolsToProcess.length} symbols`,
+            );
           }
         }
       } catch (err) {
@@ -3513,35 +4276,55 @@ async function processLightBatch(
 
     for (let i = 0; i < symbolsToProcess.length; i++) {
       const elapsed = Date.now() - startTime;
-	      if (elapsed > DEADLINE_MS) {
-	        console.warn(`[sweep:light] Deadline exceeded (${elapsed}ms). Skipping remaining ${symbolsToProcess.length - i} symbols.`);
-	        result.errors += symbolsToProcess.length - i;
-	        break;
+      if (elapsed > DEADLINE_MS) {
+        console.warn(
+          `[sweep:light] Deadline exceeded (${elapsed}ms). Skipping remaining ${symbolsToProcess.length - i} symbols.`,
+        );
+        result.errors += symbolsToProcess.length - i;
+        break;
       }
 
       const sym = symbolsToProcess[i];
       const cacheEntry = regimeCache[sym.symbol];
-      console.log(`[sweep:light] Processing ${sym.symbol} (${i + 1}/${symbolsToProcess.length}, cache=${cacheEntry ? "hit" : "miss"}, ${elapsed}ms elapsed)...`);
+      console.log(
+        `[sweep:light] Processing ${sym.symbol} (${i + 1}/${symbolsToProcess.length}, cache=${cacheEntry ? "hit" : "miss"}, ${elapsed}ms elapsed)...`,
+      );
 
       // ── Layer 1: Per-symbol lock ──
       const symbolLockToken = `${invocationToken}:${sym.symbol}`;
-      const lockAcquired = await acquireSymbolLock(sym.symbol, "light", symbolLockToken);
-	      if (!lockAcquired) {
-	        const skipMsg = "skipped: symbol-locked by concurrent invocation (heavy sweep holding lock)";
-	        console.warn(`[sweep:light] ${sym.symbol}: SKIPPED — symbol locked by another invocation`);
-	        result.skipped++;
-	        result.symbols[sym.symbol] = { regime: "skipped_locked", error: skipMsg };
-	        // Fix C: log skip to nt_errors for dashboard visibility
+      const lockAcquired = await acquireSymbolLock(
+        sym.symbol,
+        "light",
+        symbolLockToken,
+      );
+      if (!lockAcquired) {
+        const skipMsg =
+          "skipped: symbol-locked by concurrent invocation (heavy sweep holding lock)";
+        console.warn(
+          `[sweep:light] ${sym.symbol}: SKIPPED — symbol locked by another invocation`,
+        );
+        result.skipped++;
+        result.symbols[sym.symbol] = {
+          regime: "skipped_locked",
+          error: skipMsg,
+        };
+        // Fix C: log skip to nt_errors for dashboard visibility
         try {
           await logError(sym.symbol, "sweep-light", skipMsg);
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
         continue;
       }
 
       try {
         // Race: process symbol vs per-symbol deadline
         const symbolResult = await Promise.race([
-          runLightRegimeForSymbol(sym, cacheEntry, timesfmMap.get(sym.symbol) ?? undefined),
+          runLightRegimeForSymbol(
+            sym,
+            cacheEntry,
+            timesfmMap.get(sym.symbol) ?? undefined,
+          ),
           sleep(PER_SYMBOL_DEADLINE_MS).then(() => ({
             regime: "skipped_timeout" as const,
             regimeShift: false,
@@ -3550,19 +4333,22 @@ async function processLightBatch(
           })),
         ]);
 
-	        if (symbolResult.entry) {
-	          regimeCache[sym.symbol] = symbolResult.entry;
-	          if (symbolResult.regimeShift) cacheChanged = true;
-	        }
+        if (symbolResult.entry) {
+          regimeCache[sym.symbol] = symbolResult.entry;
+          if (symbolResult.regimeShift) cacheChanged = true;
+        }
 
-	        if (symbolResult.error) {
-	          result.errors++;
-	          result.symbols[sym.symbol] = { regime: symbolResult.regime, error: symbolResult.error };
-	        } else {
-	          result.processed++;
-	          result.symbols[sym.symbol] = { regime: symbolResult.regime };
-	        }
-	      } finally {
+        if (symbolResult.error) {
+          result.errors++;
+          result.symbols[sym.symbol] = {
+            regime: symbolResult.regime,
+            error: symbolResult.error,
+          };
+        } else {
+          result.processed++;
+          result.symbols[sym.symbol] = { regime: symbolResult.regime };
+        }
+      } finally {
         await releaseSymbolLock(sym.symbol, symbolLockToken);
       }
 

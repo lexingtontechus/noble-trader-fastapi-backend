@@ -5,7 +5,7 @@ Runtime Configuration Engine
 Provides hot-reloadable, admin-adjustable configuration backed by Supabase.
 
 Resolution order (highest priority wins):
-  1. DB override  (system_config table -> in-memory cache with TTL)
+  1. DB override  (nt_system_config table -> in-memory cache with TTL)
   2. Environment variable (e.g. RENKO_BRICK_SIZE)
   3. Hardcoded default (from the module that defines the param)
 
@@ -139,34 +139,34 @@ class RuntimeConfig:
         client = self._get_client()
         try:
             resp = await client.get(
-                f"{self._supabase_url}/rest/v1/system_config",
-                params={"select": "*"},
-                headers={
-                    "apikey": self._supabase_key,
-                    "Authorization": f"Bearer {self._supabase_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-            resp.raise_for_status()
-            rows = resp.json()
-            entries = []
-            for row in rows:
-                entry = self._row_to_entry(row)
-                entries.append(entry)
-            return entries
-        except Exception as exc:
-            log.warning("Failed to fetch config from DB: %s", exc)
-            return []
+f"{self._supabase_url}/rest/v1/nt_system_config",
+	                params={"select": "*"},
+	                headers={
+	                    "apikey": self._supabase_key,
+	                    "Authorization": f"Bearer {self._supabase_key}",
+	                    "Content-Type": "application/json",
+	                },
+	            )
+	            resp.raise_for_status()
+	            rows = resp.json()
+	            entries = []
+	            for row in rows:
+	                entry = self._row_to_entry(row)
+	                entries.append(entry)
+	            return entries
+	        except Exception as exc:
+	            log.warning("Failed to fetch config from DB: %s", exc)
+	            return []
 
-    async def _fetch_category_from_db(self, category: str) -> List[ConfigEntry]:
-        """Fetch config entries for a specific category."""
-        if not self._db_available:
-            return []
+	    async def _fetch_category_from_db(self, category: str) -> List[ConfigEntry]:
+	        """Fetch config entries for a specific category."""
+	        if not self._db_available:
+	            return []
 
-        client = self._get_client()
-        try:
-            resp = await client.get(
-                f"{self._supabase_url}/rest/v1/system_config",
+	        client = self._get_client()
+	        try:
+	            resp = await client.get(
+	                f"{self._supabase_url}/rest/v1/nt_system_config",
                 params={"select": "*", "category": f"eq.{category}"},
                 headers={
                     "apikey": self._supabase_key,
@@ -213,13 +213,13 @@ class RuntimeConfig:
                 "updated_by": changed_by,
             }
             resp = await client.post(
-                f"{self._supabase_url}/rest/v1/system_config",
-                json=row,
-                headers={
-                    "apikey": self._supabase_key,
-                    "Authorization": f"Bearer {self._supabase_key}",
-                    "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates",
+                f"{self._supabase_url}/rest/v1/nt_system_config",
+	                json=row,
+	                headers={
+	                    "apikey": self._supabase_key,
+	                    "Authorization": f"Bearer {self._supabase_key}",
+	                    "Content-Type": "application/json",
+	                    "Prefer": "resolution=merge-duplicates",
                 },
             )
             resp.raise_for_status()
@@ -237,8 +237,8 @@ class RuntimeConfig:
                 "reason": reason,
             }
             await client.post(
-                f"{self._supabase_url}/rest/v1/system_config_audit",
-                json=audit_row,
+                f"{self._supabase_url}/rest/v1/nt_system_config_audit",
+	                json=audit_row,
                 headers={
                     "apikey": self._supabase_key,
                     "Authorization": f"Bearer {self._supabase_key}",
@@ -508,7 +508,7 @@ class RuntimeConfig:
 
         try:
             resp = await client.get(
-                f"{self._supabase_url}/rest/v1/system_config_audit",
+                f"{self._supabase_url}/rest/v1/nt_system_config_audit",
                 params=params,
                 headers={
                     "apikey": self._supabase_key,
