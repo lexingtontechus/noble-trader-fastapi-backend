@@ -733,7 +733,7 @@ The optimizer returns results for each combination plus `best_by_sharpe` and `be
 
 ## Deployment
 
-- **Backend**: FastAPI on Render - `https://noble-trader-fastapi-backend.onrender.com`
+- **Backend**: FastAPI on Lightning AI T4 GPU - `https://8000-<studio>.cloudspaces.litng.ai`
 - **Frontend**: NextJS v16 on Vercel - `https://noble-trader-agent-frontend.vercel.app`
 - **Database**: Supabase (PostgreSQL) - `ta_renko_snapshot` table
 - **GitHub**: `lexingtontechus/noble-trader-fastapi-backend` and `lexingtontechus/noble-trader-agent-frontend`

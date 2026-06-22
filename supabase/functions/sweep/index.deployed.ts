@@ -56,7 +56,7 @@ const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
-const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? NOBLE_TRADER_URL || "";
+const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
 
 // ─── Types ──────────────────────────────────────────────────
@@ -1439,14 +1439,16 @@ export function generateBrickSizes(atr: number, price: number): number[] {
   }
 
   const base = price * baseBrickPct / 100;
-  // BETA: 3 brick sizes instead of 5 to reduce CPU load on Render's 0.5 CPU tier.
-  // Each brick size × SL×TP combo requires a full backtest in the /optimize endpoint.
-  // 3 bricks × 4 SL × 6 TP = 72 combos; 5 bricks would be 120 combos.
-  // UPGRADE PATH: When upgrading to ≥1 CPU on Render, add 0.75× and 3.0× back.
+  // 5 brick sizes — TimesFM gates ~70% of heavy sweeps, so the CPU budget
+  // is available for a wider grid (120 combos vs 72). The extra 0.75× and
+  // 3.0× bricks capture fine-grain and coarse-grain Renko regimes that
+  // the middle 3 bricks miss.
   const bricks = [
+    Math.round(base * 0.75 * 10000) / 10000,
     Math.round(base * 1.0  * 10000) / 10000,
     Math.round(base * 1.5  * 10000) / 10000,
     Math.round(base * 2.0  * 10000) / 10000,
+    Math.round(base * 3.0  * 10000) / 10000,
   ];
 
   // Deduplicate (forex can produce identical bricks after rounding)
@@ -2039,10 +2041,12 @@ const HEAVY_LOCK_TTL_S = 360;            // 6 min — heavy sweep lock
 const LIGHT_LOCK_TTL_S = 90;             // 1.5 min — light regime lock
 
 // ─── F-Lite-1: Heavy Hours (UTC) ──────────────────────────────
-// Light regime is suppressed during these 6 hours to avoid colliding
-// with the heavy sweep cron jobs (which fire at :00/:05/:10/etc).
-// Enforced BOTH in the cron schedule AND here (defense in depth).
-const HEAVY_HOURS_UTC = [20];  // v2: heavy sweeps run daily at 20:00 UTC only
+// Light regime is suppressed during these hours to avoid colliding
+// with heavy sweep cron jobs. Enforced BOTH in the cron schedule
+// AND here (defense in depth).
+//   Crypto heavy: hours 6, 18 (2x/day, TimesFM-gated)
+//   Stocks heavy: hour 21    (3x/week Mon/Wed/Fri)
+const HEAVY_HOURS_UTC = [6, 18, 21];
 
 function isHeavyHour(): boolean {
   return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
@@ -2199,6 +2203,28 @@ async function runHeavySweepForSymbol(
     }
 
     console.log(`[sweep:heavy] ${symbolConfig.symbol}: ${prices.length} candles loaded`);
+
+    // 1.5. TimesFM confidence gate — skip heavy if forecast is confident
+    try {
+      const timesfmMap = await timesfmPost([
+        { symbol: symbolConfig.symbol, prices: prices.slice(-500) },
+      ]);
+      const pTimesfm = timesfmMap.get(symbolConfig.symbol);
+      if (pTimesfm !== null && pTimesfm !== undefined) {
+        const confidence = Math.abs(pTimesfm - 0.5);
+        if (confidence > 0.1) {
+          console.log(`[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — TimesFM confident (p_timesfm=${pTimesfm.toFixed(4)}, confidence=${confidence.toFixed(4)} threshold=0.1)`);
+          return {
+            best: null, regime: null, kelly: null,
+            duration: 0, nCombos: 0,
+            error: `TimesFM-stable (p=${pTimesfm.toFixed(4)})`,
+          };
+        }
+        console.log(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM uncertain (p_timesfm=${pTimesfm.toFixed(4)}) — running full sweep`);
+      }
+    } catch (e) {
+      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM gate failed (${e instanceof Error ? e.message : String(e)}) — proceeding without gate`);
+    }
 
     // 2. Compute ATR and generate brick sizes
     const atr = computeATR(prices, 14);

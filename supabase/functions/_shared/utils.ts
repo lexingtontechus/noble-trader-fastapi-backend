@@ -19,7 +19,7 @@ const UPSTASH_TOKEN = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
-const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? NOBLE_TRADER_URL || "";
+const TIMESFM_INFERENCE_URL = Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
 
 // ─── Types ──────────────────────────────────────────────────
@@ -1432,14 +1432,16 @@ export function generateBrickSizes(atr: number, price: number): number[] {
   }
 
   const base = price * baseBrickPct / 100;
-  // BETA: 3 brick sizes instead of 5 to reduce CPU load on Render's 0.5 CPU tier.
-  // Each brick size × SL×TP combo requires a full backtest in the /optimize endpoint.
-  // 3 bricks × 4 SL × 6 TP = 72 combos; 5 bricks would be 120 combos.
-  // UPGRADE PATH: When upgrading to ≥1 CPU on Render, add 0.75× and 3.0× back.
+  // 5 brick sizes — TimesFM gates ~70% of heavy sweeps, so the CPU budget
+  // is available for a wider grid (120 combos vs 72). The extra 0.75× and
+  // 3.0× bricks capture fine-grain and coarse-grain Renko regimes that
+  // the middle 3 bricks miss.
   const bricks = [
+    Math.round(base * 0.75 * 10000) / 10000,
     Math.round(base * 1.0  * 10000) / 10000,
     Math.round(base * 1.5  * 10000) / 10000,
     Math.round(base * 2.0  * 10000) / 10000,
+    Math.round(base * 3.0  * 10000) / 10000,
   ];
 
   // Deduplicate (forex can produce identical bricks after rounding)

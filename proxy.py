@@ -35,7 +35,7 @@ TIMESFM_URL = os.getenv("TIMESFM_URL", "http://127.0.0.1:8002")
 PORT = int(os.getenv("PORT", "8000"))
 
 # Routes that should go to TimesFM
-FORECAST_PREFIXES = ("/forecast", "/info")
+FORECAST_PREFIXES = ("forecast", "info")
 
 
 # ── Shared HTTP client (connection-pooled) ──────────────────────────────────

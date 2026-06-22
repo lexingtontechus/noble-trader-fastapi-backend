@@ -8,8 +8,26 @@ Hardening:
 - Security headers (HSTS, nosniff, noframe)
 - Graceful error handling
 """
-import logging
+# ═══════════════════════════════════════════════════════════════════════════════
+# HuggingFace cache path must be set BEFORE huggingface_hub is imported
+# (the constant is evaluated at module-import time, not lazily).
+# ═══════════════════════════════════════════════════════════════════════════════
 import os
+import sys
+
+# Force HuggingFace cache to a writable path inside the project directory.
+# Resolve symlinks (Lightning Studio often uses symlinked paths) and
+# pre-create directories so huggingface_hub doesn't fail with EACCES.
+_CACHE_DIR = os.path.realpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".cache", "huggingface"
+))
+os.environ["HF_HOME"] = _CACHE_DIR
+os.environ["HF_HUB_CACHE"] = os.path.join(_CACHE_DIR, "hub")
+os.makedirs(os.environ["HF_HUB_CACHE"], exist_ok=True)
+
+# ── Imports ──────────────────────────────────────────────────────────────────
+
+import logging
 import secrets
 import time
 from collections import defaultdict, deque
@@ -24,7 +42,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 import uvicorn
 
-# --- Logging -----------------------------------------------------------------
+# ── Logging -----------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +50,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("timesfm-server")
 
-# --- Model configuration -----------------------------------------------------
+# ── Model configuration -----------------------------------------------------
 
 MODEL_ID = os.getenv("TIMESFM_MODEL_ID", "google/timesfm-2.5-200m-pytorch")
 MAX_CONTEXT = int(os.getenv("TIMESFM_MAX_CONTEXT", "1024"))
@@ -46,6 +64,7 @@ RATE_LIMIT_WINDOW_S = 60
 torch.set_float32_matmul_precision("high")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 log.info(f"Using device: {device} ({torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'})")
+log.info(f"HF_HOME: {os.environ['HF_HOME']}")
 
 # --- App state (model loaded once at startup) --------------------------------
 
@@ -78,6 +97,7 @@ app = FastAPI(
     title="TimesFM Forecasting API",
     version="1.1.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # CORS — tighten this in production if needed
@@ -89,23 +109,19 @@ app.add_middleware(
 )
 
 
-# --- Security headers middleware (Step 6) ------------------------------------
+# --- Security headers middleware ---------------------------------------------
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    # HSTS — tells browsers to always use HTTPS for the next year
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    # Prevent MIME-type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
-    # Prevent clickjacking
     response.headers["X-Frame-Options"] = "DENY"
-    # Don't cache API responses (forecasts are time-sensitive)
     response.headers["Cache-Control"] = "no-store"
     return response
 
 
-# --- Request logging middleware (Step 4) -------------------------------------
+# --- Request logging middleware ----------------------------------------------
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -113,9 +129,8 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     elapsed_ms = (time.time() - start) * 1000
 
-    # Extract key ID from header (first 8 chars only — never log full key)
     api_key = request.headers.get("X-API-Key", "")
-    key_id = api_key[:8] + "…" if api_key else "-"
+    key_id = api_key[:8] + "..." if api_key else "-"
 
     log.info(
         f"req method={request.method} path={request.url.path} "
@@ -125,7 +140,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# --- Auth + Rate limiting (Steps 3 + auth) -----------------------------------
+# --- Auth + Rate limiting ----------------------------------------------------
 
 VALID_KEYS = frozenset(
     k.strip() for k in os.getenv("TIMESFM_API_KEYS", "").split(",") if k.strip()
@@ -142,7 +157,6 @@ else:
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-# Per-key sliding-window rate limiter (in-memory; fine for single-worker)
 request_history: dict[str, deque] = defaultdict(lambda: deque())
 
 
@@ -153,7 +167,6 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
             detail="Missing X-API-Key header",
         )
 
-    # Constant-time key comparison
     key_valid = False
     for valid_key in VALID_KEYS:
         if secrets.compare_digest(api_key, valid_key):
@@ -166,15 +179,12 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
             detail="Invalid API key",
         )
 
-    # Rate limiting: sliding window
     now = time.time()
     history = request_history[api_key]
-    # Drop entries older than the window
     while history and history[0] < now - RATE_LIMIT_WINDOW_S:
         history.popleft()
 
     if len(history) >= RATE_LIMIT_PER_MIN:
-        # Compute seconds until oldest request exits the window
         retry_after = int(history[0] + RATE_LIMIT_WINDOW_S - now) + 1
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -217,7 +227,6 @@ class ForecastResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    """Liveness/readiness probe target. No auth required."""
     return {
         "status": "ok" if state["model"] is not None else "loading",
         "device": device,

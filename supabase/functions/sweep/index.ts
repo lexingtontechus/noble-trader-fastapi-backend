@@ -89,10 +89,12 @@ const HEAVY_LOCK_TTL_S = 360;            // 6 min — heavy sweep lock
 const LIGHT_LOCK_TTL_S = 90;             // 1.5 min — light regime lock
 
 // ─── F-Lite-1: Heavy Hours (UTC) ──────────────────────────────
-// Light regime is suppressed during these 6 hours to avoid colliding
-// with the heavy sweep cron jobs (which fire at :00/:05/:10/etc).
-// Enforced BOTH in the cron schedule AND here (defense in depth).
-const HEAVY_HOURS_UTC = [20];  // v2: heavy sweeps run daily at 20:00 UTC only
+// Light regime is suppressed during these hours to avoid colliding
+// with heavy sweep cron jobs. Enforced BOTH in the cron schedule
+// AND here (defense in depth).
+//   Crypto heavy: hours 6, 18 (2x/day, TimesFM-gated)
+//   Stocks heavy: hour 21    (3x/week Mon/Wed/Fri)
+const HEAVY_HOURS_UTC = [6, 18, 21];
 
 function isHeavyHour(): boolean {
   return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
@@ -249,6 +251,30 @@ async function runHeavySweepForSymbol(
     }
 
     console.log(`[sweep:heavy] ${symbolConfig.symbol}: ${prices.length} candles loaded`);
+
+    // 1.5. TimesFM confidence gate — skip heavy if forecast is confident
+    // TimesFM p_timesfm near 0 or 1 = high confidence (stable regime)
+    // TimesFM p_timesfm near 0.5 = uncertain → run full sweep
+    try {
+      const timesfmMap = await timesfmPost([
+        { symbol: symbolConfig.symbol, prices: prices.slice(-500) },
+      ]);
+      const pTimesfm = timesfmMap.get(symbolConfig.symbol);
+      if (pTimesfm !== null && pTimesfm !== undefined) {
+        const confidence = Math.abs(pTimesfm - 0.5); // 0 = uncertain, 0.5 = max confidence
+        if (confidence > 0.1) {
+          console.log(`[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — TimesFM confident (p_timesfm=${pTimesfm.toFixed(4)}, confidence=${confidence.toFixed(4)} threshold=0.1)`);
+          return {
+            best: null, regime: null, kelly: null,
+            duration: 0, nCombos: 0,
+            error: `TimesFM-stable (p=${pTimesfm.toFixed(4)})`,
+          };
+        }
+        console.log(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM uncertain (p_timesfm=${pTimesfm.toFixed(4)}) — running full sweep`);
+      }
+    } catch (e) {
+      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: TimesFM gate failed (${e instanceof Error ? e.message : String(e)}) — proceeding without gate`);
+    }
 
     // 2. Compute ATR and generate brick sizes
     const atr = computeATR(prices, 14);

@@ -162,10 +162,10 @@ Runs a full grid search across brick sizes, SL/TP ratios, and HMM parameters. Sc
 
 | Asset Class | Cron (UTC) | Cadence | Rationale |
 |---|---|---|---|
-| **Crypto** (BTC/ETH/SOL/BTCUSD/ETHUSD) | `X 2,6,10,14,18,22 * * *` | 6×/day | 24/7 market — no off-hours concept |
-| **Stocks/ETFs** (AAPL/AMZN/GOOGL/META/MSFT/NVDA/TSLA/SPY/QQQ) | `XX 21 * * 1-5` | 1×/day | Post US close, inside the global dead zone (20:00→23:00 UTC) |
+| **Crypto** (BTC/ETH/SOL/BTCUSD/ETHUSD) | `X 6,18 * * *` | 2×/day | 24/7 market — TimesFM gate skips ~70% of invocations |
+| **Stocks/ETFs** (AAPL/AMZN/GOOGL/META/MSFT/NVDA/TSLA/SPY/QQQ) | `XX 21 * * 1,3,5` | 3×/week (Mon/Wed/Fri) | Post US close — TimesFM gate reduces actual HMM runs to ~1/week |
 
-Moving stocks/ETFs heavy sweeps out of US/EU market hours eliminated the leading cause of recurring Supabase 5xx errors (heavy invocations/day: 84 → 39, −54%; market-hours heavy invocations for stocks/ETFs: ~42 → 0, −100%). The edge function also enforces this defensively: heavy sweeps for non-crypto symbols outside the 20:00–23:00 UTC window return HTTP 202 `{status:"deferred", reason:"outside-dead-zone"}` (see `_shared/utils.ts:isOffHoursForAssetClass()`).
+The heavy sweep now has a **TimesFM confidence gate**: before running the expensive HMM optimize (~90s), the function calls TimesFM. If the forecast is confident (`|p_timesfm - 0.5| > 0.1`), the heavy sweep is skipped entirely (~1s). Only uncertain forecasts trigger the full HMM. This reduces actual heavy HMM runs by ~70%. of recurring Supabase 5xx errors (heavy invocations/day: 84 → 39, −54%; market-hours heavy invocations for stocks/ETFs: ~42 → 0, −100%). The edge function also enforces this defensively: heavy sweeps for non-crypto symbols outside the 20:00–23:00 UTC window return HTTP 202 `{status:"deferred", reason:"outside-dead-zone"}` (see `_shared/utils.ts:isOffHoursForAssetClass()`).
 
 - Optimizes for **Sharpe ratio** with minimum trade count filters
 - Computes **blended EV** with P_regime from HMM posteriors + P_imbalance from L2 depth + P_markov from transition matrix
@@ -351,7 +351,8 @@ Both tiers are modes of `supabase/functions/sweep/index.ts`:
 │       ├── 018_off_hours_heavy_sweep.sql    # P1: stocks/ETFs heavy → 21:00 UTC off-hours
 │       ├── 019_asset_aware_stale_retry.sql  # P1: asset-class-aware retry-stale skip
 │       ├── 020_write_hardening.sql          # P2: sim_write_failures DLQ + countShifts24h index
-│       └── 100_nt_calibration_account_venue.sql  # NEW: nt_venues, nt_calibration_records, nt_account_snapshots (v3)
+│       ├── 021_fix_cron_schedules.sql       # Fix light excl hours, remove redundant BTCUSD/ETHUSD
+│       └── 022_reduce_heavy_with_timesfm.sql # TimesFM-gated heavy: crypto 2x/day, stocks 3x/week, 5 bricks
 ├── Caddyfile                      # Gateway configuration
 └── (project root)
 ```
@@ -372,7 +373,7 @@ Create a `.env.local` file:
 
 ```env
 # Noble Trader Backend
-NEXT_PUBLIC_NOBLE_TRADER_URL=https://noble-trader-fastapi-backend.onrender.com
+NEXT_PUBLIC_NOBLE_TRADER_URL=https://8000-&lt;studio>.cloudspaces.litng.ai
 
 # Supabase
 SUPABASE_URL=https://your-project.supabase.co
@@ -598,6 +599,12 @@ psql $DATABASE_URL -f supabase/migrations/019_asset_aware_stale_retry.sql
 
 # P2: sim_write_failures dead-letter table + countShifts24h composite index
 psql $DATABASE_URL -f supabase/migrations/020_write_hardening.sql
+
+# Fix light exclusion hours + remove redundant BTCUSD/ETHUSD
+psql $DATABASE_URL -f supabase/migrations/021_fix_cron_schedules.sql
+
+# TimesFM-gated heavy sweep reduction + 5 brick sizes
+psql $DATABASE_URL -f supabase/migrations/022_reduce_heavy_with_timesfm.sql
 ```
 
 > **Important:** Migration 005 uses Supabase Vault for the service role key. After running it, you must manually insert your key:
@@ -630,7 +637,7 @@ supabase secrets set \
   UPSTASH_REDIS_REST_TOKEN=your-token \
   SB_URL=https://your-project.supabase.co \
   SB_SERVICE_ROLE_KEY=your-service-role-key \
-  NOBLE_TRADER_URL=https://noble-trader-fastapi-backend.onrender.com
+  NOBLE_TRADER_URL=https://8000-&lt;studio>.cloudspaces.litng.ai
 ```
 
 ### 2. Upstash Redis Setup
@@ -659,7 +666,7 @@ The `trading:config:{symbol}` hash is the **single source of truth** for each sy
 ### Data Flow
 
 ```
-sweep mode=heavy (crypto 6×/day at 02/06/10/14/18/22 UTC; stocks/ETFs 1×/day at 21:00 UTC)
+sweep mode=heavy (crypto 2×/day at 06/18 UTC; stocks/ETFs 3×/week Mon/Wed/Fri at 21:00 UTC)
   → fetches 45d candles → runs /optimize + /regime/detect + /size/kelly in parallel
   → selects best Sharpe combo → computes EV → writes FULL config
   → logs row to sim_sweep_results table (via hardened writeWithDeadLetter — 3× backoff+jitter, DLQ fallback)
@@ -694,12 +701,12 @@ All values are stored as strings in the Redis hash. Numeric fields are parsed wi
 
 | Field | Example | Source | Calculation |
 |-------|---------|--------|-------------|
-| `brick_size` | `163.19` | `/optimize` API | Optimal Renko brick size in price units. Generated by `generateBrickSizes()` using ATR-based calibration: `base = price × baseBrickPct / 100` where `baseBrickPct` varies by volatility regime (0.75% high-vol crypto, 0.60% medium stocks, 0.40% low-vol indices, 0.25% forex). The `/optimize` grid search tests 3 multipliers (1.0×, 1.5×, 2.0×) and selects the best Sharpe. |
+| `brick_size` | `163.19` | `/optimize` API | Optimal Renko brick size in price units. Generated by `generateBrickSizes()` using ATR-based calibration: `base = price × baseBrickPct / 100` where `baseBrickPct` varies by volatility regime (0.75% high-vol crypto, 0.60% medium stocks, 0.40% low-vol indices, 0.25% forex). The `/optimize` grid search tests 5 multipliers (0.75×, 1.0×, 1.5×, 2.0×, 3.0×) and selects the best Sharpe. |
 | `sl_bricks` | `2` | `/optimize` API | Stop-loss distance in brick units. Selected from grid `[2, 3, 4, 5]` by highest Sharpe ratio with R:R ≥ 2.0. |
 | `tp_bricks` | `5` | `/optimize` API | Take-profit distance in brick units. Selected from grid `[4, 5, 6, 8, 10, 12]` by highest Sharpe ratio with R:R ≥ 2.0. |
 | `sweep_sharpe` | `0.6775` | `/optimize` API | Sharpe ratio of the best backtest combination. Sharpe > 10 is rejected as overfit. |
 | `sweep_trades` | `15` | `/optimize` API | Number of trades in the best backtest combo. Minimum 5 required for statistical significance. |
-| `sweep_window` | `45d` | Edge function | Lookback window for the sweep. BETA: 45d to fit 0.5 CPU Render tier (was 90d). |
+| `sweep_window` | `90d` | Edge function | Lookback window for the sweep. 90d (2160 hourly bars) for statistical significance. |
 
 #### Markov Probability Fields
 

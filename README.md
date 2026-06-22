@@ -10,14 +10,22 @@ and produces 24-feature observation vectors for downstream RL/ML policy layers.
 
 ## Version
 
-**v7.3.0** — Renko HFT Pipeline · EV Engine v3 (P_timesfm + 4-source blend) · TimesFM Foundation Model Integration · Calibration Loop · Venue Management · Cold-Start Path · Lead/Lag Correlation · Fat-Tail Risk Overlay · Shift-Aware Wakeups · Sweep Fatigue Reduction · MCP Server · Strategy Signals · TDA Features · Walk-forward Backtest · Grid Optimization · CSV/JSON Export · Discord Notifications · Circuit Breakers · Operational Hardening · P&L Analytics · Alpaca Streaming
+**v7.4.0** — TimesFM Self-Hosted · Three-Layer Gateway Proxy · Confidence-Gated Heavy Sweeps · Brick Sizes 3→5 · 90d Lookback · Cron Schedules Reduced 2x/3x per Week · EV Engine v3 · P&L Analytics · Calibration Loop · Venue Management · MCP Server
 
 ---
 
 ## Project Structure
 
 ```
-regime_risk_platform/
+noble-trader-fastapi-backend/
+│
+├── main.py                           Main FastAPI app — HMM, Renko, EV, auth
+├── server.py                         TimesFM forecasting service (port 8002)
+├── proxy.py                          Gateway reverse proxy (port 8000 → 8001/8002)
+├── start.sh                          Launcher — starts main + timesfm + proxy
+├── setup.py                          Editable install shim (delegates to pyproject.toml)
+├── pyproject.toml                    Modern packaging metadata + tool config
+├── requirements.txt
 │
 ├── regime_platform/                  Python package
 │   ├── core/
@@ -53,19 +61,19 @@ regime_risk_platform/
 │   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
 │   │   ├── backtest.py            POST /backtest/run | /history | /{id} | /compare | /optimize | /export
 │   │   ├── strategy.py            POST /strategy/signal
-	│   │   ├── tda.py                 POST /tda/features
-	│   │   ├── observation.py          POST /observation/build | /build-v2
-	│   │   ├── calibration.py          POST /calibration/log | GET /bias/{symbol} | GET /status
-	│   │   └── venue.py                GET /venue/list | POST /{id}/snapshot | GET /{id}/snapshots | GET /{id}/status
-	│   ├── services/
-	│   │   ├── stream_session.py         Per-symbol stateful streaming engine
-	│   │   ├── registry.py               Singleton session store
-	│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
-	│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
-	│   │   └── backtest_store.py      Supabase persistence for backtest results
-	│   ├── services/statistics/
-	│   │   ├── ev_engine.py              EV Engine v3 — 4-source P_win (regime + imbalance + Markov + TimesFM), tail risk, regime shift validation
-	│   │   └── bayesian_updater.py       Bayesian Updater with TimesFM-enhanced prior
+│   │   ├── tda.py                    POST /tda/features
+│   │   ├── observation.py            POST /observation/build | /build-v2
+│   │   ├── calibration.py            POST /calibration/log | GET /bias/{symbol} | GET /status
+│   │   └── venue.py                  GET /venue/list | POST /{id}/snapshot | GET /{id}/snapshots | GET /{id}/status
+│   ├── services/
+│   │   ├── stream_session.py         Per-symbol stateful streaming engine
+│   │   ├── registry.py               Singleton session store
+│   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
+│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
+│   │   └── backtest_store.py      Supabase persistence for backtest results
+│   ├── services/statistics/
+│   │   ├── ev_engine.py              EV Engine v3 — 4-source P_win (regime + imbalance + Markov + TimesFM), tail risk, regime shift validation
+│   │   └── bayesian_updater.py       Bayesian Updater with TimesFM-enhanced prior
 │   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
 │   ├── notifications/               Discord notifier
 │   ├── middleware/
@@ -74,9 +82,6 @@ regime_risk_platform/
 │   ├── services/
 │   │   ├── alpaca_stream.py          Alpaca WebSocket stream manager
 │   │   └── pnl_service.py            P&L analytics (intraday, risk dashboard, alerts)
-│
-├── main.py                           v6.0 - all features (recommended entry point)
-├── requirements.txt
 │
 ├── docs/
 │   ├── index.html                    Full documentation site (26 pages)
@@ -88,7 +93,7 @@ regime_risk_platform/
 │
 ├── supabase/
 │   ├── functions/                    Edge functions (sweep — unified heavy/light)
-│   └── migrations/                   Database migrations (001–100)
+│   └── migrations/                   Database migrations (001–022)
 │
 ├── tests/
 │   ├── test_platform.py              Smoke test: HMM + Kelly + risk
@@ -112,17 +117,63 @@ regime_risk_platform/
 ## Quick Start
 
 ```bash
-# 1. Install
-pip install -r requirements.txt
+# 1. Install (editable install recommended)
+pip install -e ".[dev]"     # includes torch + timesfm
+# or: pip install -r requirements.txt
 
-# 2. Start (recommended - all v3.1 features)
+# 2. Set environment
+export TIMESFM_API_KEYS="your-key-here"
+export JWT_SECRET_KEY="your-secret"    # or AUTH_ENABLED=false
+
+# 3. Start (three-layer stack)
+./start.sh
+# Launches:
+#   main.py   on port 8001  (HMM/Renko/auth)
+#   server.py on port 8002  (TimesFM forecasting)
+#   proxy.py  on port 8000  (gateway — this is the public port)
+
+# 4. Verify
+curl http://localhost:8000/health                    # aggregated health
+curl http://localhost:8000/forecast                  # → TimesFM (port 8002)
+curl http://localhost:8000/regime/detect             # → main app (port 8001)
+```
+
+**Direct (single-service) mode:**
+```bash
+# Main app only (no proxy, no TimesFM):
 uvicorn main:app --port 8000 --reload
 
-# 3. Swagger UI
-open http://localhost:8000/docs
+# TimesFM only:
+python server.py
+```
 
-# 4. Local docs site
-open docs/index.html
+### Architecture
+
+```
+start.sh
+  ├── PORT=8001  python main.py      (HMM, Renko, auth, all routers)
+  ├── PORT=8002  python server.py    (TimesFM forecasting API)
+  └── PORT=8000  python proxy.py     (routes by path prefix)
+
+Client → proxy:8000
+  /forecast*  → server.py:8002
+  /info*      → server.py:8002
+  /health     → aggregated from both
+  /*          → main.py:8001
+```
+
+### Project Setup
+
+```bash
+# Editable install (dev)
+pip install -e .
+
+# With GPU HMM extras
+pip install ".[gpu]"
+
+# TimesFM model cache (first run downloads ~925MB)
+# On first /forecast call, the model is cached at:
+#   .cache/huggingface/hub/models--google--timesfm-2.5-200m-pytorch/
 ```
 
 ---
@@ -134,15 +185,19 @@ open docs/index.html
 | **FastAPI** | ≥0.111 | Async web framework, auto-docs |
 | **hmmlearn** | ≥0.3.2 | 4-state Gaussian HMM (CPU) |
 | **scipy** | ≥1.13 | VaR/CVaR, SLSQP optimiser |
-| **numpy** | ≥1.26 | Vectorised return/vol calculations |
+| **numpy** | ≥2.0 | Vectorised return/vol calculations |
 | **pydantic v2** | ≥2.7 | Request/response validation |
 | **uvicorn** | ≥0.29 | ASGI server |
 | **python-jose** | ≥3.3 | JWT signing/verification |
 | **redis** | ≥5.0 | Optional price buffer persistence |
 | **pomegranate** | ≥1.0 *(optional)* | GPU-accelerated HMM (PyTorch) |
 | **clerk-backend-api** | ≥0.1.0 | Clerk JWT authentication |
-| **httpx** | ≥0.28.1 | Clerk JWKS fetching |
+| **httpx** | ≥0.28.1 | Clerk JWKS fetching + proxy routing |
 | **PyJWT** | ≥2.9.0,<3.0.0 | JWT token handling |
+| **timesfm** | ≥2.0.1 | Google TimesFM 2.5 foundation model |
+| **torch** | ≥2.4 | PyTorch (TimesFM inference) |
+| **huggingface-hub** | ≥1.0 | HF model download/caching |
+| **safetensors** | ≥0.6 | Safe tensor serialization |
 | **alpaca-py** | *(optional)* | Alpaca live feed adapter |
 | **websockets** | *(optional)* | Binance live feed adapter |
 | **ib_async** | *(optional)* | Interactive Brokers adapter |
@@ -160,6 +215,25 @@ open docs/index.html
 | `POST` | `/size/kelly` | Regime-gated Kelly position sizing |
 | `POST` | `/risk/analyse` | VaR, CVaR, drawdown, stop/TP |
 | `POST` | `/simulate/{symbol}` | Monte Carlo regime transition simulation |
+
+### TimesFM Forecasting
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/forecast` | TimesFM foundation model batch forecast | X-API-Key |
+| `GET` | `/info` | Model config + device + GPU memory | X-API-Key |
+| `GET` | `/health` | Liveness probe (no auth) | None |
+
+The `/forecast` endpoint accepts batched inputs:
+
+```json
+{
+  "horizon": 12,
+  "inputs": [[100, 101, 102], [200, 201, 202]]
+}
+```
+
+Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elapsed_ms`. See `server.py` for full schema.
 
 ### Multi-Asset
 
