@@ -71,7 +71,7 @@ load_dotenv(override=False)  # Don't override already-set env vars (e.g. from Re
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 
 try:
@@ -385,6 +385,24 @@ def create_app() -> FastAPI:
     app.include_router(prices_router_module.router)
 
     app.add_middleware(KillSwitchGateMiddleware)
+
+    # ── TimesFM forecast proxy ──────────────────────────────────
+    # The proxy.py routes /forecast → TimesFM on port 8002, but
+    # Lightning AI's public URL may map to this port (8001) instead
+    # of the proxy port (8000). This endpoint ensures /forecast
+    # works regardless of which port is publicly exposed.
+    import httpx as _httpx
+
+    @app.post("/forecast", include_in_schema=False)
+    async def forecast_proxy(request: Request):
+        """Pass-through to the TimesFM inference server on port 8002."""
+        timesfm_url = f"http://127.0.0.1:8002/forecast"
+        body = await request.body()
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        async with _httpx.AsyncClient(timeout=90.0) as _client:
+            resp = await _client.post(timesfm_url, content=body, headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code,
+                        headers=dict(resp.headers))
 
     @app.get("/health", summary="Health check")
     async def health():
