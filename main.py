@@ -396,11 +396,13 @@ def create_app() -> FastAPI:
     @app.post("/forecast", include_in_schema=False)
     async def forecast_proxy(request: Request):
         """Pass-through to the TimesFM inference server on port 8002."""
+        log.info(f"TimesFM proxy: forwarding POST /forecast to port 8002")
         timesfm_url = f"http://127.0.0.1:8002/forecast"
         body = await request.body()
         headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         async with _httpx.AsyncClient(timeout=90.0) as _client:
             resp = await _client.post(timesfm_url, content=body, headers=headers)
+        log.info(f"TimesFM proxy: port 8002 returned {resp.status_code}")
         return Response(content=resp.content, status_code=resp.status_code,
                         headers=dict(resp.headers))
 
