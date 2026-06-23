@@ -2399,9 +2399,14 @@ const LIGHT_LOCK_TTL_S = 90; // 1.5 min — light regime lock
 // Light regime is suppressed during these hours to avoid colliding
 // with heavy sweep cron jobs. Enforced BOTH in the cron schedule
 // AND here (defense in depth).
-//   Crypto heavy: hours 6, 18 (2x/day, TimesFM-gated)
-//   Stocks heavy: hour 21    (3x/week Mon/Wed/Fri)
-const HEAVY_HOURS_UTC = [6, 18, 21];
+//
+// Migration 101 reduced heavy sweeps to 1×/day at hour 20.
+// The cron schedule already excludes hour 20 from light firing,
+// so this guard is defense-in-depth only for that hour.
+// Hours 6/18/21 removed: they had heavy sweeps in the v1
+// schedule but no longer do — keeping them suppressed light
+// cycles unnecessarily.
+const HEAVY_HOURS_UTC = [20];
 
 function isHeavyHour(): boolean {
   return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
