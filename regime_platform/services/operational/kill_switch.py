@@ -276,7 +276,7 @@ class KillSwitchService:
             from regime_platform.services.operational.executor_factory import executor_factory
             api = executor_factory.get_alpaca_rest()
             if api:
-                orders = api.list_orders(status="open")
+                orders = api.get_orders(status="open")
                 for order in orders:
                     try:
                         api.cancel_order(order.id)

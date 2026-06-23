@@ -247,7 +247,7 @@ class ReconciliationService:
 
             # Get recent orders
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            orders = api.list_orders(
+            orders = api.get_orders(
                 status="all",
                 after=since,
                 limit=500,
