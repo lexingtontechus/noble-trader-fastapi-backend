@@ -13,6 +13,7 @@ from . import (
     pipeline,
     pnl,
     portfolio,
+    prices,
     regime,
     risk,
     simulate,

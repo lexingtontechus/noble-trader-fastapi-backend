@@ -24,13 +24,14 @@ const NOBLE_TRADER_URL = Deno.env.get("NOBLE_TRADER_URL") ?? "";
 const TIMESFM_INFERENCE_URL =
   Deno.env.get("TIMESFM_INFERENCE_URL") ?? (NOBLE_TRADER_URL || "");
 const TIMESFM_API_KEYS = Deno.env.get("TIMESFM_API_KEYS") ?? "";
+const LIGHTNINGAI_DATA_URL = Deno.env.get("LIGHTNINGAI_DATA_URL") ?? (NOBLE_TRADER_URL || "");
 
 // ─── Types ──────────────────────────────────────────────────
 export interface SymbolConfig {
   id: number;
   symbol: string;
   asset_class: string;
-  data_source: string; // "hyperliquid" | "alpaca" | "yahoo"
+  data_source: string; // "hyperliquid" | "alpaca" ("lightningai" replaces deprecated "yahoo")
   yahoo_ticker: string | null;
   hyperliquid_coin: string | null;
   alpaca_symbol: string | null; // e.g. "AAPL", "BTC/USD", "GLD"
@@ -1464,6 +1465,58 @@ function isAlpacaCrypto(alpacaSymbol: string): boolean {
   return alpacaSymbol.includes("/"); // e.g. "BTC/USD"
 }
 
+/**
+ * Fetch price candles from the Lightning AI data proxy (Noble Trader backend).
+ *
+ * Replaces the deprecated Yahoo Finance data source. The backend is hosted on
+ * Lightning AI and proxies price data from Alpaca or other institutional feeds.
+ *
+ * GET /prices/{ticker}?range={range}&interval={interval}
+ * Response: number[] of close prices sorted oldest → newest.
+ */
+export async function fetchLightningAICandles(
+  ticker: string,
+  range = "90d",
+  interval = "1h",
+): Promise<number[]> {
+  if (!LIGHTNINGAI_DATA_URL) {
+    throw new Error(
+      `[lightningai] LIGHTNINGAI_DATA_URL not configured — cannot fetch prices for ${ticker}`,
+    );
+  }
+
+  const url = `${LIGHTNINGAI_DATA_URL}/prices/${encodeURIComponent(ticker)}?range=${range}&interval=${interval}`;
+  console.log(`[lightningai] Fetching ${ticker} (${range}, ${interval})`);
+
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `[lightningai] ${ticker}: HTTP ${res.status} — ${text.substring(0, 200)}`,
+    );
+  }
+
+  const data = (await res.json()) as { prices?: number[] } | number[];
+  let prices: number[];
+
+  if (Array.isArray(data)) {
+    prices = data.filter((p) => typeof p === "number" && !isNaN(p));
+  } else if (data?.prices) {
+    prices = data.prices.filter((p) => typeof p === "number" && !isNaN(p));
+  } else {
+    throw new Error(
+      `[lightningai] Unexpected response format from ${url}`,
+    );
+  }
+
+  console.log(`[lightningai] ${ticker}: Got ${prices.length} prices`);
+  return prices;
+}
+
 export async function fetchAlpacaCandles(
   symbol: string,
   alpacaSymbol: string,
@@ -1474,22 +1527,8 @@ export async function fetchAlpacaCandles(
   const secretKey = Deno.env.get("ALPACA_SECRET_KEY");
 
   if (!apiKey || !secretKey) {
-    console.warn(
-      `[alpaca] No API credentials set, falling back to Yahoo for ${symbol}`,
-    );
-    // Fall back to Yahoo — derive the yahoo ticker from the symbol
-    const yahooTicker =
-      symbol === "BTCUSD"
-        ? "BTC-USD"
-        : symbol === "ETHUSD"
-          ? "ETH-USD"
-          : symbol === "SOLUSD"
-            ? "SOL-USD"
-            : symbol;
-    return fetchYahooCandles(
-      yahooTicker,
-      hours <= 1080 ? "45d" : "90d",
-      interval,
+    throw new Error(
+      `[alpaca] No API credentials set — cannot fetch prices for ${symbol} (Alpaca pricing only by design)`,
     );
   }
 
@@ -1554,22 +1593,10 @@ export async function fetchAlpacaCandles(
       return prices;
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[alpaca] ${symbol}: ${msg} — falling back to Yahoo`);
-    // Fall back to Yahoo
-    const yahooTicker =
-      symbol === "BTCUSD"
-        ? "BTC-USD"
-        : symbol === "ETHUSD"
-          ? "ETH-USD"
-          : symbol === "SOLUSD"
-            ? "SOL-USD"
-            : symbol;
-    return fetchYahooCandles(
-      yahooTicker,
-      hours <= 1080 ? "45d" : "90d",
-      interval,
-    );
+    // Alpaca pricing only by design — re-throw, no fallback
+    throw err instanceof Error
+      ? err
+      : new Error(`[alpaca] ${symbol}: ${String(err)}`);
   }
 }
 
@@ -1604,11 +1631,9 @@ export async function fetchSweepCandles(
       "1h",
     );
   } else {
-    return fetchYahooCandles(
-      symbolConfig.yahoo_ticker!,
-      SWEEP_YAHOO_RANGE,
-      "1h",
-    );
+    // Use Lightning AI data proxy instead of direct Yahoo scraping
+    const ticker = symbolConfig.yahoo_ticker || symbolConfig.symbol;
+    return fetchLightningAICandles(ticker, SWEEP_YAHOO_RANGE, "1h");
   }
 }
 
@@ -1626,40 +1651,24 @@ export async function fetchLatestCandles(
       symbolConfig.alpaca_symbol ||
       ALPACA_SYMBOL_MAP[symbolConfig.symbol] ||
       symbolConfig.symbol;
+    // ── Market-hours-aware bar count ──
+    // Crypto (24/7):   nBars hours ≈ nBars bars
+    // Stocks/ETFs:     limited to ~16h/day extended hours → need ~4× hours
+    const isCrypto = isAlpacaCrypto(alpacaSymbol);
+    const adjustedHours = isCrypto
+      ? Math.min(nBars, 500)
+      : Math.min(nBars * 4, 2000); // 4× for market hours limitation
     return fetchAlpacaCandles(
       symbolConfig.symbol,
       alpacaSymbol,
-      Math.min(nBars, 500),
+      adjustedHours,
       "1h",
     );
   } else {
-    // Try hourly first (more granular for regime detection)
+    // Use Lightning AI data proxy instead of direct Yahoo scraping
+    const ticker = symbolConfig.yahoo_ticker || symbolConfig.symbol;
     const range = nBars <= 390 ? "5d" : "90d";
-    let prices = await fetchYahooCandles(
-      symbolConfig.yahoo_ticker!,
-      range,
-      "1h",
-    );
-
-    // Noble Trader /regime/detect requires >= 81 prices.
-    // Fallback to daily interval if hourly returned insufficient data
-    // (common outside market hours for stocks/ETFs/commodities)
-    if (prices.length < 100) {
-      console.log(
-        `[fetchLatestCandles] ${symbolConfig.symbol}: hourly returned ${prices.length} bars (need >=81 for regime), falling back to daily`,
-      );
-      prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "1y", "1d");
-    }
-
-    // Final safety: if daily also failed, try 2y daily for more history
-    if (prices.length < 100) {
-      console.log(
-        `[fetchLatestCandles] ${symbolConfig.symbol}: daily 1y returned ${prices.length} bars, trying 2y daily`,
-      );
-      prices = await fetchYahooCandles(symbolConfig.yahoo_ticker!, "2y", "1d");
-    }
-
-    return prices;
+    return fetchLightningAICandles(ticker, range, "1h");
   }
 }
 

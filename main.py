@@ -120,6 +120,8 @@ from regime_platform.routers import pnl
 from regime_platform.routers import calibration, venue
 # Phase 9: Runtime Configuration (admin-adjustable params)
 from regime_platform.routers import config as config_router_module
+# Phase 11: Price Data Proxy (Lightning AI, replaces Yahoo scraping)
+from regime_platform.routers import prices as prices_router_module
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
@@ -380,6 +382,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router_module.config_router)
     app.include_router(calibration.router)
     app.include_router(venue.router)
+    app.include_router(prices_router_module.router)
 
     app.add_middleware(KillSwitchGateMiddleware)
 
