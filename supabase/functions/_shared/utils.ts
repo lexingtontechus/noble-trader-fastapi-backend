@@ -1265,8 +1265,8 @@ export async function detectRegime(
       target_vol: 0.15,
       base_risk_limit: 0.02,
     },
-    20000,
-  ) as Promise<RegimeResult>; // 20s (down from 30s — parallel with optimize)
+    45000,
+  ) as Promise<RegimeResult>; // 45s — light sweep runs regime+kelly+timesfm sequentially, so regime needs headroom
 }
 
 /**
