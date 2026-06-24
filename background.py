@@ -39,6 +39,7 @@ print("  TimesFM   → port 8002")
 
 # Start main app
 main_env = os.environ.copy()
+main_env["RATE_LIMIT_COMPUTE"] = "30/minute"  # sweep function calls from single IP
 main_proc = subprocess.Popen(
     [sys.executable, "main.py"],
     env=main_env,
