@@ -493,4 +493,28 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=os.getenv("PORT") is None, log_level="info")
+    import socket as _socket
+
+    _preferred = int(os.getenv("PORT", "8000"))
+    _ports_to_try = [_preferred] + [p for p in [8000, 8001, 8080, 9000] if p != _preferred]
+    _bound_port = None
+
+    for _port in _ports_to_try:
+        try:
+            _sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            _sock.bind(("0.0.0.0", _port))
+            _sock.listen(2048)
+            _bound_port = _port
+            log.info(f"Bound to port {_bound_port} (requested={_preferred})")
+            break
+        except OSError:
+            log.warning(f"Port {_port} unavailable, trying next...")
+            continue
+
+    if _bound_port is None:
+        log.critical("No available port found!")
+        raise SystemExit(1)
+
+    uvicorn.run("main:app", host="0.0.0.0", port=_bound_port, fd=_sock.fileno(),
+                reload=os.getenv("PORT") is None, log_level="info")
