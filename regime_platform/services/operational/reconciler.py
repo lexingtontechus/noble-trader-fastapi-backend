@@ -150,10 +150,10 @@ class ReconciliationService:
 
             # Get order from Alpaca
             try:
-                order = api.get_order_by_client_id(order_id)
+                order = await api.get_order_by_client_id(order_id)
             except Exception:
                 try:
-                    order = api.get_order(order_id)
+                    order = await api.get_order(order_id)
                 except Exception as e:
                     result.status = ReconciliationStatus.ERROR
                     result.discrepancy_notes = f"Order not found: {str(e)[:100]}"
@@ -247,7 +247,7 @@ class ReconciliationService:
 
             # Get recent orders
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            orders = api.get_orders(
+            orders = await api.get_orders(
                 status="all",
                 after=since,
                 limit=500,
@@ -323,7 +323,7 @@ class ReconciliationService:
 
             alpaca_symbols = set()
             if api:
-                positions = api.list_positions()
+                positions = await api.list_positions()
                 for pos in positions:
                     alpaca_symbols.add(pos.symbol)
                     result.alpaca_positions += 1
