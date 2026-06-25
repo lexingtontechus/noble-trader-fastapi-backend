@@ -2400,16 +2400,21 @@ const LIGHT_LOCK_TTL_S = 90; // 1.5 min — light regime lock
 // with heavy sweep cron jobs. Enforced BOTH in the cron schedule
 // AND here (defense in depth).
 //
-// Migration 101 reduced heavy sweeps to 1×/day at hour 20.
-// The cron schedule already excludes hour 20 from light firing,
-// so this guard is defense-in-depth only for that hour.
-// Hours 6/18/21 removed: they had heavy sweeps in the v1
-// schedule but no longer do — keeping them suppressed light
-// cycles unnecessarily.
+// Migration 026: heavy sweeps moved to weekends only.
+// Heavy sweeps run at 20 UTC on Saturday/Sunday.
+// The cron schedule suppresses light during hour 20 on weekends.
+// This guard is defense-in-depth AND day-aware — it only triggers
+// on weekends when heavy sweeps actually run.
 const HEAVY_HOURS_UTC = [20];
 
 function isHeavyHour(): boolean {
-  return HEAVY_HOURS_UTC.includes(new Date().getUTCHours());
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat
+  // Only suppress light on weekends — heavy sweeps run weekends only
+  if (day === 0 || day === 6) {
+    return HEAVY_HOURS_UTC.includes(now.getUTCHours());
+  }
+  return false; // Weekdays: never suppress light
 }
 
 // Heavy sweep grid ranges (ported from heavy-sweep v4)

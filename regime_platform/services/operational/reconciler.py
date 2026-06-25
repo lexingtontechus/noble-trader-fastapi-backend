@@ -245,10 +245,9 @@ class ReconciliationService:
                 logger.warning("Reconciler: Alpaca API not available")
                 return results
 
-            # Get recent orders
+            # Get recent orders (fetch any status, filter by time client-side if needed)
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
             orders = await api.get_orders(
-                status="all",
                 after=since,
                 limit=500,
                 direction="desc",
