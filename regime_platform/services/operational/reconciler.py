@@ -245,13 +245,17 @@ class ReconciliationService:
                 logger.warning("Reconciler: Alpaca API not available")
                 return results
 
-            # Get recent orders (fetch any status, filter by time client-side if needed)
-            since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            orders = await api.get_orders(
-                after=since,
-                limit=500,
-                direction="desc",
-            )
+            # Get recent orders (params vary by alpaca-py version, so fetch unfiltered)
+            since = datetime.now(timezone.utc) - timedelta(hours=24)
+            try:
+                orders = await api.get_orders(
+                    after=since.isoformat(),
+                    limit=500,
+                    direction="desc",
+                )
+            except TypeError:
+                # Fallback for alpaca-py versions that don't support these params
+                orders = await api.get_orders()
 
             for order in orders:
                 result = await self.reconcile_order(
