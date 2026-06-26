@@ -152,21 +152,20 @@ This reduces heavy sweeps by ~30-40% by only re-optimizing when market microstru
 
 ## Three-Tier Intelligence System
 
-> **Updated June 17, 2026.** The two edge functions (`heavy-sweep` + `light-regime`)
-> have been merged into a single unified `sweep` function (Option F). Both tiers are
-> now modes of the same function, switched via request body. The old functions are
-> still deployed but no longer referenced by any active code path.
+> **Updated June 25, 2026.** Heavy sweeps moved to weekends only (migration 026).
+> Light stock sweeps reshaped to US market cycles (migration 027). See
+> [Cron Schedule Reference](#4-cron-schedule-reference) for full details.
 
-### Heavy Sweep (Full Parameter Optimization)
-Runs a full grid search across brick sizes, SL/TP ratios, and HMM parameters. Scheduled via `pg_cron` on an asset-class-aware cadence (migration 018):
+### Heavy Sweep (Full Parameter Optimization — Weekends Only)
+Runs a full grid search across brick sizes, SL/TP ratios, and HMM parameters. Scheduled via `pg_cron` on **weekends only** (Saturday + Sunday at 20:00 UTC, staggered 5 min apart):
 
 | Asset Class | Cron (UTC) | Cadence | Rationale |
 |---|---|---|---|
-| **Crypto** (BTC/ETH/SOL/BTCUSD/ETHUSD) | `X 20 * * *` | 1×/day | Off-hours daily fine-tuning. TimesFM handles non-stationarity 24/7 |
-| **Stocks/ETFs** (AAPL/AMZN/GOOGL/META/MSFT/NVDA/TSLA) | `X 20 * * 1-5` | 1×/weekday | Post US close — staggered every 5 min |
-| **Broad Market** (SPY, QQQ) | `X 21 * * 1-5` | 1×/weekday | Late off-hours, after individual stocks complete |
+| **Crypto** (BTC/ETH/SOL/BTCUSD/ETHUSD) | `X 20 * * 0,6` | 1×/weekend | Off-hours recalibration. TimesFM + light sweeps handle weekdays |
+| **Stocks/ETFs** (AAPL/AMZN/GOOGL/META/MSFT/NVDA/TSLA) | `X 20 * * 0,6` | 1×/weekend | After US market close Saturday — staggered every 5 min |
+| **Broad Market** (SPY, QQQ) | `X 21 * * 0,6` | 1×/weekend | After individual stocks complete |
 
-The heavy sweep now has a **TimesFM confidence gate**: before running the expensive HMM optimize (~90s), the function calls TimesFM. If the forecast is confident (`|p_timesfm - 0.5| > 0.1`), the heavy sweep is skipped entirely (~1s). Only uncertain forecasts trigger the full HMM. This reduces actual heavy HMM runs by ~70%. of recurring Supabase 5xx errors (heavy invocations/day: 84 → 39, −54%; market-hours heavy invocations for stocks/ETFs: ~42 → 0, −100%). The edge function also enforces this defensively: heavy sweeps for non-crypto symbols outside the 20:00–23:00 UTC window return HTTP 202 `{status:"deferred", reason:"outside-dead-zone"}` (see `_shared/utils.ts:isOffHoursForAssetClass()`).
+The heavy sweep has a **TimesFM confidence gate**: before running the expensive HMM optimize (~90s), the function calls TimesFM. If the forecast is confident (`|p_timesfm - 0.5| > 0.1`), the heavy sweep is skipped entirely (~1s). Only uncertain forecasts trigger the full HMM. This reduces actual heavy HMM runs by ~70%.
 
 - Optimizes for **Sharpe ratio** with minimum trade count filters
 - Computes **blended EV** with P_regime from HMM posteriors + P_imbalance from L2 depth + P_markov from transition matrix
@@ -178,7 +177,7 @@ The heavy sweep now has a **TimesFM confidence gate**: before running the expens
 - **Sweep Fatigue** — when a symbol is `CALIBRATED`, sets `sweep_skip_until` (12h future), skipping heavy sweeps for that symbol until the timer expires. OVERCONFIDENT / UNDERCONFIDENT clears the skip. Reduces heavy sweeps by ~30-40%.
 
 ### Light Regime (HMM Detection + TimesFM)
-Fast HMM-only run that detects the current market regime without re-optimizing parameters. Runs every 15 minutes during the 23 non-heavy hours (F-Lite-1 rule — light is suppressed during heavy hour 20 to avoid collision with the heavy sweep cron).
+Fast HMM-only run that detects the current market regime without re-optimizing parameters. Runs **24 hours a day on weekdays** (no suppression — heavy sweeps run weekends only). On weekends, runs 23 hours (suppressed during hour 20 when heavy sweeps run). Stock sweeps follow US market cycles (15min frequency during peak 12:00-21:00 UTC, 1hr frequency during off-peak).
 
 - Detects **5-state trend** (strong_bull, bull, neutral, bear, strong_bear) + **2-state volatility** (low_vol, high_vol)
 - Produces composite labels like `low_vol_bull`, `high_vol_bear`
@@ -353,7 +352,12 @@ Both tiers are modes of `supabase/functions/sweep/index.ts`:
 │       ├── 019_asset_aware_stale_retry.sql  # P1: asset-class-aware retry-stale skip
 │       ├── 020_write_hardening.sql          # P2: sim_write_failures DLQ + countShifts24h index
 │       ├── 021_fix_cron_schedules.sql       # Fix light excl hours, remove redundant BTCUSD/ETHUSD
-│       └── 022_reduce_heavy_with_timesfm.sql # TimesFM-gated heavy: crypto 2x/day, stocks 3x/week, 5 bricks
+│       ├── 022_reduce_heavy_with_timesfm.sql # TimesFM-gated heavy: crypto 2x/day, stocks 3x/week, 5 bricks
+│       ├── 023_nt_system_config_audit.sql    # System config audit table + snapshot triggers
+│       ├── 024_ev_calibration_l2_config.sql  # EV calibration & L2 config fields
+│       ├── 025_fix_light_sweep_cron_bodies.sql # Fix broken jsonb_build_object in light sweep
+│       ├── 026_weekend_only_heavy_sweeps.sql # Heavy sweeps → weekends only, day-aware isHeavyHour
+│       └── 027_reshape_light_stocks_week_schedule.sql # Light stocks: 15min peak / 1hr off-peak
 ├── Caddyfile                      # Gateway configuration
 └── (project root)
 ```
@@ -606,6 +610,21 @@ psql $DATABASE_URL -f supabase/migrations/021_fix_cron_schedules.sql
 
 # TimesFM-gated heavy sweep reduction + 5 brick sizes
 psql $DATABASE_URL -f supabase/migrations/022_reduce_heavy_with_timesfm.sql
+
+# System config audit table + snapshot triggers
+psql $DATABASE_URL -f supabase/migrations/023_nt_system_config_audit.sql
+
+# EV calibration & L2 config fields
+psql $DATABASE_URL -f supabase/migrations/024_ev_calibration_l2_config.sql
+
+# Fix broken jsonb_build_object in light sweep cron bodies
+psql $DATABASE_URL -f supabase/migrations/025_fix_light_sweep_cron_bodies.sql
+
+# Heavy sweeps → weekends only, day-aware isHeavyHour guard
+psql $DATABASE_URL -f supabase/migrations/026_weekend_only_heavy_sweeps.sql
+
+# Light stocks: 15min peak (12-21 UTC) / 1hr off-peak (21-12 UTC)
+psql $DATABASE_URL -f supabase/migrations/027_reshape_light_stocks_week_schedule.sql
 ```
 
 > **Important:** Migration 005 uses Supabase Vault for the service role key. After running it, you must manually insert your key:
@@ -667,17 +686,17 @@ The `trading:config:{symbol}` hash is the **single source of truth** for each sy
 ### Data Flow
 
 ```
-sweep mode=heavy (crypto 2×/day at 06/18 UTC; stocks/ETFs 3×/week Mon/Wed/Fri at 21:00 UTC)
-  → fetches 45d candles → runs /optimize + /regime/detect + /size/kelly in parallel
+sweep mode=heavy (weekends only at 20:00 UTC)
+  → fetches 90d candles → runs /optimize + /regime/detect + /size/kelly in parallel
   → selects best Sharpe combo → computes EV → writes FULL config
   → logs row to sim_sweep_results table (via hardened writeWithDeadLetter — 3× backoff+jitter, DLQ fallback)
-  → stocks/ETFs deferred (HTTP 202) outside 20:00–23:00 UTC off-hours window
 
-sweep mode=light (every 15min, suppressed during heavy hours — F-Lite-1)
+sweep mode=light (24h weekdays, 23h weekends — F-Lite-1 only on weekends)
   → fetches 200 latest candles → runs /regime/detect + /size/kelly
   → updates regime + signal + EV every cycle
   → full config write only on regime shift; targeted HSET otherwise
   → logs regime shifts to sim_regime_log table
+  → stock sweeps: 15min freq 12:00-21:00 UTC, 1hr freq off-peak
 ```
 
 ### Timestamp Fields
@@ -806,7 +825,7 @@ trading:config:BTC
 ├── sweep_timestamp      : "1781559902390"              # Epoch ms, updated on optimize/refresh
 ├── sweep_sharpe         : "0.6775"                     # Sharpe of best backtest combo
 ├── sweep_trades         : "15"                         # Trades in best combo
-├── sweep_window         : "45d"                        # Lookback (BETA: 45d for 0.5 CPU)
+├── sweep_window         : "90d"                        # Lookback (90d / 2160 hourly bars)
 ├── signal               : "buy"                        # buy | sell | neutral
 ├── entry_price          : "66596.0000"                 # Current price (tick-rounded)
 ├── stop_loss            : "66263.0000"                 # entry - sl_bricks × brick_size
@@ -869,83 +888,87 @@ curl https://your-project.supabase.co/rest/v1/rpc/cron_job_status \
 
 ### 4. Cron Schedule Reference
 
-> **Updated June 17, 2026 (post-sweep-unification + Fix A/B/C).** All 24 active jobs
-> call the unified `sweep` edge function (v12) at `/functions/v1/sweep` via
+> **Updated June 25, 2026 (migrations 026 + 027).** Heavy sweeps moved to weekends
+> only. Light stock sweeps reshaped to US market cycle (15min peak / 1hr off-peak).
+> All jobs call the unified `sweep` edge function at `/functions/v1/sweep` via
 > `pg_cron` + `pg_net` (`net.http_post`). The old `heavy-sweep` and `light-regime`
 > functions are still deployed but no longer referenced by any active code path.
 
-#### Heavy Sweep — Daily off-hours at 20:00 UTC (14 jobs)
+#### Heavy Sweep — Weekends only at 20:00 UTC (14 jobs)
 
-Heavy sweeps run a full Renko grid optimization (3 brick sizes × 4 SL × 6 TP = ~72
+Heavy sweeps run a full Renko grid optimization (5 brick sizes × 4 SL × 6 TP = ~120
 combos) and write to `sim_sweep_results` + `trading:config:{symbol}` in Redis. Each
 symbol is offset by 5 minutes to avoid API rate limits and to stay within the
 **global concurrency cap of 4** concurrent sweep invocations.
 
-Migration 101 reduced heavy sweeps from 6×/day to 1×/day at hour 20 UTC (off-hours).
-TimesFM handles non-stationarity detection 24/7, so heavy sweeps are now just a
-daily fine-tuning + calibration check. SPY and QQQ run at hour 21 (after individual
-stocks) to provide broad-market context.
+**Why weekends only:** TimesFM handles non-stationarity detection 24/7, light sweeps
+keep regime updated every 15-60min, and the volatility-shift emergency trigger fires
+a heavy sweep mid-week if needed. Weekly recalibration is sufficient for brick params.
 
-**Heavy hours (UTC):** 20 (crypto + most stocks), 21 (SPY, QQQ only).
-**F-Lite-1 rule:** Light regime is suppressed during hour 20 only (cron already
-excludes it; code-level guard is defense-in-depth).
+**Heavy hours (UTC):** 20-21 Saturday/Sunday only.
+**F-Lite-1 rule:** Light regime is suppressed during hour 20 on weekends only (the
+`isHeavyHour()` guard is day-aware — weekdays never suppress).
 
 | Job ID | Job name | Schedule (cron) | Symbol | DOW |
 |---:|---|---|---|---|
-| 780 | `sweep-heavy-BTC` | `0 20 * * *` | BTC | daily |
-| 781 | `sweep-heavy-ETH` | `5 20 * * *` | ETH | daily |
-| 782 | `sweep-heavy-SOL` | `10 20 * * *` | SOL | daily |
-| 783 | `sweep-heavy-BTCUSD` | `15 20 * * *` | BTCUSD | daily |
-| 784 | `sweep-heavy-ETHUSD` | `20 20 * * *` | ETHUSD | daily |
-| 785 | `sweep-heavy-AAPL` | `25 20 * * 1-5` | AAPL | weekdays |
-| 786 | `sweep-heavy-AMZN` | `30 20 * * 1-5` | AMZN | weekdays |
-| 787 | `sweep-heavy-GOOGL` | `35 20 * * 1-5` | GOOGL | weekdays |
-| 788 | `sweep-heavy-META` | `40 20 * * 1-5` | META | weekdays |
-| 789 | `sweep-heavy-MSFT` | `45 20 * * 1-5` | MSFT | weekdays |
-| 790 | `sweep-heavy-NVDA` | `50 20 * * 1-5` | NVDA | weekdays |
-| 791 | `sweep-heavy-TSLA` | `55 20 * * 1-5` | TSLA | weekdays |
-| 792 | `sweep-heavy-SPY` | `0 21 * * 1-5` | SPY | weekdays |
-| 793 | `sweep-heavy-QQQ` | `5 21 * * 1-5` | QQQ | weekdays |
+| — | `sweep-heavy-BTC` | `0 20 * * 0,6` | BTC | Sat/Sun |
+| — | `sweep-heavy-ETH` | `5 20 * * 0,6` | ETH | Sat/Sun |
+| — | `sweep-heavy-SOL` | `10 20 * * 0,6` | SOL | Sat/Sun |
+| — | `sweep-heavy-BTCUSD` | `15 20 * * 0,6` | BTCUSD | Sat/Sun |
+| — | `sweep-heavy-ETHUSD` | `20 20 * * 0,6` | ETHUSD | Sat/Sun |
+| — | `sweep-heavy-AAPL` | `30 20 * * 0,6` | AAPL | Sat/Sun |
+| — | `sweep-heavy-AMZN` | `35 20 * * 0,6` | AMZN | Sat/Sun |
+| — | `sweep-heavy-GOOGL` | `40 20 * * 0,6` | GOOGL | Sat/Sun |
+| — | `sweep-heavy-META` | `45 20 * * 0,6` | META | Sat/Sun |
+| — | `sweep-heavy-MSFT` | `50 20 * * 0,6` | MSFT | Sat/Sun |
+| — | `sweep-heavy-NVDA` | `55 20 * * 0,6` | NVDA | Sat/Sun |
+| — | `sweep-heavy-TSLA` | `0 21 * * 0,6` | TSLA | Sat/Sun |
+| — | `sweep-heavy-SPY` | `5 21 * * 0,6` | SPY | Sat/Sun |
+| — | `sweep-heavy-QQQ` | `10 21 * * 0,6` | QQQ | Sat/Sun |
 
-**Schedule notation:** `M H * * DOW` — all heavy jobs fire 1×/day (crypto daily, stocks weekdays).
+**Schedule notation:** `M H * * DOW` — all heavy jobs fire 1×/weekend day (Sat+Sun, 20-21 UTC).
 
-#### Light Regime — Every 15 minutes during 23 non-heavy hours (3 sub-batches)
+#### Light Regime — 24h weekdays, 23h weekends (up to 8 job entries)
 
 Light regime runs an HMM-only fast regime detection (no parameter optimization)
-and updates Redis config + `sim_regime_log` table. Light jobs fire every 15 minutes
-but **only during non-heavy hours** (F-Lite-1 — see below).
+and updates Redis config + `sim_regime_log` table.
 
-**Light hours (UTC):** 00–19, 21–23 (every hour except hour 20 — 23 hours = 92 cycles/day).
+**Light hours (UTC):**
+- **Crypto (weekdays + weekends):** 24 hours on weekdays (`* * * 1-5`), 23 hours on weekends (`0-19,21-23 * * 0,6`)
+- **Stocks (weekdays only):** Peak 15min frequency 12:00-21:00 UTC, off-peak 1hr frequency 21:00-05:00 + 05:00-12:00 UTC
+- **Stocks (weekends only):** Weekend light stock sweeps keep the original 23h schedule (`0-19,21-23 * * 0,6`)
 
-| Job ID | Job name | Schedule (cron) | Symbols in batch | DOW |
-|---:|---|---|---|---|
-| 794 | `sweep-light-crypto` | `0,15,30,45 0-19,21-23 * * *` | BTC, ETH, SOL | daily |
-| 795 | `sweep-light-stocks-1` | `5,20,35,50 0-19,21-23 * * 1-5` | AAPL, AMZN, GOOGL, META | weekdays |
-| 796 | `sweep-light-stocks-2` | `10,25,40,55 0-19,21-23 * * 1-5` | MSFT, NVDA, TSLA, SPY, QQQ | weekdays |
-
-Migration 101 simplified from 9 light jobs to 3 sub-batches with consistent 5-minute
-stagger gaps, eliminating pooler pileup. BTCUSD and ETHUSD light sweeps removed
-(heavy sweep at hour 20 provides adequate coverage for Alpaca crypto spot). Stocks
-use the same jobs weekdays only — weekend light sweeps are not needed since markets
-are closed and the heavy sweep covers the gap.
+| Job name | Schedule (cron) | Symbols in batch | DOW | Frequency |
+|---|---|---|---|---|
+| `sweep-light-crypto-wk` | `0,15,30,45 * * * 1-5` | BTC, ETH, SOL | weekdays | 24h, every 15min |
+| `sweep-light-crypto-we` | `0,15,30,45 0-19,21-23 * * 0,6` | BTC, ETH, SOL | weekends | 23h, every 15min |
+| `sweep-light-stocks-1-wk-pre` | `5 5-11 * * 1-5` | AAPL, AMZN, GOOGL, META | weekdays | 1hr (pre-market) |
+| `sweep-light-stocks-1-wk-peak` | `5,20,35,50 12-21 * * 1-5` | AAPL, AMZN, GOOGL, META | weekdays | 15min (trading hrs) |
+| `sweep-light-stocks-1-wk-post-evening` | `5 21-23 * * 1-5` | AAPL, AMZN, GOOGL, META | weekdays | 1hr (post-market) |
+| `sweep-light-stocks-1-wk-post-morning` | `5 0-4 * * 1-5` | AAPL, AMZN, GOOGL, META | weekdays | 1hr (overnight) |
+| `sweep-light-stocks-2-wk-pre` | `10 5-11 * * 1-5` | MSFT, NVDA, TSLA, SPY, QQQ | weekdays | 1hr (pre-market) |
+| `sweep-light-stocks-2-wk-peak` | `10,25,40,55 12-21 * * 1-5` | MSFT, NVDA, TSLA, SPY, QQQ | weekdays | 15min (trading hrs) |
+| `sweep-light-stocks-2-wk-post-evening` | `10 21-23 * * 1-5` | MSFT, NVDA, TSLA, SPY, QQQ | weekdays | 1hr (post-market) |
+| `sweep-light-stocks-2-wk-post-morning` | `10 0-4 * * 1-5` | MSFT, NVDA, TSLA, SPY, QQQ | weekdays | 1hr (overnight) |
+| `sweep-light-stocks-1-we` | `5,20,35,50 0-19,21-23 * * 0,6` | AAPL, AMZN, GOOGL, META | weekends | 23h, every 15min |
+| `sweep-light-stocks-2-we` | `10,25,40,55 0-19,21-23 * * 0,6` | MSFT, NVDA, TSLA, SPY, QQQ | weekends | 23h, every 15min |
 
 #### Retry Stale Symbols — Every 5 minutes (1 job)
 
-| Job ID | Job name | Schedule | Purpose |
-|---:|---|---|---|
-| 777 | `retry-stale-symbols` | `*/5 * * * *` | Picks up any symbol whose `sim_regime_log` is >20 min stale. Calls `sweep` with `{"mode":"light","symbol":"<SYM>"}`. Defers to heavy sweep cron during heavy hour (20 UTC). |
+| Job name | Schedule | Purpose |
+|---|---|---|
+| `retry-stale-symbols` | `*/5 * * * *` | Picks up any symbol whose `nt_regime_log` is >20 min stale. Calls `sweep` with `{"mode":"light","symbol":"<SYM>"}`. No longer has F-Lite-1 skip logic — heavy sweeps run weekends only so retry never conflicts. |
 
-#### F-Lite-1: Light Suppressed During Heavy Hours
+#### F-Lite-1: Light Suppressed During Heavy Hours (Weekends Only)
 
 To prevent collision between light regime sweeps and heavy sweep cron jobs, light is
-suppressed during the single daily heavy hour [20 UTC]. This is enforced in **three
+suppressed during heavy hour [20 UTC] **on weekends only**. This is enforced in **two
 layers** (defense in depth):
 
 | Layer | Where | Mechanism |
 |---|---|---|
-| **Cron schedule** | `pg_cron.job` rows 794–796 | The light cron jobs are scheduled only during non-heavy hours (`0-19,21-23`). This is the primary defense. |
-| **Fix B** | Edge function — `sweep/index.ts` `Deno.serve` handler | After mode validation, if `mode === "light" && isHeavyHour()` (where `HEAVY_HOURS_UTC = [20]`), returns `202 {"status":"suppressed","reason":"f-lite-1","hour":<H>}` immediately — before lock acquisition, before any work. Defense in depth: catches any caller that bypasses the cron schedule (manual curl, future SQL changes, etc). |
-| **Fix A (legacy)** | SQL — `sim_retry_stale_symbols()` | The retry-stale-symbols function was originally hardened with a heavy-hour check in migration 017, but migration 101 reduced heavy hours to [20] and the cron schedule handles suppression at the source. The SQL-level check still runs but is redundant — kept for defense-in-depth. |
+| **Cron schedule** | `pg_cron.job` | Weekend light jobs are scheduled during non-heavy hours (`0-19,21-23`). Weekday light jobs run all 24 hours with no suppression. |
+| **Edge function guard** | `sweep/index.ts` — `isHeavyHour()` | Day-aware check: returns `true` only on weekends (UTC day 0 or 6) when `HEAVY_HOURS_UTC` matches. Weekdays always return `false` — never suppress. |
 
 #### Two-Layer Concurrency Control (in the edge function)
 
@@ -1154,9 +1177,9 @@ ORDER BY created_at DESC;
 > deployed (for rollback safety) but no active code path references them.
 
 **Mode = Heavy** (full parameter grid search with EV computation):
-1. Fetches recent price data from HyperLiquid or Yahoo Finance (45d / 1080 hourly bars)
-2. Computes ATR-based brick sizes (3 sizes: 1.0×, 1.5×, 2.0×) — BETA: reduced from 5 to fit 0.5 CPU Render tier
-3. Runs `/optimize` in a single API call (3 bricks × 4 SL × 6 TP = 72 combos per symbol)
+1. Fetches recent price data from HyperLiquid or Alpaca (90d / 2160 hourly bars)
+2. Computes ATR-based brick sizes (5 sizes: 0.75×, 1.0×, 1.5×, 2.0×, 3.0×)
+3. Runs `/optimize` in a single API call (5 bricks × 4 SL × 6 TP = 120 combos per symbol)
 4. Runs **regime detection + Kelly sizing in parallel** with optimize (Promise.allSettled)
 5. Selects optimal params by Sharpe ratio (with R:R ≥ 2.0 + Sharpe ≤ 10 overfit guards)
 6. **Computes blended EV**: P_regime from HMM posteriors + P_imbalance from L2 depth + P_markov from transition matrix
@@ -1167,6 +1190,7 @@ ORDER BY created_at DESC;
 11. **Graceful fallback**: if optimize times out but regime/kelly succeed, writes cached brick params + regime
 12. **130s deadline guard** — skips remaining symbols if approaching Supabase's 150s limit
 13. **Per-symbol lock** (TTL 360s) — kills same-symbol double-fire across heavy + light
+14. **TimesFM confidence gate** — skips full HMM if forecast is confident (|p_timesfm - 0.5| > 0.1), reducing actual heavy runs by ~70%
 
 **Mode = Light** (fast regime detection with EV update, runs every 15 min per symbol):
 1. Fetches recent prices (hourly, fallback to daily if < 100 bars)
@@ -1181,18 +1205,8 @@ ORDER BY created_at DESC;
 10. **Per-symbol lock** (TTL 90s) — kills same-symbol double-fire across heavy + light
 11. **F-Lite-1 enforcement** (Fix B) — if invoked during a heavy hour, returns `202 suppressed` immediately. Cron schedule + Fix A (SQL) should prevent this, but Fix B is defense in depth.
 
-> **⚠️ BETA CPU Constraints (0.5 CPU Render tier)**
-> - Sweep window: **45d** (1080 hourly bars) — reduced from 90d to fit CPU budget
-> - Brick sizes: **3** (1.0×, 1.5×, 2.0×) — reduced from 5 to reduce combos
-> - Combos/symbol: **~72** (3 bricks × 4 SL × 6 TP) — was ~120
-> - Optimize call: **~40-60s** on 0.5 CPU — was ~90-120s at 90d/5 bricks
->
-> **Upgrade Path (≥1 CPU on Render):**
-> 1. `SWEEP_CANDLE_HOURS`: 1080 → 2160 (45d → 90d)
-> 2. `SWEEP_YAHOO_RANGE`: "45d" → "90d"
-> 3. `generateBrickSizes`: add 0.75× and 3.0× back (3 → 5 bricks)
-> 4. `sweep_window` labels: "45d" → "90d"
-> 5. Optimize timeout: 90s → 120s (more data = longer compute)
+> **Note:** The TimesFM confidence gate reduces actual heavy HMM runs by ~70%,
+> so the 90d window + 5 brick sizes are well within the compute budget.
 
 ### Shared Utilities (`_shared/utils.ts`)
 Common code used by the unified `sweep` function (inlined into `index.deployed.ts` for deployment):

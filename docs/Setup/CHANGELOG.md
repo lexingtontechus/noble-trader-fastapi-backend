@@ -32,6 +32,14 @@
 - **No `.env` changes needed for LightningAI** — secrets injected as env vars are read automatically by `pydantic-settings`
 - **Edge functions** — the Supabase Edge Functions (`sweep`, `heavy-sweep`, `light-regime`) contain a separate TypeScript EV engine implementation that still uses `p_imbalance` internally. These are independent Deno deployments and are unaffected by the Python backend changes
 
+### Changed — Cron Schedules (Migrations 026 + 027)
+
+- **Heavy sweeps moved to weekends only** — all `sweep-heavy-*` cron jobs now fire on Saturday/Sunday only (`0,6` DOW) at 20:00 UTC. Previously ran 6×/day for crypto and weekdays for stocks
+- **Light stock sweeps reshaped to US market cycle** — split into peak (15min frequency 12:00-21:00 UTC) and off-peak (1hr frequency 21:00-12:00 UTC) windows. ~50% reduction in daily runs
+- **Light crypto runs 24/7 on weekdays** — no suppression during US trading hours
+- **`isHeavyHour()` day-aware** — the edge function guard now only suppresses light mode on weekends when heavy sweeps run. Weekdays never suppress
+- **`sim_retry_stale_symbols()` F-Lite-1 check removed** — no longer skips retries during any hour since heavy sweeps don't run on weekdays
+
 ---
 
 ## [7.1.0] - 2026-05-24
