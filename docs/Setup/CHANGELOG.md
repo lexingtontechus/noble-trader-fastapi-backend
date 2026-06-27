@@ -1,4 +1,21 @@
-## [7.5.0] - 2026-06-22
+## [8.0.0] - 2026-06-27
+
+### Added — True Signal Gateway (Edge Function PUBLISH)
+
+- **`PUBLISH agent:{symbol}` in edge function** (`sweep/index.deployed.ts` line 3609+) — after `redisSetConfig()` writes the full config hash, 4 True Signal gates are applied. If all pass, the config payload is published to `agent:{symbol}` via Redis PUBLISH. This eliminates the need for external agents to poll `HGETALL trading:config:{symbol}`.
+- **`agent:{symbol}` Pub/Sub channel** — external agents subscribe and receive pushes only when a True Signal occurs. The edge function already has all data (regime, EV, TimesFM, signal) in local variables — no extra Redis reads needed.
+
+### Changed — Decoupled Liveness from State
+
+- **Removed per-tick `trading:heartbeat:{symbol}` writes** — the Python backend no longer writes heartbeat on every tick (lines 757-770 of `router.py` commented out). The heartbeat is now exclusively written by the edge function every 15 minutes (liveness-only).
+- **Removed per-snapshot `trading:config:{symbol}` cache writes** — `_save_snapshot()` no longer calls `trading_heartbeat.cache_config()`. The config hash is updated by the edge function every cycle; the Python backend only reads it.
+
+### The 4 Gates (Edge Function, Light-Regime Path Only)
+
+1. **Regime Shift Hard Block** — no regime shift in last 300s (5-min cooldown)
+2. **Shift Velocity Cap** — < 3 shifts in 24h (not turbulent)
+3. **Regime Confidence** — `regime_conf > 0.40`
+4. **Normalized EV** — `ev_per_dollar > 0.15`
 
 ### Changed — EV Engine v4 Refactor
 

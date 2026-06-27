@@ -3606,9 +3606,31 @@ async function runLightRegimeForSymbol(
           tail_risk_score: tailRisk.score,
           tail_risk_action: tailRisk.action,
         };
-        await redisSetConfig(symbolConfig.symbol, redisConfig);
+	        await redisSetConfig(symbolConfig.symbol, redisConfig);
 
-        await logRegimeEntry({
+	        // ── v8.0: True Signal gating ─────────────────────────────
+	        // 4 gates must all pass before publishing to agent:{symbol}.
+	        // This eliminates the need for the agent to poll HGETALL
+	        // trading:config:{symbol} every 5-15 minutes.
+	        const now = Date.now();
+	        const shiftAt_ = redisConfig.shift_at ?? 0;
+	        const isTrueSignal =
+	          // Gate 1: Regime Shift Hard Block (5-min cooldown)
+	          !(regimeShift || (shiftAt_ > 0 && (now - shiftAt_) < 300000))
+	          // Gate 2: Shift Velocity Cap (< 3 shifts in 24h)
+	          && (shifts24h < 3)
+	          // Gate 3: Regime Confidence > 0.40
+	          && (effectiveRegimeConf > 0.40)
+	          // Gate 4: Normalized EV > 0.15
+	          && ((evResult?.ev_per_dollar ?? 0) > 0.15);
+
+	        if (isTrueSignal) {
+	          await redisPipeline([
+	            ["PUBLISH", `agent:${symbolConfig.symbol}`, JSON.stringify(redisConfig)],
+	          ]);
+	        }
+
+	        await logRegimeEntry({
           symbol: symbolConfig.symbol,
           source: regimeDegraded ? "sweep-light-degraded" : "sweep-light",
           regime: effectiveRegime,

@@ -266,6 +266,49 @@ When cached data is stale (>4 hours old), the UI does **not** block with a loadi
 
 This avoids a blank screen during the 10-30 second warm-up process and provides the best user experience for returning visitors.
 
+## True Signal Gateway (v8.0)
+
+The True Signal Gateway decouples **liveness** from **state** to eliminate the need for external agents to poll Redis hashes. Gating and PUBLISH happen in the **edge function** (`sweep/index.deployed.ts`), not in the Python backend — the edge function already has all computed data (regime, EV, TimesFM, signal) in local variables, so no extra Redis reads are needed.
+
+### Separation of Concerns
+
+| Key | Role | Written By | Frequency |
+|-----|------|-----------|----------|
+| `trading:heartbeat:{symbol}` | **Liveness** — proves system is alive | Edge function sweep | Every 15 min |
+| `trading:config:{symbol}` | **Full State** — always written for reference | Edge function sweep | Every 15 min |
+| `agent:{symbol}` (Pub/Sub) | **True Signal Push** — only when all gates pass | Edge function sweep | On True Signal only |
+
+### The 4 Gates
+
+Applied in the edge function right after `redisSetConfig()` (line 3609 of `index.deployed.ts`):
+
+1. **Regime Shift Hard Block** — No regime shift in the last 300s (5-min cooldown)
+2. **Shift Velocity Cap** — < 3 regime shifts in the last 24h (market not turbulent)
+3. **Regime Confidence** — `regime_conf > 0.40` (statistically confident)
+4. **Normalized EV** — `ev_per_dollar > 0.15` (positive edge)
+
+### What Changed (v8.0)
+
+- **Removed**: Per-tick `trading:heartbeat:{symbol}` writes from the Python backend (`trading_heartbeat.update()` on every tick). Heartbeat is now exclusively written by the edge function every 15 minutes.
+- **Removed**: Per-snapshot `trading:config:{symbol}` cache writes from `_save_snapshot()` in `router.py`.
+- **Added**: `PUBLISH agent:{symbol}` in the edge function after `redisSetConfig()`, gated by 4 True Signal conditions. The agent receives a push only when all conditions are favorable.
+- No changes to the heavy-sweep paths (they run on weekends only for parameter optimization).
+
+### How an External Agent Consumes This
+
+```
+subscribe agent:BTC
+  → receives {"signal":"buy","ev_per_dollar":"0.55","regime":"high_vol_bull",...}
+  → Agent evaluates: True Signal. Execute on exchange.
+
+(silence — no push means conditions aren't favorable for a new signal)
+```
+
+The agent:
+- **Subscribes** to `agent:BTC` — gets pushed only when all 4 gates pass
+- **Polls** `trading:heartbeat:BTC` every 15 min — cheap liveness check (single key, no config hash)
+- **Never polls** `trading:config:BTC` — that data is pushed on True Signal
+
 ## Warm-up Process
 
 The warm-up flow feeds 6 months of historical Yahoo Finance data through the pipeline so it has enough bricks to detect patterns and generate signals.
