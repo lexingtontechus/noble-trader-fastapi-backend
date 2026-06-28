@@ -744,14 +744,15 @@ if FASTAPI_AVAILABLE:
         _notify_tick_result(symbol, result, pipeline)
 
         # ── Auto-save on critical events (MCP agent safety) ────────
-        # Save immediately when:
-        #   1. A position was opened or closed (avoids orphaned trades on restart)
-        #   2. Every 100th tick (periodic checkpoint)
+        # Save immediately when a position was opened or closed
+        # (avoids orphaned trades on restart). v8.0: removed the
+        # periodic 100th-tick checkpoint — L1 snapshots only on
+        # meaningful state changes to reduce Redis write volume.
         has_position_event = (
             result.get("filtered") is not None
             or result.get("trade_result") is not None
         )
-        if has_position_event or pipeline.brick_engine.brick_count % 100 == 0:
+        if has_position_event:
             asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         # ── v8.0 REMOVED: per-tick trading heartbeat writes ──────

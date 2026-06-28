@@ -183,7 +183,7 @@ The Renko pipeline uses a two-tier cache for state persistence, optimized for MC
 **Dual-write strategy**:
 - Every save writes to Redis L1 first (fire-and-forget), then Supabase L2
 - Confirmed saves (`POST /renko/snapshot/save`) await both writes
-- Periodic auto-saves (every 100th tick) are fire-and-forget
+- Auto-saves only trigger on state-change events (position open/close, config change) — no periodic checkpoint
 
 ### Supabase L2 Cache (`ta_renko_snapshot`)
 
@@ -240,9 +240,9 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
                                 DONE
 
 +---------------------------------------------------+
-|           Auto-Save Triggers (7 events)            |
+|           Auto-Save Triggers (6 events)            |
 |  Position open/close, regime, equity, sizing,      |
-|  live toggle, periodic (every 100th tick)           |
+|  live toggle                                       |
 |  -> dual-write: Redis L1 + Supabase L2             |
 +---------------------------------------------------+
 ```
@@ -291,8 +291,9 @@ Applied in the edge function right after `redisSetConfig()` (line 3609 of `index
 
 - **Removed**: Per-tick `trading:heartbeat:{symbol}` writes from the Python backend (`trading_heartbeat.update()` on every tick). Heartbeat is now exclusively written by the edge function every 15 minutes.
 - **Removed**: Per-snapshot `trading:config:{symbol}` cache writes from `_save_snapshot()` in `router.py`.
-- **Added**: `PUBLISH agent:{symbol}` in the edge function after `redisSetConfig()`, gated by 4 True Signal conditions. The agent receives a push only when all conditions are favorable.
-- No changes to the heavy-sweep paths (they run on weekends only for parameter optimization).
+- **Removed**: Periodic 100th-tick L1 snapshot checkpoint — snapshots now only save on state-change events (position open/close), reducing Redis SET volume by ~90%.
+- **Added**: `PUBLISH agent:{symbol}` in the edge function after `redisSetConfig()`, gated by 4 True Signal conditions.
+- **Optimized**: `redisUpdateSignal()` in the edge function now only runs on non-shift cycles — on regime shift or initial write, `redisSetConfig()` covers all fields, eliminating one redundant HSET per shift cycle. ~50% reduction in config write commands.
 
 ### How an External Agent Consumes This
 
@@ -379,7 +380,8 @@ The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2
 | Sizing model changed | `POST /renko/sizing/model` | Sizing mode must survive restart |
 | Live toggle | `POST /renko/live/toggle` | Execution mode must persist |
 | Batch complete | `POST /renko/tick/batch` | Full pipeline state after warmup |
-| Periodic checkpoint | Every 100th tick | Safety net for long-running sessions |
+
+> **v8.0**: Removed the periodic 100th-tick checkpoint. L1 snapshots are now writes only on actual state-change events, reducing Redis SET volume by ~90%. Supabase L2 persistence covers crash recovery for intermediate states.
 
 ## MCP Agent Workflow
 

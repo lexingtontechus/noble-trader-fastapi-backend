@@ -9,6 +9,11 @@
 
 - **Removed per-tick `trading:heartbeat:{symbol}` writes** — the Python backend no longer writes heartbeat on every tick (lines 757-770 of `router.py` commented out). The heartbeat is now exclusively written by the edge function every 15 minutes (liveness-only).
 - **Removed per-snapshot `trading:config:{symbol}` cache writes** — `_save_snapshot()` no longer calls `trading_heartbeat.cache_config()`. The config hash is updated by the edge function every cycle; the Python backend only reads it.
+- **Removed periodic 100th-tick L1 snapshot checkpoint** — `_save_snapshot()` in `router.py` now only fires on position events (`result.get("filtered")` or `result.get("trade_result")`), not on `brick_count % 100 == 0`. Reduces Redis SET volume by ~90%.
+
+### Optimized — Edge Function Config Writes
+
+- **`redisUpdateSignal()` now conditional** — on regime shift or initial write cycles, `redisUpdateSignal()` is skipped because `redisSetConfig()` already writes all signal/EV/TimesFM fields. Only runs on non-shift cycles. Eliminates the duplicate HSET to `trading:config:{symbol}` per shift cycle (~50% reduction in edge function config write commands).
 
 ### The 4 Gates (Edge Function, Light-Regime Path Only)
 

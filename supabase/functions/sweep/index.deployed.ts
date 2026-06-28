@@ -3496,41 +3496,47 @@ async function runLightRegimeForSymbol(
           `[sweep:light] ${symbolConfig.symbol}: p_timesfm=${pTimesfm} ready for Redis`,
         );
       }
-      await redisUpdateSignal(
-        symbolConfig.symbol,
-        tradeSignal.signal,
-        tradeSignal.entry_price,
-        tradeSignal.stop_loss,
-        tradeSignal.take_profit,
-        decimals,
-        {
-          ev: evResult.ev,
-          ev_per_dollar: evResult.ev_per_dollar,
-          p_win: evResult.p_win,
-          aggression: evResult.aggression,
-          ev_scale: evResult.ev_scale,
-          effective_kelly: effectiveKelly,
-        },
-        {
-          regime_shift: regimeShift ? "true" : "false",
-          prev_regime: prevRegime ?? "",
-          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
-          shifts_24h: shifts24h,
-        },
-        pTimesfm !== null
-          ? {
-              p_timesfm: pTimesfm,
-              timesfm_horizon: "12h",
-            }
-          : {
-              p_timesfm: 0.5,
-              timesfm_horizon: "0h",
-            },
-        {
-          tail_risk_score: tailRisk.score,
-          tail_risk_action: tailRisk.action,
-        },
-      );
+      // ── v8.0: Lightweight update on non-shift cycles ───────────
+      // On regime shift or initial write, redisSetConfig covers all
+      // fields including signal/EV/TimesFM — redisUpdateSignal would
+      // duplicate the same writes. Only call it on non-shift cycles.
+      if (!regimeShift && !isInitialWrite) {
+        await redisUpdateSignal(
+          symbolConfig.symbol,
+          tradeSignal.signal,
+          tradeSignal.entry_price,
+          tradeSignal.stop_loss,
+          tradeSignal.take_profit,
+          decimals,
+          {
+            ev: evResult.ev,
+            ev_per_dollar: evResult.ev_per_dollar,
+            p_win: evResult.p_win,
+            aggression: evResult.aggression,
+            ev_scale: evResult.ev_scale,
+            effective_kelly: effectiveKelly,
+          },
+          {
+            regime_shift: "false",
+            prev_regime: prevRegime ?? "",
+            shift_at: cacheEntry?.shift_at ?? 0,
+            shifts_24h: shifts24h,
+          },
+          pTimesfm !== null
+            ? {
+                p_timesfm: pTimesfm,
+                timesfm_horizon: "12h",
+              }
+            : {
+                p_timesfm: 0.5,
+                timesfm_horizon: "0h",
+              },
+          {
+            tail_risk_score: tailRisk.score,
+            tail_risk_action: tailRisk.action,
+          },
+        );
+      }
 
       // 8. Build new cache entry
       const newEntry: RegimeCacheEntry = {
