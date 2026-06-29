@@ -50,15 +50,18 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
         "active": "eq.true",
         "order": "asset_class.asc,symbol.asc",
     }
+    print(f"[sb] Querying {url} with params={params}", flush=True)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=_headers(), params=params)
             resp.raise_for_status()
             rows: list[dict[str, Any]] = resp.json()
             logger.info("Fetched %d active symbols from nt_symbol", len(rows))
+            print(f"[sb] Got {len(rows)} symbols: {[r.get('symbol') for r in rows]}", flush=True)
             return rows
     except Exception as exc:
         logger.error("Failed to fetch active symbols: %s", exc)
+        print(f"[sb] FAILED: {exc}", flush=True)
         return []
 
 

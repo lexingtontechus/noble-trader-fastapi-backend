@@ -99,16 +99,24 @@ def _signal_handler() -> None:
 
 async def main() -> None:
     """Entry point: start orchestrator + health server, wait for shutdown."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
     )
 
     health_port = int(os.getenv("SWEEP_ORCHESTRATOR_PORT", "8003"))
-    logger.info(
-        "Starting sweep orchestrator (health port %d)...",
-        health_port,
-    )
+    print(f"[sweep-orch] Starting sweep orchestrator (health port {health_port})...", flush=True)
+    logger.info("Starting sweep orchestrator (health port %d)...", health_port)
+
+    su = bool(os.environ.get("SUPABASE_URL"))
+    sk = bool(os.environ.get("SUPABASE_KEY"))
+    ru = bool(os.environ.get("REDIS_URL") or os.environ.get("UPSTASH_REDIS_REST_URL"))
+    print(f"[sweep-orch] SUPABASE_URL={'set' if su else 'NOT SET'}, SUPABASE_KEY={'set' if sk else 'NOT SET'}, Redis={'set' if ru else 'NOT SET'}", flush=True)
+
+    if not su or not sk:
+        print("[sweep-orch] FATAL: Supabase not configured — sweeps cannot run", flush=True)
 
     orch = SweepOrchestrator()
     await orch.start()

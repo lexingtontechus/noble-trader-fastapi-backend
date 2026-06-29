@@ -65,6 +65,7 @@ print(f"  PID timesfm: {timesfm_proc.pid}")
 # Start sweep orchestrator on port 8003
 orch_env = os.environ.copy()
 orch_env["SWEEP_ORCHESTRATOR_PORT"] = "8003"
+orch_env["PYTHONUNBUFFERED"] = "1"
 orch_proc = subprocess.Popen(
     [sys.executable, "-m", "regime_platform.sweep_orchestrator"],
     env=orch_env,
