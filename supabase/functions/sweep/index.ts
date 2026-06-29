@@ -57,6 +57,7 @@ import {
   computeEV,
   computeMarkovTransition,
   countShifts24h,
+  batchCountShifts24h,
   isMarketOpen,
   safeParseFloat,
   safeParseInt,
@@ -108,6 +109,150 @@ function isHeavyHour(): boolean {
     return HEAVY_HOURS_UTC.includes(now.getUTCHours());
   }
   return false; // Weekdays: never suppress light
+}
+// ─── Shared RedisConfig builder ──
+function buildRedisConfig(params: {
+  regime: string;
+  regimeConf: number;
+  brickSize: number;
+  slBricks: number;
+  tpBricks: number;
+  kellyF: number;
+  markovPUp: number;
+  markovPDn: number;
+  tradeSignal: { signal: string; entry_price: number; stop_loss: number; take_profit: number };
+  evResult: EVResult;
+  effectiveKelly: number;
+  regimeShift: boolean;
+  prevRegime: string;
+  shiftAt: number;
+  shifts24h: number;
+  priceDecimals?: number;
+  sweepWindow?: string;
+  sweepSharpe?: number;
+  sweepTrades?: number;
+  pTimesfm?: number;
+  timesfmHorizon?: string;
+  tailRiskScore?: number;
+  tailRiskAction?: string;
+  calibrationBias?: number;
+  calibrationStatus?: string;
+  sweepSkipUntil?: number;
+}): RedisConfig {
+  const result: RedisConfig = {
+    regime: params.regime,
+    regime_conf: params.regimeConf,
+    brick_size: params.brickSize,
+    tp_bricks: params.tpBricks,
+    sl_bricks: params.slBricks,
+    markov_p_up: params.markovPUp,
+    markov_p_dn: params.markovPDn,
+    kelly_f: params.kellyF,
+    last_update: Date.now(),
+    sweep_timestamp: Date.now(),
+    signal: params.tradeSignal.signal,
+    entry_price: params.tradeSignal.entry_price,
+    stop_loss: params.tradeSignal.stop_loss,
+    take_profit: params.tradeSignal.take_profit,
+    ev: params.evResult.ev,
+    ev_per_dollar: params.evResult.ev_per_dollar,
+    p_win: params.evResult.p_win,
+    p_regime: params.evResult.p_regime,
+    p_imbalance: params.evResult.p_imbalance,
+    p_markov: params.evResult.p_markov,
+    aggression: params.evResult.aggression,
+    ev_scale: params.evResult.ev_scale,
+    effective_kelly: params.effectiveKelly,
+    markov_current_state: params.evResult.markov_current_state,
+    regime_shift: params.regimeShift ? "true" : "false",
+    prev_regime: params.prevRegime,
+    shift_at: params.shiftAt,
+    shifts_24h: params.shifts24h,
+  };
+  if (params.sweepWindow !== undefined) result.sweep_window = params.sweepWindow;
+  if (params.sweepSharpe !== undefined) result.sweep_sharpe = params.sweepSharpe;
+  if (params.sweepTrades !== undefined) result.sweep_trades = params.sweepTrades;
+  if (params.pTimesfm !== undefined) result.p_timesfm = params.pTimesfm;
+  if (params.timesfmHorizon !== undefined) result.timesfm_horizon = params.timesfmHorizon;
+  if (params.tailRiskScore !== undefined) result.tail_risk_score = params.tailRiskScore;
+  if (params.tailRiskAction !== undefined) result.tail_risk_action = params.tailRiskAction;
+  if (params.calibrationBias !== undefined) result.calibration_bias = params.calibrationBias;
+  if (params.calibrationStatus !== undefined) result.calibration_status = params.calibrationStatus;
+  if (params.sweepSkipUntil !== undefined) result.sweep_skip_until = params.sweepSkipUntil;
+  if (params.priceDecimals !== undefined) result.price_decimals = params.priceDecimals;
+  return result;
+}
+// ─── Shared RedisConfig builder ──
+function buildRedisConfig(params: {
+  regime: string;
+  regimeConf: number;
+  brickSize: number;
+  slBricks: number;
+  tpBricks: number;
+  kellyF: number;
+  markovPUp: number;
+  markovPDn: number;
+  tradeSignal: { signal: string; entry_price: number; stop_loss: number; take_profit: number };
+  evResult: EVResult;
+  effectiveKelly: number;
+  regimeShift: boolean;
+  prevRegime: string;
+  shiftAt: number;
+  shifts24h: number;
+  priceDecimals?: number;
+  sweepWindow?: string;
+  sweepSharpe?: number;
+  sweepTrades?: number;
+  pTimesfm?: number;
+  timesfmHorizon?: string;
+  tailRiskScore?: number;
+  tailRiskAction?: string;
+  calibrationBias?: number;
+  calibrationStatus?: string;
+  sweepSkipUntil?: number;
+}): RedisConfig {
+  const result: RedisConfig = {
+    regime: params.regime,
+    regime_conf: params.regimeConf,
+    brick_size: params.brickSize,
+    tp_bricks: params.tpBricks,
+    sl_bricks: params.slBricks,
+    markov_p_up: params.markovPUp,
+    markov_p_dn: params.markovPDn,
+    kelly_f: params.kellyF,
+    last_update: Date.now(),
+    sweep_timestamp: Date.now(),
+    signal: params.tradeSignal.signal,
+    entry_price: params.tradeSignal.entry_price,
+    stop_loss: params.tradeSignal.stop_loss,
+    take_profit: params.tradeSignal.take_profit,
+    ev: params.evResult.ev,
+    ev_per_dollar: params.evResult.ev_per_dollar,
+    p_win: params.evResult.p_win,
+    p_regime: params.evResult.p_regime,
+    p_imbalance: params.evResult.p_imbalance,
+    p_markov: params.evResult.p_markov,
+    aggression: params.evResult.aggression,
+    ev_scale: params.evResult.ev_scale,
+    effective_kelly: params.effectiveKelly,
+    markov_current_state: params.evResult.markov_current_state,
+    regime_shift: params.regimeShift ? "true" : "false",
+    prev_regime: params.prevRegime,
+    shift_at: params.shiftAt,
+    shifts_24h: params.shifts24h,
+  };
+  if (params.sweepWindow !== undefined) result.sweep_window = params.sweepWindow;
+  if (params.sweepSharpe !== undefined) result.sweep_sharpe = params.sweepSharpe;
+  if (params.sweepTrades !== undefined) result.sweep_trades = params.sweepTrades;
+  if (params.pTimesfm !== undefined) result.p_timesfm = params.pTimesfm;
+  if (params.timesfmHorizon !== undefined) result.timesfm_horizon = params.timesfmHorizon;
+  if (params.tailRiskScore !== undefined) result.tail_risk_score = params.tailRiskScore;
+  if (params.tailRiskAction !== undefined) result.tail_risk_action = params.tailRiskAction;
+  if (params.calibrationBias !== undefined) result.calibration_bias = params.calibrationBias;
+  if (params.calibrationStatus !== undefined) result.calibration_status = params.calibrationStatus;
+  if (params.sweepSkipUntil !== undefined) result.sweep_skip_until = params.sweepSkipUntil;
+  if (params.priceDecimals !== undefined) result.price_decimals = params.priceDecimals;
+  return result;
 }
 
 // Heavy sweep grid ranges (ported from heavy-sweep v4)
@@ -236,9 +381,10 @@ async function runHeavySweepForSymbol(
   const startTime = Date.now();
 
   try {
-    // ── Sweep Fatigue: skip if calibrated and skip_until is in the future ──
+    // ── Sweep Fatigue + I5: Cache prevCfg for TimesFM gate ──
+    let prevCfg: Record<string, string> | null = null;
     try {
-      const prevCfg = await redisGetConfig(symbolConfig.symbol);
+      prevCfg = await redisGetConfig(symbolConfig.symbol);
       if (prevCfg) {
         const skipUntil = safeParseFloat(prevCfg.sweep_skip_until ?? "0", 0);
         if (skipUntil > Date.now()) {
@@ -263,9 +409,19 @@ async function runHeavySweepForSymbol(
     console.log(`[sweep:heavy] ${symbolConfig.symbol}: ${prices.length} candles loaded`);
 
     // 1.5. TimesFM confidence gate — skip heavy if forecast is confident
-    // TimesFM p_timesfm near 0 or 1 = high confidence (stable regime)
-    // TimesFM p_timesfm near 0.5 = uncertain → run full sweep
+    // I5: Use cached p_timesfm from prevCfg if available (avoids ~15s HTTP call)
     try {
+      const cachedP = prevCfg?.p_timesfm
+        ? safeParseFloat(prevCfg.p_timesfm, 0.5)
+        : null;
+      if (cachedP !== null && Math.abs(cachedP - 0.5) > 0.1) {
+        console.log(`[sweep:heavy] ${symbolConfig.symbol}: SKIPPED — TimesFM confident from cache (p_timesfm=${cachedP.toFixed(4)}, confidence=${Math.abs(cachedP - 0.5).toFixed(4)} threshold=0.1)`);
+        return {
+          best: null, regime: null, kelly: null,
+          duration: 0, nCombos: 0,
+          error: `TimesFM-stable (p=${cachedP.toFixed(4)})`,
+        };
+      }
       const timesfmMap = await timesfmPost([
         { symbol: symbolConfig.symbol, prices: prices.slice(-500) },
       ]);
@@ -352,41 +508,21 @@ async function runHeavySweepForSymbol(
       const effectiveKelly = evResult.effective_kelly > 0 ? Math.min(evResult.effective_kelly, 0.5) : kellyF;
 
       console.log(`[sweep:heavy] ${symbolConfig.symbol}: FALLBACK — regime=${combinedRegime}, cached brick=${cachedBrick}, signal=${tradeSignal.signal}`);
+      console.log(`[sweep:heavy] ${symbolConfig.symbol}: FALLBACK — regime=${combinedRegime}, cached brick=${cachedBrick}, signal=${tradeSignal.signal}`);
 
-      const redisConfig: RedisConfig = {
-        regime: combinedRegime,
-        regime_conf: regimeConf,
-        brick_size: cachedBrick,
-        tp_bricks: cachedTp,
-        sl_bricks: cachedSl,
-        markov_p_up: markovPUp,
-        markov_p_dn: markovPDn,
-        kelly_f: kellyF,
-        last_update: Date.now(),
-        sweep_timestamp: Date.now(),
-        sweep_window: "90d (fallback)",
-        signal: tradeSignal.signal,
-        entry_price: tradeSignal.entry_price,
-        stop_loss: tradeSignal.stop_loss,
-        take_profit: tradeSignal.take_profit,
-        ev: evResult.ev,
-        ev_per_dollar: evResult.ev_per_dollar,
-        p_win: evResult.p_win,
-        p_regime: evResult.p_regime,
-        p_imbalance: evResult.p_imbalance,
-        p_markov: evResult.p_markov,
-        aggression: evResult.aggression,
-        ev_scale: evResult.ev_scale,
-        effective_kelly: effectiveKelly,
-        markov_current_state: evResult.markov_current_state,
-	        regime_shift: "false",
-	        prev_regime: "",
-	        shift_at: 0,
-	        shifts_24h: 0,
-	        p_timesfm: prevPTimesfm,
-	        timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-	      };
-		      await redisSetConfig(symbolConfig.symbol, redisConfig);
+      const redisConfig = buildRedisConfig({
+        regime: combinedRegime, regimeConf,
+        brickSize: cachedBrick, slBricks: cachedSl, tpBricks: cachedTp,
+        kellyF, markovPUp, markovPDn,
+        tradeSignal, evResult, effectiveKelly,
+        regimeShift: false, prevRegime: "", shiftAt: 0, shifts24h: 0,
+        sweepWindow: "90d (fallback)",
+        pTimesfm: prevPTimesfm,
+        timesfmHorizon: prevPTimesfm !== undefined ? "12h" : undefined,
+      });
+      await redisSetConfig(symbolConfig.symbol, redisConfig);
+      await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
+
 		      await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
 
 		      // ── Sweep Fatigue: calibration write for fallback path ──
@@ -407,28 +543,14 @@ async function runHeavySweepForSymbol(
 		        }
 		      } catch { /* best effort */ }
 
-		      try {
-	        const cache = await redisLoadRegimeCache();
-	        cache[symbolConfig.symbol] = {
-          regime: combinedRegime, regime_conf: regimeConf,
-          brick_size: cachedBrick, sl_bricks: cachedSl, tp_bricks: cachedTp,
-          kelly_f: kellyF, last_update: Date.now(),
-          signal: tradeSignal.signal, entry_price: tradeSignal.entry_price,
-          stop_loss: tradeSignal.stop_loss, take_profit: tradeSignal.take_profit,
-          price_decimals: 2,
-          ev: evResult.ev, ev_per_dollar: evResult.ev_per_dollar, p_win: evResult.p_win,
-          p_regime: evResult.p_regime, p_imbalance: evResult.p_imbalance,
-          p_markov: evResult.p_markov, aggression: evResult.aggression,
-          ev_scale: evResult.ev_scale, effective_kelly: effectiveKelly,
-          markov_current_state: evResult.markov_current_state,
-	          regime_shift: "false", prev_regime: "", shift_at: 0, shifts_24h: 0,
-	          p_timesfm: prevPTimesfm,
-	          timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-	        };
-	        await redisSaveRegimeCache(cache);
-      } catch { /* best effort */ }
+	      // ── D3+I1 REMOVED: regime cache update (light batch handles it) ──
+	      // try {
+	      //   const cache = await redisLoadRegimeCache();
+	      //   cache[symbolConfig.symbol] = { ... };
+	      //   await redisSaveRegimeCache(cache);
+	      // } catch { /* best effort */ }
 
-      await logRegimeEntry({
+	      await logRegimeEntry({
         symbol: symbolConfig.symbol, source: "sweep-heavy-fallback",
         regime: combinedRegime, regime_conf: regimeConf,
         markov_p_up: markovPUp, markov_p_dn: markovPDn,
@@ -591,81 +713,24 @@ async function runHeavySweepForSymbol(
     );
 
     // 9. Write to Redis
-    const redisConfig: RedisConfig = {
-      regime: combinedRegime,
-      regime_conf: regimeConf,
-      brick_size: best.brick_size,
-      tp_bricks: best.tp_bricks,
-      sl_bricks: best.sl_bricks,
-      markov_p_up: markovPUp,
-      markov_p_dn: markovPDn,
-      kelly_f: kellyF,
-      last_update: Date.now(),
-      sweep_timestamp: Date.now(),
-      sweep_window: "90d",
-      sweep_sharpe: best.sharpe,
-      sweep_trades: best.total_trades,
-      signal: tradeSignal.signal,
-      entry_price: tradeSignal.entry_price,
-      stop_loss: tradeSignal.stop_loss,
-      take_profit: tradeSignal.take_profit,
-      ev: evResult.ev,
-      ev_per_dollar: evResult.ev_per_dollar,
-      p_win: evResult.p_win,
-      p_regime: evResult.p_regime,
-      p_imbalance: evResult.p_imbalance,
-      p_markov: evResult.p_markov,
-      aggression: evResult.aggression,
-      ev_scale: evResult.ev_scale,
-      effective_kelly: effectiveKelly,
-      markov_current_state: evResult.markov_current_state,
-      regime_shift: regimeShift ? "true" : "false",
-      prev_regime: prevRegime ?? "",
-      shift_at: regimeShift ? Date.now() : prevShiftAt,
-      shifts_24h: shifts24h,
-      p_timesfm: prevPTimesfm,
-      timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-    };
+    const redisConfig = buildRedisConfig({
+      regime: combinedRegime, regimeConf,
+      brickSize: best.brick_size, slBricks: best.sl_bricks, tpBricks: best.tp_bricks,
+      kellyF, markovPUp, markovPDn,
+      tradeSignal, evResult, effectiveKelly,
+      regimeShift, prevRegime: prevRegime ?? "",
+      shiftAt: regimeShift ? Date.now() : prevShiftAt,
+      shifts24h,
+      sweepWindow: "90d",
+      sweepSharpe: best.sharpe,
+      sweepTrades: best.total_trades,
+      pTimesfm: prevPTimesfm,
+      timesfmHorizon: prevPTimesfm !== undefined ? "12h" : undefined,
+    });
 
     await redisSetConfig(symbolConfig.symbol, redisConfig);
 
-    try {
-      const cache = await redisLoadRegimeCache();
-      cache[symbolConfig.symbol] = {
-        regime: combinedRegime,
-        regime_conf: regimeConf,
-        brick_size: best.brick_size,
-        sl_bricks: best.sl_bricks,
-        tp_bricks: best.tp_bricks,
-        kelly_f: kellyF,
-        last_update: Date.now(),
-        signal: tradeSignal.signal,
-        entry_price: tradeSignal.entry_price,
-        stop_loss: tradeSignal.stop_loss,
-        take_profit: tradeSignal.take_profit,
-        price_decimals: 4,
-        ev: evResult.ev,
-        ev_per_dollar: evResult.ev_per_dollar,
-        p_win: evResult.p_win,
-        p_regime: evResult.p_regime,
-        p_imbalance: evResult.p_imbalance,
-        p_markov: evResult.p_markov,
-        aggression: evResult.aggression,
-        ev_scale: evResult.ev_scale,
-        effective_kelly: effectiveKelly,
-        markov_current_state: evResult.markov_current_state,
-        regime_shift: regimeShift ? "true" : "false",
-        prev_regime: prevRegime ?? "",
-        shift_at: regimeShift ? Date.now() : prevShiftAt,
-        shifts_24h: shifts24h,
-        p_timesfm: prevPTimesfm,
-        timesfm_horizon: prevPTimesfm !== undefined ? "12h" : undefined,
-      };
-      await redisSaveRegimeCache(cache);
-      console.log(`[sweep:heavy] ${symbolConfig.symbol}: regime cache updated with optimized brick params`);
-    } catch (err) {
-      console.warn(`[sweep:heavy] ${symbolConfig.symbol}: regime cache save failed: ${err}`);
-    }
+    // ── D3+I1 REMOVED: regime cache update (light batch handles it) ──
 
     await redisSetHeartbeat(symbolConfig.symbol, symbolConfig.heartbeat_ttl_seconds);
     console.log(`[sweep:heavy] ${symbolConfig.symbol}: Redis config updated (regime=${combinedRegime}, kelly=${kellyF.toFixed(3)})`);
@@ -894,12 +959,11 @@ async function runLightRegimeForSymbol(
         console.log(`[sweep:light] ${symbolConfig.symbol}: tail_risk=${tailRisk.score.toFixed(2)} (${tailRisk.action})`);
       }
 
-      // 6c. Compute shifts_24h
-      let shifts24h = cacheEntry?.shifts_24h ?? 0;
-      if (regimeShift) {
-        shifts24h = await countShifts24h(symbolConfig.symbol);
-        console.log(`[sweep:light] ${symbolConfig.symbol}: shifts_24h=${shifts24h} (fresh count)`);
-      }
+	      // 6c. Compute shifts_24h (cached; batch query in processLightBatch)
+	      let shifts24h = cacheEntry?.shifts_24h ?? 0;
+	      if (regimeShift) {
+	        console.log(`[sweep:light] ${symbolConfig.symbol}: shifts_24h=${shifts24h} (cached, will be batched)`);
+	      }
 
       // 7. Compute trade signal
       const currentPrice = prices[prices.length - 1];
@@ -979,56 +1043,81 @@ async function runLightRegimeForSymbol(
       // 9. Write full config + cache only on regime shift or initial population
       const isInitialWrite = cacheEntry === undefined || cacheEntry.regime === "unknown" || cacheEntry.regime === "market_closed";
       if (regimeShift || isInitialWrite) {
-        const redisConfig: RedisConfig = {
+        const redisConfig = buildRedisConfig({
           regime: effectiveRegime,
-          regime_conf: effectiveRegimeConf,
-          brick_size: brickSize,
-          tp_bricks: tpBricks,
-          sl_bricks: slBricks,
-          markov_p_up: markovPUp,
-          markov_p_dn: markovPDn,
-          kelly_f: kellyF,
-          last_update: Date.now(),
-          sweep_timestamp: Date.now(),
-          signal: tradeSignal.signal,
-          entry_price: tradeSignal.entry_price,
-          stop_loss: tradeSignal.stop_loss,
-          take_profit: tradeSignal.take_profit,
-          ev: evResult.ev,
-          ev_per_dollar: evResult.ev_per_dollar,
-          p_win: evResult.p_win,
-          p_regime: evResult.p_regime,
-          p_imbalance: evResult.p_imbalance,
-          p_markov: evResult.p_markov,
-          aggression: evResult.aggression,
-          ev_scale: evResult.ev_scale,
-          effective_kelly: effectiveKelly,
-          markov_current_state: evResult.markov_current_state,
-          regime_shift: regimeShift ? "true" : "false",
-          prev_regime: prevRegime ?? "",
-          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
-          shifts_24h: shifts24h,
-          p_timesfm: pTimesfm ?? undefined,
-          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
-          tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
-          tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
-        };
-        await redisSetConfig(symbolConfig.symbol, redisConfig);
-
-        await logRegimeEntry({
-          symbol: symbolConfig.symbol,
-          source: regimeDegraded ? "sweep-light-degraded" : "sweep-light",
-          regime: effectiveRegime,
-          regime_conf: effectiveRegimeConf,
-          markov_p_up: markovPUp,
-          markov_p_dn: markovPDn,
-          kelly_f: kellyF,
-          prev_regime: prevRegime,
-          regime_shift: true,
+          regimeConf: effectiveRegimeConf,
+          brickSize, slBricks, tpBricks,
+          kellyF, markovPUp, markovPDn,
+          tradeSignal, evResult, effectiveKelly,
+          regimeShift, prevRegime: prevRegime ?? "",
+          shiftAt: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
+          shifts24h,
+          pTimesfm: pTimesfm ?? undefined,
+          timesfmHorizon: pTimesfm !== null ? "12h" : undefined,
+          tailRiskScore: tailRisk.score > 0 ? tailRisk.score : undefined,
+          tailRiskAction: tailRisk.score > 0 ? tailRisk.action : undefined,
         });
-      }
+	        await redisSetConfig(symbolConfig.symbol, redisConfig);
 
-      console.log(
+	        // ── Calibration refresh on shift/init ──
+	        try {
+	          const cal = await computeCalibrationBias(symbolConfig.symbol);
+	          if (cal) {
+	            const calFields: (string | number)[] = [
+	              "calibration_bias", cal.bias,
+	              "calibration_status", cal.status,
+	            ];
+	            if (cal.status === "CALIBRATED") {
+	              calFields.push("sweep_skip_until", Date.now() + 12 * 3600 * 1000);
+	            }
+	            await sweepRedisPipeline([
+	              ["HSET", `trading:config:${symbolConfig.symbol}`, ...calFields],
+	            ]);
+	          }
+	        } catch { /* non-critical */ }
+
+		        await logRegimeEntry({
+		          symbol: symbolConfig.symbol,
+		          source: regimeDegraded ? "sweep-light-degraded" : "sweep-light",
+		          regime: effectiveRegime,
+		          regime_conf: effectiveRegimeConf,
+		          markov_p_up: markovPUp,
+		          markov_p_dn: markovPDn,
+		          kelly_f: kellyF,
+		          prev_regime: prevRegime,
+		          regime_shift: true,
+		        });
+		      }
+
+	      // ── Agent heartbeat: full config on every cycle ──────────
+	      try {
+	        await sweepRedisPipeline([["PUBLISH", `agent:${symbolConfig.symbol}`, JSON.stringify({
+	          type: "heartbeat", symbol: symbolConfig.symbol, ts: Date.now(),
+	          regime: effectiveRegime, regime_conf: effectiveRegimeConf,
+	          signal: tradeSignal.signal,
+	          entry_price: tradeSignal.entry_price,
+	          stop_loss: tradeSignal.stop_loss,
+	          take_profit: tradeSignal.take_profit,
+	          aggression: evResult.aggression,
+	          brick_size: brickSize, sl_bricks: slBricks, tp_bricks: tpBricks,
+	          kelly_f: kellyF, effective_kelly: effectiveKelly,
+	          ev: evResult.ev, ev_per_dollar: evResult.ev_per_dollar,
+	          p_win: evResult.p_win, p_regime: evResult.p_regime,
+	          p_imbalance: evResult.p_imbalance, p_markov: evResult.p_markov,
+	          ev_scale: evResult.ev_scale,
+	          markov_current_state: evResult.markov_current_state,
+	          p_timesfm: pTimesfm ?? undefined,
+	          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
+	          tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
+	          tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
+	          regime_shift: regimeShift ? "true" : "false",
+	          prev_regime: prevRegime ?? undefined,
+	          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
+	          shifts_24h: shifts24h,
+	        })]]);
+	      } catch { /* non-critical */ }
+
+	      console.log(
         `[sweep:light] ${symbolConfig.symbol}: regime=${effectiveRegime}${regimeDegraded ? " (degraded)" : ""}, conf=${effectiveRegimeConf.toFixed(2)}, ` +
         `kelly=${kellyF.toFixed(3)}, risk_mult=${riskMultiplier}, shift=${regimeShift}`,
       );
@@ -1524,6 +1613,7 @@ async function processLightBatch(
     const startTime = Date.now();
     const RATE_LIMIT_DELAY_MS = 8000;
     let cacheChanged = false;
+    const shiftedSymbols: string[] = [];
 
     // ── Vectorized TimesFM: fetch prices + one batched call ──
     let timesfmMap = new Map<string, number | null>();
@@ -1602,7 +1692,10 @@ async function processLightBatch(
 
         if (symbolResult.entry) {
           regimeCache[sym.symbol] = symbolResult.entry;
-          if (symbolResult.regimeShift) cacheChanged = true;
+          if (symbolResult.regimeShift) {
+            cacheChanged = true;
+            shiftedSymbols.push(sym.symbol);
+          }
         }
       } finally {
         await releaseSymbolLock(sym.symbol, symbolLockToken);
@@ -1613,9 +1706,30 @@ async function processLightBatch(
       }
     }
 
+    // ── I2: Batch shifts_24h query ──
+    if (shiftedSymbols.length > 0) {
+      try {
+        const shiftCounts = await batchCountShifts24h(shiftedSymbols);
+        for (const sym of shiftedSymbols) {
+          const entry = regimeCache[sym];
+          if (entry) {
+            const freshCount = shiftCounts.get(sym) ?? 0;
+            if (freshCount !== entry.shifts_24h) {
+              entry.shifts_24h = freshCount;
+            }
+          }
+        }
+        console.log(
+          `[sweep:light] Batched shifts_24h for ${shiftedSymbols.length} symbols: ${shiftedSymbols.map((s) => `${s}=${shiftCounts.get(s) ?? 0}`).join(", ")}`,
+        );
+      } catch (err) {
+        console.warn(`[sweep:light] Batch shifts_24h failed: ${err}`);
+      }
+    }
+
     if (cacheChanged) {
       await redisSaveRegimeCache(regimeCache);
-      console.log(`[sweep:light] Regime cache saved (1 SET)`);
+      console.log(`[sweep:light] Regime cache saved`);
     } else {
       console.log(`[sweep:light] Regime cache unchanged — no write needed`);
     }

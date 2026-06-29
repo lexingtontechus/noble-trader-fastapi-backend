@@ -126,7 +126,7 @@ class L2FeedManager:
             )
             alpaca_adapter = AlpacaL2Adapter(alpaca_symbols)
             self._adapters.append(alpaca_adapter)
-            tasks.append(self._run_adapter(alpaca_adapter))
+            tasks.append(asyncio.create_task(self._run_adapter(alpaca_adapter)))
 
         if hl_coins:
             log.info(
@@ -135,7 +135,7 @@ class L2FeedManager:
             )
             hl_adapter = HyperliquidL2Adapter(hl_coins)
             self._adapters.append(hl_adapter)
-            tasks.append(self._run_hl_adapter(hl_adapter, hl_to_symbol))
+            tasks.append(asyncio.create_task(self._run_hl_adapter(hl_adapter, hl_to_symbol)))
 
         if not tasks:
             log.warning("L2FeedManager: no adapters could be created for symbols: %s", symbols)

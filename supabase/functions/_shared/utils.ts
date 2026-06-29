@@ -2434,3 +2434,37 @@ export function isVolatilityShift(
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Batched version: query shifts_24h for multiple symbols in one call.
+ * Returns Map<symbol, count> of regime shifts in the last 24h.
+ */
+export async function batchCountShifts24h(
+  symbols: string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (symbols.length === 0) return result;
+  try {
+    const twentyFourHoursAgo = new Date(
+      Date.now() - 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const symbolList = symbols.join(",");
+    const data = await supabaseRest(
+      "nt_regime_log",
+      "GET",
+      undefined,
+      `symbol=in.(${symbolList})&regime_shift=eq.true&detected_at=gte.${twentyFourHoursAgo}&select=symbol`,
+    );
+    if (Array.isArray(data)) {
+      const counts: Record<string, number> = {};
+      for (const row of data) {
+        const sym = (row as any).symbol;
+        if (sym) counts[sym] = (counts[sym] || 0) + 1;
+      }
+      for (const sym of symbols) result.set(sym, counts[sym] || 0);
+    }
+  } catch (err) {
+    console.warn(`[batchCountShifts24h] failed: ${err}`);
+  }
+  return result;
+}
