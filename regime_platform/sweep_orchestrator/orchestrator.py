@@ -198,6 +198,12 @@ class SweepOrchestrator:
             total,
             len(groups),
         )
+        for cron_expr, sym_list in groups.items():
+            logger.info(
+                "  Group [%s]: %s",
+                cron_expr,
+                [s["symbol"] for s in sym_list],
+            )
 
     def _reschedule_groups(self, groups: dict[str, list[dict[str, Any]]]) -> None:
         """Replace all sweep-* jobs to reflect current groups."""
@@ -300,9 +306,23 @@ class SweepOrchestrator:
                 logger.info("%s: locked — skipping (concurrent sweep)", symbol)
                 continue
 
+            result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
             try:
-                await self._process_symbol(sym, prices)
+                result = await self._process_symbol(sym, prices)
                 self._last_ok[symbol] = time.time()
+
+                await log_sweep_result({
+                    "symbol": symbol,
+                    "asset_class": sym.get("asset_class", ""),
+                    "source": "sweep-light",
+                    "regime": result["regime_label"],
+                    "regime_conf": round(result["regime_conf"], 4),
+                    "kelly_f": round(result["kelly_f"], 6),
+                    "markov_p_up": round(result["markov_p_up"], 4),
+                    "markov_p_dn": round(result["markov_p_dn"], 4),
+                    "sweep_window": "light",
+                    "sweep_duration_ms": int((time.time() - start_ts) * 1000),
+                })
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
                 await log_error(symbol, "sweep-light", str(exc)[:1000])
@@ -310,7 +330,13 @@ class SweepOrchestrator:
                 await self._redis.delete(lock_key)
 
             elapsed = time.time() - start_ts
-            logger.info("%s: done in %.1fs", symbol, elapsed)
+            logger.info(
+                "%s: done in %.1fs — regime=%s, kelly=%.3f",
+                symbol,
+                elapsed,
+                result["regime_label"],
+                result["kelly_f"],
+            )
 
             if i < len(symbols_to_process) - 1:
                 await asyncio.sleep(STAGGER_SECONDS)
@@ -322,8 +348,11 @@ class SweepOrchestrator:
         sym: dict[str, Any],
         prices: list[float],
         p_timesfm: float | None = None,
-    ) -> None:
-        """Run one light-sweep cycle for a single symbol."""
+    ) -> dict[str, Any]:
+        """Run one light-sweep cycle for a single symbol.
+
+        Returns a dict with sweep result fields for logging.
+        """
         symbol = sym["symbol"]
         np_prices = np.array(prices, dtype=float)
 
@@ -473,6 +502,17 @@ class SweepOrchestrator:
             prev_regime=prev_regime,
             regime_shift=regime_shift,
         )
+
+        return {
+            "regime_label": regime_label,
+            "regime_conf": regime_conf,
+            "kelly_f": kelly_f,
+            "markov_p_up": p_up,
+            "markov_p_dn": p_dn,
+            "signal": trade_signal["signal"],
+            "ev": ev_result.ev,
+            "p_win": ev_result.p_win,
+        }
 
     # ── Stale-symbol background check ─────────────────────────────
 
