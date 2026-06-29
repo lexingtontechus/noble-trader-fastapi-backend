@@ -2,10 +2,11 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Noble Trader Stack — Single-command launcher
 #
-# Starts three services on the same machine:
-#   Port 8001  – Main app  (HMM/Renko pipeline, auth, etc.)
-#   Port 8002  – TimesFM   (Google TimesFM 2.5 forecast API)
-#   Port 8000  – Gateway   (reverse proxy – this is the public-facing port)
+# Starts four services on the same machine:
+#   Port 8001  – Main app    (HMM/Renko pipeline, auth, etc.)
+#   Port 8002  – TimesFM     (Google TimesFM 2.5 forecast API)
+#   Port 8003  – Sweep Orch  (APScheduler-based sweep orchestrator)
+#   Port 8000  – Gateway     (reverse proxy – this is the public-facing port)
 #
 # Usage:
 #   chmod +x start.sh
@@ -31,6 +32,7 @@ echo "  Noble Trader Stack — starting up"
 echo "  Public port:  $PUBLIC_PORT"
 echo "  Main app:     http://127.0.0.1:8001"
 echo "  TimesFM:      http://127.0.0.1:8002"
+echo "  Sweep Orch:   http://127.0.0.1:8003"
 echo "  Gateway:      http://127.0.0.1:$PUBLIC_PORT"
 echo "═══════════════════════════════════════════════════════════════════════"
 
@@ -38,6 +40,7 @@ echo "════════════════════════�
 cleanup() {
     echo ""
     echo "Shutting down all services..."
+    kill "$ORCH_PID" 2>/dev/null || true
     kill "$MAIN_PID" 2>/dev/null || true
     kill "$TIMESFM_PID" 2>/dev/null || true
     kill "$GATEWAY_PID" 2>/dev/null || true
@@ -77,16 +80,23 @@ if command -v curl &>/dev/null; then
         echo "  ⚠ TimesFM not responding yet (model may still be loading — this is normal)"
 fi
 
-# ── 3. Gateway / Proxy (public port) ───────────────────────────────────────
+# ── 3. Sweep Orchestrator (port 8003) ───────────────────────────────────────
 echo ""
-echo "[3/3] Starting Gateway on port $PUBLIC_PORT..."
+echo "[3/4] Starting Sweep Orchestrator on port 8003..."
+SWEEP_ORCHESTRATOR_PORT=8003 python -m regime_platform.sweep_orchestrator &
+ORCH_PID=$!
+echo "  PID: $ORCH_PID"
+
+# ── 4. Gateway / Proxy (public port) ───────────────────────────────────────
+echo ""
+echo "[4/4] Starting Gateway on port $PUBLIC_PORT..."
 PORT="$PUBLIC_PORT" python proxy.py &
 GATEWAY_PID=$!
 echo "  PID: $GATEWAY_PID"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════"
-echo "  All services running. Gateway is live at http://0.0.0.0:$PUBLIC_PORT"
+echo "  All 4 services running. Gateway is live at http://0.0.0.0:$PUBLIC_PORT"
 echo "  Press Ctrl+C to stop all services."
 echo "═══════════════════════════════════════════════════════════════════════"
 

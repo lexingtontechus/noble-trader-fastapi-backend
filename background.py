@@ -2,7 +2,7 @@
 """
 Noble Trader Stack — Background Execution (Lightning AI "play" button)
 
-Starts both services as subprocesses and waits for them.
+Starts three services as subprocesses and waits for them.
 Use this as the Lightning AI "play" button entry point.
 """
 
@@ -34,12 +34,13 @@ signal.signal(signal.SIGINT, cleanup)
 signal.signal(signal.SIGTERM, cleanup)
 
 print("Starting Noble Trader background stack...")
-print("  Main app  → will bind to PORT or fall back to 8000")
-print("  TimesFM   → port 8002")
+print("  Main app    → will bind to PORT or fall back to 8000")
+print("  TimesFM     → port 8002")
+print("  Sweep Orch  → port 8003")
 
 # Start main app
 main_env = os.environ.copy()
-main_env["RATE_LIMIT_COMPUTE"] = "30/minute"  # sweep function calls from single IP
+main_env["RATE_LIMIT_COMPUTE"] = "30/minute"
 main_proc = subprocess.Popen(
     [sys.executable, "main.py"],
     env=main_env,
@@ -61,14 +62,25 @@ timesfm_proc = subprocess.Popen(
 processes.append(timesfm_proc)
 print(f"  PID timesfm: {timesfm_proc.pid}")
 
-print("\nBoth services running. Press Ctrl+C to stop.")
+# Start sweep orchestrator on port 8003
+orch_env = os.environ.copy()
+orch_env["SWEEP_ORCHESTRATOR_PORT"] = "8003"
+orch_proc = subprocess.Popen(
+    [sys.executable, "-m", "regime_platform.sweep_orchestrator"],
+    env=orch_env,
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+)
+processes.append(orch_proc)
+print(f"  PID orch: {orch_proc.pid}")
+
+print("\nAll 3 services running. Press Ctrl+C to stop.")
 print(f"  Public URL: https://8000-{os.environ.get('LIGHTNING_INSTANCE_ID', '')}.cloudspaces.litng.ai")
 
 try:
-    # Wait for both processes to complete
+    # Wait for all processes to complete
     while all(p.poll() is None for p in processes):
         time.sleep(1)
-    # If one exited, print which one
     for proc in processes:
         rc = proc.poll()
         if rc is not None:

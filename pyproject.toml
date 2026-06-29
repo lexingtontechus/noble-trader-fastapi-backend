@@ -50,6 +50,7 @@ dependencies = [
     "huggingface-hub>=1.0",
     "safetensors>=0.6",
     "gunicorn>=26.0.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]
