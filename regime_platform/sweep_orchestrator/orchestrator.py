@@ -320,9 +320,15 @@ class SweepOrchestrator:
                     "tp_bricks": result.get("tp_bricks", 5),
                     "regime": result["regime_label"],
                     "regime_conf": round(result["regime_conf"], 4),
-                    "kelly_f": round(result["kelly_f"], 6),
+                    "kelly_f": round(result.get("effective_kelly", result["kelly_f"]), 6),
                     "markov_p_up": round(result["markov_p_up"], 4),
                     "markov_p_dn": round(result["markov_p_dn"], 4),
+                    "sharpe": round(result.get("sharpe", 0), 4),
+                    "total_return": round(result.get("total_return", 0), 6),
+                    "annual_return": round(result.get("annual_return", 0), 6),
+                    "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
+                    "win_rate": round(result.get("win_rate", 0), 4),
+                    "n_trades": result.get("n_trades"),
                     "sweep_window": "light",
                     "sweep_duration_ms": int((time.time() - start_ts) * 1000),
                 })
@@ -370,15 +376,29 @@ class SweepOrchestrator:
 
         # ── 2. Kelly sizing ──
         returns = np.diff(np.log(np_prices)).tolist()
+        # Annualise factor: 8760 for 24/7 assets (crypto), 252 for stocks/ETFs
+        asset_class = sym.get("asset_class", "")
+        annualise_factor = 8760 if asset_class == "crypto" else 252
         kelly_result = self._sizer.size(
             PositionRequest(
                 returns=returns,
                 kelly_fraction=0.5,
                 target_vol=0.15,
                 regime=regime,
-            )
+            ),
+            annualise_factor=annualise_factor,
         )
         kelly_f = kelly_result.recommended_f
+
+        # ── 2b. Return statistics for Supabase ──
+        np_returns = np.array(returns, dtype=float)
+        total_return = float(np_prices[-1] / np_prices[0] - 1.0) if np_prices[0] > 0 else 0.0
+        annual_return = (1.0 + total_return) ** (8760 / max(len(returns), 1)) - 1.0
+        cum_returns = np.cumprod(1.0 + np_returns)
+        peak = np.maximum.accumulate(cum_returns)
+        drawdowns = (cum_returns - peak) / peak
+        max_drawdown_pct = float(np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+        win_rate = float(np.sum(np_returns > 0) / len(np_returns)) if len(np_returns) > 0 else 0.0
 
         # ── 3. Markov probabilities ──
         p_up, p_dn = _markov_probs(regime_label)
@@ -510,6 +530,7 @@ class SweepOrchestrator:
             "regime_label": regime_label,
             "regime_conf": regime_conf,
             "kelly_f": kelly_f,
+            "effective_kelly": effective_kelly,
             "markov_p_up": p_up,
             "markov_p_dn": p_dn,
             "brick_size": brick_size,
@@ -518,6 +539,12 @@ class SweepOrchestrator:
             "signal": trade_signal["signal"],
             "ev": ev_result.ev,
             "p_win": ev_result.p_win,
+            "sharpe": kelly_result.sharpe_ratio,
+            "total_return": round(total_return, 6),
+            "annual_return": round(annual_return, 6),
+            "max_drawdown_pct": round(max_drawdown_pct, 6),
+            "win_rate": round(win_rate, 4),
+            "n_trades": len(returns),
         }
 
     # ── Stale-symbol background check ─────────────────────────────
