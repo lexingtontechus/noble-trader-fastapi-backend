@@ -594,7 +594,9 @@ class RuntimeConfig:
                 # PostgREST may return a TIMESTAMPTZ as ISO string;
                 # skip bad values rather than crash the entire fetch.
                 log.warning(
-                    "Config value %r cannot be parsed as float", raw,
+                    "Config value %r cannot be parsed as float "
+                    "(check nt_system_config.value_type for this key)",
+                    raw,
                 )
                 return None
         elif value_type == ValueType.INT:

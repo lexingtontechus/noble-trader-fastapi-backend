@@ -331,6 +331,7 @@ class SweepOrchestrator:
                     "annual_return": round(result.get("annual_return", 0), 6),
                     "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
                     "win_rate": round(result.get("win_rate", 0), 4),
+                    "profit_factor": round(result.get("profit_factor", 0), 4),
                     "n_trades": result.get("n_trades"),
                     "sweep_window": "light",
                     "sweep_duration_ms": int((time.time() - start_ts) * 1000),
@@ -402,6 +403,19 @@ class SweepOrchestrator:
         drawdowns = (cum_returns - peak) / peak
         max_drawdown_pct = float(np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
         win_rate = float(np.sum(np_returns > 0) / len(np_returns)) if len(np_returns) > 0 else 0.0
+        gross_profit = float(np.sum(np_returns[np_returns > 0])) if np.any(np_returns > 0) else 0.0
+        gross_loss = abs(float(np.sum(np_returns[np_returns < 0]))) if np.any(np_returns < 0) else 0.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+        logger.info(
+            "%s: kelly breakdown — full=%s, frac=%s, vol_scaled=%s, regime_gated=%s, recommended=%s",
+            symbol,
+            kelly_result.full_kelly_f,
+            kelly_result.fractional_f,
+            kelly_result.vol_scaled_f,
+            kelly_result.regime_gated_f,
+            kelly_result.recommended_f,
+        )
 
         # ── 3. Markov probabilities ──
         p_up, p_dn = _markov_probs(regime_label)
@@ -547,6 +561,7 @@ class SweepOrchestrator:
             "annual_return": round(annual_return, 6),
             "max_drawdown_pct": round(max_drawdown_pct, 6),
             "win_rate": round(win_rate, 4),
+            "profit_factor": round(profit_factor, 4),
             "n_trades": len(returns),
         }
 
