@@ -112,11 +112,40 @@ async def main() -> None:
 
     su = bool(os.environ.get("SUPABASE_URL"))
     sk = bool(os.environ.get("SUPABASE_KEY"))
-    ru = bool(os.environ.get("REDIS_URL") or os.environ.get("UPSTASH_REDIS_REST_URL"))
-    print(f"[sweep-orch] SUPABASE_URL={'set' if su else 'NOT SET'}, SUPABASE_KEY={'set' if sk else 'NOT SET'}, Redis={'set' if ru else 'NOT SET'}", flush=True)
+    redis_url = os.environ.get("REDIS_URL", "")
+    upstash_url = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+    print(f"[sweep-orch] SUPABASE_URL={'set' if su else 'NOT SET'}, SUPABASE_KEY={'set' if sk else 'NOT SET'}", flush=True)
+    print(f"[sweep-orch] REDIS_URL={'set' if redis_url else 'NOT SET'}, UPSTASH_REDIS_REST_URL={'set' if upstash_url else 'NOT SET'}", flush=True)
 
     if not su or not sk:
         print("[sweep-orch] FATAL: Supabase not configured — sweeps cannot run", flush=True)
+
+    # Show the effective Redis URL (password masked)
+    from regime_platform.core.settings import settings as _settings
+    _effective = _settings.redis_url_effective
+    if _effective:
+        import re as _re
+        _masked = _re.sub(r':([^@]+)@', ':****@', _effective)
+        print(f"[sweep-orch] Effective Redis URL: {_masked}", flush=True)
+
+        # Test connection directly
+        try:
+            import redis.asyncio as _aioredis
+            _test_client = _aioredis.from_url(
+                _effective,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+                decode_responses=True,
+            )
+            await _test_client.ping()
+            print("[sweep-orch] Redis PING: OK", flush=True)
+            await _test_client.aclose()
+        except Exception as _e:
+            print(f"[sweep-orch] Redis PING: FAILED — {_e}", flush=True)
+            import traceback as _tb
+            _tb.print_exc()
+    else:
+        print("[sweep-orch] Effective Redis URL: (empty — no Redis configured)", flush=True)
 
     orch = SweepOrchestrator()
     await orch.start()
