@@ -181,10 +181,13 @@ class SweepOrchestrator:
             return
 
         # Group by regime_cron expression
+        # Support multi-expression cron (e.g. "5,20 * * * 1-5 / 35 * * * 0,6")
+        # by splitting on " / " and assigning the symbol to each part.
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for sym in symbols:
-            cron = sym.get("regime_cron", "*/15 * * * *")
-            groups[cron].append(sym)
+            cron_raw = sym.get("regime_cron", "*/15 * * * *")
+            for cron in self._split_cron(cron_raw):
+                groups[cron].append(sym)
 
         # Sort within groups for deterministic stagger order
         for cron in groups:
@@ -602,6 +605,37 @@ class SweepOrchestrator:
                 await asyncio.sleep(STAGGER_SECONDS)
 
     # ── Helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _split_cron(cron_raw: str) -> list[str]:
+        """Split a possibly multi-expression cron string.
+
+        Supports formats like:
+          "5,20,35,50 * * * 1-5 / 5,35 * * * 0,6"  (weekday + weekend)
+          "*/15 * * * *"                             (single expression)
+
+        The ``/`` is a standalone token separating two 5-field expressions.
+        Returns a list of individual 5-field cron expressions.
+        """
+        tokens = cron_raw.strip().split()
+        if "/" in tokens:
+            idx = tokens.index("/")
+            before = " ".join(tokens[:idx])
+            after = " ".join(tokens[idx + 1:])
+            valid = []
+            for expr in (before, after):
+                fields = expr.split()
+                if len(fields) == 5:
+                    valid.append(expr)
+                else:
+                    logger.warning("Skipping invalid cron sub-expression: %r", expr)
+            return valid or ["*/15 * * * *"]
+
+        if len(tokens) == 5:
+            return [cron_raw.strip()]
+
+        logger.warning("Skipping invalid cron expression: %r", cron_raw)
+        return ["*/15 * * * *"]
 
     async def _load_brick_params(self, symbol: str) -> tuple[float, int, int]:
         """Load brick_size, sl_bricks, tp_bricks from Redis config or defaults."""
