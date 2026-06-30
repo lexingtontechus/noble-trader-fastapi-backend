@@ -99,7 +99,10 @@ async def log_regime_entry(
                 json=payload,
             )
             if not resp.is_success:
-                logger.warning("log_regime_entry %s: HTTP %d", symbol, resp.status_code)
+                logger.warning(
+                    "log_regime_entry %s: HTTP %d — %s",
+                    symbol, resp.status_code, resp.text[:300],
+                )
     except Exception as exc:
         logger.warning("log_regime_entry %s failed: %s", symbol, exc)
 
@@ -117,7 +120,10 @@ async def log_sweep_result(payload: dict[str, Any]) -> None:
                 json=payload,
             )
             if not resp.is_success:
-                logger.warning("log_sweep_result: HTTP %d", resp.status_code)
+                logger.warning(
+                    "log_sweep_result: HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
     except Exception as exc:
         logger.warning("log_sweep_result failed: %s", exc)
 

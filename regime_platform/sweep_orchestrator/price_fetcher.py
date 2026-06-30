@@ -114,11 +114,13 @@ async def fetch_alpaca_candles(
         "APCA-API-SECRET-KEY": secret_key,
     }
 
-    start = __import__("datetime").datetime.fromtimestamp(
-        __import__("time").time() - hours * 3600
+    _dt = __import__("datetime")
+    _tz = _dt.timezone.utc
+    start = _dt.datetime.fromtimestamp(
+        __import__("time").time() - hours * 3600, tz=_tz
     ).isoformat()
-    end = __import__("datetime").datetime.fromtimestamp(
-        __import__("time").time() - 16 * 60  # 16 min buffer for free tier
+    end = _dt.datetime.fromtimestamp(
+        __import__("time").time() - 16 * 60, tz=_tz  # 16 min buffer for free tier
     ).isoformat()
 
     is_crypto = "/" in alpaca_symbol
@@ -127,19 +129,27 @@ async def fetch_alpaca_candles(
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             if is_crypto:
-                url = (
-                    f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars"
-                    f"?symbols={alpaca_symbol}&timeframe={timeframe}"
-                    f"&start={start}&end={end}&limit=10000"
-                )
+                url = f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars"
+                params = {
+                    "symbols": alpaca_symbol,
+                    "timeframe": timeframe,
+                    "start": start,
+                    "end": end,
+                    "limit": 10000,
+                }
             else:
                 url = (
                     f"{ALPACA_DATA_URL}/v2/stocks/{alpaca_symbol}/bars"
-                    f"?timeframe={timeframe}&start={start}&end={end}"
-                    f"&limit=10000&adjustment=raw"
                 )
+                params = {
+                    "timeframe": timeframe,
+                    "start": start,
+                    "end": end,
+                    "limit": 10000,
+                    "adjustment": "raw",
+                }
 
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, params=params)
             resp.raise_for_status()
             data = resp.json()
 

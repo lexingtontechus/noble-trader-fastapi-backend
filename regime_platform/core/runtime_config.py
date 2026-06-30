@@ -151,8 +151,14 @@ class RuntimeConfig:
             rows = resp.json()
             entries = []
             for row in rows:
-                entry = self._row_to_entry(row)
-                entries.append(entry)
+                try:
+                    entry = self._row_to_entry(row)
+                    entries.append(entry)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to parse config row key=%r: %s",
+                        row.get("key"), exc,
+                    )
             return entries
         except Exception as exc:
             log.warning("Failed to fetch config from DB: %s", exc)
@@ -582,7 +588,15 @@ class RuntimeConfig:
             return None
 
         if value_type == ValueType.FLOAT:
-            return float(raw)
+            try:
+                return float(raw)
+            except (ValueError, TypeError):
+                # PostgREST may return a TIMESTAMPTZ as ISO string;
+                # skip bad values rather than crash the entire fetch.
+                log.warning(
+                    "Config value %r cannot be parsed as float", raw,
+                )
+                return None
         elif value_type == ValueType.INT:
             return int(float(raw))  # float() handles "10.0" -> 10
         elif value_type == ValueType.BOOL:
