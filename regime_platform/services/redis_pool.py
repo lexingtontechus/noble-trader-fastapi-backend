@@ -56,13 +56,10 @@ class RedisConnectionManager:
         is backed by the connection pool and should NOT be closed by
         callers - the pool manages the connection lifecycle.
         """
-        if not self._enabled:
-            return None
-
         if self._pool is None:
             await self._initialize()
 
-        return self._pool
+        return self._pool if self._enabled else None
 
     async def _initialize(self):
         """Initialize the shared connection pool."""
