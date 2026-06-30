@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     """
 
     model_config = {
-        "env_file": ".env",
+        "env_file": [".env", ".env.local"],
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
@@ -88,19 +88,17 @@ class Settings(BaseSettings):
 
     # ── Redis ───────────────────────────────────────────────────────────────
     REDIS_URL: str = ""
-
+    UPSTASH_REDIS_REST_URL: str = ""
+    UPSTASH_REDIS_REST_TOKEN: str = ""
+    
     @property
     def redis_url_effective(self) -> str:
         """Return REDIS_URL, falling back to UPSTASH_REDIS_REST_URL if set."""
         if self.REDIS_URL:
             return self.REDIS_URL
-        import os
-        upstash = os.environ.get("UPSTASH_REDIS_REST_URL", "")
-        if upstash:
-            # Convert https://...upstash.io -> rediss://...upstash.io:6379
-            # and append the token as the password
-            token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-            host = upstash.replace("https://", "").rstrip("/")
+        if self.UPSTASH_REDIS_REST_URL:
+            token = self.UPSTASH_REDIS_REST_TOKEN
+            host = self.UPSTASH_REDIS_REST_URL.replace("https://", "").rstrip("/")
             return f"rediss://:{token}@{host}:6379"
         return ""
 
