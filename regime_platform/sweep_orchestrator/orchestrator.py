@@ -394,6 +394,31 @@ class SweepOrchestrator:
         )
         kelly_f = kelly_result.recommended_f
 
+        # ── 2a. Kelly edge diagnostics ──
+        _mu = float(np.mean(np.array(returns, dtype=float)))
+        _sigma2 = float(np.var(np.array(returns, dtype=float), ddof=1))
+        logger.info(
+            "%s: kelly math — mu=%.8f, sigma2=%.8f, mu/sigma2=%.4f, "
+            "full=%s, frac=%s, vol_scaled=%s, regime_gated=%s, recommended=%s",
+            symbol, _mu, _sigma2, (_mu / _sigma2 if _sigma2 > 0 else 0.0),
+            kelly_result.full_kelly_f, kelly_result.fractional_f,
+            kelly_result.vol_scaled_f, kelly_result.regime_gated_f,
+            kelly_result.recommended_f,
+        )
+
+        # ── 2b. Regime-based Kelly floor ──
+        # Hourly returns are noisy; mean can be ≤ 0 even in a strong bull
+        # regime, driving raw Kelly to 0. When the HMM is confidently
+        # directional, apply a floor so the sizer never returns 0.
+        if kelly_f == 0.0 and regime_label not in ("unknown", "market_closed", "neutral"):
+            # Scale the floor by regime confidence (0.5–0.99 → 0.02–0.06)
+            _floor = 0.04 * max(0.0, min(1.0, (regime_conf - 0.5) * 2.0))
+            kelly_f = round(min(_floor, 0.06), 6)
+            logger.info(
+                "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, regime=%s)",
+                symbol, kelly_f, regime_conf, regime_label,
+            )
+
         # ── 2b. Return statistics for Supabase ──
         np_returns = np.array(returns, dtype=float)
         total_return = float(np_prices[-1] / np_prices[0] - 1.0) if np_prices[0] > 0 else 0.0
@@ -406,16 +431,6 @@ class SweepOrchestrator:
         gross_profit = float(np.sum(np_returns[np_returns > 0])) if np.any(np_returns > 0) else 0.0
         gross_loss = abs(float(np.sum(np_returns[np_returns < 0]))) if np.any(np_returns < 0) else 0.0
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
-
-        logger.info(
-            "%s: kelly breakdown — full=%s, frac=%s, vol_scaled=%s, regime_gated=%s, recommended=%s",
-            symbol,
-            kelly_result.full_kelly_f,
-            kelly_result.fractional_f,
-            kelly_result.vol_scaled_f,
-            kelly_result.regime_gated_f,
-            kelly_result.recommended_f,
-        )
 
         # ── 3. Markov probabilities ──
         p_up, p_dn = _markov_probs(regime_label)
