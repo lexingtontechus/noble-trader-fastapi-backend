@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from regime_platform.core.settings import settings
 
@@ -329,43 +329,11 @@ class TradingHeartbeat:
             log.debug("TradingHeartbeat delete failed for %s: %s", symbol, exc)
             return False
 
-    # ── Config Cache Operations ───────────────────────────────────────
-
-    async def cache_config(self, symbol: str, config_dict: Dict[str, Any]) -> bool:
-        """
-        Cache a RenkoConfig in Redis for fast retrieval.
-
-        The config is stored as a flat hash of string values.
-        A config_ts timestamp is added for staleness detection.
-        """
-        if not self._enabled:
-            return False
-        try:
-            client = await self._get_client()
-            if client is None:
-                return False
-
-            key = f"{CONFIG_PREFIX}{symbol}"
-            mapping = {}
-            for k, v in config_dict.items():
-                # Skip non-serializable values (enums, nested dicts)
-                if isinstance(v, (str, int, float, bool)):
-                    mapping[k] = str(v)
-                elif hasattr(v, "value"):  # Enum
-                    mapping[k] = str(v.value)
-                # Skip complex types (lists, dicts, None)
-
-            mapping["config_ts"] = str(time.time())
-
-            pipe = client.pipeline(transaction=False)
-            pipe.hset(key, mapping=mapping)
-            pipe.expire(key, CONFIG_TTL)
-            await pipe.execute()
-
-            return True
-        except Exception as exc:
-            log.debug("TradingHeartbeat cache_config failed for %s: %s", symbol, exc)
-            return False
+    # ── Config Cache Reads ──────────────────────────────────────────
+    # NOTE: ``trading:config:*`` is written exclusively by the
+    # SweepOrchestrator (regime_platform/sweep_orchestrator/orchestrator.py)
+    # as a pipelined HSET + EXPIRE, including a ``config_ts`` field so the
+    # staleness check below stays meaningful. There is no writer here.
 
     async def get_config(self, symbol: str) -> Optional[Dict[str, str]]:
         """

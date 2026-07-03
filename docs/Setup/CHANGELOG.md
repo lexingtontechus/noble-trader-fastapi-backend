@@ -1,21 +1,21 @@
 ## [8.0.0] - 2026-06-27
 
-### Added — True Signal Gateway (Edge Function PUBLISH)
+### Added — True Signal Gateway (Redis PUBLISH)
 
-- **`PUBLISH agent:{symbol}` in edge function** (`sweep/index.deployed.ts` line 3609+) — after `redisSetConfig()` writes the full config hash, 4 True Signal gates are applied. If all pass, the config payload is published to `agent:{symbol}` via Redis PUBLISH. This eliminates the need for external agents to poll `HGETALL trading:config:{symbol}`.
-- **`agent:{symbol}` Pub/Sub channel** — external agents subscribe and receive pushes only when a True Signal occurs. The edge function already has all data (regime, EV, TimesFM, signal) in local variables — no extra Redis reads needed.
+- **`PUBLISH agent:{symbol}`** — after the SweepOrchestrator writes the full config hash to Redis, the payload is published to the `agent:{symbol}` pub/sub channel. External agents subscribe and receive pushes only when a True Signal occurs. The orchestrator already has all computed data (regime, EV, signal) in local variables — no extra Redis reads needed.
+- **`agent:{symbol}` Pub/Sub channel** — external DOOM agents subscribe and receive heartbeat + signal payloads. **Note:** `agent:{symbol}` is a pub/sub channel, not a Redis key — it will not appear under `KEYS`/`SCAN`. Validate with `PUBSUB NUMSUB agent:{symbol}`.
 
 ### Changed — Decoupled Liveness from State
 
-- **Removed per-tick `trading:heartbeat:{symbol}` writes** — the Python backend no longer writes heartbeat on every tick (lines 757-770 of `router.py` commented out). The heartbeat is now exclusively written by the edge function every 15 minutes (liveness-only).
-- **Removed per-snapshot `trading:config:{symbol}` cache writes** — `_save_snapshot()` no longer calls `trading_heartbeat.cache_config()`. The config hash is updated by the edge function every cycle; the Python backend only reads it.
+- **Removed per-tick `trading:heartbeat:{symbol}` writes** — the Python backend no longer writes heartbeat on every tick (lines 757-770 of `router.py` commented out). The heartbeat is now written by the SweepOrchestrator on LightningAI every sweep cycle (liveness-only).
+- **Removed per-snapshot `trading:config:{symbol}` cache writes** — `_save_snapshot()` no longer calls `trading_heartbeat.cache_config()` (method removed). The config hash is written exclusively by the SweepOrchestrator as a pipelined HSET + EXPIRE; the Python backend only reads it via `get_config()`.
 - **Removed periodic 100th-tick L1 snapshot checkpoint** — `_save_snapshot()` in `router.py` now only fires on position events (`result.get("filtered")` or `result.get("trade_result")`), not on `brick_count % 100 == 0`. Reduces Redis SET volume by ~90%.
 
-### Optimized — Edge Function Config Writes
+### Optimized — Config Writes
 
-- **`redisUpdateSignal()` now conditional** — on regime shift or initial write cycles, `redisUpdateSignal()` is skipped because `redisSetConfig()` already writes all signal/EV/TimesFM fields. Only runs on non-shift cycles. Eliminates the duplicate HSET to `trading:config:{symbol}` per shift cycle (~50% reduction in edge function config write commands).
+- **`redisUpdateSignal()` now conditional** — on regime shift or initial write cycles, `redisUpdateSignal()` is skipped because `redisSetConfig()` already writes all signal/EV/TimesFM fields. Only runs on non-shift cycles. Eliminates the duplicate HSET to `trading:config:{symbol}` per shift cycle (~50% reduction in config write commands).
 
-### The 4 Gates (Edge Function, Light-Regime Path Only)
+### The 4 Gates (Light-Regime Path Only)
 
 1. **Regime Shift Hard Block** — no regime shift in last 300s (5-min cooldown)
 2. **Shift Velocity Cap** — < 3 shifts in 24h (not turbulent)
@@ -52,9 +52,11 @@
 ### Infrastructure
 
 - **No `.env` changes needed for LightningAI** — secrets injected as env vars are read automatically by `pydantic-settings`
-- **Edge functions** — the Supabase Edge Functions (`sweep`, `heavy-sweep`, `light-regime`) contain a separate TypeScript EV engine implementation that still uses `p_imbalance` internally. These are independent Deno deployments and are unaffected by the Python backend changes
+- **Edge functions** — the Supabase Edge Functions (`sweep`, `heavy-sweep`, `light-regime`) are **deprecated**. The unified engine is the Python `SweepOrchestrator` on **LightningAI** (APScheduler-driven, reads cron schedules from `nt_symbol.regime_cron`). The edge function code is retained in `supabase/functions/` for reference only.
 
 ### Changed — Cron Schedules (Migrations 026 + 027)
+
+> **NOTE:** These Supabase pg_cron schedules are now deprecated for sweep invocation. The SweepOrchestrator on LightningAI reads per-symbol `regime_cron` values from the `nt_symbol` table directly. The migration SQL below documents the historical schedule structure; the `nt_symbol.regime_cron` column values match this cadence.
 
 - **Heavy sweeps moved to weekends only** — all `sweep-heavy-*` cron jobs now fire on Saturday/Sunday only (`0,6` DOW) at 20:00 UTC. Previously ran 6×/day for crypto and weekdays for stocks
 - **Light stock sweeps reshaped to US market cycle** — split into peak (15min frequency 12:00-21:00 UTC) and off-peak (1hr frequency 21:00-12:00 UTC) windows. ~50% reduction in daily runs

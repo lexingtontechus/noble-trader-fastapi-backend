@@ -27,6 +27,7 @@ from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine
 from regime_platform.services.redis_pool import redis_pool
+from renko.trading_heartbeat import CONFIG_TTL
 from regime_platform.sweep_orchestrator.market_hours import is_market_open
 from regime_platform.sweep_orchestrator.price_fetcher import (
     fetch_latest_candles,
@@ -471,8 +472,12 @@ class SweepOrchestrator:
         self._last_regime[symbol] = regime_label
 
         # ── 8. Write to Redis ──
+        # Single pipelined round-trip: config hash (+ TTL), heartbeat, and
+        # the DOOM-agent pub/sub heartbeat. Bundling cuts 3 round-trips to 1.
         decimals = _price_decimals(symbol)
         config_key = f"trading:config:{symbol}"
+        heartbeat_key = f"trading:heartbeat:{symbol}"
+        agent_channel = f"agent:{symbol}"
         now_ms = int(time.time() * 1000)
 
         config_dict: dict[str, str | float] = {
@@ -502,48 +507,42 @@ class SweepOrchestrator:
             "prev_regime": prev_regime or "",
             "shift_at": str(now_ms) if regime_shift else "0",
             "price_decimals": decimals,
+            # config_ts (float seconds) lets get_config()'s staleness check
+            # treat orchestrator-written keys consistently with the TTL below.
+            "config_ts": round(time.time(), 3),
         }
         if cal:
             config_dict["calibration_bias"] = round(cal["bias"], 4)
             config_dict["calibration_status"] = cal["status"]
 
-        await self._redis.hset(config_key, mapping=config_dict)
+        agent_payload = json.dumps({
+            "type": "heartbeat",
+            "symbol": symbol,
+            "ts": now_ms,
+            "regime": regime_label,
+            "regime_conf": round(regime_conf, 4),
+            "signal": trade_signal["signal"],
+            "entry_price": round(trade_signal["entry_price"], decimals),
+            "stop_loss": round(trade_signal["stop_loss"], decimals),
+            "take_profit": round(trade_signal["take_profit"], decimals),
+            "aggression": ev_result.aggression,
+            "brick_size": brick_size,
+            "sl_bricks": sl_bricks,
+            "tp_bricks": tp_bricks,
+            "kelly_f": round(kelly_f, 6),
+            "ev": round(ev_result.ev, 4),
+            "p_win": round(ev_result.p_win, 4),
+            "regime_shift": "true" if regime_shift else "false",
+            "prev_regime": prev_regime or "",
+        })
 
-        # ── 9. Heartbeat ──
         ttl = sym.get("heartbeat_ttl_seconds", 900)
-        await self._redis.set(
-            f"trading:heartbeat:{symbol}",
-            str(now_ms),
-            ex=ttl,
-        )
-
-        # ── 10. Pub/Sub heartbeat for DOOM agents ──
-        try:
-            await self._redis.publish(
-                f"agent:{symbol}",
-                json.dumps({
-                    "type": "heartbeat",
-                    "symbol": symbol,
-                    "ts": now_ms,
-                    "regime": regime_label,
-                    "regime_conf": round(regime_conf, 4),
-                    "signal": trade_signal["signal"],
-                    "entry_price": round(trade_signal["entry_price"], decimals),
-                    "stop_loss": round(trade_signal["stop_loss"], decimals),
-                    "take_profit": round(trade_signal["take_profit"], decimals),
-                    "aggression": ev_result.aggression,
-                    "brick_size": brick_size,
-                    "sl_bricks": sl_bricks,
-                    "tp_bricks": tp_bricks,
-                    "kelly_f": round(kelly_f, 6),
-                    "ev": round(ev_result.ev, 4),
-                    "p_win": round(ev_result.p_win, 4),
-                    "regime_shift": "true" if regime_shift else "false",
-                    "prev_regime": prev_regime or "",
-                }),
-            )
-        except Exception:
-            pass  # non-critical
+        pipe = self._redis.pipeline(transaction=False)
+        pipe.hset(config_key, mapping=config_dict)
+        pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
+        pipe.set(heartbeat_key, str(now_ms), ex=ttl)
+        pipe.publish(agent_channel, agent_payload)
+        await pipe.execute()
 
         # ── 11. Log to Supabase ──
         await log_regime_entry(
@@ -668,15 +667,22 @@ class SweepOrchestrator:
         return ["*/15 * * * *"]
 
     async def _load_brick_params(self, symbol: str) -> tuple[float, int, int]:
-        """Load brick_size, sl_bricks, tp_bricks from Redis config or defaults."""
+        """Load brick_size, sl_bricks, tp_bricks from Redis config or defaults.
+
+        Uses ``hmget`` to fetch only the three fields actually needed rather
+        than the full ~28-field hash — cheaper on every run, and on a cold
+        start (new Redis instance) it returns ``None`` values that fall back
+        to the defaults below.
+        """
         try:
-            config = await self._redis.hgetall(f"trading:config:{symbol}")
-            if config:
-                return (
-                    float(config.get("brick_size", 0.5)),
-                    int(config.get("sl_bricks", 3)),
-                    int(config.get("tp_bricks", 5)),
-                )
+            brick_size_s, sl_s, tp_s = await self._redis.hmget(
+                f"trading:config:{symbol}", "brick_size", "sl_bricks", "tp_bricks"
+            )
+            return (
+                float(brick_size_s) if brick_size_s is not None else 0.5,
+                int(sl_s) if sl_s is not None else 3,
+                int(tp_s) if tp_s is not None else 5,
+            )
         except Exception:
             pass
         return (0.5, 3, 5)

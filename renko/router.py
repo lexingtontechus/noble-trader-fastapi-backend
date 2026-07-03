@@ -756,11 +756,10 @@ if FASTAPI_AVAILABLE:
             asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
         # ── v8.0 REMOVED: per-tick trading heartbeat writes ──────
-        # Heartbeat is now exclusively written by the edge function
-        # every 15 minutes (liveness). The Python backend no longer
+        # Heartbeat is now written by the SweepOrchestrator on LightningAI
+        # every sweep cycle (liveness). The Python backend no longer
         # writes to trading:heartbeat:{symbol} on every tick.
-        # Aggregation Dispatcher relied on this for O(1) state checks
-        # but the agent now subscribes to agent:{symbol} for signals
+        # The agent subscribes to agent:{symbol} for signals
         # and polls trading:heartbeat:{symbol} at 15-min cadence.
         #
         # if has_position_event:
@@ -2166,14 +2165,12 @@ async def _save_snapshot(
         brick_size = snap["config"].get("brick_size", 0.50)
 
         # ── v8.0 REMOVED: per-snapshot heartbeat + config writes ──
-        # trading:heartbeat:{symbol} is now liveness-only (edge fn,
-        # every 15 min). trading:config:{symbol} is Golden State,
-        # only written on True Signal via AgentPublisher.
+        # trading:heartbeat:{symbol} is now liveness-only (written by the
+        # SweepOrchestrator on LightningAI every sweep cycle). trading:config:{symbol}
+        # is the Golden State, written exclusively by the SweepOrchestrator.
         #
         # asyncio.create_task(trading_heartbeat.update_from_pipeline(symbol, pipeline))
         # asyncio.create_task(trading_heartbeat.update(symbol, snapshot_ts=time.time()))
-        #
-        # asyncio.create_task(trading_heartbeat.cache_config(symbol, config_dict))
 
         # ── Dual-write: Redis L1 (fast, always non-blocking) ──
         if renko_cache.enabled:

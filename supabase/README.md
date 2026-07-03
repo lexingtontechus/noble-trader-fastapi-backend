@@ -1,5 +1,7 @@
 # Noble Trader Admin
 
+> **DEPRECATED — Supabase Edge Functions (Deno) as the sweep engine.** The Python `SweepOrchestrator` on **LightningAI** is now the unified engine. Supabase PostgreSQL remains the system-of-record for the symbol registry (`nt_symbol`), per-symbol cron schedules (`regime_cron`), sweep results, and regime history — read by the orchestrator. The `supabase/functions/` code below is retained for reference/rollback only.
+
 **Intelligent Trading Dashboard — HMM Regime Detection, EV Engine v3, TimesFM Foundation Model, Parameter Optimization & AI-Powered Market Intelligence**
 
 Noble Trader Admin is a production-grade Next.js dashboard that orchestrates a three-tier Intelligence system across 14 symbols (3 HyperLiquid perps + 2 Alpaca crypto spot + 9 Alpaca stocks/ETFs). It combines Hidden Markov Model regime detection with a blended EV Engine v3 (regime + L2 imbalance + Markov transition + TimesFM foundation model), automated parameter sweeps with vectorized GPU inference, Kelly fraction sizing, aggression dispatching, AI-generated market briefings, a calibration loop for bias detection, lead/lag correlation adjustment, tail-risk overlays, and shift-aware wakeups. SPY and QQQ ETFs provide broad-market regime context.
@@ -20,26 +22,33 @@ Noble Trader Admin is a production-grade Next.js dashboard that orchestrates a t
           │                  ▲
           ▼                  │
   ┌──────────────────────────────────────────────────────────┐
-  │          Supabase (PostgreSQL + Edge Functions            │
-  │  ┌─────────────┐  ┌─────────────────────────────────┐   │
-  │  │  pg_cron +   │  │  Edge Functions                  │   │
-  │  │  pg_net      │  │  • sweep (unified)               │   │
-  │  │  (Scheduler) │  │    - mode=heavy                  │   │
-  │  └──────┬───────┘  │    - mode=light                  │   │
-  │         │          │    - action=sync-allowlist       │   │
-  │         │          │    - action=sync-calibration     │   │
-  │         └──────────│    - vectorized TimesFM batch    │   │
-  │                    │    - calibration bias queries    │   │
-  │                    │    - sweep fatigue skip logic    │   │
-  │                    │    - shift-aware wakeups         │   │
-  │                    └──────────┬──────────────────────┘   │
-  │                               ▼                          │
-  │  ┌─────────────────────────────────────────────────┐    │
-  │  │  Lightning AI — TimesFM T4 GPU Instance          │    │
-  │  │  • /forecast/batch  (batched 14-symbol inference)│    │
-  │  │  • /forecast        (single-symbol fallback)     │    │
-  │  │  • /health          (status check)               │    │
-  │  └─────────────────────────────────────────────────┘    │
+  │          Supabase (PostgreSQL — Data + Schedule Store)     │
+  │  ┌──────────────────────────────────────────────────┐    │
+  │  │  nt_symbol table  — active symbols, cron schedule│    │
+  │  │  nt_sweep_results — sweep history                │    │
+  │  │  nt_regime_log    — regime shifts               │    │
+  │  │  nt_system_config — runtime configuration        │    │
+  │  └──────────────────────────────────────────────────┘    │
+  │  [DEPRECATED] Edge Functions (sweep) — replaced by       │
+  │  SweepOrchestrator on LightningAI (see below).            │
+  │  supabase/functions/ retained for reference/rollback.    │
+  └──────────────────────────────────────────────────────────┘
+                       │
+          ┌────────────┘ reads symbols + cron schedule
+          ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │  LightningAI — Unified Sweep Engine                      │
+  │  SweepOrchestrator (Python, APScheduler)                 │
+  │  • Reads nt_symbol + regime_cron from Supabase           │
+  │  • Runs HMM regime detection + Kelly sizing + EV Engine   │
+  │  • Writes trading:config:{sym}, trading:heartbeat:{sym}  │
+  │  • PUBLISHes agent:{sym} (DOOM agent pub/sub heartbeat)  │
+  │  • Logs sweep results + regime shifts to Supabase        │
+  │                                                           │
+  │  TimesFM GPU Instance (T4) — batched inference endpoint   │
+  │  • /forecast/batch  (batched 14-symbol inference)         │
+  │  • /forecast        (single-symbol fallback)            │
+  │  • /health          (status check)                       │
   └──────────────────────────────────────────────────────────┘
                        │
                        │ Redis writes signals + cal bias
@@ -295,9 +304,9 @@ Both tiers are modes of `supabase/functions/sweep/index.ts`:
 |---|---|
 | **Database** | Prisma ORM (SQLite) + Supabase (PostgreSQL) |
 | **Cache/Config** | Upstash Redis (REST API) |
-| **Scheduler** | pg_cron + pg_net (Supabase) |
-| **Edge Functions** | Supabase Edge Functions (Deno runtime) |
-| **Trading Engine** | Noble Trader FastAPI Backend (Render) |
+| **Scheduler** | pg_cron + pg_net (Supabase) — [DEPRECATED] for sweep invocation; orchestrator reads `regime_cron` from `nt_symbol` table directly |
+| **Edge Functions** | Supabase Edge Functions (Deno runtime) — **DEPRECATED**; replaced by SweepOrchestrator on LightningAI |
+| **Trading Engine** | SweepOrchestrator (Python) on **LightningAI** + Noble Trader FastAPI Backend (Render) |
 | **Market Data** | HyperLiquid API (perpetual futures), Yahoo Finance (stocks/forex/commodities) |
 | **Foundation Model** | TimesFM (Google) on Lightning AI T4 GPU — zero-shot forecasting |
 | **EV Engine** | v3 — Blended P_win (regime + imbalance + Markov + TimesFM), Aggression Dispatcher, Bayesian Updater w/ TimesFM prior, Tail Risk Overlay, Regime Shift Meta-Signal |
@@ -309,17 +318,10 @@ Both tiers are modes of `supabase/functions/sweep/index.ts`:
 
 ```
 ├── supabase/
-│   ├── functions/
+│   ├── functions/                    # [DEPRECATED] Supabase Edge Functions — replaced by SweepOrchestrator on LightningAI
 │   │   ├── sweep/
-│   │   │   ├── index.ts            # Unified sweep fn (mode=heavy|light|warmup|sync-allowlist|sync-calibration)
-│   │   │   │                      #   + vectorized TimesFM batch inference
-│   │   │   │                      #   + lead/lag correlation adjustment
-│   │   │   │                      #   + cold-start path (warming_up)
-│   │   │   │                      #   + shift-aware wakeups
-│   │   │   │                      #   + sweep fatigue skip logic
-│   │   │   │                      #   + tail risk assessment
-│   │   │   │                      #   + calibration bias query + write
-│   │   │   └── index.deployed.ts   # Self-contained bundle (utils.ts inlined) for deploy
+│   │   │   ├── index.ts            # [DEPRECATED] Unified sweep fn — retained for reference/rollback
+│   │   │   └── index.deployed.ts   # [DEPRECATED] Self-contained bundle — retained for reference/rollback
 │   │   ├── heavy-sweep/index.ts    # [DEPRECATED] replaced by sweep, kept for rollback
 │   │   ├── light-regime/index.ts   # [DEPRECATED] replaced by sweep, kept for rollback
 │   │   └── _shared/

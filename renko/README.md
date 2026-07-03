@@ -268,19 +268,21 @@ This avoids a blank screen during the 10-30 second warm-up process and provides 
 
 ## True Signal Gateway (v8.0)
 
-The True Signal Gateway decouples **liveness** from **state** to eliminate the need for external agents to poll Redis hashes. Gating and PUBLISH happen in the **edge function** (`sweep/index.deployed.ts`), not in the Python backend — the edge function already has all computed data (regime, EV, TimesFM, signal) in local variables, so no extra Redis reads are needed.
+The True Signal Gateway decouples **liveness** from **state** to eliminate the need for external agents to poll Redis hashes. The **SweepOrchestrator on LightningAI** writes all Redis state and publishes pub/sub heartbeats in a single pipelined round-trip per symbol per sweep cycle. Edge functions are **deprecated** — `supabase/functions/` is retained for reference only.
+
+> **NOTE:** `agent:{symbol}` is a Redis pub/sub **channel**, not a key. It will never appear under `KEYS`/`SCAN`. Validate with `PUBSUB NUMSUB agent:{symbol}`.
 
 ### Separation of Concerns
 
 | Key | Role | Written By | Frequency |
 |-----|------|-----------|----------|
-| `trading:heartbeat:{symbol}` | **Liveness** — proves system is alive | Edge function sweep | Every 15 min |
-| `trading:config:{symbol}` | **Full State** — always written for reference | Edge function sweep | Every 15 min |
-| `agent:{symbol}` (Pub/Sub) | **True Signal Push** — only when all gates pass | Edge function sweep | On True Signal only |
+| `trading:heartbeat:{symbol}` | **Liveness** — proves system is alive | SweepOrchestrator (LightningAI) | Every sweep cycle |
+| `trading:config:{symbol}` | **Full State** — always written for reference | SweepOrchestrator (LightningAI) | Every sweep cycle (1h TTL) |
+| `agent:{symbol}` (Pub/Sub) | **Signal Push** — heartbeat + signal data | SweepOrchestrator (LightningAI) | Every sweep cycle |
 
 ### The 4 Gates
 
-Applied in the edge function right after `redisSetConfig()` (line 3609 of `index.deployed.ts`):
+Applied by the SweepOrchestrator after computing the full config payload:
 
 1. **Regime Shift Hard Block** — No regime shift in the last 300s (5-min cooldown)
 2. **Shift Velocity Cap** — < 3 regime shifts in the last 24h (market not turbulent)
@@ -289,11 +291,11 @@ Applied in the edge function right after `redisSetConfig()` (line 3609 of `index
 
 ### What Changed (v8.0)
 
-- **Removed**: Per-tick `trading:heartbeat:{symbol}` writes from the Python backend (`trading_heartbeat.update()` on every tick). Heartbeat is now exclusively written by the edge function every 15 minutes.
-- **Removed**: Per-snapshot `trading:config:{symbol}` cache writes from `_save_snapshot()` in `router.py`.
+- **Removed**: Per-tick `trading:heartbeat:{symbol}` writes from the Python backend (`trading_heartbeat.update()` on every tick). Heartbeat is now written by the SweepOrchestrator on LightningAI every sweep cycle.
+- **Removed**: Per-snapshot `trading:config:{symbol}` cache writes from `_save_snapshot()` in `router.py` (the `cache_config()` method was removed — single writer is now the orchestrator).
 - **Removed**: Periodic 100th-tick L1 snapshot checkpoint — snapshots now only save on state-change events (position open/close), reducing Redis SET volume by ~90%.
-- **Added**: `PUBLISH agent:{symbol}` in the edge function after `redisSetConfig()`, gated by 4 True Signal conditions.
-- **Optimized**: `redisUpdateSignal()` in the edge function now only runs on non-shift cycles — on regime shift or initial write, `redisSetConfig()` covers all fields, eliminating one redundant HSET per shift cycle. ~50% reduction in config write commands.
+- **Added**: `PUBLISH agent:{symbol}` by the SweepOrchestrator as part of the pipelined Redis write (HSET + EXPIRE + SET + PUBLISH in one round-trip).
+- **Optimized**: Config writes are now a single Redis pipeline (HSET + EXPIRE + SET heartbeat + PUBLISH), cutting per-symbol round-trips from ~3 to 1. Config keys have a 1h TTL (previously immortal).
 
 ### How an External Agent Consumes This
 

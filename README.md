@@ -92,7 +92,7 @@ noble-trader-fastapi-backend/
 │   └── TimeFM/                       TimesFM integration requirements & architecture docs (6 documents)
 │
 ├── supabase/
-│   ├── functions/                    Edge functions (sweep — unified heavy/light)
+│   ├── functions/                    Edge functions [DEPRECATED] — retained for reference; engine is now SweepOrchestrator on LightningAI
 │   └── migrations/                   Database migrations (001–022)
 │
 ├── tests/
@@ -668,7 +668,7 @@ Without `REDIS_URL`, all state is in-memory with zero overhead.
 
 ## Redis Config — `trading:config:{symbol}`
 
-The `trading:config:{symbol}` hash in Upstash Redis is the single source of truth for the trading bot. Written by the sweep edge function (heavy + light modes), read by the trading bot every 15s.
+The `trading:config:{symbol}` hash in Upstash Redis is the single source of truth for the trading bot. Written by the **SweepOrchestrator on LightningAI** (pipelined HSET + 1h EXPIRE), read by the trading bot every 15s.
 
 ### Core Fields
 
@@ -690,15 +690,15 @@ The `trading:config:{symbol}` hash in Upstash Redis is the single source of trut
 | `aggression` | string | `mid` | Aggression dispatcher | `passive`, `mid`, or `aggressive` |
 | `ev_scale` | float | `0.80` | EV Engine | EV-scaled Kelly multiplier |
 | `effective_kelly` | float | `0.12` | Kelly sizing | Final Kelly fraction |
-| `brick_size` | float | `0.50` | Heavy sweep | Optimal Renko brick size |
-| `tp_bricks` | int | `5` | Heavy sweep | Take-profit in bricks |
-| `sl_bricks` | int | `3` | Heavy sweep | Stop-loss in bricks |
+| `brick_size` | float | `0.50` | Orchestrator (LightningAI) | Optimal Renko brick size |
+| `tp_bricks` | int | `5` | Orchestrator (LightningAI) | Take-profit in bricks |
+| `sl_bricks` | int | `3` | Orchestrator (LightningAI) | Stop-loss in bricks |
 | `kelly_f` | float | `0.15` | Kelly sizing | Base Kelly fraction |
 | `markov_p_up` | float | `0.52` | Markov chain | Probability of UP transition |
 | `markov_p_dn` | float | `0.48` | Markov chain | Probability of DOWN transition |
 | `markov_current_state` | string | `FLAT` | Markov chain | Current Markov state |
 | `last_update` | timestamp | `1782015223299` | — | Unix ms of last update |
-| `sweep_timestamp` | timestamp | `1782015223299` | Sweep | Unix ms of last sweep |
+| `sweep_timestamp` | timestamp | `1782015223299` | Orchestrator (LightningAI) | Unix ms of last sweep |
 
 ### Regime Shift Fields
 
@@ -746,8 +746,8 @@ P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
 
 | Field | Type | Example | Source | Description |
 |---|---|---|---|---|
-| `calibration_bias` | float | `-0.02` | Heavy sweep | avg(predictedPWin) − actual_win_rate (negative = underconfident) |
-| `calibration_status` | string | `CALIBRATED` | Heavy sweep | `CALIBRATED`, `OVERCONFIDENT`, `UNDERCONFIDENT`, or `INSUFFICIENT_DATA` |
+| `calibration_bias` | float | `-0.02` | Orchestrator (LightningAI) | avg(predictedPWin) − actual_win_rate (negative = underconfident) |
+| `calibration_status` | string | `CALIBRATED` | Orchestrator (LightningAI) | `CALIBRATED`, `OVERCONFIDENT`, `UNDERCONFIDENT`, or `INSUFFICIENT_DATA` |
 
 **Status thresholds:**
 | Condition | Label |
@@ -761,7 +761,7 @@ P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
 
 | Field | Type | Example | Source | Description |
 |---|---|---|---|---|
-| `sweep_skip_until` | timestamp | `1782051223299` | Heavy sweep | Unix ms — heavy sweeps are skipped until this time (12h future when CALIBRATED) |
+| `sweep_skip_until` | timestamp | `1782051223299` | Orchestrator (LightningAI) | Unix ms — heavy sweeps are skipped until this time (12h future when CALIBRATED) |
 
 ---
 
