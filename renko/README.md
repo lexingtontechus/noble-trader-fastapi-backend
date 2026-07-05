@@ -279,6 +279,7 @@ The True Signal Gateway decouples **liveness** from **state** to eliminate the n
 | `trading:heartbeat:{symbol}` | **Liveness** — proves system is alive | SweepOrchestrator (LightningAI) | Every sweep cycle |
 | `trading:config:{symbol}` | **Full State** — always written for reference | SweepOrchestrator (LightningAI) | Every sweep cycle (1h TTL) |
 | `agent:{symbol}` (Pub/Sub) | **Signal Push** — heartbeat + signal data | SweepOrchestrator (LightningAI) | Every sweep cycle |
+| `signal.raw.noble_trader` (Pub/Sub) | **Aggregate Heartbeat** — all symbol heartbeats in one channel | SweepOrchestrator (LightningAI) | Every sweep cycle |
 
 ### The 4 Gates
 
@@ -288,6 +289,10 @@ Applied by the SweepOrchestrator after computing the full config payload:
 2. **Shift Velocity Cap** — < 3 regime shifts in the last 24h (market not turbulent)
 3. **Regime Confidence** — `regime_conf > 0.40` (statistically confident)
 4. **Normalized EV** — `ev_per_dollar > 0.15` (positive edge)
+
+### What Changed (v8.1)
+
+- **Added**: `signal.raw.noble_trader` aggregate pub/sub channel — receives all heartbeat payloads alongside per-symbol `agent:{symbol}` channels. Enables Hermes L0 subscriber to listen to one channel instead of N per-symbol channels, eliminating restarts when symbols are added.
 
 ### What Changed (v8.0)
 

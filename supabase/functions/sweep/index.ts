@@ -1089,33 +1089,37 @@ async function runLightRegimeForSymbol(
 		        });
 		      }
 
-	      // ── Agent heartbeat: full config on every cycle ──────────
-	      try {
-	        await sweepRedisPipeline([["PUBLISH", `agent:${symbolConfig.symbol}`, JSON.stringify({
-	          type: "heartbeat", symbol: symbolConfig.symbol, ts: Date.now(),
-	          regime: effectiveRegime, regime_conf: effectiveRegimeConf,
-	          signal: tradeSignal.signal,
-	          entry_price: tradeSignal.entry_price,
-	          stop_loss: tradeSignal.stop_loss,
-	          take_profit: tradeSignal.take_profit,
-	          aggression: evResult.aggression,
-	          brick_size: brickSize, sl_bricks: slBricks, tp_bricks: tpBricks,
-	          kelly_f: kellyF, effective_kelly: effectiveKelly,
-	          ev: evResult.ev, ev_per_dollar: evResult.ev_per_dollar,
-	          p_win: evResult.p_win, p_regime: evResult.p_regime,
-	          p_imbalance: evResult.p_imbalance, p_markov: evResult.p_markov,
-	          ev_scale: evResult.ev_scale,
-	          markov_current_state: evResult.markov_current_state,
-	          p_timesfm: pTimesfm ?? undefined,
-	          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
-	          tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
-	          tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
-	          regime_shift: regimeShift ? "true" : "false",
-	          prev_regime: prevRegime ?? undefined,
-	          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
-	          shifts_24h: shifts24h,
-	        })]]);
-	      } catch { /* non-critical */ }
+		      // ── Agent heartbeat: full config on every cycle ──────────
+		      try {
+		        const heartbeatPayload = JSON.stringify({
+		          type: "heartbeat", symbol: symbolConfig.symbol, ts: Date.now(),
+		          regime: effectiveRegime, regime_conf: effectiveRegimeConf,
+		          signal: tradeSignal.signal,
+		          entry_price: tradeSignal.entry_price,
+		          stop_loss: tradeSignal.stop_loss,
+		          take_profit: tradeSignal.take_profit,
+		          aggression: evResult.aggression,
+		          brick_size: brickSize, sl_bricks: slBricks, tp_bricks: tpBricks,
+		          kelly_f: kellyF, effective_kelly: effectiveKelly,
+		          ev: evResult.ev, ev_per_dollar: evResult.ev_per_dollar,
+		          p_win: evResult.p_win, p_regime: evResult.p_regime,
+		          p_imbalance: evResult.p_imbalance, p_markov: evResult.p_markov,
+		          ev_scale: evResult.ev_scale,
+		          markov_current_state: evResult.markov_current_state,
+		          p_timesfm: pTimesfm ?? undefined,
+		          timesfm_horizon: pTimesfm !== null ? "12h" : undefined,
+		          tail_risk_score: tailRisk.score > 0 ? tailRisk.score : undefined,
+		          tail_risk_action: tailRisk.score > 0 ? tailRisk.action : undefined,
+		          regime_shift: regimeShift ? "true" : "false",
+		          prev_regime: prevRegime ?? undefined,
+		          shift_at: regimeShift ? Date.now() : (cacheEntry?.shift_at ?? 0),
+		          shifts_24h: shifts24h,
+		        });
+		        await sweepRedisPipeline([
+		          ["PUBLISH", `agent:${symbolConfig.symbol}`, heartbeatPayload],
+		          ["PUBLISH", "signal.raw.noble_trader", heartbeatPayload],
+		        ]);
+		      } catch { /* non-critical */ }
 
 	      console.log(
         `[sweep:light] ${symbolConfig.symbol}: regime=${effectiveRegime}${regimeDegraded ? " (degraded)" : ""}, conf=${effectiveRegimeConf.toFixed(2)}, ` +

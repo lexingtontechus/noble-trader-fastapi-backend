@@ -42,7 +42,7 @@ Noble Trader Admin is a production-grade Next.js dashboard that orchestrates a t
   │  • Reads nt_symbol + regime_cron from Supabase           │
   │  • Runs HMM regime detection + Kelly sizing + EV Engine   │
   │  • Writes trading:config:{sym}, trading:heartbeat:{sym}  │
-  │  • PUBLISHes agent:{sym} (DOOM agent pub/sub heartbeat)  │
+  │  • PUBLISHes agent:{sym} + signal.raw.noble_trader (aggregate)  │
   │  • Logs sweep results + regime shifts to Supabase        │
   │                                                           │
   │  TimesFM GPU Instance (T4) — batched inference endpoint   │

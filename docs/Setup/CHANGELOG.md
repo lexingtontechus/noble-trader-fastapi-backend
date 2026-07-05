@@ -1,3 +1,9 @@
+## [8.1.0] - 2026-07-05
+
+### Added — Aggregate Heartbeat Channel
+
+- **`signal.raw.noble_trader`** — a single aggregate Redis pub/sub channel that receives all heartbeat payloads alongside the per-symbol `agent:{symbol}` channels. This enables the Hermes L0 subscriber to listen to one channel instead of N per-symbol channels, eliminating the need for restarts when symbols are added. Both the Python SweepOrchestrator and TypeScript edge functions now publish to this channel.
+
 ## [8.0.0] - 2026-06-27
 
 ### Added — True Signal Gateway (Redis PUBLISH)

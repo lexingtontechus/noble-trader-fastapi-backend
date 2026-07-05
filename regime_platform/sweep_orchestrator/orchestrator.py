@@ -542,6 +542,7 @@ class SweepOrchestrator:
         pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
         pipe.set(heartbeat_key, str(now_ms), ex=ttl)
         pipe.publish(agent_channel, agent_payload)
+        pipe.publish("signal.raw.noble_trader", agent_payload)  # aggregate channel for L0 subscriber
         await pipe.execute()
 
         # ── 11. Log to Supabase ──
