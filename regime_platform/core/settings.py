@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_REST_URL: str = ""
     UPSTASH_REDIS_REST_TOKEN: str = ""
     
+    # ── Signal Aggregator Configuration ───────────────────────────────────────
+    EXTERNAL_SIGNAL_WEBHOOK_URL: str = ""  # Webhook URL for external signal forwarding
+    
     @property
     def redis_url_effective(self) -> str:
         """Return REDIS_URL, falling back to UPSTASH_REDIS_REST_URL if set."""
@@ -159,16 +162,41 @@ class Settings(BaseSettings):
     def telegram_configured(self) -> bool:
         """True if Telegram bot token and chat ID are configured."""
         return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHAT_ID)
+    
+    @property
+    def signal_aggregator_configured(self) -> bool:
+        """True if signal aggregator services are configured."""
+        return bool(self.REDIS_URL or self.UPSTASH_REDIS_REST_URL)
+    
+    @property
+    def external_webhook_configured(self) -> bool:
+        """True if external webhook URL is configured."""
+        return bool(self.EXTERNAL_SIGNAL_WEBHOOK_URL)
 
     # ── Validation ──────────────────────────────────────────────────────────
 
     def model_post_init(self, __context: object) -> None:
-        """Warn if JWT_SECRET_KEY is empty while auth is enabled."""
+        """Validate configuration and warn about missing settings."""
+        # Authentication warnings
         if self.AUTH_ENABLED and not self.JWT_SECRET_KEY:
             log.warning(
                 "JWT_SECRET_KEY is not set. Authentication will reject all JWT tokens. "
                 "Set JWT_SECRET_KEY env var or set AUTH_ENABLED=false for development."
             )
+        
+        # Redis configuration warnings
+        if not self.REDIS_URL and not self.UPSTASH_REDIS_REST_URL:
+            log.warning("No Redis URL configured. Signal aggregator services will be disabled.")
+        
+        # External webhook warning
+        if self.EXTERNAL_SIGNAL_WEBHOOK_URL and not self.REDIS_URL and not self.UPSTASH_REDIS_REST_URL:
+            log.warning("External webhook URL configured but no Redis connection. Webhook service will be disabled.")
+            
+        # Telegram configuration warning
+        if self.TELEGRAM_BOT_TOKEN and not self.TELEGRAM_CHAT_ID:
+            log.warning("Telegram bot token configured but no chat ID. Telegram signals will be disabled.")
+        elif self.TELEGRAM_CHAT_ID and not self.TELEGRAM_BOT_TOKEN:
+            log.warning("Telegram chat ID configured but no bot token. Telegram signals will be disabled.")
 
 
 # ── Singleton ────────────────────────────────────────────────────────────────

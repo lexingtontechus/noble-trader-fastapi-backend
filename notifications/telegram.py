@@ -357,6 +357,136 @@ class TelegramNotifier:
             disable_notification=disable_notification,
         )
 
+    async def send_signal(
+        self,
+        symbol: str,
+        direction: str,
+        pattern: str,
+        price: float,
+        confidence: float,
+        brick_size: Optional[float] = None,
+        regime: Optional[str] = None,
+        position_size_usd: Optional[float] = None,
+        kelly_fraction: Optional[float] = None,
+        masaniello_sizing: bool = False,
+        **kwargs,
+    ) -> bool:
+        """
+        Send a trading signal notification to Telegram.
+        
+        Args:
+            symbol: Trading symbol (e.g., "SPY")
+            direction: Signal direction ("LONG", "SHORT", "BUY", "SELL")
+            pattern: Pattern type ("bull_run", "bear_run", "reversal", etc.)
+            price: Current price
+            confidence: Signal confidence (0.0 to 1.0)
+            brick_size: Renko brick size (optional)
+            regime: Current regime (optional)
+            position_size_usd: Position size in USD (optional)
+            kelly_fraction: Kelly fraction (optional)
+            masaniello_sizing: Whether using Masaniello sizing (optional)
+            **kwargs: Additional data
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.is_configured:
+            return False
+            
+        # Rate limit check
+        if not self._rate_limiter.can_send():
+            logger.warning("Telegram rate limit reached, dropping signal")
+            return False
+            
+        # Direction emoji
+        direction_emoji = {
+            "LONG": "📈", "SHORT": "📉", "BUY": "📈", "SELL": "📉", "HOLD": "⏸️"
+        }.get(direction.upper(), "🔔")
+        
+        # Pattern emoji and descriptive text
+        pattern_info = {
+            "bull_run": ("🐂", "Bull Run"),
+            "bear_run": ("🐻", "Bear Run"), 
+            "reversal": ("🔄", "Reversal"),
+            "consolidation": ("⚖️", "Consolidation"),
+            "breakout": ("🚀", "Breakout"),
+            "double_top": ("⬆️", "Double Top"),
+            "double_bottom": ("⬇️", "Double Bottom"),
+            "no_pattern": ("❓", "No Pattern")
+        }
+        
+        pattern_emoji, pattern_name = pattern_info.get(pattern.lower(), ("❓", "Unknown Pattern"))
+        
+        # Confidence indicator
+        confidence_color = "🟢" if confidence >= 0.8 else "🟡" if confidence >= 0.6 else "🔴"
+        confidence_pct = confidence * 100
+        
+        # Build enhanced HTML message
+        message_lines = [
+            f"{direction_emoji} <b>{symbol} Trading Signal</b>",
+            f"{pattern_emoji} <i>{pattern_name}</i>",
+            "",
+            f"💰 <b>Price:</b> ${price:.2f}",
+            f"📊 <b>Confidence:</b> {confidence_color} {confidence_pct:.0f}%",
+            f"🎯 <b>Direction:</b> {direction}"
+        ]
+        
+        # Add optional information
+        if regime:
+            regime_color = "🟢" if "bull" in regime.lower() else "🔴" if "bear" in regime.lower() else "🟡"
+            message_lines.append(f"🏛️ <b>Regime:</b> {regime_color} {regime}")
+            
+        if brick_size:
+            message_lines.append(f"🧱 <b>Brick Size:</b> ${brick_size:.2f}")
+            
+        if position_size_usd and position_size_usd > 0:
+            message_lines.append(f"💸 <b>Position:</b> ${position_size_usd:,.0f}")
+            
+        if kelly_fraction:
+            kelly_color = "🟢" if kelly_fraction >= 0.2 else "🟡" if kelly_fraction >= 0.1 else "🔴"
+            message_lines.append(f"🎲 <b>Kelly F:</b> {kelly_color} {kelly_fraction:.3f}")
+            
+        if masaniello_sizing:
+            message_lines.append("⚡ <b>Sizing:</b> Dynamic Masaniello")
+            
+        # Add technical indicators if available
+        if kwargs.get("atr"):
+            message_lines.append(f"📈 <b>ATR:</b> ${kwargs['atr']:.2f}")
+            
+        if kwargs.get("support"):
+            message_lines.append(f"🛡️ <b>Support:</b> ${kwargs['support']:.2f}")
+            
+        if kwargs.get("resistance"):
+            message_lines.append(f"🎯 <b>Resistance:</b> ${kwargs['resistance']:.2f}")
+            
+        # Add timeframe if available
+        if kwargs.get("timeframe"):
+            tf_emoji = {
+                "1m": "⏱️", "5m": "⏱️", "15m": "⏱️", "30m": "⏱️",
+                "1h": "🕐", "4h": "🕐", "1d": "📅", "1w": "📅"
+            }.get(kwargs["timeframe"], "📊")
+            message_lines.append(f"{tf_emoji} <b>Timeframe:</b> {kwargs['timeframe']}")
+        
+        # Add risk information
+        if kwargs.get("risk_level"):
+            risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(kwargs["risk_level"], "⚠️")
+            message_lines.append(f"⚠️ <b>Risk:</b> {risk_emoji} {kwargs['risk_level'].title()}")
+            
+        message_lines.append("")
+        message_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        message_lines.append("<i>Noble Trader Dynamic Regime Platform</i>")
+        
+        message = "\n".join(message_lines)
+        
+        try:
+            await self._send_html_message(message, parse_mode="HTML")
+            self._rate_limiter.record_send()
+            logger.info(f"Signal sent to Telegram for {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send signal to Telegram: {e}")
+            return False
+
     async def send_risk_alert(
         self,
         risk_type: str,

@@ -18,10 +18,14 @@ Integration with Noble Trader Agent:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+
+import redis.asyncio as redis
 
 from renko.brick_engine import RenkoBrickEngine, Brick, BrickDirection
 from renko.swing_classifier import SwingClassifier, ClassifiedBrick, SwingLabel
@@ -31,6 +35,7 @@ from renko.risk_manager import RiskManager, RiskParams, ActivePosition, TradeRes
 from renko.executor import AlpacaExecutor, OrderResult
 from renko.trade_journal import TradeJournal, TradeRecord
 from renko.config import RenkoConfig
+from regime_platform.core.settings import settings
 
 import hashlib
 import numpy as np
@@ -104,6 +109,15 @@ class RenkoPipeline:
         self._on_signal = on_signal
         self._on_trade = on_trade
         self._on_brick = on_brick
+        
+        # Initialize Redis client for signal publishing
+        self._redis_client = None
+        if settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL:
+            self._redis_client = redis.from_url(
+                settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL,
+                decode_responses=False
+            )
+            self._redis_channel = "signal.raw.noble_trader"
 
         # Initialize pipeline components
         self.brick_engine = RenkoBrickEngine(
@@ -198,6 +212,63 @@ class RenkoPipeline:
         self._pending_close: Optional[dict] = None        # Close info for router to execute
         self._brick_velocity: float = 0.0
 
+    # ── Redis Signal Publishing ────────────────────────────────────────────────
+
+    async def _publish_qualified_signal(self, filtered_signal: FilteredSignal) -> None:
+        """
+        Publish qualified signals to Redis pub/sub for external subscribers.
+        
+        Args:
+            filtered_signal: The qualified signal that passed all filters
+        """
+        if not self._redis_client:
+            return
+            
+        try:
+            payload = {
+                "type": "renko_signal",
+                "symbol": filtered_signal.original_signal.symbol,
+                "timestamp": time.time(),
+                "pattern": filtered_signal.original_signal.pattern.value,
+                "direction": filtered_signal.original_signal.direction.value,
+                "price": filtered_signal.original_signal.price,
+                "confidence": filtered_signal.original_signal.confidence,
+                "passed_filters": filtered_signal.passed_filters,
+                "regime_aligned": filtered_signal.regime_aligned,
+                "position_size_usd": filtered_signal.position_size_usd,
+                "kelly_fraction": filtered_signal.kelly_fraction,
+                "brick_size": filtered_signal.brick_size,
+                "pipeline_source": "renko_hft",
+                "regime": self._current_regime,
+                "regime_quality": self._current_regime_quality,
+                "regime_confidence": self._current_regime_confidence,
+                "current_drawdown": self._current_drawdown,
+                "equity": self._current_equity,
+                "masaniello_sizing": filtered_signal.sizing_mode == "masaniello",
+                "masaniello_factor": filtered_signal.masaniello_factor if filtered_signal.sizing_mode == "masaniello" else 0.0,
+                "quality_factor": filtered_signal.quality_factor,
+                "drawdown_factor": filtered_signal.drawdown_factor,
+                "volatility_factor": filtered_signal.volatility_factor,
+                "risk_fraction": filtered_signal.risk_fraction,
+                "contracts": filtered_signal.contracts
+            }
+            
+            await self._redis_client.publish(self._redis_channel, json.dumps(payload))
+            logger.info(f"Published qualified signal for {filtered_signal.original_signal.symbol} to Redis")
+            
+        except Exception as e:
+            logger.error(f"Failed to publish signal to Redis: {e}")
+            # Don't fail the pipeline - Redis is optional for core functionality
+
+    async def close(self) -> None:
+        """Close the Redis client connection."""
+        if self._redis_client:
+            try:
+                await self._redis_client.aclose()
+                logger.info("Redis client closed")
+            except Exception as e:
+                logger.error(f"Error closing Redis client: {e}")
+
     # ── Public API ────────────────────────────────────────────────
 
     def process_tick(self, price: float, ts: Optional[float] = None) -> Dict[str, Any]:
@@ -284,6 +355,11 @@ class RenkoPipeline:
             self._last_filtered = filtered
             if self._on_signal:
                 self._on_signal(filtered)
+            
+            # Publish qualified signal to Redis for external subscribers
+            if filtered_signal.original_signal.pattern.value != "no_pattern":
+                # Use asyncio.create_task to avoid blocking the tick processing
+                asyncio.create_task(self._publish_qualified_signal(filtered))
 
             # Stage 5: Open position (if none active)
             if not self.risk_manager.has_position:

@@ -158,6 +158,37 @@ async def lifespan(app: FastAPI):
         from regime_platform.services.operational import kill_switch, audit_logger, reconciler
         await kill_switch.start_refresh()
         log.info("Kill switch service started")
+        
+        # Start Signal Aggregator service
+        try:
+            from regime_platform.services.signal_aggregator import get_signal_aggregator
+            await get_signal_aggregator()
+            log.info("Signal Aggregator service started")
+        except Exception as e:
+            log.warning(f"Signal Aggregator start failed: {e}")
+        
+        # Start External Webhook Service
+        try:
+            from regime_platform.services.external_webhook_service import get_external_webhook_service
+            await get_external_webhook_service()
+            log.info("External Webhook Service started")
+        except Exception as e:
+            log.warning(f"External Webhook Service start failed: {e}")
+        
+        # Start enhanced Telegram notifications if configured
+        if settings.telegram_configured:
+            try:
+                from notifications.telegram import telegram_notifier
+                # Test the connection
+                test_result = await telegram_notifier.send_message("🔔 Telegram signal notifications active")
+                if test_result:
+                    log.info("Enhanced Telegram notifications service initialized")
+                else:
+                    log.warning("Telegram notifications service failed to initialize")
+            except Exception as e:
+                log.error(f"Failed to initialize Telegram notifications: {e}")
+        
+        # Start periodic reconciliation (every 15 minutes)
 
         # Start periodic reconciliation (every 15 minutes)
         import asyncio
@@ -251,7 +282,25 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f"L2 feed manager stop error: {e}")
 
-	    # Close Discord notifier HTTP client
+	    # Close Signal Aggregator service
+    try:
+        from regime_platform.services.signal_aggregator import signal_aggregator
+        if signal_aggregator:
+            await signal_aggregator.stop()
+            log.info("Signal Aggregator service stopped")
+    except Exception as e:
+        log.warning(f"Signal Aggregator shutdown error: {e}")
+    
+    # Close External Webhook Service
+    try:
+        from regime_platform.services.external_webhook_service import external_webhook_service
+        if external_webhook_service:
+            await external_webhook_service.stop()
+            log.info("External Webhook Service stopped")
+    except Exception as e:
+        log.warning(f"External Webhook Service shutdown error: {e}")
+    
+    # Close Discord notifier HTTP client
     try:
         from notifications.discord import discord_notifier
         await discord_notifier.close()
