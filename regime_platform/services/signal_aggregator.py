@@ -458,18 +458,21 @@ class SignalAggregator:
         
         self._webhook_rate_limiter.record_send()
     
-    @retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
     async def _send_webhook(self, url: str, payload: Dict[str, Any]) -> None:
         """Send payload to external webhook."""
         if not HTTPX_AVAILABLE:
             log.warning("HTTPX not available, skipping webhook")
             return
         
-        try:
+        async def _do_send():
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
-                log.debug(f"Webhook sent successfully to {url}")
+                return response
+        
+        try:
+            await _do_send()
+            log.debug(f"Webhook sent successfully to {url}")
         except Exception as e:
             log.error(f"Failed to send webhook to {url}: {e}")
             raise

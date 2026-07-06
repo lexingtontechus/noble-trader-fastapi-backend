@@ -179,12 +179,17 @@ async def lifespan(app: FastAPI):
         if settings.telegram_configured:
             try:
                 from notifications.telegram import telegram_notifier
-                # Test the connection
-                test_result = await telegram_notifier.send_message("🔔 Telegram signal notifications active")
-                if test_result:
-                    log.info("Enhanced Telegram notifications service initialized")
-                else:
-                    log.warning("Telegram notifications service failed to initialize")
+                # Test the connection with a simple message
+                try:
+                    test_result = await telegram_notifier._send_message("🔔 Telegram signal notifications active")
+                    if test_result:
+                        log.info("Enhanced Telegram notifications service initialized")
+                    else:
+                        log.warning("Telegram notifications service failed to initialize")
+                except Exception as e:
+                    log.warning(f"Telegram test message failed: {e}")
+            except ImportError:
+                log.warning("Telegram notifications module not available")
             except Exception as e:
                 log.error(f"Failed to initialize Telegram notifications: {e}")
         

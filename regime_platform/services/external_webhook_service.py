@@ -436,7 +436,6 @@ class ExternalWebhookService:
             # Send immediately (non-blocking)
             asyncio.create_task(self._send_webhook(endpoint, delivery))
     
-    @retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
     async def _send_webhook(self, endpoint: WebhookEndpoint, delivery: WebhookDelivery) -> None:
         """Send webhook to the specified endpoint."""
         if not HTTPX_AVAILABLE:
@@ -469,23 +468,27 @@ class ExternalWebhookService:
         elif endpoint.authentication == WebhookAuthentication.CUSTOM and endpoint.auth_credentials:
             headers.update(endpoint.auth_credentials)
         
-        try:
-            # Send webhook
+        async def _do_send():
             async with httpx.AsyncClient(timeout=endpoint.timeout_seconds) as client:
                 response = await client.post(endpoint.url, json=transformed_payload, headers=headers)
                 response.raise_for_status()
-                
-                # Update delivery status
-                delivery.status = WebhookStatus.SENT
-                delivery.response_code = response.status_code
-                delivery.last_sent_at = time.time()
-                endpoint.last_status = WebhookStatus.SENT
-                endpoint.last_error = None
-                endpoint.consecutive_failures = 0
-                endpoint.total_sent += 1
-                
-                log.info(f"Webhook sent successfully to {endpoint.name}: {response.status_code}")
-                
+                return response
+        
+        try:
+            # Send webhook
+            response = await _do_send()
+            
+            # Update delivery status
+            delivery.status = WebhookStatus.SENT
+            delivery.response_code = response.status_code
+            delivery.last_sent_at = time.time()
+            endpoint.last_status = WebhookStatus.SENT
+            endpoint.last_error = None
+            endpoint.consecutive_failures = 0
+            endpoint.total_sent += 1
+            
+            log.info(f"Webhook sent successfully to {endpoint.name}: {response.status_code}")
+            
         except Exception as e:
             # Update delivery status
             delivery.status = WebhookStatus.FAILED
