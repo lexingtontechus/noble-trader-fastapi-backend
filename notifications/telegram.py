@@ -369,6 +369,14 @@ class TelegramNotifier:
         position_size_usd: Optional[float] = None,
         kelly_fraction: Optional[float] = None,
         masaniello_sizing: bool = False,
+        sharpe_ratio: Optional[float] = None,
+        win_rate: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        tp_price: Optional[float] = None,
+        sl_bricks: Optional[int] = None,
+        tp_bricks: Optional[int] = None,
+        prev_regime: Optional[str] = None,
+        regime_shift: Optional[str] = None,
         **kwargs,
     ) -> bool:
         """
@@ -376,15 +384,21 @@ class TelegramNotifier:
         
         Args:
             symbol: Trading symbol (e.g., "SPY")
-            direction: Signal direction ("LONG", "SHORT", "BUY", "SELL")
+            direction: Signal direction ("LONG", "SHORT", "BUY", "SELL", "HOLD")
             pattern: Pattern type ("bull_run", "bear_run", "reversal", etc.)
-            price: Current price
+            price: Current price (entry price)
             confidence: Signal confidence (0.0 to 1.0)
             brick_size: Renko brick size (optional)
             regime: Current regime (optional)
             position_size_usd: Position size in USD (optional)
-            kelly_fraction: Kelly fraction (optional)
+            kelly_fraction: Kelly fraction (optional) - indicates aggression level
             masaniello_sizing: Whether using Masaniello sizing (optional)
+            sl_price: Stop loss price (optional)
+            tp_price: Take profit price (optional)
+            sl_bricks: Stop loss in bricks (optional)
+            tp_bricks: Take profit in bricks (optional)
+            prev_regime: Previous regime (optional)
+            regime_shift: Regime shift direction (optional)
             **kwargs: Additional data
             
         Returns:
@@ -426,10 +440,52 @@ class TelegramNotifier:
             f"{direction_emoji} <b>{symbol} Trading Signal</b>",
             f"{pattern_emoji} <i>{pattern_name}</i>",
             "",
-            f"💰 <b>Price:</b> ${price:.2f}",
+            f"💰 <b>Entry:</b> ${price:.2f}",
+        ]
+        
+        # Add price levels
+        if sl_price is not None:
+            message_lines.append(f"🛡️ <b>SL:</b> ${sl_price:.2f}")
+        if tp_price is not None:
+            message_lines.append(f"🚀 <b>TP:</b> ${tp_price:.2f}")
+        
+        message_lines.extend([
             f"📊 <b>Confidence:</b> {confidence_color} {confidence_pct:.0f}%",
             f"🎯 <b>Direction:</b> {direction}"
-        ]
+        ])
+        
+        # Add performance metrics
+        if sharpe_ratio is not None:
+            sharpe_emoji = "🚀" if sharpe_ratio > 2.0 else "📈" if sharpe_ratio > 1.0 else "📊"
+            message_lines.append(f"{sharpe_emoji} <b>Sharpe:</b> {sharpe_ratio:.2f}")
+            
+        if win_rate is not None:
+            win_rate_pct = win_rate * 100
+            win_rate_emoji = "🏆" if win_rate_pct > 60 else "✅" if win_rate_pct > 50 else "⚠️"
+            message_lines.append(f"{win_rate_emoji} <b>Win Rate:</b> {win_rate_pct:.1f}%")
+        
+        # Add risk levels in bricks
+        if sl_bricks is not None and tp_bricks is not None:
+            message_lines.append(f"📏 <b>Risk:</b> {sl_bricks} SL / {tp_bricks} TP bricks")
+        
+        # Add aggression level
+        if kelly_fraction is not None:
+            aggression_emoji = "🔥" if kelly_fraction > 0.25 else "⚡" if kelly_fraction > 0.15 else "🎯"
+            message_lines.append(f"{aggression_emoji} <b>Aggression:</b> {kelly_fraction:.1%}")
+        
+        # Add regime information
+        if regime is not None:
+            regime_color = "🟢" if "bull" in regime.lower() else "🔴" if "bear" in regime.lower() else "🟡"
+            message_lines.append(f"🏛️ <b>Current:</b> {regime_color} {regime}")
+            
+            if prev_regime is not None:
+                prev_regime_color = "🟢" if "bull" in prev_regime.lower() else "🔴" if "bear" in prev_regime.lower() else "🟡"
+                message_lines.append(f"🔄 <b>Previous:</b> {prev_regime_color} {prev_regime}")
+                
+                if regime_shift is not None:
+                    shift_emoji = {"bull_bear": "📉", "bear_bull": "📈"}.get(regime_shift, "🔄")
+                    shift_text = regime_shift.replace('_', ' → ')
+                    message_lines.append(f"{shift_emoji} <b>Shift:</b> {shift_text}")
         
         # Add optional information
         if regime:
@@ -479,10 +535,11 @@ class TelegramNotifier:
         message = "\n".join(message_lines)
         
         try:
-            await self._send_html_message(message, parse_mode="HTML")
-            self._rate_limiter.record_send()
-            logger.info(f"Signal sent to Telegram for {symbol}")
-            return True
+            success = await self._send_message(message, parse_mode="HTML")
+            if success:
+                self._rate_limiter.record_send()
+                logger.info(f"Signal sent to Telegram for {symbol}")
+            return success
         except Exception as e:
             logger.error(f"Failed to send signal to Telegram: {e}")
             return False

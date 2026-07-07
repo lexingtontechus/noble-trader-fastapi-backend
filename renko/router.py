@@ -49,12 +49,18 @@ from renko.brick_engine import BrickDirection
 from renko.redis_cache import renko_cache
 from renko.trading_heartbeat import trading_heartbeat
 
-# Discord notifications (graceful import - not required for pipeline to work)
+# Discord & Telegram notifications (graceful import - not required for pipeline to work)
 try:
     from notifications.discord import discord_notifier, AlertLevel
     DISCORD_AVAILABLE = True
 except ImportError:
     DISCORD_AVAILABLE = False
+
+try:
+    from notifications.telegram import telegram_notifier
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -2017,6 +2023,13 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
                 sl_price = round(price + 3 * brick_size, 4) if price else None
                 tp_price = round(price - 5 * brick_size, 4) if price else None
 
+            # Update regime shift tracking
+            regime_shift = pipeline._update_regime_shift(regime)
+            
+            # Get SL/TP bricks from config
+            sl_bricks = pipeline.config.sl_bricks
+            tp_bricks = pipeline.config.tp_bricks
+            
             # Signal alert -> #trade-signals
             asyncio.create_task(discord_notifier.send_signal(
                 symbol=symbol,
@@ -2027,7 +2040,34 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
                 velocity=velocity,
                 brick_size=brick_size,
                 regime=regime,
+                kelly_fraction=pipeline._last_filtered.kelly_fraction if pipeline._last_filtered else None,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                sl_bricks=sl_bricks,
+                tp_bricks=tp_bricks,
+                prev_regime=pipeline._prev_regime,
+                regime_shift=regime_shift,
             ))
+            
+            # Telegram signal notification
+            if TELEGRAM_AVAILABLE:
+                telegram_notifier.send_signal(
+                    symbol=symbol,
+                    direction=direction,
+                    pattern=pattern,
+                    price=price or 0.0,
+                    confidence=confidence,
+                    brick_size=brick_size,
+                    regime=regime,
+                    kelly_fraction=pipeline._last_filtered.kelly_fraction if pipeline._last_filtered else None,
+                    masaniello_sizing=(pipeline._last_filtered.sizing_mode == "masaniello") if pipeline._last_filtered else False,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    sl_bricks=sl_bricks,
+                    tp_bricks=tp_bricks,
+                    prev_regime=pipeline._prev_regime,
+                    regime_shift=regime_shift,
+                )
 
             # Execution alert -> #trade-executions
             asyncio.create_task(discord_notifier.send_execution(

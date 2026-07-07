@@ -291,6 +291,14 @@ class DiscordNotifier:
         brick_count: Optional[int] = None,
         regime: Optional[str] = None,
         kelly_fraction: Optional[float] = None,
+        sharpe_ratio: Optional[float] = None,
+        win_rate: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        tp_price: Optional[float] = None,
+        sl_bricks: Optional[int] = None,
+        tp_bricks: Optional[int] = None,
+        prev_regime: Optional[str] = None,
+        regime_shift: Optional[str] = None,
     ) -> bool:
         """
         Send a trading signal alert to #trade-signals.
@@ -304,11 +312,11 @@ class DiscordNotifier:
         symbol : str
             Trading symbol (e.g., "SPY")
         direction : str
-            Signal direction ("LONG" or "SHORT")
+            Signal direction ("LONG", "SHORT", "BUY", "SELL", "HOLD")
         pattern : str
             Pattern type (bull_run, bear_run, reversal, double_top, etc.)
         price : float
-            Signal price
+            Signal price (entry price)
         confidence : float, optional
             Signal confidence 0.0-1.0
         velocity : float, optional
@@ -320,17 +328,90 @@ class DiscordNotifier:
         regime : str, optional
             Current HMM regime label
         kelly_fraction : float, optional
-            Kelly criterion fraction for position sizing
+            Kelly criterion fraction for position sizing (aggression)
+        sl_price : float, optional
+            Stop loss price
+        tp_price : float, optional
+            Take profit price
+        sl_bricks : int, optional
+            Stop loss in bricks
+        tp_bricks : int, optional
+            Take profit in bricks
+        prev_regime : str, optional
+            Previous HMM regime label
+        regime_shift : str, optional
+            Regime shift direction (None, "bull_bear", "bear_bull")
+        sharpe_ratio : float, optional
+            Sharpe ratio for strategy performance
+        win_rate : float, optional
+            Win rate (0.0-1.0) for strategy
         """
         dir_emoji = "🟢" if direction.upper() in ("LONG", "BUY") else "🔴"
         color = DIRECTION_COLORS.get(direction.upper(), 0x3498DB)
 
+        # Price levels formatting
+        price_fields = []
+        price_fields.append({"name": "Entry Price", "value": f"${price:.2f}", "inline": True})
+        
+        if sl_price is not None:
+            price_fields.append({"name": "Stop Loss", "value": f"${sl_price:.2f}", "inline": True})
+        if tp_price is not None:
+            price_fields.append({"name": "Take Profit", "value": f"${tp_price:.2f}", "inline": True})
+        
+        # Risk levels in bricks
+        risk_fields = []
+        if sl_bricks is not None and tp_bricks is not None:
+            risk_fields.append({
+                "name": "Risk Levels", 
+                "value": f"SL: {sl_bricks} bricks | TP: {tp_bricks} bricks", 
+                "inline": True
+            })
+        
+        # Signal aggression
+        aggression_fields = []
+        if kelly_fraction is not None:
+            aggression_emoji = "🔥" if kelly_fraction > 0.25 else "⚡" if kelly_fraction > 0.15 else "🎯"
+            aggression_fields.append({
+                "name": "Aggression", 
+                "value": f"{aggression_emoji} Kelly: {kelly_fraction:.2%}", 
+                "inline": True
+            })
+        
+        # Performance metrics
+        perf_fields = []
+        if sharpe_ratio is not None:
+            sharpe_emoji = "🚀" if sharpe_ratio > 2.0 else "📈" if sharpe_ratio > 1.0 else "📊"
+            perf_fields.append({
+                "name": "Sharpe Ratio", 
+                "value": f"{sharpe_emoji} {sharpe_ratio:.2f}", 
+                "inline": True
+            })
+        if win_rate is not None:
+            win_rate_pct = win_rate * 100
+            win_rate_emoji = "🏆" if win_rate_pct > 60 else "✅" if win_rate_pct > 50 else "⚠️"
+            perf_fields.append({
+                "name": "Win Rate", 
+                "value": f"{win_rate_emoji} {win_rate_pct:.1f}%", 
+                "inline": True
+            })
+        
+        # Regime info
+        regime_fields = []
+        if regime is not None:
+            regime_color = "🟢" if "bull" in regime.lower() else "🔴" if "bear" in regime.lower() else "🟡"
+            regime_fields.append({"name": "Current Regime", "value": f"{regime_color} {regime}", "inline": True})
+        if prev_regime is not None and regime is not None:
+            prev_regime_color = "🟢" if "bull" in prev_regime.lower() else "🔴" if "bear" in prev_regime.lower() else "🟡"
+            regime_fields.append({"name": "Previous Regime", "value": f"{prev_regime_color} {prev_regime}", "inline": True})
+        if regime_shift is not None:
+            shift_emoji = {"bull_bear": "📉", "bear_bull": "📈"}.get(regime_shift, "🔄")
+            regime_fields.append({"name": "Regime Shift", "value": f"{shift_emoji} {regime_shift.replace('_', ' → ')}", "inline": True})
+        
         fields = [
             {"name": "Symbol", "value": symbol, "inline": True},
             {"name": "Direction", "value": f"{dir_emoji} {direction}", "inline": True},
-            {"name": "Price", "value": f"${price:.2f}", "inline": True},
             {"name": "Pattern", "value": pattern, "inline": True},
-        ]
+        ] + price_fields + risk_fields + aggression_fields + perf_fields + regime_fields
 
         if confidence is not None:
             fields.append({

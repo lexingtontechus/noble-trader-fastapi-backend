@@ -211,6 +211,10 @@ class RenkoPipeline:
         self._pending_execution: Optional[dict] = None   # Signal info for router to execute
         self._pending_close: Optional[dict] = None        # Close info for router to execute
         self._brick_velocity: float = 0.0
+        
+        # Regime shift tracking
+        self._prev_regime: Optional[str] = None
+        self._regime_shift: Optional[str] = None  # "bull_bear" or "bear_bull"
 
     # ── Redis Signal Publishing ────────────────────────────────────────────────
 
@@ -408,6 +412,34 @@ class RenkoPipeline:
             total_trades=journal_stats.get("total_trades", 0),
             total_pnl_bricks=journal_stats.get("total_pnl_bricks", 0.0),
         )
+    
+    def _update_regime_shift(self, new_regime: Optional[str]) -> Optional[str]:
+        """
+        Update regime shift tracking when regime changes.
+        
+        Args:
+            new_regime: The new regime (bull/bear/neutral)
+            
+        Returns:
+            Regime shift string if changed, None otherwise
+        """
+        if self._current_regime == new_regime:
+            return None
+            
+        # Detect regime shift
+        regime_shift = None
+        if self._current_regime is not None and new_regime is not None:
+            if "bull" in self._current_regime.lower() and "bear" in new_regime.lower():
+                regime_shift = "bull_bear"
+            elif "bear" in self._current_regime.lower() and "bull" in new_regime.lower():
+                regime_shift = "bear_bull"
+        
+        # Update tracking
+        self._prev_regime = self._current_regime
+        self._current_regime = new_regime
+        self._regime_shift = regime_shift
+        
+        return regime_shift
 
     @property
     def readiness(self) -> Dict[str, Any]:
@@ -1013,17 +1045,51 @@ class RenkoPipeline:
         except RuntimeError as e:
             logger.warning(f"Cannot open position: {e}")
 
+    def _fetch_prediction_data(self) -> Optional[Dict[str, float]]:
+        """Fetch prediction data from Redis for the current symbol."""
+        if not self._redis_client:
+            return None
+        
+        try:
+            config_key = f"regime:symbol:{self.config.symbol}:config"
+            config_data = self.redis_client.hgetall(config_key)
+            
+            if not config_data:
+                return None
+                
+            # Extract prediction fields from Redis data
+            prediction_data = {}
+            if "p_win" in config_data:
+                prediction_data["predicted_p_win"] = float(config_data["p_win"])
+            if "p_regime" in config_data:
+                prediction_data["p_regime"] = float(config_data["p_regime"])
+            if "p_ext_signal" in config_data:
+                prediction_data["p_ext_signal"] = float(config_data["p_ext_signal"])
+            if "p_markov" in config_data:
+                prediction_data["p_markov"] = float(config_data["p_markov"])
+            if "p_timesfm" in config_data:
+                prediction_data["p_timesfm"] = float(config_data["p_timesfm"])
+            
+            return prediction_data if prediction_data else None
+        except Exception as e:
+            logger.warning(f"Failed to fetch prediction data from Redis: {e}")
+            return None
+
     def _handle_trade_close(self, result: TradeResult) -> None:
         """Handle a closed trade - update journal with full cost modeling."""
         self.signal_filter.record_trade_result(result.pnl_bricks)
 
         # Create journal record if we have filtered signal context
         if self._last_filtered is not None:
+            # Fetch prediction data from Redis
+            prediction_data = self._fetch_prediction_data()
+            
             record = self.journal.create_record(
                 symbol=self.config.symbol,
                 filtered=self._last_filtered,
                 result=result,
                 regime=self._current_regime,
+                prediction_data=prediction_data,
             )
             
             # ── Phase 2: Transaction cost modeling ──

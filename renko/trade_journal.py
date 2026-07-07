@@ -174,10 +174,18 @@ class TradeJournal:
         filtered: FilteredSignal,
         result: TradeResult,
         regime: Optional[str] = None,
+        prediction_data: Optional[Dict[str, float]] = None,
     ) -> TradeRecord:
         """Factory method to create a TradeRecord from pipeline data."""
         self._trade_counter += 1
         signal = filtered.original_signal
+
+        # Use prediction data if provided, otherwise use defaults
+        p_win = prediction_data.get("predicted_p_win", 0.5) if prediction_data else 0.5
+        p_regime = prediction_data.get("p_regime") if prediction_data else None
+        p_ext_signal = prediction_data.get("p_ext_signal") if prediction_data else None
+        p_markov = prediction_data.get("p_markov") if prediction_data else None
+        p_timesfm = prediction_data.get("p_timesfm") if prediction_data else None
 
         return TradeRecord(
             trade_id=f"R{self._trade_counter:06d}",
@@ -200,6 +208,12 @@ class TradeJournal:
             velocity=signal.velocity,
             label_sequence=signal.label_sequence,
             filters_passed=filtered.passed_filters,
+            predicted_p_win=p_win,
+            aggression=filtered.aggression if hasattr(filtered, 'aggression') else "mid",
+            p_regime=p_regime,
+            p_ext_signal=p_ext_signal,
+            p_markov=p_markov,
+            p_timesfm=p_timesfm,
         )
 
     def get_stats(self, last_n: Optional[int] = None) -> Dict:
