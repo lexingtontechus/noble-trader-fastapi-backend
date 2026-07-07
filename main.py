@@ -61,18 +61,23 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-# urllib3<2.0 compatibility shim for alpaca-trade-api
-import urllib3_compat  # noqa: F401 -- side-effect shim
-
 # Load .env file before any other imports that read env vars
 from dotenv import load_dotenv
 load_dotenv(override=False)  # Don't override already-set env vars (e.g. from Render dashboard)
+
+# Configure sensitive data filtering for logging
+from regime_platform.utils.log_filter import configure_logging_filter
+configure_logging_filter()
+
+# urllib3<2.0 compatibility shim for alpaca-trade-api
+import urllib3_compat  # noqa: F401 -- side-effect shim
 
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import HTTPException
 
 try:
     from fastapi_mcp import FastApiMCP
@@ -86,6 +91,7 @@ from regime_platform.auth.jwt_auth import TokenData
 from regime_platform.core.gpu_engine import gpu_capabilities
 from regime_platform.core.settings import settings
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_COMPUTE, RATE_LIMIT_WRITE
+from regime_platform.middleware.input_validation import InputValidationMiddleware
 
 # v2.x routers
 from regime_platform.routers import (
@@ -383,11 +389,65 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        
+        # Log the full error with stack trace in all environments
         log.error(f"FATAL ERROR during request {request.method} {request.url}: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
-        )
+        
+        # Sanitize error response for production/staging
+        if _deploy_env in ("production", "staging"):
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Internal Server Error", "detail": "An unexpected error occurred"},
+            )
+        else:
+            # Development environment can show more details
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Internal Server Error", "detail": str(exc), "type": exc.__class__.__name__},
+            )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Handler for FastAPI request validation errors."""
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        
+        # Log validation errors in all environments
+        log.warning(f"Validation error: {exc}")
+        
+        # Sanitize error response for production/staging
+        if _deploy_env in ("production", "staging"):
+            return JSONResponse(
+                status_code=422,
+                content={"error": "Invalid input", "detail": "Please check your request data"},
+            )
+        else:
+            # Development environment can show more details
+            return JSONResponse(
+                status_code=422,
+                content={"error": "Invalid input", "detail": exc.detail},
+            )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """Handler for HTTP exceptions."""
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        
+        # Log HTTP exceptions in all environments
+        log.warning(f"HTTP {exc.status_code}: {exc.detail}")
+        
+        # Sanitize error details for production/staging
+        if _deploy_env in ("production", "staging") and exc.status_code >= 500:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": "Internal Server Error", "detail": "An unexpected error occurred"},
+            )
+        else:
+            # Keep original details for development and non-5xx errors
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": exc.detail},
+            )
 
     cors_origins = [
         o.strip()
@@ -438,7 +498,8 @@ def create_app() -> FastAPI:
     app.include_router(venue.router)
     app.include_router(prices_router_module.router)
 
-    app.add_middleware(KillSwitchGateMiddleware)
+    # Add input validation middleware (before other middleware)
+    app.add_middleware(InputValidationMiddleware)
 
     # ── TimesFM forecast proxy ──────────────────────────────────
     # The proxy.py routes /forecast → TimesFM on port 8002, but

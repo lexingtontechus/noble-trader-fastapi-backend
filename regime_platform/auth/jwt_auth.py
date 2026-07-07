@@ -62,7 +62,15 @@ JWT_SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "")
 JWT_ALGORITHM   = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINS = int(os.getenv("JWT_EXPIRE_MINS", "60"))
 API_KEYS        = set(filter(None, os.getenv("API_KEYS", "").split(",")))
-AUTH_ENABLED    = os.getenv("AUTH_ENABLED", "true").lower() != "false"
+AUTH_ENABLED    = os.getenv("AUTH_ENABLED", "true").lower() == "true"
+
+# Import enhanced authentication configuration
+from .auth_config import get_auth_mode, is_jwt_enabled, validate_auth_config, AuthMode
+
+# Validate authentication configuration on import
+_auth_warnings = validate_auth_config()
+if _auth_warnings:
+    log.warning(f"Authentication configuration warning: {_auth_warnings}")
 
 if AUTH_ENABLED and not JWT_SECRET_KEY:
     log.error(
@@ -194,9 +202,28 @@ _API_KEY_CACHE_TTL = 60  # seconds - re-validate keys every minute
 
 
 def _hash_api_key(api_key: str) -> str:
-    """Hash an API key using SHA-256 + pepper (matches frontend api-keys.js)."""
+    """Hash an API key using bcrypt with pepper (secure password hashing)."""
+    import bcrypt
     pepper = getattr(settings, "SUPABASE_ENCRYPTION_KEY", None) or "default-pepper-change-me"
-    return hashlib.sha256((api_key + pepper).encode()).hexdigest()
+    
+    # Combine API key with pepper and hash with bcrypt
+    key_with_pepper = (api_key + pepper).encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(key_with_pepper, salt)
+    return hashed.decode('utf-8')
+
+
+def _verify_api_key(api_key: str, key_hash: str) -> bool:
+    """Verify an API key against a stored bcrypt hash."""
+    import bcrypt
+    pepper = getattr(settings, "SUPABASE_ENCRYPTION_KEY", None) or "default-pepper-change-me"
+    
+    try:
+        key_with_pepper = (api_key + pepper).encode('utf-8')
+        stored_hash = key_hash.encode('utf-8')
+        return bcrypt.checkpw(key_with_pepper, stored_hash)
+    except (ValueError, TypeError):
+        return False
 
 
 def _lookup_saas_api_key(api_key: str) -> Optional[TokenData]:
@@ -298,40 +325,85 @@ async def get_current_user(
     FastAPI dependency for HTTP endpoint authentication.
 
     Accepts:
-      - Bearer JWT token in Authorization header
+      - Bearer JWT token in Authorization header (if JWT enabled)
       - X-API-Key header (SaaS nt_live_* or static service key)
 
-    If AUTH_ENABLED=false, returns a synthetic admin user (dev mode).
+    Authentication modes:
+      - full: JWT + API Keys + Clerk
+      - api_key_only: Only API keys (recommended for LightningAI)
+      - disabled: No authentication (development only)
     """
-    if not AUTH_ENABLED:
-        # Dev mode - only allowed in development, never in production
+    auth_mode = get_auth_mode()
+    
+    # Handle disabled mode (development only)
+    if auth_mode == AuthMode.DISABLED:
         _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
         if _DEPLOY_ENV in ("production", "staging"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+                detail="AUTH_MODE=disabled is not allowed in production/staging.",
             )
-        log.warning("AUTH_ENABLED=false: returning dev admin user (development only)")
+        log.warning("AUTH_MODE=disabled: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
+    
+    # Handle API key only mode (recommended for LightningAI)
+    if auth_mode == AuthMode.API_KEY_ONLY:
+        if api_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if api_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(api_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(
+                    sub=f"mcp-internal", 
+                    role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+                )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Provide X-API-Key header.",
+        )
+    
+    # Full mode: JWT + API Keys + Clerk (default)
+    if auth_mode == AuthMode.FULL:
+        # API key check first (fastest)
+        if api_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if api_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(api_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
-    # API key check: try SaaS API key first, then static API_KEYS
-    if api_key:
-        # SaaS API key (nt_live_*) - DB-backed
-        saas_user = _lookup_saas_api_key(api_key)
-        if saas_user:
-            return saas_user
-    # Static API key (service-to-service)
-    if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
-        return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
+        # JWT check (with Clerk fallback)
+        if credentials and credentials.scheme.lower() == "bearer":
+            token = credentials.credentials
+            
+            # Try Clerk JWT verification first
+            try:
+                clerk_result = _try_clerk_verification(token)
+                if clerk_result:
+                    return clerk_result
+            except HTTPException:
+                raise
+            
+            # Fall back to local JWT verification
+            if JWT_SECRET_KEY:
+                return decode_token(token)
+        
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Provide a Bearer JWT or X-API-Key header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    # JWT check
-    if credentials and credentials.scheme.lower() == "bearer":
-        return decode_token(credentials.credentials)
-
+    # Fallback for any unexpected configuration
     raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Not authenticated. Provide a Bearer JWT or X-API-Key header.",
-        headers={"WWW-Authenticate": "Bearer"},
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Invalid authentication configuration",
     )
 
 
@@ -397,64 +469,85 @@ async def get_authed_user(
     api_key: Optional[str] = Depends(_api_key_hdr),
 ) -> TokenData:
     """
-    Unified auth dependency that tries Clerk JWT first, then falls back
-    to the traditional JWT/API-key auth.
-
-    Priority order:
-      1. Bearer token -> try Clerk JWKS verification (dynamic issuer)
-      2. Bearer token -> try local JWT_SECRET_KEY verification
-      3. X-API-Key header -> SaaS API key (nt_live_*) DB lookup
-      4. X-API-Key header -> static API key (service-to-service)
-      5. AUTH_ENABLED=false -> dev mode (synthetic admin)
+    Unified auth dependency that adapts to the configured authentication mode.
+    
+    Mode-specific behavior:
+      - full: Clerk JWT + JWT + API Keys
+      - api_key_only: Only API keys (recommended for LightningAI)
+      - disabled: No authentication (development only)
     """
-    # Dev mode bypass (production blocked)
-    if not AUTH_ENABLED:
+    auth_mode = get_auth_mode()
+    
+    # Handle disabled mode (development only)
+    if auth_mode == AuthMode.DISABLED:
         _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
         if _DEPLOY_ENV in ("production", "staging"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+                detail="AUTH_MODE=disabled is not allowed in production/staging.",
             )
-        log.warning("AUTH_ENABLED=false: returning dev admin user (development only)")
+        log.warning("AUTH_MODE=disabled: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
+    
+    # API key only mode (recommended for LightningAI)
+    if auth_mode == AuthMode.API_KEY_ONLY:
+        if api_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if api_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(api_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(
+                    sub=f"mcp-internal", 
+                    role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+                )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Provide X-API-Key header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Full mode: Clerk JWT + JWT + API Keys (default)
+    if auth_mode == AuthMode.FULL:
+        # API key check first (fastest)
+        if api_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if api_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(api_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
 
-    # API key check: try SaaS API key first, then static API_KEYS
-    if api_key:
-        # SaaS API key (nt_live_*) - DB-backed
-        saas_user = _lookup_saas_api_key(api_key)
-        if saas_user:
-            return saas_user
-    # Static API key (service-to-service)
-    if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
-        return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
-
-    # No credentials at all
-    if not credentials or credentials.scheme.lower() != "bearer":
+        # JWT check (with Clerk fallback)
+        if credentials and credentials.scheme.lower() == "bearer":
+            token = credentials.credentials
+            
+            # Try Clerk JWT verification first
+            try:
+                clerk_result = _try_clerk_verification(token)
+                if clerk_result:
+                    return clerk_result
+            except HTTPException:
+                raise
+            
+            # Fall back to local JWT verification
+            if JWT_SECRET_KEY:
+                return decode_token(token)
+        
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated. Provide a Bearer JWT or X-API-Key header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
-
-    # Try Clerk JWT verification first
-    try:
-        clerk_result = _try_clerk_verification(token)
-        if clerk_result:
-            return clerk_result
-    except HTTPException:
-        raise
-
-    # Fall back to local JWT verification
-    if JWT_SECRET_KEY:
-        return decode_token(token)
-
-    # No auth method worked
+    # Fallback for any unexpected configuration
     raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Not authenticated. Provide a valid Bearer JWT or X-API-Key header.",
-        headers={"WWW-Authenticate": "Bearer"},
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Invalid authentication configuration",
     )
 
 
@@ -501,27 +594,66 @@ async def ws_auth(
     Authenticate a WebSocket connection BEFORE calling accept().
 
     Checks (in order):
-      1. AUTH_ENABLED=false -> dev mode, always accept
+      1. AUTH_MODE=disabled -> dev mode, always accept
       2. ?api_key=<key> query parameter (SaaS or static)
       3. ?token=<jwt> query parameter (Clerk JWT -> local JWT)
       4. X-API-Key header (SaaS or static)
     """
-    if not AUTH_ENABLED:
+    auth_mode = get_auth_mode()
+    
+    if auth_mode == AuthMode.DISABLED:
         _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
         if _DEPLOY_ENV in ("production", "staging"):
             await websocket.close(code=4001, reason="Auth disabled in production")
             raise HTTPException(status_code=401, detail="Auth disabled in production")
-        log.warning("AUTH_ENABLED=false: WS dev mode (development only)")
+        log.warning("AUTH_MODE=disabled: WS dev mode (development only)")
         return TokenData(sub="dev", role="admin")
+    
+    # API key only mode
+    if auth_mode == AuthMode.API_KEY_ONLY:
+        if api_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if api_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(api_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(
+                    sub=f"mcp-internal", 
+                    role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+                )
+        
+        # Check header API key
+        hdr_key = websocket.headers.get("x-api-key")
+        if hdr_key:
+            # SaaS API key (nt_live_*) - DB-backed
+            if hdr_key.startswith("nt_live_"):
+                saas_user = _lookup_saas_api_key(hdr_key)
+                if saas_user:
+                    return saas_user
+            # Static API key (service-to-service)
+            if hdr_key in API_KEYS or hdr_key == os.getenv("MCP_INTERNAL_KEY"):
+                return TokenData(
+                    sub=f"mcp-internal", 
+                    role="admin" if hdr_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+                )
+        
+        raise WebSocketAuthError("Authentication required. Provide ?api_key=<key> or X-API-Key header.")
 
-    # Query-param API key: try SaaS first, then static
+    # API key check for full mode
     if api_key:
-        saas_user = _lookup_saas_api_key(api_key)
-        if saas_user:
-            return saas_user
+        # SaaS API key (nt_live_*) - DB-backed
+        if api_key.startswith("nt_live_"):
+            saas_user = _lookup_saas_api_key(api_key)
+            if saas_user:
+                return saas_user
         # Static API key (service-to-service)
         if api_key in API_KEYS or api_key == os.getenv("MCP_INTERNAL_KEY"):
-            return TokenData(sub=f"mcp-internal", role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader")
+            return TokenData(
+                sub=f"mcp-internal", 
+                role="admin" if api_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+            )
 
     # Query-param JWT / Clerk JWT
     if token:
@@ -543,11 +675,17 @@ async def ws_auth(
     # Header API key: try SaaS first, then static
     hdr_key = websocket.headers.get("x-api-key")
     if hdr_key:
-        saas_user = _lookup_saas_api_key(hdr_key)
-        if saas_user:
-            return saas_user
-        if hdr_key in API_KEYS:
-            return TokenData(sub=f"apikey:{hdr_key[:8]}...")
+        # SaaS API key (nt_live_*) - DB-backed
+        if hdr_key.startswith("nt_live_"):
+            saas_user = _lookup_saas_api_key(hdr_key)
+            if saas_user:
+                return saas_user
+        # Static API key (service-to-service)
+        if hdr_key in API_KEYS or hdr_key == os.getenv("MCP_INTERNAL_KEY"):
+            return TokenData(
+                sub=f"mcp-internal", 
+                role="admin" if hdr_key == os.getenv("MCP_INTERNAL_KEY") else "trader"
+            )
 
     raise WebSocketAuthError("Unauthorised - provide ?token=<jwt> or ?api_key=<key>")
 

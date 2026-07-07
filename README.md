@@ -514,14 +514,50 @@ POST /optimise/full
 
 ## Authentication
 
-### JWT Authentication (Built-in)
+### Authentication Modes (Enhanced)
+
+Choose the authentication mode that best fits your deployment:
+
+```bash
+# LightningAI / Push Architecture (Recommended)
+AUTH_MODE=api_key_only
+API_KEYS=your_service_key
+
+# Multi-Layer (Default)
+AUTH_MODE=full
+JWT_SECRET_KEY=your_jwt_secret
+API_KEYS=your_service_key
+
+# Development Only
+AUTH_MODE=disabled
+```
+
+**Authentication Mode Options:**
+- `full`: JWT + API Keys + Clerk (default)
+- `api_key_only`: Only API keys (recommended for LightningAI)
+- `disabled`: No authentication (development only)
+
+### API Key Only Mode (Recommended for LightningAI)
+
+Perfect for push-based architectures:
 
 ```bash
 # Configure
+export AUTH_MODE=api_key_only
+export API_KEYS="lightningai_key_1,lightningai_key_2"
+
+# Usage
+curl -H "X-API-Key: lightningai_key_1" http://localhost:8000/portfolio
+```
+
+### JWT Authentication (Legacy)
+
+```bash
+# Configure
+export AUTH_MODE=full
 export JWT_SECRET_KEY="your-signing-secret"
 export AUTH_USERS="admin:pass:admin,trader:pass123:trader"
 export API_KEYS="svc-key-1"
-export AUTH_ENABLED=false   # dev mode - bypasses all auth
 
 # Issue token
 curl -X POST http://localhost:8000/auth/token \
@@ -609,48 +645,56 @@ async def clerk_webhook(request: Request):
 
 Clerk authentication works alongside the existing JWT system, allowing flexible migration paths.
 
-### Dual Authentication Support
+### Unified Authentication System
 
-Both `/simulate` and `/portfolio` endpoints now support both authentication systems:
+All endpoints automatically adapt to your authentication mode:
 
 ```python
-# Endpoints accept both JWT and Clerk users
-from regime_platform.auth import TokenData, ClerkTokenData
-from typing import Union
+# Single dependency works across all authentication modes
+from regime_platform.auth import get_authed_user, TokenData
 
 @router.post("/simulate/{symbol}")
 async def simulate_symbol(
     symbol: str,
     req: SimulateRequest,
-    user: Union[TokenData, ClerkTokenData] = Depends(get_current_user),
+    user: TokenData = Depends(get_authed_user),
 ):
-    # Works with both JWT and Clerk authentication
+    # Works with all authentication modes
     pass
 ```
 
-**Usage examples:**
+**Usage examples by mode:**
 
+**API Key Only Mode (LightningAI):**
 ```bash
-# Using JWT token
+# Only API keys are required
+curl -H "X-API-Key: your_service_key" \
+  https://your-domain.com/portfolio
+```
+
+**Full Mode (JWT + API + Clerk):**
+```bash
+# JWT token
 curl -H "Authorization: Bearer <jwt_token>" \
   https://your-domain.com/simulate/SPY
 
-# Using Clerk JWT token
+# Clerk JWT token  
 curl -H "Authorization: Bearer <clerk_jwt_token>" \
   https://your-domain.com/simulate/SPY
 
-# Using API key (service-to-service)
+# API key (service-to-service)
 curl -H "X-API-Key: your-api-key" \
   https://your-domain.com/portfolio
 ```
 
-All endpoints automatically support:
+All modes support:
+- ✅ **API Key Only mode** (recommended for LightningAI)
 - ✅ **JWT tokens** (built-in system)
-- ✅ **Clerk JWT tokens** (new Clerk integration)
+- ✅ **Clerk JWT tokens** (new Clerk integration)  
 - ✅ **API keys** (service-to-service)
-- ✅ **Development mode** (AUTH_ENABLED=false)
+- ✅ **Development mode** (AUTH_MODE=disabled)
 
-This provides maximum flexibility for different authentication scenarios while maintaining backward compatibility.
+This provides maximum flexibility for different deployment scenarios while maintaining backward compatibility.
 
 ---
 
