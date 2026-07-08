@@ -394,67 +394,14 @@ class SweepOrchestrator:
                     f"[sweep:orch] {symbol}: TimesFM unavailable — skipping qualification checks, "
                     f"using fallback mode (p_timesfm=None)"
                 )
-                result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
-                try:
-                    result = await self._process_symbol(sym, prices, p_timesfm=None)
-                    self._last_ok[symbol] = time.time()
-                    await log_sweep_result({
-                        "symbol": symbol,
-                        "asset_class": sym.get("asset_class", ""),
-                        "source": "sweep-light",
-                        "brick_size": result.get("brick_size", 0.5),
-                        "sl_bricks": result.get("sl_bricks", 3),
-                        "tp_bricks": result.get("tp_bricks", 5),
-                        "regime": result["regime_label"],
-                        "regime_conf": round(result["regime_conf"], 4),
-                        "kelly_f": round(result.get("effective_kelly", result["kelly_f"]), 6),
-                        "markov_p_up": round(result["markov_p_up"], 4),
-                        "markov_p_dn": round(result["markov_p_dn"], 4),
-                        "sharpe": round(result.get("sharpe", 0), 4),
-                        "total_return": round(result.get("total_return", 0), 6),
-                        "annual_return": round(result.get("annual_return", 0), 6),
-                        "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
-                        "win_rate": round(result.get("win_rate", 0), 4),
-                        "profit_factor": round(result.get("profit_factor", 0), 4),
-                        "n_trades": result.get("n_trades"),
-                        "sweep_window": "sweep-light (TimesFM unavailable)",
-                        "sweep_duration_ms": int((time.time() - start_ts) * 1000),
-                    })
-                except Exception as exc:
-                    logger.error("%s: sweep failed: %s", symbol, exc)
-                    await log_error(symbol, "sweep-light", str(exc)[:1000])
+                sweep_window = "sweep-light (TimesFM unavailable)"
             else:
-                result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
-                try:
-                    result = await self._process_symbol(sym, prices, p_timesfm)
-                    self._last_ok[symbol] = time.time()
-                    await log_sweep_result({
-                        "symbol": symbol,
-                        "asset_class": sym.get("asset_class", ""),
-                        "source": "sweep-light",
-                        "brick_size": result.get("brick_size", 0.5),
-                        "sl_bricks": result.get("sl_bricks", 3),
-                        "tp_bricks": result.get("tp_bricks", 5),
-                        "regime": result["regime_label"],
-                        "regime_conf": round(result["regime_conf"], 4),
-                        "kelly_f": round(result.get("effective_kelly", result["kelly_f"]), 6),
-                        "markov_p_up": round(result["markov_p_up"], 4),
-                        "markov_p_dn": round(result["markov_p_dn"], 4),
-                        "sharpe": round(result.get("sharpe", 0), 4),
-                        "total_return": round(result.get("total_return", 0), 6),
-                        "annual_return": round(result.get("annual_return", 0), 6),
-                        "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
-                        "win_rate": round(result.get("win_rate", 0), 4),
-                        "profit_factor": round(result.get("profit_factor", 0), 4),
-                        "n_trades": result.get("n_trades"),
-                        "sweep_window": "sweep-light",
-                        "sweep_duration_ms": int((time.time() - start_ts) * 1000),
-                    })
-                except Exception as exc:
-                    logger.error("%s: sweep failed: %s", symbol, exc)
-                    await log_error(symbol, "sweep-light", str(exc)[:1000])
-                self._last_ok[symbol] = time.time()
+                sweep_window = "sweep-light"
 
+            result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
+            try:
+                result = await self._process_symbol(sym, prices, p_timesfm)
+                self._last_ok[symbol] = time.time()
                 await log_sweep_result({
                     "symbol": symbol,
                     "asset_class": sym.get("asset_class", ""),
@@ -474,9 +421,12 @@ class SweepOrchestrator:
                     "win_rate": round(result.get("win_rate", 0), 4),
                     "profit_factor": round(result.get("profit_factor", 0), 4),
                     "n_trades": result.get("n_trades"),
-                    "sweep_window": "light",
+                    "sweep_window": sweep_window,
                     "sweep_duration_ms": int((time.time() - start_ts) * 1000),
                 })
+            except Exception as exc:
+                logger.error("%s: sweep failed: %s", symbol, exc)
+                await log_error(symbol, "sweep-light", str(exc)[:1000])
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
                 await log_error(symbol, "sweep-light", str(exc)[:1000])
