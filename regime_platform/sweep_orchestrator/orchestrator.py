@@ -83,47 +83,47 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
                 "http://localhost:8002/forecast"
             )
 
-        if not TIMESFM_INFERENCE_URL:
+            if not TIMESFM_INFERENCE_URL:
+                logger.warning(
+                    f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
+                )
+                return None
+
+            # Use last 500 bars (same as heavy sweep)
+            price_samples = prices[-500:] if len(prices) >= 500 else prices
+
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                resp = await client.post(
+                    TIMESFM_INFERENCE_URL,
+                    json={"symbol": symbol, "prices": price_samples},
+                    headers={"Content-Type": "application/json"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            # TimesFM returns { "point_forecast": [[prediction]], "horizon": 1, ... }
+            # Extract the prediction (first and only value in the array)
+            point_forecast = data.get("point_forecast", [])
+            if point_forecast and len(point_forecast) > 0 and len(point_forecast[0]) > 0:
+                p_timesfm = float(point_forecast[0][0])
+            else:
+                logger.warning(f"[sweep:orch] {symbol}: Invalid TimesFM response format")
+                p_timesfm = 0.5  # Default fallback
+            confidence = abs(p_timesfm - 0.5)
+
+            # Cache result
+            _TIMESFM_CACHE[symbol] = (p_timesfm, now)
+            logger.info(
+                f"[sweep:orch] {symbol}: TimesFM fetched (p={p_timesfm:.4f}, "
+                f"confidence={confidence:.4f})"
+            )
+            return p_timesfm, confidence
+
+        except Exception as e:
             logger.warning(
-                f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
+                f"[sweep:orch] {symbol}: TimesFM fetch failed ({e}) — proceeding without"
             )
             return None
-
-        # Use last 500 bars (same as heavy sweep)
-        price_samples = prices[-500:] if len(prices) >= 500 else prices
-
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.post(
-                TIMESFM_INFERENCE_URL,
-                json={"symbol": symbol, "prices": price_samples},
-                headers={"Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        # TimesFM returns { "point_forecast": [[prediction]], "horizon": 1, ... }
-        # Extract the prediction (first and only value in the array)
-        point_forecast = data.get("point_forecast", [])
-        if point_forecast and len(point_forecast) > 0 and len(point_forecast[0]) > 0:
-            p_timesfm = float(point_forecast[0][0])
-        else:
-            logger.warning(f"[sweep:orch] {symbol}: Invalid TimesFM response format")
-            p_timesfm = 0.5  # Default fallback
-        confidence = abs(p_timesfm - 0.5)
-
-        # Cache result
-        _TIMESFM_CACHE[symbol] = (p_timesfm, now)
-        logger.info(
-            f"[sweep:orch] {symbol}: TimesFM fetched (p={p_timesfm:.4f}, "
-            f"confidence={confidence:.4f})"
-        )
-        return p_timesfm, confidence
-
-    except Exception as e:
-        logger.warning(
-            f"[sweep:orch] {symbol}: TimesFM fetch failed ({e}) — proceeding without"
-        )
-        return None
 
 
 def _markov_probs(regime_label: str) -> tuple[float, float]:
