@@ -386,17 +386,19 @@ class SweepOrchestrator:
                 continue
 
             # Fetch TimesFM (cached 15min)
-            p_timesfm, timesfm_confidence = await _fetch_timesfm_cached(symbol, prices)
+            p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
 
             # Validate TimesFM result before processing
-            if p_timesfm is None:
+            if p_timesfm_result is None:
                 logger.warning(
                     f"[sweep:orch] {symbol}: TimesFM unavailable — skipping qualification checks, "
                     f"using fallback mode (p_timesfm=None)"
                 )
                 sweep_window = "sweep-light (TimesFM unavailable)"
+                p_timesfm = None
             else:
                 sweep_window = "sweep-light"
+                p_timesfm, timesfm_confidence = p_timesfm_result
 
             result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
             try:
