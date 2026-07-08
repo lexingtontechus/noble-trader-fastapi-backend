@@ -108,14 +108,14 @@ async def log_regime_entry(
 
 
 async def log_sweep_result(payload: dict[str, Any]) -> None:
-    """Insert a row into ``nt_sweep_log``."""
+    """Insert a row into ``nt_regime_log``."""
     if not settings.SUPABASE_URL:
         return
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                _url("nt_sweep_log"),
+                _url("nt_regime_log"),
                 headers={**_headers(), "Prefer": "return=minimal"},
                 json=payload,
             )
@@ -126,11 +126,11 @@ async def log_sweep_result(payload: dict[str, Any]) -> None:
                 )
             else:
                 logger.info(
-                    "log_sweep_log: Successfully logged sweep for %s",
+                    "log_regime_log: Successfully logged sweep for %s",
                     payload.get("symbol", "unknown")
                 )
     except Exception as exc:
-        logger.error("log_sweep_log failed: %s", exc)
+        logger.error("log_regime_log failed: %s", exc)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:

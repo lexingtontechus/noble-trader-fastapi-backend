@@ -77,10 +77,11 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
         # Cache miss or expired — fetch from inference API
         try:
             import httpx
+            # Use proxy endpoint which routes to TimesFM on port 8002
             TIMESFM_INFERENCE_URL = (
                 os.getenv("TIMESFM_INFERENCE_URL") or
                 os.getenv("TIMESFM_URL") or
-                "http://localhost:8002/forecast"
+                "http://localhost:8000/forecast"
             )
 
             if not TIMESFM_INFERENCE_URL:

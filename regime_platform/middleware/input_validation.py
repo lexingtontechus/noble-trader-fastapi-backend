@@ -29,7 +29,8 @@ class ValidationError(HTTPException):
 class InputValidationMiddleware(BaseHTTPMiddleware):
     """Middleware for comprehensive input validation."""
 
-    def __init__(self, exempt_paths: Optional[List[str]] = None):
+    def __init__(self, exempt_paths: Optional[List[str]] = None, app=None):
+        super().__init__(app)
         self.exempt_paths = exempt_paths or [
             "/docs",
             "/redoc",
@@ -56,6 +57,31 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
         ]
 
     async def dispatch(self, request: Request, call_next):
+        # Skip validation for exempt paths
+        if any(request.url.path.startswith(path) for path in self.exempt_paths):
+            return await call_next(request)
+
+        # Only validate certain HTTP methods
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            try:
+                # Validate JSON body if present
+                content_type = request.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    await self._validate_json_body(request)
+
+                # Validate query parameters
+                await self._validate_query_params(request)
+
+                # Validate path parameters
+                await self._validate_path_params(request)
+
+            except ValidationError as e:
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content=e.detail,
+                )
+
+        return await call_next(request)
         # Skip validation for exempt paths
         if any(request.url.path.startswith(path) for path in self.exempt_paths):
             return await call_next(request)
