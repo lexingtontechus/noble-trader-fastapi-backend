@@ -135,7 +135,8 @@ async def log_calibration(
         raise HTTPException(status_code=503, detail="Supabase not configured")
 
     record_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    # Use timezone-naive datetime for Postgres compatibility
+    now = datetime.now(timezone.utc).astimezone().replace(tzinfo=None).isoformat()
 
     row = {
         "id": record_id,
