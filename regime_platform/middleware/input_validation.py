@@ -29,7 +29,17 @@ class ValidationError(HTTPException):
 class InputValidationMiddleware(BaseHTTPMiddleware):
     """Middleware for comprehensive input validation."""
 
-    def __init__(self, exempt_paths: Optional[List[str]] = None, app=None):
+    def __init__(self, app=None, exempt_paths: Optional[List[str]] = None, **kwargs):
+        # ── CRITICAL: argument order matters ───────────────────────────
+        # FastAPI's ``app.add_middleware(InputValidationMiddleware)`` calls
+        # the constructor as ``InputValidationMiddleware(app)`` — i.e. with
+        # ``app`` as the FIRST positional argument. The previous signature
+        # had ``exempt_paths`` first and ``app=None`` second, so ``app``
+        # (a CORSMiddleware-wrapped object) was being bound to
+        # ``exempt_paths``. Then ``for path in self.exempt_paths`` raised
+        # ``TypeError: 'CORSMiddleware' object is not iterable`` on EVERY
+        # request, returning HTTP 500 and breaking the TimesFM /forecast
+        # proxy. ``app`` must be the first parameter.
         super().__init__(app)
         self.exempt_paths = exempt_paths or [
             "/docs",
@@ -37,6 +47,15 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
             "/openapi.json",
             "/health",
             "/metrics",
+            # Internal TimesFM proxy endpoints — these are trusted
+            # machine-to-machine calls from the sweep orchestrator, not
+            # user input. Validating their payload against the XSS/SQL
+            # pattern list is unnecessary and risky (the validation's
+            # blocked-keys list includes 'key', 'token', 'query', etc.,
+            # which could falsely trip on legitimate forecast payload
+            # field names).
+            "/forecast",
+            "/info",
         ]
 
         # Common patterns to block
@@ -81,31 +100,6 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
                     content=e.detail,
                 )
 
-        return await call_next(request)
-        # Skip validation for exempt paths
-        if any(request.url.path.startswith(path) for path in self.exempt_paths):
-            return await call_next(request)
-        
-        # Only validate certain HTTP methods
-        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            try:
-                # Validate JSON body if present
-                content_type = request.headers.get("content-type", "")
-                if "application/json" in content_type:
-                    await self._validate_json_body(request)
-                
-                # Validate query parameters
-                await self._validate_query_params(request)
-                
-                # Validate path parameters
-                await self._validate_path_params(request)
-                
-            except ValidationError as e:
-                return JSONResponse(
-                    status_code=e.status_code,
-                    content=e.detail,
-                )
-        
         return await call_next(request)
     
     async def _validate_json_body(self, request: Request):

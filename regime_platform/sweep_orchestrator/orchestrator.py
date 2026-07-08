@@ -95,18 +95,28 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
     try:
         import httpx
 
-        # Use proxy endpoint which routes to TimesFM on port 8002.
-        # Override via env vars for production / non-local deployments.
-        TIMESFM_INFERENCE_URL = (
+        # ── Resolve the TimesFM inference URL ─────────────────────────
+        # Priority:
+        #   1. TIMESFM_INFERENCE_URL env var (explicit override)
+        #   2. TIMESFM_URL env var (legacy alias)
+        #   3. http://localhost:8000/forecast (the gateway/proxy on port
+        #      8000, which routes /forecast → TimesFM on port 8002)
+        #
+        # If the gateway is down or misconfigured, we fall back to hitting
+        # TimesFM directly on port 8002 (see _TIMESFM_FALLBACK_URL below).
+        primary_url = (
             os.getenv("TIMESFM_INFERENCE_URL") or
             os.getenv("TIMESFM_URL") or
             "http://localhost:8000/forecast"
         )
-        if not TIMESFM_INFERENCE_URL:
-            logger.warning(
-                f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
-            )
-            return None
+        # Direct fallback: bypass the gateway, hit TimesFM server.py on
+        # port 8002. Only used if the primary URL returns a connection
+        # error or 502/503 (gateway down or model still loading).
+        # Can be disabled by setting TIMESFM_DISABLE_FALLBACK=1.
+        fallback_url = os.getenv(
+            "TIMESFM_DIRECT_URL", "http://127.0.0.1:8002/forecast"
+        )
+        use_fallback = os.getenv("TIMESFM_DISABLE_FALLBACK", "0") != "1"
 
         # API key is REQUIRED by server.py's /forecast endpoint
         # (verify_api_key dependency). The previous request omitted the
@@ -135,27 +145,84 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
         if TIMESFM_API_KEY:
             headers["X-API-Key"] = TIMESFM_API_KEY
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.post(
-                TIMESFM_INFERENCE_URL,
-                json=request_body,
-                headers=headers,
+        # ── Try primary URL first, fall back to direct port 8002 ──────
+        # The gateway (port 8000) sometimes returns 502 if the TimesFM
+        # process on port 8002 hasn't started yet, or 503 if the model
+        # is still loading. Hitting port 8002 directly gives us a more
+        # specific error and avoids the gateway as a single point of
+        # failure.
+        urls_to_try = [primary_url]
+        if use_fallback and primary_url != fallback_url:
+            urls_to_try.append(fallback_url)
+
+        last_error = None
+        resp = None
+        for url in urls_to_try:
+            try:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                    resp = await client.post(
+                        url,
+                        json=request_body,
+                        headers=headers,
+                    )
+                # If we got a real HTTP response (even an error), don't
+                # try the fallback — the server is reachable, the error
+                # is a real one (401, 422, 500, etc.) that the fallback
+                # won't fix.
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
+                last_error = conn_err
+                logger.debug(
+                    f"[sweep:orch] {symbol}: TimesFM URL {url} unreachable: "
+                    f"{conn_err}"
+                )
+                continue  # try the fallback URL
+
+        if resp is None:
+            # All URLs failed to connect
+            logger.warning(
+                f"[sweep:orch] {symbol}: TimesFM unreachable at all tried URLs "
+                f"({[u for u in urls_to_try]}) — last error: {last_error}"
             )
-            if resp.status_code == 401:
-                logger.error(
-                    f"[sweep:orch] {symbol}: TimesFM 401 Unauthorized — "
-                    f"TIMESFM_API_KEYS env var not set or key mismatch"
-                )
-                return None
-            if resp.status_code == 422:
-                logger.error(
-                    f"[sweep:orch] {symbol}: TimesFM 422 Unprocessable Entity — "
-                    f"payload schema mismatch. URL={TIMESFM_INFERENCE_URL}, "
-                    f"body_keys={list(request_body.keys())}"
-                )
-                return None
-            resp.raise_for_status()
-            data = resp.json()
+            return None
+
+        # ── Handle specific HTTP error codes ──────────────────────────
+        if resp.status_code == 401:
+            logger.error(
+                f"[sweep:orch] {symbol}: TimesFM 401 Unauthorized — "
+                f"TIMESFM_API_KEYS env var not set or key mismatch. "
+                f"URL={resp.url}"
+            )
+            return None
+        if resp.status_code == 422:
+            logger.error(
+                f"[sweep:orch] {symbol}: TimesFM 422 Unprocessable Entity — "
+                f"payload schema mismatch. URL={resp.url}, "
+                f"body_keys={list(request_body.keys())}, "
+                f"resp={resp.text[:200]}"
+            )
+            return None
+        if resp.status_code == 503:
+            # server.py returns 503 when state["model"] is None (model
+            # still loading). This is transient — don't log at ERROR,
+            # just INFO, so logs don't fill up during the 30-60s model
+            # load window at startup.
+            logger.info(
+                f"[sweep:orch] {symbol}: TimesFM 503 (model still loading) — "
+                f"will retry next sweep cycle"
+            )
+            return None
+        if resp.status_code == 502:
+            # Gateway/proxy couldn't reach TimesFM on port 8002.
+            # This usually means server.py isn't running.
+            logger.warning(
+                f"[sweep:orch] {symbol}: TimesFM 502 Bad Gateway — "
+                f"server.py on port 8002 not reachable. "
+                f"Check that 'python server.py' is running."
+            )
+            return None
+        resp.raise_for_status()
+        data = resp.json()
 
         # TimesFM returns {"point_forecast": [[next_value]], ...}.
         # The forecast is a *price* (or price-like value), NOT a probability.
@@ -750,12 +817,28 @@ class SweepOrchestrator:
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
             "shift_at": str(now_ms) if regime_shift else "0",
-            "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
+            # ── CRITICAL: Redis HSET cannot store None values ───────────
+            # The previous implementation did:
+            #   "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None
+            # When p_timesfm was None (TimesFM unavailable), this put None
+            # into the dict, and redis-py's hset(mapping=...) raised:
+            #   DataError: Invalid input of type: 'NoneType'. Convert to
+            #   a bytes, string, int or float first.
+            # This cascaded: TimesFM down → p_timesfm=None → Redis write
+            # failed → NO Redis state at all (no heartbeat, no config hash,
+            # no agent pub/sub). Fix: omit the field entirely when None.
+            # Downstream readers should use HGET with a default, or check
+            # field presence via HEXISTS.
             "price_decimals": decimals,
             # config_ts (float seconds) lets get_config()'s staleness check
             # treat orchestrator-written keys consistently with the TTL below.
             "config_ts": round(time.time(), 3),
         }
+        # Only include p_timesfm when we actually have a value. Omitting
+        # the field is safer than storing a sentinel ("" or "null") because
+        # it can't be misinterpreted as a real forecast value.
+        if p_timesfm is not None:
+            config_dict["p_timesfm"] = round(p_timesfm, 4)
         if cal:
             config_dict["calibration_bias"] = round(cal["bias"], 4)
             config_dict["calibration_status"] = cal["status"]
@@ -799,8 +882,24 @@ class SweepOrchestrator:
 
         ttl = sym.get("heartbeat_ttl_seconds", 900)
         try:
+            # ── Defensive: strip any None values from config_dict ────────
+            # Redis HSET(mapping=...) raises DataError if any value is None.
+            # We've already handled p_timesfm above, but other fields
+            # (calibration_bias, etc.) could theoretically be None too.
+            # Filter them out as a safety net so a single bad field can't
+            # abort the entire pipeline write.
+            safe_config_dict = {
+                k: v for k, v in config_dict.items() if v is not None
+            }
+            if len(safe_config_dict) != len(config_dict):
+                dropped = set(config_dict) - set(safe_config_dict)
+                logger.warning(
+                    f"[sweep:orch] {symbol}: dropped None-valued fields from "
+                    f"Redis config_dict: {sorted(dropped)}"
+                )
+
             pipe = self._redis.pipeline(transaction=False)
-            pipe.hset(config_key, mapping=config_dict)
+            pipe.hset(config_key, mapping=safe_config_dict)
             pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
             pipe.set(heartbeat_key, str(now_ms), ex=ttl)
             pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
@@ -809,7 +908,8 @@ class SweepOrchestrator:
             await pipe.execute()
             logger.debug(
                 f"[sweep:orch] {symbol}: Redis write OK "
-                f"(config_key={config_key}, qualified={qualified})"
+                f"(config_key={config_key}, qualified={qualified}, "
+                f"fields={len(safe_config_dict)})"
             )
         except Exception as redis_exc:
             # The previous implementation let this exception propagate,

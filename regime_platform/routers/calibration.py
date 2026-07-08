@@ -158,11 +158,24 @@ async def log_calibration(
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                _supabase_url("nt_calibration_records"),
-                headers=_supabase_headers(),
-                json=row,
-            )
+            url = _supabase_url("nt_calibration_records")
+            resp = await client.post(url, headers=_supabase_headers(), json=row)
+
+            # ── Schema drift fallback: p_ext_signal vs p_imbalance ─────
+            # Migration 100 originally named this column 'p_imbalance'.
+            # Migration 024 renamed it to 'p_ext_signal'. If 024 hasn't
+            # been applied on this Supabase, the insert fails with
+            # PGRST204 mentioning 'p_ext_signal'. Retry once with the
+            # legacy column name so the API doesn't hard-fail.
+            if resp.status_code == 400 and "p_ext_signal" in resp.text:
+                log.warning(
+                    "log_calibration: 'p_ext_signal' column not found — "
+                    "retrying with legacy 'p_imbalance' name. "
+                    "Apply migration 024 to fix."
+                )
+                row["p_imbalance"] = row.pop("p_ext_signal")
+                resp = await client.post(url, headers=_supabase_headers(), json=row)
+
             if resp.status_code not in (200, 201):
                 log.error(
                     "Supabase insert failed: status=%s body=%s",
