@@ -91,8 +91,16 @@ noble-trader-fastapi-backend/
 │   ├── deployment.md                 Production operations guide
 │   └── TimeFM/                       TimesFM integration requirements & architecture docs (6 documents)
 │
+├── regime_platform/
+│   └── sweep_orchestrator/           Sweep Orchestrator — active signal generation (Python, APScheduler, Redis)
+│       ├── orchestrator.py           Core signal gen with TimesFM, EV gates, qualification
+│       ├── __main__.py               Entry point for orchestrator service
+│       ├── market_hours.py           Market hours validation
+│       ├── price_fetcher.py           Price data fetching
+│       └── supabase_client.py        Supabase integration (active symbols, logs)
+│
 ├── supabase/
-│   ├── functions/                    Edge functions [DEPRECATED] — retained for reference; engine is now SweepOrchestrator on LightningAI
+│   ├── functions/                    Edge functions [DEPRECATED] — retained for reference
 │   └── migrations/                   Database migrations (001–022)
 │
 ├── tests/
@@ -712,9 +720,36 @@ Without `REDIS_URL`, all state is in-memory with zero overhead.
 
 ## Redis Config — `trading:config:{symbol}`
 
-The `trading:config:{symbol}` hash in Upstash Redis is the single source of truth for the trading bot. Written by the **SweepOrchestrator on LightningAI** (pipelined HSET + 1h EXPIRE), read by the trading bot every 15s.
+The `trading:config:{symbol}` hash in Redis is the single source of truth for the trading bot. Written by **SweepOrchestrator** (Python, APScheduler), read by trading bots every 15s.
 
-### Core Fields
+### Signal Generation Architecture
+
+**Active path**: `regime_platform/sweep_orchestrator/`
+- Runs as standalone Python service (not Supabase edge functions)
+- Schedules per-symbol sweeps via APScheduler cron jobs
+- Fetches TimesFM predictions (cached 15min) → 3-source EV blend
+- Enforces qualification gates before publishing
+
+**Key qualification gates**:
+| Gate | Threshold | Purpose |
+|------|-----------|---------|
+| Signal type | `buy` or `sell` (not `neutral`) | Only trade on clear direction |
+| Regime confidence | ≥ 0.60 | Ensure reliable HMM classification |
+| Kelly fraction | ≥ 0.02 | Minimum position sizing |
+| TimesFM confidence | ≥ 0.05 (|p-0.5|) | Require directional forecast certainty |
+| EV allowed | `ev > min_ev` AND `rr ≥ min_rr` | Minimum expected value |
+
+**Signal types**:
+- `heartbeat` (sweep_orchestrator) → **only qualified signals published to** `signal.raw.noble_trader`
+- `renko_signal` (renko pipeline) → Always published
+
+**Redis publish targets**:
+```
+agent:{symbol}          → always publishes (liveness heartbeat)
+signal.raw.noble_trader → only qualified signals (qualification gated)
+```
+
+### Core Fields (sweep_orchestrator)
 
 | Field | Type | Example | Source | Description |
 |---|---|---|---|---|
@@ -757,8 +792,8 @@ The `trading:config:{symbol}` hash in Upstash Redis is the single source of trut
 
 | Field | Type | Example | Source | Description |
 |---|---|---|---|---|
-| `p_timesfm` | float | `0.48` | TimesFM GPU | Foundation model directional forecast (0–1). >0.5 = bullish, <0.5 = bearish |
-| `timesfm_horizon` | string | `12h` | TimesFM GPU | Forecast window label |
+| `p_timesfm` | float | `0.48` | TimesFM API | Foundation model directional forecast (0–1). >0.5 = bullish, <0.5 = bearish |
+| `timesfm_horizon` | string | `12h` | TimesFM API | Forecast window label |
 
 **Example:** `p_timesfm=0.48` for BTC means TimesFM forecasts a slight price decline over the next 12 hours. This feeds into the EV Engine v3 blended P_win:
 

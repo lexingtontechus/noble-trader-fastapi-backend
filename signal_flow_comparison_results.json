@@ -1,0 +1,238 @@
+{
+  "scenarios": [
+    {
+      "scenario": "strong_bull_confident_timesfm",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.7079,
+          "p_regime": 0.8,
+          "p_timesfm": 0.72,
+          "ev": 1.6854,
+          "ev_per_dollar": 1.1236,
+          "rr": 2.0,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": true,
+        "published_to_raw": true,
+        "published_to_qualified_tier": false,
+        "gates": {
+          "signal_neutral": false,
+          "regime_conf_low": false,
+          "timesfm_uncertain": false,
+          "timesfm_missing": false,
+          "ev_not_allowed": false,
+          "kelly_too_low": false
+        },
+        "size_mult": 1.0,
+        "ev": {
+          "p_win": 0.7079,
+          "p_regime": 0.8,
+          "p_timesfm": 0.72,
+          "ev": 1.6854,
+          "ev_per_dollar": 1.1236,
+          "rr": 2.0,
+          "allowed": true
+        }
+      }
+    },
+    {
+      "scenario": "bull_uncertain_timesfm",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.5685,
+          "p_regime": 0.65,
+          "p_timesfm": 0.52,
+          "ev": 0.9897,
+          "ev_per_dollar": 0.9897,
+          "rr": 2.5,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": false,
+        "published_to_raw": false,
+        "published_to_qualified_tier": false,
+        "gates": {
+          "signal_neutral": false,
+          "regime_conf_low": false,
+          "timesfm_uncertain": true,
+          "timesfm_missing": false,
+          "ev_not_allowed": false,
+          "kelly_too_low": false
+        },
+        "size_mult": 1.0,
+        "ev": {
+          "p_win": 0.5685,
+          "p_regime": 0.65,
+          "p_timesfm": 0.52,
+          "ev": 0.9897,
+          "ev_per_dollar": 0.9897,
+          "rr": 2.5,
+          "allowed": true
+        }
+      }
+    },
+    {
+      "scenario": "neutral_no_edge",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.5,
+          "p_regime": 0.5,
+          "p_timesfm": 0.5,
+          "ev": 0.75,
+          "ev_per_dollar": 0.5,
+          "rr": 2.0,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": false,
+        "published_to_raw": false,
+        "published_to_qualified_tier": false,
+        "gates": {
+          "signal_neutral": true,
+          "regime_conf_low": true,
+          "timesfm_uncertain": true,
+          "timesfm_missing": false,
+          "ev_not_allowed": false,
+          "kelly_too_low": true
+        },
+        "size_mult": 1.0,
+        "ev": {
+          "p_win": 0.5,
+          "p_regime": 0.5,
+          "p_timesfm": 0.5,
+          "ev": 0.75,
+          "ev_per_dollar": 0.5,
+          "rr": 2.0,
+          "allowed": true
+        }
+      }
+    },
+    {
+      "scenario": "bear_confident_timesfm_down",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.5558,
+          "p_regime": 0.8,
+          "p_timesfm": 0.28,
+          "ev": 1.0009,
+          "ev_per_dollar": 0.6673,
+          "rr": 2.0,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": true,
+        "published_to_raw": true,
+        "published_to_qualified_tier": false,
+        "gates": {
+          "signal_neutral": false,
+          "regime_conf_low": false,
+          "timesfm_uncertain": false,
+          "timesfm_missing": false,
+          "ev_not_allowed": false,
+          "kelly_too_low": false
+        },
+        "size_mult": 1.0,
+        "ev": {
+          "p_win": 0.5558,
+          "p_regime": 0.8,
+          "p_timesfm": 0.28,
+          "ev": 1.0009,
+          "ev_per_dollar": 0.6673,
+          "rr": 2.0,
+          "allowed": true
+        }
+      }
+    },
+    {
+      "scenario": "no_timesfm_fallback",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.6302,
+          "p_regime": 0.725,
+          "p_timesfm": 0.0,
+          "ev": 1.336,
+          "ev_per_dollar": 0.8907,
+          "rr": 2.0,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": false,
+        "published_to_raw": false,
+        "published_to_qualified_tier": false,
+        "gates": {
+          "signal_neutral": false,
+          "regime_conf_low": false,
+          "timesfm_uncertain": false,
+          "timesfm_missing": true,
+          "ev_not_allowed": false,
+          "kelly_too_low": false
+        },
+        "size_mult": 1.0,
+        "ev": {
+          "p_win": 0.6302,
+          "p_regime": 0.725,
+          "p_timesfm": 0.0,
+          "ev": 1.336,
+          "ev_per_dollar": 0.8907,
+          "rr": 2.0,
+          "allowed": true
+        }
+      }
+    },
+    {
+      "scenario": "very_confident_high_tier",
+      "current": {
+        "published_to_raw": true,
+        "ev": {
+          "p_win": 0.8364,
+          "p_regime": 0.94,
+          "p_timesfm": 0.82,
+          "ev": 2.2636,
+          "ev_per_dollar": 1.5091,
+          "rr": 2.0,
+          "allowed": true
+        }
+      },
+      "optimized": {
+        "qualified": true,
+        "published_to_raw": true,
+        "published_to_qualified_tier": true,
+        "gates": {
+          "signal_neutral": false,
+          "regime_conf_low": false,
+          "timesfm_uncertain": false,
+          "timesfm_missing": false,
+          "ev_not_allowed": false,
+          "kelly_too_low": false
+        },
+        "size_mult": 1.2,
+        "ev": {
+          "p_win": 0.8364,
+          "p_regime": 0.94,
+          "p_timesfm": 0.82,
+          "ev": 2.2636,
+          "ev_per_dollar": 1.5091,
+          "rr": 2.0,
+          "allowed": true
+        }
+      }
+    }
+  ],
+  "summary": {
+    "current_raw_publishes": 6,
+    "optimized_raw_publishes": 3,
+    "optimized_high_conf_tier": 1,
+    "total_scenarios": 6
+  }
+}

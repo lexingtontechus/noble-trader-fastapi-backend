@@ -1,0 +1,104 @@
+{
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0
+  },
+  "results": [
+    {
+      "scenario": "strong_bull_confident_timesfm",
+      "signal": "buy",
+      "regime_conf": 0.88,
+      "regime_conf_ok": true,
+      "kelly_f": 0.12,
+      "kelly_min_ok": true,
+      "p_timesfm": 0.72,
+      "timesfm_confidence": 0.22,
+      "timesfm_too_uncertain": false,
+      "ev": {
+        "p_win": 0.5819,
+        "ev": 1.1185,
+        "rr": 2.0,
+        "allowed": true
+      },
+      "qualified": true,
+      "expected": true
+    },
+    {
+      "scenario": "bull_uncertain_timesfm",
+      "signal": "buy",
+      "regime_conf": 0.62,
+      "regime_conf_ok": true,
+      "kelly_f": 0.04,
+      "kelly_min_ok": true,
+      "p_timesfm": 0.52,
+      "timesfm_confidence": 0.02,
+      "timesfm_too_uncertain": true,
+      "ev": {
+        "p_win": 0.507,
+        "ev": 0.7745,
+        "rr": 2.5,
+        "allowed": true
+      },
+      "qualified": false,
+      "expected": false
+    },
+    {
+      "scenario": "range_low_regime_conf",
+      "signal": "neutral",
+      "regime_conf": 0.45,
+      "regime_conf_ok": false,
+      "kelly_f": 0.0,
+      "kelly_min_ok": false,
+      "p_timesfm": 0.5,
+      "timesfm_confidence": null,
+      "timesfm_too_uncertain": true,
+      "ev": {
+        "p_win": 0.5,
+        "ev": 0.75,
+        "rr": 2.0,
+        "allowed": true
+      },
+      "qualified": false,
+      "expected": false
+    },
+    {
+      "scenario": "bear_confident_down",
+      "signal": "sell",
+      "regime_conf": 0.81,
+      "regime_conf_ok": true,
+      "kelly_f": 0.09,
+      "kelly_min_ok": true,
+      "p_timesfm": 0.28,
+      "timesfm_confidence": 0.22,
+      "timesfm_too_uncertain": false,
+      "ev": {
+        "p_win": 0.4181,
+        "ev": 0.3815,
+        "rr": 2.0,
+        "allowed": true
+      },
+      "qualified": true,
+      "expected": true
+    },
+    {
+      "scenario": "no_timesfm_soft_fail",
+      "signal": "buy",
+      "regime_conf": 0.75,
+      "regime_conf_ok": true,
+      "kelly_f": 0.08,
+      "kelly_min_ok": true,
+      "p_timesfm": null,
+      "timesfm_confidence": null,
+      "timesfm_too_uncertain": false,
+      "ev": {
+        "p_win": 0.5,
+        "ev": 0.75,
+        "rr": 2.0,
+        "allowed": true
+      },
+      "qualified": false,
+      "expected": false
+    }
+  ]
+}

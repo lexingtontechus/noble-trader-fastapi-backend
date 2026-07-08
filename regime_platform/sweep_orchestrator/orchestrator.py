@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import defaultdict
 from typing import Any
@@ -49,6 +50,74 @@ STALE_CHECK_INTERVAL_S = 60       # check every 60 s
 REFRESH_SYMBOLS_INTERVAL_S = 300  # re-read nt_symbol every 5 min
 LIGHT_LOCK_TTL_S = 90             # per-symbol lock TTL (matches edge fn)
 STAGGER_SECONDS = 5               # gap between symbols within a group
+
+# ── TimesFM fetcher with 15-minute cache ────────────────────────────────
+# Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
+# Using a simple in-memory cache (not Redis for this hot path)
+_TIMESFM_CACHE: dict[str, tuple[float, float]] = {}  # symbol -> (p, timestamp)
+_TIMESFM_CACHE_TTL_S = 900  # 15 minutes
+
+async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float, float] | None:
+    """
+    Fetch TimesFM forecast for a symbol with a 15-minute cache.
+
+    Returns (p_timesfm, confidence) or None if unavailable.
+    Uses the same inference URL as the edge function.
+    """
+    now = time.time()
+    cached = _TIMESFM_CACHE.get(symbol)
+    if cached:
+        p, ts = cached
+        if now - ts < _TIMESFM_CACHE_TTL_S:
+            logger.debug(
+                f"[sweep:orch] {symbol}: TimesFM cache hit (p={p:.4f}, age={now-ts:.0f}s)"
+            )
+            return p, now - ts
+
+    # Cache miss or expired — fetch from inference API
+    try:
+        import httpx
+        TIMESFM_INFERENCE_URL = (
+            os.getenv("TIMESFM_INFERENCE_URL") or
+            os.getenv("TIMESFM_URL") or
+            "http://localhost:8000/inference"
+        )
+
+        if not TIMESFM_INFERENCE_URL:
+            logger.warning(
+                f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
+            )
+            return None
+
+        # Use last 500 bars (same as heavy sweep)
+        price_samples = prices[-500:] if len(prices) >= 500 else prices
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.post(
+                TIMESFM_INFERENCE_URL,
+                json={"symbol": symbol, "prices": price_samples},
+                headers={"Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # TimesFM returns { "predictions": { "BTC": 0.72 } }
+        p_timesfm = float(data.get("predictions", {}).get(symbol, 0.5))
+        confidence = abs(p_timesfm - 0.5)
+
+        # Cache result
+        _TIMESFM_CACHE[symbol] = (p_timesfm, now)
+        logger.info(
+            f"[sweep:orch] {symbol}: TimesFM fetched (p={p_timesfm:.4f}, "
+            f"confidence={confidence:.4f})"
+        )
+        return p_timesfm, confidence
+
+    except Exception as e:
+        logger.warning(
+            f"[sweep:orch] {symbol}: TimesFM fetch failed ({e}) — proceeding without"
+        )
+        return None
 
 
 def _markov_probs(regime_label: str) -> tuple[float, float]:
@@ -310,9 +379,12 @@ class SweepOrchestrator:
                 logger.info("%s: locked — skipping (concurrent sweep)", symbol)
                 continue
 
+            # Fetch TimesFM (cached 15min)
+            p_timesfm, timesfm_confidence = await _fetch_timesfm_cached(symbol, prices)
+
             result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
             try:
-                result = await self._process_symbol(sym, prices)
+                result = await self._process_symbol(sym, prices, p_timesfm)
                 self._last_ok[symbol] = time.time()
 
                 await log_sweep_result({
@@ -458,6 +530,69 @@ class SweepOrchestrator:
         # EVFullResult is a dataclass — use attribute access
         effective_kelly = kelly_f * ev_result.ev_scale * ev_result.markov_multiplier
 
+        # ── 5a. Qualification gates (NEW) ──
+        # Only publish qualified signals to signal.raw.noble_trader
+        signal_is_qualifiable = trade_signal["signal"] not in ("neutral", "unknown")
+
+        if p_timesfm is not None:
+            confidence = abs(p_timesfm - 0.5)
+            timesfm_too_uncertain = confidence < 0.05  # require certainty
+        else:
+            confidence = None
+            timesfm_too_uncertain = False
+
+        min_regime_conf = 0.60
+        min_kelly = 0.02
+
+        passed_gates = {
+            "signal": trade_signal["signal"],
+            "signal_qualifiable": signal_is_qualifiable,
+            "regime_conf": regime_conf,
+            "regime_conf_ok": regime_conf >= min_regime_conf,
+            "kelly_f": kelly_f,
+            "kelly_min_ok": kelly_f >= min_kelly,
+            "timesfm_missing": p_timesfm is None,
+            "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
+            "timesfm_too_uncertain": timesfm_too_uncertain,
+            "ev_allowed": ev_result.allowed,
+        }
+
+        # Check if signal passes all qualification gates
+        # TimesFM is now required for qualification (p_timesfm cannot be None)
+        qualified = (
+            signal_is_qualifiable
+            and regime_conf >= min_regime_conf
+            and kelly_f >= min_kelly
+            and p_timesfm is not None  # TimesFM required
+            and confidence >= 0.05     # Certainty required
+            and ev_result.allowed
+        )
+
+        if not qualified:
+            logger.info(
+                f"[sweep:orch] {symbol}: SKIPPED — signal '{trade_signal['signal']}', "
+                f"regime_conf={regime_conf:.3f} (< {min_regime_conf}), kelly_f={kelly_f:.4f} "
+                f"(< {min_kelly}), timesfm_conf={round(confidence, 4) if confidence is not None else None}, "
+                f"ev_allowed={ev_result.allowed}"
+            )
+            # Still return a result dict for logging
+            return {
+                "regime_label": regime_label,
+                "regime_conf": regime_conf,
+                "kelly_f": kelly_f,
+                "effective_kelly": effective_kelly,
+                "markov_p_up": p_up,
+                "markov_p_dn": p_dn,
+                "brick_size": brick_size,
+                "sl_bricks": sl_bricks,
+                "tp_bricks": tp_bricks,
+                "signal": trade_signal["signal"],
+                "ev": ev_result.ev,
+                "p_win": ev_result.p_win,
+                "passed_gates": passed_gates,
+                "qualified": False,
+            }
+
         # ── 6. Calibration bias ──
         cal = await fetch_calibration_bias(symbol)
 
@@ -506,6 +641,7 @@ class SweepOrchestrator:
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
             "shift_at": str(now_ms) if regime_shift else "0",
+            "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
             "price_decimals": decimals,
             # config_ts (float seconds) lets get_config()'s staleness check
             # treat orchestrator-written keys consistently with the TTL below.
@@ -514,6 +650,19 @@ class SweepOrchestrator:
         if cal:
             config_dict["calibration_bias"] = round(cal["bias"], 4)
             config_dict["calibration_status"] = cal["status"]
+
+        # Compute size multiplier based on TimesFM confidence
+        size_mult = 1.0
+        if qualified and p_timesfm is not None:
+            confidence = abs(p_timesfm - 0.5)
+            if confidence >= 0.30:
+                size_mult = 1.2
+            elif confidence >= 0.15:
+                size_mult = 1.0
+            else:
+                size_mult = 0.6
+
+        effective_kelly_final = effective_kelly * size_mult if qualified else 0.0
 
         agent_payload = json.dumps({
             "type": "heartbeat",
@@ -530,10 +679,13 @@ class SweepOrchestrator:
             "sl_bricks": sl_bricks,
             "tp_bricks": tp_bricks,
             "kelly_f": round(kelly_f, 6),
+            "effective_kelly": round(effective_kelly_final, 6),
             "ev": round(ev_result.ev, 4),
             "p_win": round(ev_result.p_win, 4),
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
+            "size_mult": round(size_mult, 2),
+            "qualified": qualified,
         })
 
         ttl = sym.get("heartbeat_ttl_seconds", 900)
@@ -541,8 +693,9 @@ class SweepOrchestrator:
         pipe.hset(config_key, mapping=config_dict)
         pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
         pipe.set(heartbeat_key, str(now_ms), ex=ttl)
-        pipe.publish(agent_channel, agent_payload)
-        pipe.publish("signal.raw.noble_trader", agent_payload)  # aggregate channel for L0 subscriber
+        pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
+        if qualified:
+            pipe.publish("signal.raw.noble_trader", agent_payload)  # Only qualified signals
         await pipe.execute()
 
         # ── 11. Log to Supabase ──
@@ -578,6 +731,8 @@ class SweepOrchestrator:
             "win_rate": round(win_rate, 4),
             "profit_factor": round(profit_factor, 4),
             "n_trades": len(returns),
+            "passed_gates": passed_gates,
+            "qualified": qualified,
         }
 
     # ── Stale-symbol background check ─────────────────────────────
