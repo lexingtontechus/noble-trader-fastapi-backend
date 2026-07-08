@@ -8,14 +8,16 @@ and ensure data integrity across all endpoints.
 import re
 import logging
 from typing import Any, Dict, List, Optional, Union
-from fastapi import Request, HTTPException, status
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
 log = logging.getLogger(__name__)
 
 class ValidationError(HTTPException):
     """Custom validation error with structured details."""
-    
+
     def __init__(self, detail: Union[str, Dict[str, Any]]):
         if isinstance(detail, str):
             detail = {"message": detail}
@@ -24,9 +26,9 @@ class ValidationError(HTTPException):
             content={"detail": detail}
         )
 
-class InputValidationMiddleware:
+class InputValidationMiddleware(BaseHTTPMiddleware):
     """Middleware for comprehensive input validation."""
-    
+
     def __init__(self, exempt_paths: Optional[List[str]] = None):
         self.exempt_paths = exempt_paths or [
             "/docs",
@@ -35,7 +37,7 @@ class InputValidationMiddleware:
             "/health",
             "/metrics",
         ]
-        
+
         # Common patterns to block
         self.blocked_patterns = [
             r'<script[^>]*>.*?</script>',  # Script tags
@@ -52,8 +54,8 @@ class InputValidationMiddleware:
             r'<frame',                   # Frames
             r'<link[^>]*rel=[\'"]stylesheet[\'"]',  # External stylesheets
         ]
-    
-    async def __call__(self, request: Request, call_next):
+
+    async def dispatch(self, request: Request, call_next):
         # Skip validation for exempt paths
         if any(request.url.path.startswith(path) for path in self.exempt_paths):
             return await call_next(request)
@@ -78,8 +80,7 @@ class InputValidationMiddleware:
                     content=e.detail,
                 )
         
-        response = await call_next(request)
-        return response
+        return await call_next(request)
     
     async def _validate_json_body(self, request: Request):
         """Validate JSON request body."""

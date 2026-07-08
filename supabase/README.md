@@ -25,7 +25,7 @@ Noble Trader Admin is a production-grade Next.js dashboard that orchestrates a t
   │          Supabase (PostgreSQL — Data + Schedule Store)     │
   │  ┌──────────────────────────────────────────────────┐    │
   │  │  nt_symbol table  — active symbols, cron schedule│    │
-  │  │  nt_sweep_results — sweep history                │    │
+  │  │  nt_sweep_result — sweep history                │    │
   │  │  nt_regime_log    — regime shifts               │    │
   │  │  nt_system_config — runtime configuration        │    │
   │  └──────────────────────────────────────────────────┘    │
@@ -179,7 +179,7 @@ The heavy sweep has a **TimesFM confidence gate**: before running the expensive 
 - Optimizes for **Sharpe ratio** with minimum trade count filters
 - Computes **blended EV** with P_regime from HMM posteriors + P_imbalance from L2 depth + P_markov from transition matrix
 - Writes optimal config + EV state to `trading:config:{symbol}` in Redis
-- Logs results to `nt_sweep_results` table in Supabase (via hardened `writeWithDeadLetter()` — 3× exponential backoff + jitter, dead-letter fallback to `nt_write_failures` on terminal failure)
+- Logs results to `nt_sweep_result` table in Supabase (via hardened `writeWithDeadLetter()` — 3× exponential backoff + jitter, dead-letter fallback to `nt_write_failures` on terminal failure)
 - **130s deadline guard** — skips remaining symbols if approaching Supabase's 150s limit
 - Per-symbol lock TTL: 360s (prevents same-symbol double-fire across heavy + light)
 - **Calibration write** — queries `nt_calibration_records` for each symbol and writes `calibration_bias` + `calibration_status` to Redis

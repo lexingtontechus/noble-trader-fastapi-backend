@@ -74,14 +74,14 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
             )
             return p, now - ts
 
-    # Cache miss or expired — fetch from inference API
-    try:
-        import httpx
-        TIMESFM_INFERENCE_URL = (
-            os.getenv("TIMESFM_INFERENCE_URL") or
-            os.getenv("TIMESFM_URL") or
-            "http://localhost:8000/inference"
-        )
+        # Cache miss or expired — fetch from inference API
+        try:
+            import httpx
+            TIMESFM_INFERENCE_URL = (
+                os.getenv("TIMESFM_INFERENCE_URL") or
+                os.getenv("TIMESFM_URL") or
+                "http://localhost:8002/forecast"
+            )
 
         if not TIMESFM_INFERENCE_URL:
             logger.warning(
@@ -101,8 +101,14 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
             resp.raise_for_status()
             data = resp.json()
 
-        # TimesFM returns { "predictions": { "BTC": 0.72 } }
-        p_timesfm = float(data.get("predictions", {}).get(symbol, 0.5))
+        # TimesFM returns { "point_forecast": [[prediction]], "horizon": 1, ... }
+        # Extract the prediction (first and only value in the array)
+        point_forecast = data.get("point_forecast", [])
+        if point_forecast and len(point_forecast) > 0 and len(point_forecast[0]) > 0:
+            p_timesfm = float(point_forecast[0][0])
+        else:
+            logger.warning(f"[sweep:orch] {symbol}: Invalid TimesFM response format")
+            p_timesfm = 0.5  # Default fallback
         confidence = abs(p_timesfm - 0.5)
 
         # Cache result
@@ -382,9 +388,71 @@ class SweepOrchestrator:
             # Fetch TimesFM (cached 15min)
             p_timesfm, timesfm_confidence = await _fetch_timesfm_cached(symbol, prices)
 
-            result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
-            try:
-                result = await self._process_symbol(sym, prices, p_timesfm)
+            # Validate TimesFM result before processing
+            if p_timesfm is None:
+                logger.warning(
+                    f"[sweep:orch] {symbol}: TimesFM unavailable — skipping qualification checks, "
+                    f"using fallback mode (p_timesfm=None)"
+                )
+                result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
+                try:
+                    result = await self._process_symbol(sym, prices, p_timesfm=None)
+                    self._last_ok[symbol] = time.time()
+                    await log_sweep_result({
+                        "symbol": symbol,
+                        "asset_class": sym.get("asset_class", ""),
+                        "source": "sweep-light",
+                        "brick_size": result.get("brick_size", 0.5),
+                        "sl_bricks": result.get("sl_bricks", 3),
+                        "tp_bricks": result.get("tp_bricks", 5),
+                        "regime": result["regime_label"],
+                        "regime_conf": round(result["regime_conf"], 4),
+                        "kelly_f": round(result.get("effective_kelly", result["kelly_f"]), 6),
+                        "markov_p_up": round(result["markov_p_up"], 4),
+                        "markov_p_dn": round(result["markov_p_dn"], 4),
+                        "sharpe": round(result.get("sharpe", 0), 4),
+                        "total_return": round(result.get("total_return", 0), 6),
+                        "annual_return": round(result.get("annual_return", 0), 6),
+                        "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
+                        "win_rate": round(result.get("win_rate", 0), 4),
+                        "profit_factor": round(result.get("profit_factor", 0), 4),
+                        "n_trades": result.get("n_trades"),
+                        "sweep_window": "sweep-light (TimesFM unavailable)",
+                        "sweep_duration_ms": int((time.time() - start_ts) * 1000),
+                    })
+                except Exception as exc:
+                    logger.error("%s: sweep failed: %s", symbol, exc)
+                    await log_error(symbol, "sweep-light", str(exc)[:1000])
+            else:
+                result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
+                try:
+                    result = await self._process_symbol(sym, prices, p_timesfm)
+                    self._last_ok[symbol] = time.time()
+                    await log_sweep_result({
+                        "symbol": symbol,
+                        "asset_class": sym.get("asset_class", ""),
+                        "source": "sweep-light",
+                        "brick_size": result.get("brick_size", 0.5),
+                        "sl_bricks": result.get("sl_bricks", 3),
+                        "tp_bricks": result.get("tp_bricks", 5),
+                        "regime": result["regime_label"],
+                        "regime_conf": round(result["regime_conf"], 4),
+                        "kelly_f": round(result.get("effective_kelly", result["kelly_f"]), 6),
+                        "markov_p_up": round(result["markov_p_up"], 4),
+                        "markov_p_dn": round(result["markov_p_dn"], 4),
+                        "sharpe": round(result.get("sharpe", 0), 4),
+                        "total_return": round(result.get("total_return", 0), 6),
+                        "annual_return": round(result.get("annual_return", 0), 6),
+                        "max_drawdown_pct": round(result.get("max_drawdown_pct", 0), 6),
+                        "win_rate": round(result.get("win_rate", 0), 4),
+                        "profit_factor": round(result.get("profit_factor", 0), 4),
+                        "n_trades": result.get("n_trades"),
+                        "sweep_window": "sweep-light",
+                        "sweep_duration_ms": int((time.time() - start_ts) * 1000),
+                    })
+                except Exception as exc:
+                    logger.error("%s: sweep failed: %s", symbol, exc)
+                    await log_error(symbol, "sweep-light", str(exc)[:1000])
                 self._last_ok[symbol] = time.time()
 
                 await log_sweep_result({
