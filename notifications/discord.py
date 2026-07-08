@@ -437,12 +437,10 @@ class DiscordNotifier:
                 "value": regime,
                 "inline": True,
             })
-        if kelly_fraction is not None:
-            fields.append({
-                "name": "Kelly %",
-                "value": f"{kelly_fraction:.1%}",
-                "inline": True,
-            })
+        # NOTE: Kelly fraction is already shown in the "Aggression" field
+        # above (built when kelly_fraction is not None). The previous
+        # implementation also appended a duplicate "Kelly %" field here,
+        # producing two Kelly entries in the embed — removed.
 
         embed = self._build_embed(
             title=f"Signal: {symbol} {direction}",

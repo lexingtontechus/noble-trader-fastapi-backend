@@ -8,6 +8,7 @@ Follows the same pattern as existing backend modules (calibration.py, venue.py).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -107,30 +108,107 @@ async def log_regime_entry(
         logger.warning("log_regime_entry %s failed: %s", symbol, exc)
 
 
-async def log_sweep_result(payload: dict[str, Any]) -> None:
-    """Insert a row into ``nt_regime_log``."""
-    if not settings.SUPABASE_URL:
-        return
+# ─── Schema whitelists ───────────────────────────────────────────
+# PostgREST will HTTP 400 (PGRST204) if the payload contains a key that
+# doesn't map to a real column. Whitelist the known columns per table so
+# callers can pass in a fat dict and we filter to the right shape per table.
+#
+# Sources: supabase/functions/sweep/index.deployed.ts (the TS edge function
+# is the source of truth — it writes sweep results to nt_sweep_result and
+# regime shifts to nt_regime_log as two separate calls).
 
+NT_REGIME_LOG_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "source", "regime", "regime_conf",
+    "markov_p_up", "markov_p_dn", "kelly_f",
+    "prev_regime", "regime_shift",
+    # NOTE: 'annual_return', 'sharpe', 'total_return', 'max_drawdown_pct',
+    # 'win_rate', 'profit_factor', 'n_trades', 'sweep_window',
+    # 'sweep_duration_ms', 'asset_class', 'brick_size', 'sl_bricks',
+    # 'tp_bricks' are sweep-result fields → they belong in nt_sweep_result.
+})
+
+NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "asset_class", "brick_size", "sl_bricks", "tp_bricks",
+    "sharpe", "total_return", "annual_return", "max_drawdown_pct",
+    "win_rate", "n_trades", "profit_factor",
+    "regime", "regime_conf", "kelly_f",
+    "markov_p_up", "markov_p_dn",
+    "sweep_window", "sweep_duration_ms", "n_combos_tested",
+})
+
+
+def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any]:
+    """Return a copy of ``payload`` containing only keys in ``allowed``.
+
+    Logs any dropped fields at DEBUG level so unexpected schema drift is
+    visible without being noisy.
+    """
+    clean = {k: v for k, v in payload.items() if k in allowed}
+    dropped = set(payload) - set(clean)
+    if dropped:
+        logger.debug(
+            "Filtered payload — dropped %d non-schema field(s): %s",
+            len(dropped), sorted(dropped),
+        )
+    return clean
+
+
+async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
+    """Insert one row into ``table``. Returns True on success."""
+    if not settings.SUPABASE_URL:
+        return False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                _url("nt_regime_log"),
+                _url(table),
                 headers={**_headers(), "Prefer": "return=minimal"},
                 json=payload,
             )
             if not resp.is_success:
                 logger.error(
-                    "log_sweep_result: HTTP %d — %s",
-                    resp.status_code, resp.text[:300],
+                    "log_sweep_result: %s insert HTTP %d — %s",
+                    table, resp.status_code, resp.text[:300],
                 )
-            else:
-                logger.info(
-                    "log_regime_log: Successfully logged sweep for %s",
-                    payload.get("symbol", "unknown")
-                )
+                return False
+            logger.info(
+                "log_sweep_result: %s insert OK for %s",
+                table, payload.get("symbol", "unknown"),
+            )
+            return True
     except Exception as exc:
-        logger.error("log_regime_log failed: %s", exc)
+        logger.error("log_sweep_result: %s insert failed: %s", table, exc)
+        return False
+
+
+async def log_sweep_result(payload: dict[str, Any]) -> None:
+    """Persist one sweep cycle.
+
+    Splits the payload across the two destination tables — matching the
+    behaviour of the Supabase Edge Function
+    (``sweep/index.deployed.ts`` lines 3196 / 3219):
+
+      * ``nt_sweep_result`` — sweep KPIs (sharpe, annual_return, win_rate,
+        n_trades, sweep_window, sweep_duration_ms, …). This is the row that
+        downstream dashboards / audit queries read.
+      * ``nt_regime_log``   — regime fields only (regime, regime_conf,
+        kelly_f, markov_p_up, markov_p_dn, prev_regime, regime_shift).
+
+    Both writes are best-effort: a failure on one does NOT abort the other.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    sweep_payload = _filter_payload(payload, NT_SWEEP_RESULT_COLUMNS)
+    regime_payload = _filter_payload(payload, NT_REGIME_LOG_COLUMNS)
+    # ``source`` is required by nt_regime_log; default to sweep-light.
+    regime_payload.setdefault("source", payload.get("source", "sweep-light"))
+
+    # Run both inserts in parallel — they're independent.
+    await asyncio.gather(
+        _insert_row("nt_sweep_result", sweep_payload),
+        _insert_row("nt_regime_log", regime_payload),
+        return_exceptions=True,
+    )
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:

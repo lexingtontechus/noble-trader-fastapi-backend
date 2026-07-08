@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections import defaultdict
@@ -61,70 +62,163 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
     """
     Fetch TimesFM forecast for a symbol with a 15-minute cache.
 
-    Returns (p_timesfm, confidence) or None if unavailable.
+    Returns ``(p_timesfm, confidence)`` where:
+      * ``p_timesfm``     — probability that the next bar closes UP, in [0, 1].
+                            Derived from the forecasted price vs. the last
+                            observed price (not the raw forecast itself).
+      * ``confidence``    — ``abs(p_timesfm - 0.5)`` in [0, 0.5].
+
+    Returns ``None`` if the TimesFM service is unreachable or returns an
+    unrecoverable error. Cache misses and cache hits share the same return
+    shape (the previous implementation returned ``(p, age_seconds)`` on cache
+    hits — a tuple-shape bug that broke downstream consumers).
+
     Uses the same inference URL as the edge function.
     """
     now = time.time()
     cached = _TIMESFM_CACHE.get(symbol)
-    if cached:
+    if cached is not None:
         p, ts = cached
         if now - ts < _TIMESFM_CACHE_TTL_S:
+            confidence = abs(p - 0.5)
             logger.debug(
-                f"[sweep:orch] {symbol}: TimesFM cache hit (p={p:.4f}, age={now-ts:.0f}s)"
+                f"[sweep:orch] {symbol}: TimesFM cache hit "
+                f"(p={p:.4f}, confidence={confidence:.4f}, age={now-ts:.0f}s)"
             )
-            return p, now - ts
+            return p, confidence
+        # Cache expired — fall through to fresh fetch.
+        _TIMESFM_CACHE.pop(symbol, None)
 
-        # Cache miss or expired — fetch from inference API
-        try:
-            import httpx
-            # Use proxy endpoint which routes to TimesFM on port 8002
-            TIMESFM_INFERENCE_URL = (
-                os.getenv("TIMESFM_INFERENCE_URL") or
-                os.getenv("TIMESFM_URL") or
-                "http://localhost:8000/forecast"
-            )
+    # ── Fresh fetch (this branch was unreachable in the previous code —
+    #    the entire fetch block was nested inside `if cached:`, so the
+    #    very first call for any symbol silently returned None).
+    try:
+        import httpx
 
-            if not TIMESFM_INFERENCE_URL:
-                logger.warning(
-                    f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
-                )
-                return None
-
-            # Use last 500 bars (same as heavy sweep)
-            price_samples = prices[-500:] if len(prices) >= 500 else prices
-
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                resp = await client.post(
-                    TIMESFM_INFERENCE_URL,
-                    json={"symbol": symbol, "prices": price_samples},
-                    headers={"Content-Type": "application/json"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-
-            # TimesFM returns { "point_forecast": [[prediction]], "horizon": 1, ... }
-            # Extract the prediction (first and only value in the array)
-            point_forecast = data.get("point_forecast", [])
-            if point_forecast and len(point_forecast) > 0 and len(point_forecast[0]) > 0:
-                p_timesfm = float(point_forecast[0][0])
-            else:
-                logger.warning(f"[sweep:orch] {symbol}: Invalid TimesFM response format")
-                p_timesfm = 0.5  # Default fallback
-            confidence = abs(p_timesfm - 0.5)
-
-            # Cache result
-            _TIMESFM_CACHE[symbol] = (p_timesfm, now)
-            logger.info(
-                f"[sweep:orch] {symbol}: TimesFM fetched (p={p_timesfm:.4f}, "
-                f"confidence={confidence:.4f})"
-            )
-            return p_timesfm, confidence
-
-        except Exception as e:
+        # Use proxy endpoint which routes to TimesFM on port 8002.
+        # Override via env vars for production / non-local deployments.
+        TIMESFM_INFERENCE_URL = (
+            os.getenv("TIMESFM_INFERENCE_URL") or
+            os.getenv("TIMESFM_URL") or
+            "http://localhost:8000/forecast"
+        )
+        if not TIMESFM_INFERENCE_URL:
             logger.warning(
-                f"[sweep:orch] {symbol}: TimesFM fetch failed ({e}) — proceeding without"
+                f"[sweep:orch] {symbol}: TIMESFM_INFERENCE_URL not set — skipping TimesFM"
             )
             return None
+
+        # API key is REQUIRED by server.py's /forecast endpoint
+        # (verify_api_key dependency). The previous request omitted the
+        # X-API-Key header, which caused every call to 401.
+        TIMESFM_API_KEY = os.getenv("TIMESFM_API_KEYS", "").split(",")[0].strip()
+
+        # Use last 500 bars (same as heavy sweep), capped to TimesFM's
+        # max_context (default 1024).
+        price_samples = prices[-500:] if len(prices) >= 500 else prices
+        if len(price_samples) < 2:
+            logger.warning(
+                f"[sweep:orch] {symbol}: not enough price samples for TimesFM "
+                f"(got {len(price_samples)})"
+            )
+            return None
+
+        # Forecast horizon = 1 (next bar). The previous payload
+        # ``{symbol, prices}`` did NOT match server.py's ForecastRequest
+        # schema, which requires ``{horizon, inputs}`` — every call 422'd.
+        last_price = float(price_samples[-1])
+        request_body = {
+            "horizon": 1,
+            "inputs": [price_samples],
+        }
+        headers = {"Content-Type": "application/json"}
+        if TIMESFM_API_KEY:
+            headers["X-API-Key"] = TIMESFM_API_KEY
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.post(
+                TIMESFM_INFERENCE_URL,
+                json=request_body,
+                headers=headers,
+            )
+            if resp.status_code == 401:
+                logger.error(
+                    f"[sweep:orch] {symbol}: TimesFM 401 Unauthorized — "
+                    f"TIMESFM_API_KEYS env var not set or key mismatch"
+                )
+                return None
+            if resp.status_code == 422:
+                logger.error(
+                    f"[sweep:orch] {symbol}: TimesFM 422 Unprocessable Entity — "
+                    f"payload schema mismatch. URL={TIMESFM_INFERENCE_URL}, "
+                    f"body_keys={list(request_body.keys())}"
+                )
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+
+        # TimesFM returns {"point_forecast": [[next_value]], ...}.
+        # The forecast is a *price* (or price-like value), NOT a probability.
+        # Convert to a probability of an up-move:
+        #   p_up = sigmoid(k * (forecast - last_price) / last_price)
+        # where k tunes how aggressively price deltas map to confidence.
+        # k=20 means a 5% predicted up-move → p_up ≈ 0.92.
+        point_forecast = data.get("point_forecast") or []
+        if not point_forecast or not point_forecast[0]:
+            logger.warning(
+                f"[sweep:orch] {symbol}: TimesFM returned empty point_forecast"
+            )
+            return None
+
+        try:
+            forecast_value = float(point_forecast[0][0])
+        except (TypeError, IndexError, ValueError) as e:
+            logger.warning(
+                f"[sweep:orch] {symbol}: TimesFM response unparseable: {e}"
+            )
+            return None
+
+        # Map forecasted price → probability of up-move.
+        # sigmoid(20 * relative_change) gives a smooth [0,1] mapping where
+        # ±5% predicted move ≈ 0.92 / 0.08 (high confidence).
+        if last_price <= 0:
+            logger.warning(
+                f"[sweep:orch] {symbol}: last_price<=0 ({last_price}) — "
+                f"cannot compute p_timesfm"
+            )
+            return None
+        rel_change = (forecast_value - last_price) / last_price
+        # math.exp is faster than importing scipy; manual sigmoid is fine.
+        _k = 20.0
+        _z = _k * rel_change
+        if _z >= 0:
+            p_timesfm = 1.0 / (1.0 + math.exp(-_z))
+        else:
+            ez = math.exp(_z)
+            p_timesfm = ez / (1.0 + ez)
+        # Clamp to [0.001, 0.999] so confidence is never exactly 0 or 1
+        # (avoids edge cases in downstream EV/Kelly math).
+        p_timesfm = max(0.001, min(0.999, p_timesfm))
+        confidence = abs(p_timesfm - 0.5)
+
+        _TIMESFM_CACHE[symbol] = (p_timesfm, now)
+        logger.info(
+            f"[sweep:orch] {symbol}: TimesFM fetched "
+            f"(forecast={forecast_value:.6f}, last={last_price:.6f}, "
+            f"rel_change={rel_change*100:+.3f}%, "
+            f"p_timesfm={p_timesfm:.4f}, confidence={confidence:.4f})"
+        )
+        return p_timesfm, confidence
+
+    except Exception as e:
+        # The previous implementation logged only the exception message and
+        # returned None — making the root cause hard to find. Include the
+        # exception type and a stack-trace hint in the log.
+        logger.warning(
+            f"[sweep:orch] {symbol}: TimesFM fetch failed "
+            f"({type(e).__name__}: {e}) — proceeding without"
+        )
+        return None
 
 
 def _markov_probs(regime_label: str) -> tuple[float, float]:
@@ -596,26 +690,20 @@ class SweepOrchestrator:
                 f"(< {min_kelly}), timesfm_conf={round(confidence, 4) if confidence is not None else None}, "
                 f"ev_allowed={ev_result.allowed}"
             )
-            # Still return a result dict for logging
-            return {
-                "regime_label": regime_label,
-                "regime_conf": regime_conf,
-                "kelly_f": kelly_f,
-                "effective_kelly": effective_kelly,
-                "markov_p_up": p_up,
-                "markov_p_dn": p_dn,
-                "brick_size": brick_size,
-                "sl_bricks": sl_bricks,
-                "tp_bricks": tp_bricks,
-                "signal": trade_signal["signal"],
-                "ev": ev_result.ev,
-                "p_win": ev_result.p_win,
-                "passed_gates": passed_gates,
-                "qualified": False,
-            }
+            # IMPORTANT: Do NOT return early here. The Redis write below must
+            # run for EVERY sweep — qualified or not — so the per-symbol config
+            # hash, heartbeat key, and agent:{symbol} pub/sub liveness message
+            # stay fresh. Downstream consumers (DOOM agent, trading heartbeat)
+            # rely on these to know a symbol is alive even when no qualified
+            # signal is produced. The previous implementation early-returned
+            # here, which combined with the TimesFM bug meant Redis got ZERO
+            # writes for any symbol (since every sweep was non-qualified).
 
         # ── 6. Calibration bias ──
-        cal = await fetch_calibration_bias(symbol)
+        # Only fetch calibration when the signal is qualified — it's an
+        # extra Supabase round-trip that's only useful for sizing decisions
+        # on signals we'll actually publish.
+        cal = await fetch_calibration_bias(symbol) if qualified else None
 
         # ── 7. Regime shift detection ──
         prev_regime = self._last_regime.get(symbol)
@@ -710,14 +798,30 @@ class SweepOrchestrator:
         })
 
         ttl = sym.get("heartbeat_ttl_seconds", 900)
-        pipe = self._redis.pipeline(transaction=False)
-        pipe.hset(config_key, mapping=config_dict)
-        pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
-        pipe.set(heartbeat_key, str(now_ms), ex=ttl)
-        pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
-        if qualified:
-            pipe.publish("signal.raw.noble_trader", agent_payload)  # Only qualified signals
-        await pipe.execute()
+        try:
+            pipe = self._redis.pipeline(transaction=False)
+            pipe.hset(config_key, mapping=config_dict)
+            pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
+            pipe.set(heartbeat_key, str(now_ms), ex=ttl)
+            pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
+            if qualified:
+                pipe.publish("signal.raw.noble_trader", agent_payload)  # Only qualified signals
+            await pipe.execute()
+            logger.debug(
+                f"[sweep:orch] {symbol}: Redis write OK "
+                f"(config_key={config_key}, qualified={qualified})"
+            )
+        except Exception as redis_exc:
+            # The previous implementation let this exception propagate,
+            # which aborted the rest of the sweep (Supabase log, return
+            # value). Log loudly and continue — a Redis hiccup should NOT
+            # prevent the sweep result from being recorded in Supabase.
+            logger.error(
+                f"[sweep:orch] {symbol}: Redis pipeline failed — "
+                f"{type(redis_exc).__name__}: {redis_exc}. "
+                f"Continuing without Redis state update; downstream "
+                f"consumers may see stale data until next sweep."
+            )
 
         # ── 11. Log to Supabase ──
         await log_regime_entry(

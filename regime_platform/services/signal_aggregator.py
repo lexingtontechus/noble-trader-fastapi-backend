@@ -138,13 +138,24 @@ class SignalRouterConfig:
 
 
 class RateLimiter:
-    """Simple sliding window rate limiter for each channel."""
-    
+    """Simple sliding window rate limiter for each channel.
+
+    Note: This is NOT a @dataclass — the previous implementation used
+    ``field(default_factory=list)`` for ``_timestamps``, which only works
+    inside ``@dataclass`` classes. Outside that context, the assignment
+    stores the ``Field`` descriptor object itself, not a list. Every call
+    to ``can_send()`` then raised ``TypeError: 'Field' object is not
+    iterable``, which was silently swallowed by the broad ``except`` in
+    ``_route_to_discord()`` — meaning the rate limiter was actually
+    *dropping every Discord message* in production. Fixed by using a
+    plain list literal.
+    """
+
     def __init__(self, max_per_window: int, window_seconds: float):
         self.max_per_window = max_per_window
         self.window_seconds = window_seconds
-        self._timestamps: list[float] = field(default_factory=list)
-    
+        self._timestamps: list[float] = []  # plain list, not field()
+
     def can_send(self) -> bool:
         """Check if we can send without exceeding rate limit."""
         now = time.monotonic()
@@ -152,7 +163,7 @@ class RateLimiter:
         cutoff = now - self.window_seconds
         self._timestamps = [ts for ts in self._timestamps if ts > cutoff]
         return len(self._timestamps) < self.max_per_window
-    
+
     def record_send(self) -> None:
         """Record that a send occurred."""
         now = time.monotonic()
@@ -200,21 +211,29 @@ class SignalAggregator:
         """Start the signal aggregator service."""
         if self._running:
             return
-        
+
         log.info("Starting Signal Aggregator Service")
-        
-        # Initialize Redis client
-        if settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL:
-            self.redis_client = redis.from_url(
-                settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL,
-                decode_responses=False
+
+        # Initialize Redis client.
+        # IMPORTANT: use settings.redis_url_effective (not raw REDIS_URL or
+        # raw UPSTASH_REDIS_REST_URL) — the property knows how to construct
+        # a `rediss://:<token>@<host>:6379` URL from Upstash's HTTPS URL +
+        # token pair. The previous implementation passed the raw HTTPS URL
+        # to redis.from_url(), which silently failed.
+        redis_url = settings.redis_url_effective
+        if not redis_url:
+            raise RuntimeError(
+                "Redis URL is required for Signal Aggregator — set either "
+                "REDIS_URL or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN"
             )
-        else:
-            raise RuntimeError("Redis URL is required for Signal Aggregator")
-        
+        self.redis_client = redis.from_url(
+            redis_url,
+            decode_responses=False
+        )
+
         # Start Redis subscription
         await self._start_redis_subscription()
-        
+
         self._running = True
         log.info("Signal Aggregator Service started successfully")
     
@@ -317,15 +336,28 @@ class SignalAggregator:
         )
     
     async def _route_to_discord(self, signal: SignalData) -> None:
-        """Route signal to Discord notifications."""
+        """Route signal to Discord notifications.
+
+        Routing rules (per DISCORD_DELIVERY_FIX.md):
+          * RENKO_SIGNAL → always send_signal() (full trade embed)
+          * HEARTBEAT with signal ∈ {buy, sell} → send_signal() (full trade embed)
+          * HEARTBEAT with signal == neutral (or missing) → send_status()
+            (regime-update style message — no trade embed)
+          * SYSTEM_STATUS → send_status()
+
+        The previous implementation always routed HEARTBEAT to send_status(),
+        which meant every qualified trade signal published by the Sweep
+        Orchestrator landed in #system-status as a regime-update message
+        instead of #trade-signals as a trade embed.
+        """
         if not DISCORD_AVAILABLE or not self.config.discord_enabled:
             return
-        
+
         # Rate limit check
         if not self._discord_rate_limiter.can_send():
             log.warning("Discord rate limit reached, dropping message")
             return
-        
+
         try:
             if signal.type == SignalType.RENKO_SIGNAL:
                 await discord_notifier.send_signal(
@@ -337,33 +369,65 @@ class SignalAggregator:
                     brick_size=signal.data.get("brick_size", 0.0),
                     regime=signal.data.get("regime", "")
                 )
+
             elif signal.type == SignalType.HEARTBEAT:
-                level = DiscordAlertLevel.INFO
-                if signal.data.get("regime_shift") == "true":
-                    level = DiscordAlertLevel.WARNING
-                
-                await discord_notifier.send_status(
-                    message=f"Regime update: {signal.symbol} → {signal.data.get('regime', 'unknown')}",
-                    symbol=signal.symbol,
-                    level=level,
-                    data=signal.data
-                )
+                # ── Trade signal vs. regime update ──────────────────────
+                # The Sweep Orchestrator publishes heartbeats with a `signal`
+                # field set to one of: "buy", "sell", "neutral".
+                # Only "buy"/"sell" are trade signals worth a full embed in
+                # #trade-signals. "neutral" means regime-only update → goes
+                # to #system-status.
+                heartbeat_signal = str(signal.data.get("signal", "")).lower()
+                if heartbeat_signal in ("buy", "sell"):
+                    await discord_notifier.send_signal(
+                        symbol=signal.symbol,
+                        direction=heartbeat_signal.upper(),
+                        pattern="regime_trade",
+                        price=signal.data.get("entry_price", 0.0),
+                        confidence=signal.data.get("p_win"),
+                        regime=signal.data.get("regime"),
+                        kelly_fraction=signal.data.get("kelly_f"),
+                        sl_price=signal.data.get("stop_loss"),
+                        tp_price=signal.data.get("take_profit"),
+                        sl_bricks=signal.data.get("sl_bricks"),
+                        tp_bricks=signal.data.get("tp_bricks"),
+                        prev_regime=signal.data.get("prev_regime") or None,
+                        regime_shift=(
+                            signal.data.get("regime_shift")
+                            if signal.data.get("regime_shift") == "true"
+                            else None
+                        ),
+                    )
+                else:
+                    # Regime-only update (neutral signal or no signal field).
+                    level = DiscordAlertLevel.INFO
+                    if signal.data.get("regime_shift") == "true":
+                        level = DiscordAlertLevel.WARNING
+
+                    await discord_notifier.send_status(
+                        message=f"Regime update: {signal.symbol} → "
+                                f"{signal.data.get('regime', 'unknown')}",
+                        symbol=signal.symbol,
+                        level=level,
+                        data=signal.data
+                    )
+
             elif signal.type == SignalType.SYSTEM_STATUS:
                 level = DiscordAlertLevel.INFO
                 if signal.priority == SignalPriority.CRITICAL:
                     level = DiscordAlertLevel.CRITICAL
                 elif signal.priority == SignalPriority.HIGH:
                     level = DiscordAlertLevel.ERROR
-                
+
                 await discord_notifier.send_status(
                     message=signal.data.get("message", ""),
                     symbol=signal.symbol,
                     level=level,
                     data=signal.data
                 )
-            
+
             self._discord_rate_limiter.record_send()
-            
+
         except Exception as e:
             log.error(f"Error sending to Discord: {e}")
     
