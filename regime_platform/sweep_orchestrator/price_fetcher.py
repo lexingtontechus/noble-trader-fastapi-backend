@@ -106,7 +106,14 @@ async def fetch_alpaca_candles(
     api_key = settings.ALPACA_API_KEY
     secret_key = settings.ALPACA_SECRET_KEY
     if not api_key or not secret_key:
-        logger.warning("Alpaca credentials not configured — cannot fetch %s", symbol)
+        # Log at WARNING (not just a passing warning) so the user sees
+        # this in production logs. This is the #1 reason Alpaca symbols
+        # don't get candles — the credentials aren't set.
+        logger.warning(
+            "Alpaca credentials not configured (ALPACA_API_KEY/ALPACA_SECRET_KEY) "
+            "— cannot fetch %s. Set these env vars to enable Alpaca data.",
+            symbol,
+        )
         return []
 
     headers = {

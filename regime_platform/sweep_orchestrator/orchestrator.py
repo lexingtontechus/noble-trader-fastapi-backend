@@ -98,6 +98,14 @@ TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "hard").lower()
 # enable. Default: disabled (only qualified signals go to production
 # channel).
 DEBUG_SIGNALS = os.getenv("DEBUG_SIGNALS", "0") == "1"
+# When True, sweep ALL symbols regardless of market hours. Useful for:
+#   - Regime tracking outside market hours (you still want to know the
+#     regime even if you can't trade)
+#   - Testing/debugging on weekends or after close
+# When False (default), stocks/commodities are skipped when the market
+# is closed (matching the TS edge function behavior). Crypto and forex
+# are always swept (24/7 and Sun-Fri respectively).
+SWEEP_AFTER_HOURS = os.getenv("SWEEP_AFTER_HOURS", "0") == "1"
 
 # ── TimesFM fetcher with 15-minute cache ────────────────────────────────
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
@@ -591,16 +599,37 @@ class SweepOrchestrator:
     ) -> None:
         """Process all symbols in one cron group."""
         # Filter by market hours
-        active = [s for s in symbols if is_market_open(s.get("asset_class", ""))]
+        if SWEEP_AFTER_HOURS:
+            active = symbols
+            logger.info(
+                "Running sweep group [%s]: %d symbols (SWEEP_AFTER_HOURS=1, "
+                "market-hours filter bypassed)",
+                cron_expr,
+                len(active),
+            )
+        else:
+            active = [s for s in symbols if is_market_open(s.get("asset_class", ""))]
+            filtered = [s for s in symbols if not is_market_open(s.get("asset_class", ""))]
+            if filtered:
+                # Log at INFO level (was debug) so the user can see WHY
+                # symbols are being skipped. This is the most common source
+                # of "why isn't my symbol being swept?" confusion.
+                logger.info(
+                    "Running sweep group [%s]: %d symbols active, %d filtered "
+                    "(market closed): %s",
+                    cron_expr,
+                    len(active),
+                    len(filtered),
+                    [(s["symbol"], s.get("asset_class", "?")) for s in filtered],
+                )
+            else:
+                logger.info(
+                    "Running sweep group [%s]: %d symbols active",
+                    cron_expr,
+                    len(active),
+                )
         if not active:
             return
-
-        logger.debug(
-            "Running sweep group [%s]: %d symbols (%d filtered)",
-            cron_expr,
-            len(active),
-            len(symbols) - len(active),
-        )
 
         # Parallel price fetch (latest 200 bars)
         price_futs = [fetch_latest_candles(s, 200) for s in active]
