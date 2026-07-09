@@ -8,7 +8,6 @@ Follows the same pattern as existing backend modules (calibration.py, venue.py).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any
@@ -181,34 +180,34 @@ async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
 
 
 async def log_sweep_result(payload: dict[str, Any]) -> None:
-    """Persist one sweep cycle.
+    """Persist sweep KPIs to ``nt_sweep_result``.
 
-    Splits the payload across the two destination tables — matching the
-    behaviour of the Supabase Edge Function
-    (``sweep/index.deployed.ts`` lines 3196 / 3219):
+    IMPORTANT: This function writes ONLY to ``nt_sweep_result`` (the sweep
+    KPI table — sharpe, annual_return, win_rate, n_trades, sweep_window,
+    sweep_duration_ms, etc.). It does NOT write to ``nt_regime_log``.
 
-      * ``nt_sweep_result`` — sweep KPIs (sharpe, annual_return, win_rate,
-        n_trades, sweep_window, sweep_duration_ms, …). This is the row that
-        downstream dashboards / audit queries read.
-      * ``nt_regime_log``   — regime fields only (regime, regime_conf,
-        kelly_f, markov_p_up, markov_p_dn, prev_regime, regime_shift).
+    The regime entry (regime, regime_conf, kelly_f, prev_regime,
+    regime_shift) is written separately by ``log_regime_entry()``, which
+    is called from inside ``_process_symbol()`` at the point where the
+    prev_regime / regime_shift values are actually known. Writing regime
+    fields from here would duplicate those rows.
 
-    Both writes are best-effort: a failure on one does NOT abort the other.
+    Previous behaviour (caused duplicate nt_regime_log rows):
+      This function split its payload across BOTH nt_sweep_result AND
+      nt_regime_log. But log_regime_entry() was ALSO being called from
+      _process_symbol(), so nt_regime_log got TWO rows per sweep —
+      one from here (with prev_regime=null, because the caller doesn't
+      have that info) and one from log_regime_entry() (with the real
+      prev_regime). The ~250ms gap between them is the time it takes
+      for _process_symbol() to finish and call log_regime_entry().
     """
     if not settings.SUPABASE_URL:
         return
 
     sweep_payload = _filter_payload(payload, NT_SWEEP_RESULT_COLUMNS)
-    regime_payload = _filter_payload(payload, NT_REGIME_LOG_COLUMNS)
-    # ``source`` is required by nt_regime_log; default to sweep-light.
-    regime_payload.setdefault("source", payload.get("source", "sweep-light"))
 
-    # Run both inserts in parallel — they're independent.
-    await asyncio.gather(
-        _insert_row("nt_sweep_result", sweep_payload),
-        _insert_row("nt_regime_log", regime_payload),
-        return_exceptions=True,
-    )
+    # Best-effort insert. Failures are logged but don't propagate.
+    await _insert_row("nt_sweep_result", sweep_payload)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
