@@ -40,6 +40,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -63,47 +64,6 @@ LOG_ORCH = os.path.join(LOG_DIR, "orchestrator.log")
 LOG_STARTUP = os.path.join(LOG_DIR, "startup.log")
 
 
-class TeeWriter:
-    """File-like object that writes to multiple destinations simultaneously.
-
-    Used to pipe a subprocess's stdout/stderr to BOTH the terminal
-    (sys.stdout/sys.stderr) AND a log file. This preserves the real-time
-    terminal output that background.py users expect, while also
-    persisting to disk for later inspection.
-    """
-
-    def __init__(self, *streams):
-        self.streams = streams
-
-    def write(self, data):
-        for stream in self.streams:
-            try:
-                stream.write(data)
-                stream.flush()
-            except Exception:
-                pass  # don't let a broken pipe kill the process
-        return len(data)
-
-    def flush(self):
-        for stream in self.streams:
-            try:
-                stream.flush()
-            except Exception:
-                pass
-
-    def fileno(self):
-        # Some subprocess code checks fileno(). Return the first stream's
-        # fileno if available, otherwise raise (Popen will fall back to
-        # the write() method).
-        for stream in self.streams:
-            if hasattr(stream, "fileno"):
-                try:
-                    return stream.fileno()
-                except Exception:
-                    continue
-        raise OSError("no fileno available")
-
-
 def log(msg=""):
     """Print a message to both stdout and the startup log file."""
     print(msg)
@@ -112,9 +72,49 @@ def log(msg=""):
         f.flush()
 
 
-def open_log_file(path):
-    """Open a log file in append mode. Returns the file object."""
-    return open(path, "a", buffering=1)  # line-buffered
+# ── Subprocess output tee (correct approach) ──────────────────────────────
+# subprocess.Popen does NOT call the stdout/stderr object's write() method.
+# It uses fileno() to get a file descriptor, then the child process writes
+# directly to that fd via dup2(). So passing a custom TeeWriter object to
+# Popen(stdout=...) does NOT work — the child writes to the fd (terminal)
+# and the TeeWriter.write() method is never called, so the log file stays
+# empty.
+#
+# The correct approach: use stdout=PIPE + stderr=STDOUT, then start a
+# daemon thread that reads lines from the pipe and writes them to BOTH
+# sys.stdout (terminal) AND the log file. This is the standard pattern
+# for teeing subprocess output in Python.
+
+
+_output_threads = []  # keep refs so threads aren't GC'd
+
+
+def _pipe_reader_thread(proc: subprocess.Popen, log_file, label: str):
+    """Read lines from proc.stdout and write to terminal + log file.
+
+    Runs as a daemon thread — exits automatically when the main process
+    exits or when proc.stdout reaches EOF (child process closed stdout).
+    """
+    try:
+        # With text=True, readline returns str. When the pipe closes,
+        # readline returns "" (empty string) — that's our EOF signal.
+        for line in proc.stdout:
+            if not line:
+                break
+            # Write to terminal
+            try:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            except Exception:
+                pass  # don't let a broken pipe kill the thread
+            # Write to log file
+            try:
+                log_file.write(line)
+                log_file.flush()
+            except Exception:
+                pass
+    except Exception:
+        pass  # thread exits silently on any error
 
 
 processes = []
@@ -131,6 +131,8 @@ def cleanup(signum=None, frame=None):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+    # Give pipe reader threads a moment to flush remaining output
+    time.sleep(0.5)
     # Close log files
     for f in log_files:
         try:
@@ -211,16 +213,16 @@ def wait_for_timesfm_ready(pid, timeout=TIMESFM_READY_TIMEOUT):
 def start_service(name, cmd, env, log_path, port):
     """Start a service subprocess with output tee'd to terminal + log file.
 
+    Uses stdout=PIPE + stderr=STDOUT + a daemon reader thread to write
+    output to BOTH the terminal (sys.stdout) AND the log file. This is
+    the correct way to tee subprocess output in Python — passing a custom
+    file-like object to Popen does NOT work because Popen uses fileno()
+    + dup2(), not the object's write() method.
+
     Returns the Popen object.
     """
-    log_file = open_log_file(log_path)
+    log_file = open(log_path, "a", buffering=1)  # line-buffered
     log_files.append(log_file)
-
-    # TeeWriter writes to both the terminal (sys.stdout/stderr) AND the
-    # log file simultaneously. This preserves real-time terminal output
-    # while also persisting to disk.
-    tee_stdout = TeeWriter(sys.stdout, log_file)
-    tee_stderr = TeeWriter(sys.stderr, log_file)
 
     log(f"\n  Starting {name} on port {port}...")
     log(f"    Log: {log_path}")
@@ -228,10 +230,23 @@ def start_service(name, cmd, env, log_path, port):
     proc = subprocess.Popen(
         cmd,
         env=env,
-        stdout=tee_stdout,
-        stderr=tee_stderr,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # merge stderr into stdout so both go to the same pipe
+        text=True,                # readline returns str, not bytes
+        bufsize=1,                # line-buffered
     )
     processes.append(proc)
+
+    # Start a daemon thread to read from the pipe and write to terminal + log
+    thread = threading.Thread(
+        target=_pipe_reader_thread,
+        args=(proc, log_file, name),
+        name=f"pipe-{name}",
+        daemon=True,
+    )
+    thread.start()
+    _output_threads.append(thread)
+
     log(f"    PID: {proc.pid}")
     return proc
 
