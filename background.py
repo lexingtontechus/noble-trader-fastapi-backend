@@ -10,19 +10,29 @@ Starts four services as subprocesses and waits for them:
 
 Use this as the Lightning AI "play" button entry point.
 
+Logging:
+  Each service's stdout+stderr is written to BOTH the terminal (if running
+  interactively) AND a log file in logs/:
+    logs/timesfm.log       — TimesFM server (port 8002)
+    logs/main.log          — Main app (port 8001)
+    logs/gateway.log       — Gateway/proxy (port 8000)
+    logs/orchestrator.log  — Sweep orchestrator (port 8003)
+    logs/startup.log       — this script's own output
+
+  View logs:
+    tail -f logs/orchestrator.log    # orchestrator only
+    tail -f logs/*.log               # all logs
+    ./lightningstudio/logs.sh        # helper script
+
 Fixes from previous version:
-  - Added missing gateway/proxy.py (was only starting 3 services, so the
-    public URL on port 8000 had nothing listening)
-  - Set PORT=8001 for main app explicitly (was defaulting to 8000,
-    conflicting with the gateway)
-  - Start TimesFM first (it's the slowest — model download + load can
-    take 2-3 min on first run)
-  - Wait for TimesFM /health to return status="ok" (model loaded) before
-    starting the orchestrator, preventing the first sweep from getting a
-    503 and falling into "TimesFM unavailable" fallback mode
-  - Fixed the wait loop: now uses `any()` instead of `all()` so the
-    script keeps running as long as at least one service is alive
-    (previously exited as soon as any single service crashed)
+  - Added missing gateway/proxy.py (was only starting 3 services)
+  - Set PORT=8001 for main app explicitly (was conflicting with gateway)
+  - Start TimesFM first (slowest — model download + load)
+  - Wait for TimesFM /health status="ok" before starting orchestrator
+  - Fixed wait loop: uses any() instead of all() (keeps running while
+    at least one service is alive)
+  - Added file-based logging (in addition to terminal output) so logs
+    survive even when no terminal is attached
 """
 
 import json
@@ -32,20 +42,87 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
 
 # ── Config ─────────────────────────────────────────────────────────────────
-# How long to wait for TimesFM model to load before starting the orchestrator
-# anyway (it'll retry on its own). Default: 180s.
 TIMESFM_READY_TIMEOUT = int(os.environ.get("TIMESFM_READY_TIMEOUT", "180"))
 
+# ── Setup log directory ───────────────────────────────────────────────────
+# Each service gets its own log file. Logs are appended to (not overwritten)
+# so history survives restarts.
+LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_TIMESFM = os.path.join(LOG_DIR, "timesfm.log")
+LOG_MAIN = os.path.join(LOG_DIR, "main.log")
+LOG_GATEWAY = os.path.join(LOG_DIR, "gateway.log")
+LOG_ORCH = os.path.join(LOG_DIR, "orchestrator.log")
+LOG_STARTUP = os.path.join(LOG_DIR, "startup.log")
+
+
+class TeeWriter:
+    """File-like object that writes to multiple destinations simultaneously.
+
+    Used to pipe a subprocess's stdout/stderr to BOTH the terminal
+    (sys.stdout/sys.stderr) AND a log file. This preserves the real-time
+    terminal output that background.py users expect, while also
+    persisting to disk for later inspection.
+    """
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            try:
+                stream.write(data)
+                stream.flush()
+            except Exception:
+                pass  # don't let a broken pipe kill the process
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+    def fileno(self):
+        # Some subprocess code checks fileno(). Return the first stream's
+        # fileno if available, otherwise raise (Popen will fall back to
+        # the write() method).
+        for stream in self.streams:
+            if hasattr(stream, "fileno"):
+                try:
+                    return stream.fileno()
+                except Exception:
+                    continue
+        raise OSError("no fileno available")
+
+
+def log(msg=""):
+    """Print a message to both stdout and the startup log file."""
+    print(msg)
+    with open(LOG_STARTUP, "a") as f:
+        f.write(msg + "\n")
+        f.flush()
+
+
+def open_log_file(path):
+    """Open a log file in append mode. Returns the file object."""
+    return open(path, "a", buffering=1)  # line-buffered
+
+
 processes = []
+log_files = []  # keep refs so files don't get GC'd
 
 
 def cleanup(signum=None, frame=None):
-    print("\nShutting down all services...")
+    log("\nShutting down all services...")
     for proc in processes:
         if proc.poll() is None:
             proc.terminate()
@@ -54,7 +131,13 @@ def cleanup(signum=None, frame=None):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    print("All services stopped.")
+    # Close log files
+    for f in log_files:
+        try:
+            f.close()
+        except Exception:
+            pass
+    log("All services stopped.")
     sys.exit(0)
 
 
@@ -79,12 +162,12 @@ def wait_for_http(url, label, timeout=30):
     while elapsed < timeout:
         try:
             urllib.request.urlopen(url, timeout=2)
-            print(f"  ✓ {label} is up (after {elapsed}s)")
+            log(f"  ✓ {label} is up (after {elapsed}s)")
             return True
         except Exception:
             time.sleep(2)
             elapsed += 2
-    print(f"  ⚠ {label} not responding after {timeout}s")
+    log(f"  ⚠ {label} not responding after {timeout}s")
     return False
 
 
@@ -96,74 +179,104 @@ def wait_for_timesfm_ready(pid, timeout=TIMESFM_READY_TIMEOUT):
     not just the HTTP status code (which is 200 in both cases).
     """
     elapsed = 0
-    print(f"  Waiting for TimesFM model to load (timeout: {timeout}s)...")
+    log(f"  Waiting for TimesFM model to load (timeout: {timeout}s)...")
+    log(f"  → Watch TimesFM load progress: tail -f {LOG_TIMESFM}")
     while elapsed < timeout:
         # Check if the process is still alive
         try:
             os.kill(pid, 0)  # signal 0 = check if process exists
         except ProcessLookupError:
-            print("  ✗ TimesFM process died during model load!")
+            log("  ✗ TimesFM process died during model load!")
+            log(f"  → Check {LOG_TIMESFM} for the error")
             return False
 
         health = _http_get_json("http://127.0.0.1:8002/health")
         if health:
             status = health.get("status", "")
             if status == "ok":
-                print(f"  ✓ TimesFM model loaded (after {elapsed}s)")
+                log(f"  ✓ TimesFM model loaded (after {elapsed}s)")
                 return True
             # Still loading — show periodic progress
             if elapsed > 0 and elapsed % 10 == 0:
-                print(f"    ...still loading ({elapsed}s elapsed)")
+                log(f"    ...still loading ({elapsed}s elapsed)")
 
         time.sleep(3)
         elapsed += 3
 
-    print(f"  ⚠ TimesFM model not ready after {timeout}s — "
-          f"starting orchestrator anyway (will retry on each sweep)")
+    log(f"  ⚠ TimesFM model not ready after {timeout}s — "
+        f"starting orchestrator anyway (will retry on each sweep)")
     return False
+
+
+def start_service(name, cmd, env, log_path, port):
+    """Start a service subprocess with output tee'd to terminal + log file.
+
+    Returns the Popen object.
+    """
+    log_file = open_log_file(log_path)
+    log_files.append(log_file)
+
+    # TeeWriter writes to both the terminal (sys.stdout/stderr) AND the
+    # log file simultaneously. This preserves real-time terminal output
+    # while also persisting to disk.
+    tee_stdout = TeeWriter(sys.stdout, log_file)
+    tee_stderr = TeeWriter(sys.stderr, log_file)
+
+    log(f"\n  Starting {name} on port {port}...")
+    log(f"    Log: {log_path}")
+
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=tee_stdout,
+        stderr=tee_stderr,
+    )
+    processes.append(proc)
+    log(f"    PID: {proc.pid}")
+    return proc
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
-print("═══════════════════════════════════════════════════════════════════")
-print("  Noble Trader — Background Stack (Lightning AI play button)")
-print("  Starting 4 services:")
-print("    TimesFM     → port 8002 (started first — slow model load)")
-print("    Main app    → port 8001")
-print("    Gateway     → port 8000 (public-facing)")
-print("    Sweep Orch  → port 8003 (started last, after TimesFM ready)")
-print("═══════════════════════════════════════════════════════════════════")
+log("═══════════════════════════════════════════════════════════════════")
+log(f"  Noble Trader — Background Stack")
+log(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+log(f"  Starting 4 services:")
+log(f"    TimesFM     → port 8002 (started first — slow model load)")
+log(f"    Main app    → port 8001")
+log(f"    Gateway     → port 8000 (public-facing)")
+log(f"    Sweep Orch  → port 8003 (started last, after TimesFM ready)")
+log(f"  Logs: {LOG_DIR}/")
+log("═══════════════════════════════════════════════════════════════════")
 
 # ── 1. Start TimesFM FIRST (slowest — model download + load) ──────────────
-print("\n[1/4] Starting TimesFM server on port 8002...")
+log("\n[1/4] Starting TimesFM server on port 8002...")
 timesfm_env = os.environ.copy()
 timesfm_env["PORT"] = "8002"
-timesfm_proc = subprocess.Popen(
+timesfm_proc = start_service(
+    "TimesFM",
     [sys.executable, "server.py"],
-    env=timesfm_env,
-    stdout=sys.stdout,
-    stderr=sys.stderr,
+    timesfm_env,
+    LOG_TIMESFM,
+    8002,
 )
-processes.append(timesfm_proc)
-print(f"  PID timesfm: {timesfm_proc.pid}")
-print("  (model load happens in background — will wait for it below)")
+log("  (model load happens in background — will wait for it below)")
 
 # ── 2. Start Main App on port 8001 ────────────────────────────────────────
 # CRITICAL: set PORT=8001 explicitly. The previous version didn't set PORT,
 # so main.py defaulted to 8000 — conflicting with the gateway (proxy.py)
 # that also binds to 8000.
-print("\n[2/4] Starting Main App on port 8001...")
+log("\n[2/4] Starting Main App on port 8001...")
 main_env = os.environ.copy()
 main_env["PORT"] = "8001"
 main_env["RATE_LIMIT_COMPUTE"] = "30/minute"
-main_proc = subprocess.Popen(
+main_proc = start_service(
+    "Main App",
     [sys.executable, "main.py"],
-    env=main_env,
-    stdout=sys.stdout,
-    stderr=sys.stderr,
+    main_env,
+    LOG_MAIN,
+    8001,
 )
-processes.append(main_proc)
-print(f"  PID main: {main_proc.pid}")
 
 # Wait for main app to bind
 wait_for_http("http://127.0.0.1:8001/health", "Main App", timeout=30)
@@ -174,52 +287,58 @@ wait_for_http("http://127.0.0.1:8001/health", "Main App", timeout=30)
 # nothing listening. Now we start proxy.py which routes:
 #   /forecast* → TimesFM (port 8002)
 #   /*         → Main app (port 8001)
-print("\n[3/4] Starting Gateway Proxy on port 8000...")
+log("\n[3/4] Starting Gateway Proxy on port 8000...")
 gateway_env = os.environ.copy()
 gateway_env["PORT"] = "8000"
-gateway_proc = subprocess.Popen(
+gateway_proc = start_service(
+    "Gateway",
     [sys.executable, "proxy.py"],
-    env=gateway_env,
-    stdout=sys.stdout,
-    stderr=sys.stderr,
+    gateway_env,
+    LOG_GATEWAY,
+    8000,
 )
-processes.append(gateway_proc)
-print(f"  PID gateway: {gateway_proc.pid}")
 
 # ── 4. Wait for TimesFM model to load, then start orchestrator ────────────
-print("\n[4/4] Waiting for TimesFM model before starting orchestrator...")
+log("\n[4/4] Waiting for TimesFM model before starting orchestrator...")
 wait_for_timesfm_ready(timesfm_proc.pid, timeout=TIMESFM_READY_TIMEOUT)
 
 # Now start the orchestrator — TimesFM should be ready (or we timed out
 # and the orchestrator will retry on its own).
-print("\n  Starting Sweep Orchestrator on port 8003...")
+log("\n  Starting Sweep Orchestrator on port 8003...")
 orch_env = os.environ.copy()
 orch_env["SWEEP_ORCHESTRATOR_PORT"] = "8003"
 orch_env["PYTHONUNBUFFERED"] = "1"
-orch_proc = subprocess.Popen(
+orch_proc = start_service(
+    "Sweep Orchestrator",
     [sys.executable, "-m", "regime_platform.sweep_orchestrator"],
-    env=orch_env,
-    stdout=sys.stdout,
-    stderr=sys.stderr,
+    orch_env,
+    LOG_ORCH,
+    8003,
 )
-processes.append(orch_proc)
-print(f"  PID orch: {orch_proc.pid}")
 
 # ── Final health summary ──────────────────────────────────────────────────
-print("\n═══════════════════════════════════════════════════════════════════")
-print("  All 4 services started. Health summary:")
+log("\n═══════════════════════════════════════════════════════════════════")
+log("  All 4 services started. Health summary:")
 main_h = _http_get_json("http://127.0.0.1:8001/health")
-print(f"    Main App    : {main_h.get('status', '?') if main_h else 'DOWN'}")
+log(f"    Main App    : {main_h.get('status', '?') if main_h else 'DOWN'}")
 tfm_h = _http_get_json("http://127.0.0.1:8002/health")
-print(f"    TimesFM     : {tfm_h.get('status', '?') if tfm_h else 'DOWN'}")
+log(f"    TimesFM     : {tfm_h.get('status', '?') if tfm_h else 'DOWN'}")
 gw_h = _http_get_json("http://127.0.0.1:8000/health")
-print(f"    Gateway     : {gw_h.get('status', '?') if gw_h else 'DOWN'}")
-print()
+log(f"    Gateway     : {gw_h.get('status', '?') if gw_h else 'DOWN'}")
+log("")
 
 public_id = os.environ.get("LIGHTNING_INSTANCE_ID", "")
-print(f"  Public URL: https://8000-{public_id}.cloudspaces.litng.ai")
-print(f"  Press Ctrl+C to stop all services.")
-print("═══════════════════════════════════════════════════════════════════")
+log(f"  Public URL: https://8000-{public_id}.cloudspaces.litng.ai")
+log("")
+log("  ── How to view logs ──────────────────────────────────────────────")
+log(f"  All logs:     tail -f {LOG_DIR}/*.log")
+log(f"  Orchestrator: tail -f {LOG_ORCH}")
+log(f"  TimesFM:      tail -f {LOG_TIMESFM}")
+log(f"  Main app:     tail -f {LOG_MAIN}")
+log(f"  Gateway:      tail -f {LOG_GATEWAY}")
+log(f"  Startup:      tail -f {LOG_STARTUP}")
+log(f"  Helper:       ./lightningstudio/logs.sh [all|orchestrator|timesfm|main|gateway]")
+log("═══════════════════════════════════════════════════════════════════")
 
 # ── Wait loop ─────────────────────────────────────────────────────────────
 # Keep running as long as at least one service is alive. The previous
@@ -233,7 +352,7 @@ try:
     for proc in processes:
         rc = proc.poll()
         if rc is not None:
-            print(f"Process PID {proc.pid} exited with code {rc}")
+            log(f"Process PID {proc.pid} exited with code {rc}")
     cleanup()
 except KeyboardInterrupt:
     cleanup()
