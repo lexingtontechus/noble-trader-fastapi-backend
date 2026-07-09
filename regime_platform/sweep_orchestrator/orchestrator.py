@@ -71,6 +71,28 @@ MIN_TIMESFM_CONFIDENCE = float(os.getenv("MIN_TIMESFM_CONFIDENCE", "0.05"))
 # We patch the engine's thresholds after construction.
 MIN_EV = float(os.getenv("MIN_EV", "0.0"))
 MIN_RR = float(os.getenv("MIN_RR", "2.0"))
+# ── TimesFM gate mode ────────────────────────────────────────────────────
+# Controls how TimesFM confidence affects signal qualification:
+#
+#   "hard" (default): reject signal if |p_timesfm - 0.5| < MIN_TIMESFM_CONFIDENCE
+#       This is a binary veto — one uncertain source kills the signal.
+#       Problem: goes counter to the blended EV philosophy. The EV blend
+#       already weights TimesFM at 0.35; a low-confidence forecast already
+#       pulls p_win toward 0.5. The hard gate double-counts the penalty.
+#
+#   "soft": don't reject, but reduce TimesFM's blend weight proportionally
+#       to its confidence:
+#         effective_weight = base_weight * min(1.0, confidence / threshold)
+#       At confidence=threshold → full weight (0.35)
+#       At confidence=threshold/2 → half weight (0.175)
+#       At confidence=0 → zero weight (like fallback mode)
+#       This preserves the blend: one uncertain source contributes less,
+#       but doesn't veto signals that other sources support.
+#
+#   "off": no TimesFM gate at all. Rely entirely on the blended EV.
+#       If TimesFM is uncertain, the blend naturally reduces p_win, which
+#       reduces EV, which the EV gate handles.
+TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "hard").lower()
 # When True, publish ALL signals (even rejected ones) to Redis channel
 # "signal.debug.noble_trader" for diagnostic visibility. Set to "1" to
 # enable. Default: disabled (only qualified signals go to production
@@ -409,6 +431,7 @@ class SweepOrchestrator:
             f"Qualification thresholds: "
             f"MIN_REGIME_CONF={MIN_REGIME_CONF}, MIN_KELLY={MIN_KELLY}, "
             f"MIN_TIMESFM_CONFIDENCE={MIN_TIMESFM_CONFIDENCE}, "
+            f"TIMESFM_GATE_MODE={TIMESFM_GATE_MODE}, "
             f"MIN_EV={MIN_EV}, MIN_RR={MIN_RR}, "
             f"DEBUG_SIGNALS={DEBUG_SIGNALS}"
         )
@@ -758,23 +781,111 @@ class SweepOrchestrator:
 
         if p_timesfm is not None:
             confidence = abs(p_timesfm - 0.5)
-            timesfm_too_uncertain = confidence < MIN_TIMESFM_CONFIDENCE
         else:
             confidence = None
-            timesfm_too_uncertain = False
 
         # ── Evaluate each gate individually ──────────────────────────
         # We evaluate all gates (not short-circuit) so the rejection log
         # can show the user EVERYTHING that's wrong, not just the first
         # failure. This is critical for tuning — if you can't see which
         # gates are failing, you can't optimize the thresholds.
+        #
+        # ── TimesFM gate mode ────────────────────────────────────────
+        # TIMESFM_GATE_MODE controls how TimesFM confidence affects
+        # qualification:
+        #   "hard" (default): reject if confidence < MIN_TIMESFM_CONFIDENCE
+        #   "soft": don't reject, but recompute EV with reduced TimesFM weight
+        #   "off": no TimesFM gate at all (rely on blended EV)
+        #
+        # The soft mode preserves the blended EV philosophy: one uncertain
+        # source shouldn't veto the entire signal — it should just
+        # contribute less to the blend. See the env var docstring above
+        # for the full rationale.
+        timesfm_confidence_ok = True  # default for "off" mode
+        adjusted_ev_result = ev_result  # default: use original EV result
+
+        if TIMESFM_GATE_MODE == "hard":
+            # Original behavior: hard reject if confidence below threshold
+            timesfm_confidence_ok = (
+                confidence is not None
+                and confidence >= MIN_TIMESFM_CONFIDENCE
+            )
+        elif TIMESFM_GATE_MODE == "soft":
+            # Soft gate: don't reject, but recompute EV with reduced weight.
+            # The EV engine's log-odds blend already weights TimesFM at 0.35.
+            # When confidence is low, we reduce that weight proportionally,
+            # then recompute p_win and EV. This way, a low-confidence TimesFM
+            # forecast doesn't veto the signal — it just contributes less.
+            if p_timesfm is not None and confidence is not None:
+                base_weight = 0.35  # matches P_WIN_WEIGHTS_TIMESFM["p_timesfm"]
+                scale = min(1.0, confidence / MIN_TIMESFM_CONFIDENCE) if MIN_TIMESFM_CONFIDENCE > 0 else 1.0
+                if scale < 1.0:
+                    # Recompute EV with adjusted TimesFM weight.
+                    # We need to re-run the EV engine with custom weights.
+                    # The EV engine supports runtime weight override via
+                    # set_weights(), but that mutates shared state. Instead,
+                    # we temporarily override, compute, then restore.
+                    original_weights = dict(self._ev_engine._timesfm_weights)
+                    adjusted_weights = dict(original_weights)
+                    adjusted_weights["p_timesfm"] = base_weight * scale
+                    # Renormalize so weights sum to 1.0
+                    total_w = sum(adjusted_weights.values())
+                    if total_w > 0:
+                        adjusted_weights = {k: v / total_w for k, v in adjusted_weights.items()}
+                    self._ev_engine._timesfm_weights = adjusted_weights
+                    try:
+                        adjusted_ev_result = self._ev_engine.compute_ev(
+                            trend_probs=trend_probs,
+                            direction=direction,
+                            p_timesfm=p_timesfm,
+                            brick_size=brick_size,
+                            sl_bricks=sl_bricks,
+                            tp_bricks=tp_bricks,
+                        )
+                    finally:
+                        # Restore original weights
+                        self._ev_engine._timesfm_weights = original_weights
+                    # In soft mode, the TimesFM gate always "passes" —
+                    # the penalty is applied via the reduced weight, not
+                    # via a binary reject.
+                    timesfm_confidence_ok = True
+                else:
+                    # Confidence meets threshold — full weight, no adjustment
+                    timesfm_confidence_ok = True
+            # If p_timesfm is None, timesfm_confidence_ok stays True (handled
+            # by the timesfm_available gate below)
+        elif TIMESFM_GATE_MODE == "off":
+            # No TimesFM gate — rely entirely on the blended EV
+            timesfm_confidence_ok = True
+        else:
+            logger.warning(
+                f"Unknown TIMESFM_GATE_MODE={TIMESFM_GATE_MODE!r}, "
+                f"defaulting to 'hard' behavior"
+            )
+            timesfm_confidence_ok = (
+                confidence is not None
+                and confidence >= MIN_TIMESFM_CONFIDENCE
+            )
+
+        # Use the (possibly adjusted) EV result for gate evaluation
+        effective_ev_result = adjusted_ev_result
+
+        # ── In soft mode, the adjusted EV result replaces the original ──
+        # This ensures all downstream code (rejection log, Redis writes,
+        # agent payload, return dict) uses the soft-gate-adjusted values.
+        # In hard/off mode, effective_ev_result IS ev_result (no change).
+        if TIMESFM_GATE_MODE == "soft" and effective_ev_result is not ev_result:
+            ev_result = effective_ev_result
+            # Recompute effective_kelly with the adjusted ev_scale
+            effective_kelly = kelly_f * ev_result.ev_scale * ev_result.markov_multiplier
+
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
             "regime_conf_ok": regime_conf >= MIN_REGIME_CONF,
             "kelly_min_ok": kelly_f >= MIN_KELLY,
             "timesfm_available": p_timesfm is not None,
-            "timesfm_confidence_ok": confidence >= MIN_TIMESFM_CONFIDENCE if confidence is not None else False,
-            "ev_allowed": ev_result.allowed,
+            "timesfm_confidence_ok": timesfm_confidence_ok,
+            "ev_allowed": effective_ev_result.allowed,
         }
 
         passed_gates = {
@@ -784,10 +895,11 @@ class SweepOrchestrator:
             "kelly_f": kelly_f,
             "timesfm_missing": p_timesfm is None,
             "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
-            "ev": round(ev_result.ev, 4),
-            "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
-            "rr": round(ev_result.rr, 4),
-            "ev_reason": ev_result.reason,
+            "ev": round(effective_ev_result.ev, 4),
+            "ev_per_dollar": round(effective_ev_result.ev_per_dollar, 4),
+            "rr": round(effective_ev_result.rr, 4),
+            "ev_reason": effective_ev_result.reason,
+            "timesfm_gate_mode": TIMESFM_GATE_MODE,
         }
 
         # A signal is qualified only if ALL gates pass.
@@ -808,7 +920,7 @@ class SweepOrchestrator:
             logger.info(
                 f"[sweep:orch] {symbol}: REJECTED — {len(failed_gates)} gate(s) failed: "
                 f"{failed_gates}\n"
-                f"    Gate details:\n"
+                f"    Gate details (TIMESFM_GATE_MODE={TIMESFM_GATE_MODE}):\n"
                 f"      signal={trade_signal['signal']!r}  qualifiable={signal_is_qualifiable}  "
                 f"(must be 'buy' or 'sell')\n"
                 f"      regime_conf={regime_conf:.4f}  >= {MIN_REGIME_CONF}? "
