@@ -52,6 +52,31 @@ REFRESH_SYMBOLS_INTERVAL_S = 300  # re-read nt_symbol every 5 min
 LIGHT_LOCK_TTL_S = 90             # per-symbol lock TTL (matches edge fn)
 STAGGER_SECONDS = 5               # gap between symbols within a group
 
+# ─── Qualification gate thresholds (configurable via env vars) ───────────
+# These determine which sweep signals get published to Redis pub/sub
+# "signal.raw.noble_trader" and forwarded to Discord. Tune them via env
+# vars to control signal volume vs. quality.
+#
+# IMPORTANT: the EV/RR gate (Gate 6) is the most common blocker. The EV
+# engine requires rr >= MIN_RR (default 2.0), but with default brick
+# params sl_bricks=3, tp_bricks=5, the actual RR is 5/3 = 1.67 — below
+# the 2.0 minimum. Either:
+#   (a) lower MIN_RR to 1.5 (via env: MIN_RR=1.5), or
+#   (b) increase tp_bricks to 6+ in your Redis config per symbol, or
+#   (c) decrease sl_bricks to 2 in your Redis config per symbol
+MIN_REGIME_CONF = float(os.getenv("MIN_REGIME_CONF", "0.60"))
+MIN_KELLY = float(os.getenv("MIN_KELLY", "0.02"))
+MIN_TIMESFM_CONFIDENCE = float(os.getenv("MIN_TIMESFM_CONFIDENCE", "0.05"))
+# MIN_RR and MIN_EV are read by the EVEngine on init — see _ev_engine below.
+# We patch the engine's thresholds after construction.
+MIN_EV = float(os.getenv("MIN_EV", "0.0"))
+MIN_RR = float(os.getenv("MIN_RR", "2.0"))
+# When True, publish ALL signals (even rejected ones) to Redis channel
+# "signal.debug.noble_trader" for diagnostic visibility. Set to "1" to
+# enable. Default: disabled (only qualified signals go to production
+# channel).
+DEBUG_SIGNALS = os.getenv("DEBUG_SIGNALS", "0") == "1"
+
 # ── TimesFM fetcher with 15-minute cache ────────────────────────────────
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
 # Using a simple in-memory cache (not Redis for this hot path)
@@ -372,6 +397,21 @@ class SweepOrchestrator:
         # Shared engine instances
         self._sizer = PositionSizer()
         self._ev_engine = EVEngine()
+        # ── Patch EV engine thresholds from env vars ──────────────────
+        # EVEngine.__init__ defaults to min_ev=0.0, min_rr=2.0. Override
+        # with env-configured values so the user can tune without code
+        # changes. The RR threshold is the most common blocker — with
+        # default brick params (sl=3, tp=5), RR=1.67 < 2.0, blocking
+        # every signal.
+        self._ev_engine.min_ev = MIN_EV
+        self._ev_engine.min_rr = MIN_RR
+        logger.info(
+            f"Qualification thresholds: "
+            f"MIN_REGIME_CONF={MIN_REGIME_CONF}, MIN_KELLY={MIN_KELLY}, "
+            f"MIN_TIMESFM_CONFIDENCE={MIN_TIMESFM_CONFIDENCE}, "
+            f"MIN_EV={MIN_EV}, MIN_RR={MIN_RR}, "
+            f"DEBUG_SIGNALS={DEBUG_SIGNALS}"
+        )
 
     # ── Public lifecycle ──────────────────────────────────────────
 
@@ -712,59 +752,114 @@ class SweepOrchestrator:
         # EVFullResult is a dataclass — use attribute access
         effective_kelly = kelly_f * ev_result.ev_scale * ev_result.markov_multiplier
 
-        # ── 5a. Qualification gates (NEW) ──
+        # ── 5a. Qualification gates ──
         # Only publish qualified signals to signal.raw.noble_trader
         signal_is_qualifiable = trade_signal["signal"] not in ("neutral", "unknown")
 
         if p_timesfm is not None:
             confidence = abs(p_timesfm - 0.5)
-            timesfm_too_uncertain = confidence < 0.05  # require certainty
+            timesfm_too_uncertain = confidence < MIN_TIMESFM_CONFIDENCE
         else:
             confidence = None
             timesfm_too_uncertain = False
 
-        min_regime_conf = 0.60
-        min_kelly = 0.02
-
-        passed_gates = {
-            "signal": trade_signal["signal"],
+        # ── Evaluate each gate individually ──────────────────────────
+        # We evaluate all gates (not short-circuit) so the rejection log
+        # can show the user EVERYTHING that's wrong, not just the first
+        # failure. This is critical for tuning — if you can't see which
+        # gates are failing, you can't optimize the thresholds.
+        gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
-            "regime_conf": regime_conf,
-            "regime_conf_ok": regime_conf >= min_regime_conf,
-            "kelly_f": kelly_f,
-            "kelly_min_ok": kelly_f >= min_kelly,
-            "timesfm_missing": p_timesfm is None,
-            "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
-            "timesfm_too_uncertain": timesfm_too_uncertain,
+            "regime_conf_ok": regime_conf >= MIN_REGIME_CONF,
+            "kelly_min_ok": kelly_f >= MIN_KELLY,
+            "timesfm_available": p_timesfm is not None,
+            "timesfm_confidence_ok": confidence >= MIN_TIMESFM_CONFIDENCE if confidence is not None else False,
             "ev_allowed": ev_result.allowed,
         }
 
-        # Check if signal passes all qualification gates
-        # TimesFM is now required for qualification (p_timesfm cannot be None)
-        qualified = (
-            signal_is_qualifiable
-            and regime_conf >= min_regime_conf
-            and kelly_f >= min_kelly
-            and p_timesfm is not None  # TimesFM required
-            and confidence >= 0.05     # Certainty required
-            and ev_result.allowed
-        )
+        passed_gates = {
+            "signal": trade_signal["signal"],
+            **gate_results,
+            "regime_conf": regime_conf,
+            "kelly_f": kelly_f,
+            "timesfm_missing": p_timesfm is None,
+            "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
+            "ev": round(ev_result.ev, 4),
+            "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
+            "rr": round(ev_result.rr, 4),
+            "ev_reason": ev_result.reason,
+        }
+
+        # A signal is qualified only if ALL gates pass.
+        qualified = all(gate_results.values())
 
         if not qualified:
+            # ── Detailed rejection log ────────────────────────────────
+            # Show EVERY gate's status + actual value vs threshold, so
+            # the user can see exactly what's blocking signals and tune
+            # accordingly. The previous log was misleading — it printed
+            # threshold values even for gates that passed.
+            failed_gates = [name for name, ok in gate_results.items() if not ok]
+            # Build the confidence line separately to avoid f-string nesting issues
+            if confidence is not None:
+                conf_str = f"{confidence:.4f} >= {MIN_TIMESFM_CONFIDENCE}? {'✓' if gate_results['timesfm_confidence_ok'] else '✗ FAIL'}"
+            else:
+                conf_str = "N/A (TimesFM unavailable)"
             logger.info(
-                f"[sweep:orch] {symbol}: SKIPPED — signal '{trade_signal['signal']}', "
-                f"regime_conf={regime_conf:.3f} (< {min_regime_conf}), kelly_f={kelly_f:.4f} "
-                f"(< {min_kelly}), timesfm_conf={round(confidence, 4) if confidence is not None else None}, "
-                f"ev_allowed={ev_result.allowed}"
+                f"[sweep:orch] {symbol}: REJECTED — {len(failed_gates)} gate(s) failed: "
+                f"{failed_gates}\n"
+                f"    Gate details:\n"
+                f"      signal={trade_signal['signal']!r}  qualifiable={signal_is_qualifiable}  "
+                f"(must be 'buy' or 'sell')\n"
+                f"      regime_conf={regime_conf:.4f}  >= {MIN_REGIME_CONF}? "
+                f"{'✓' if gate_results['regime_conf_ok'] else '✗ FAIL'}\n"
+                f"      kelly_f={kelly_f:.6f}  >= {MIN_KELLY}? "
+                f"{'✓' if gate_results['kelly_min_ok'] else '✗ FAIL'}\n"
+                f"      p_timesfm={'None' if p_timesfm is None else f'{p_timesfm:.4f}'}  "
+                f"available={gate_results['timesfm_available']}  "
+                f"confidence={conf_str}\n"
+                f"      ev={ev_result.ev:.4f}  rr={ev_result.rr:.4f}  "
+                f"ev_allowed={ev_result.allowed}  "
+                f"(need ev>{MIN_EV} AND rr>={MIN_RR})\n"
+                f"      ev_reason={ev_result.reason or 'passed'}\n"
+                f"    brick_params: sl={sl_bricks}, tp={tp_bricks}, "
+                f"brick_size={brick_size}  -> rr={ev_result.rr:.4f}"
             )
-            # IMPORTANT: Do NOT return early here. The Redis write below must
-            # run for EVERY sweep — qualified or not — so the per-symbol config
-            # hash, heartbeat key, and agent:{symbol} pub/sub liveness message
-            # stay fresh. Downstream consumers (DOOM agent, trading heartbeat)
-            # rely on these to know a symbol is alive even when no qualified
-            # signal is produced. The previous implementation early-returned
-            # here, which combined with the TimesFM bug meant Redis got ZERO
-            # writes for any symbol (since every sweep was non-qualified).
+
+        # ── Debug channel: publish ALL signals for visibility ────────
+        # When DEBUG_SIGNALS=1, publish every signal (qualified or not)
+        # to "signal.debug.noble_trader" so you can subscribe and inspect
+        # what's being filtered. This is essential for threshold tuning —
+        # you can't optimize what you can't see.
+        if DEBUG_SIGNALS:
+            _debug_ts = int(time.time() * 1000)
+            debug_payload = json.dumps({
+                "type": "debug_signal",
+                "symbol": symbol,
+                "ts": _debug_ts,
+                "qualified": qualified,
+                "signal": trade_signal["signal"],
+                "regime": regime_label,
+                "regime_conf": round(regime_conf, 4),
+                "kelly_f": round(kelly_f, 6),
+                "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
+                "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
+                "ev": round(ev_result.ev, 4),
+                "rr": round(ev_result.rr, 4),
+                "ev_allowed": ev_result.allowed,
+                "ev_reason": ev_result.reason,
+                "failed_gates": [k for k, v in gate_results.items() if not v],
+                "entry_price": round(trade_signal["entry_price"], decimals),
+                "stop_loss": round(trade_signal["stop_loss"], decimals),
+                "take_profit": round(trade_signal["take_profit"], decimals),
+                "sl_bricks": sl_bricks,
+                "tp_bricks": tp_bricks,
+                "brick_size": brick_size,
+            })
+            try:
+                await self._redis.publish("signal.debug.noble_trader", debug_payload)
+            except Exception:
+                pass  # don't let debug publish break the sweep
 
         # ── 6. Calibration bias ──
         # Only fetch calibration when the signal is qualified — it's an
