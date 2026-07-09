@@ -336,10 +336,20 @@ async def main():
         )
 
     # Validate webhook URL if provided
+    # NOTE: urlparse separates the URL into components. parsed.path does
+    # NOT include the domain — that's in parsed.netloc. The previous
+    # validation checked for "discord.com/api/webhooks" in parsed.path,
+    # which always failed because parsed.path is just "/api/webhooks/...".
+    # This caused every valid webhook URL to be rejected with
+    # "ERROR: Invalid Discord webhook URL". Fix: check netloc and path
+    # separately.
     if discord_webhook:
         parsed = urlparse(discord_webhook)
-        if parsed.scheme != "https" or "discord.com/api/webhooks" not in parsed.path:
-            print(f"ERROR: Invalid Discord webhook URL: {discord_webhook[:50]}...")
+        if parsed.scheme != "https" or parsed.netloc != "discord.com" or not parsed.path.startswith("/api/webhooks/"):
+            print(f"ERROR: Invalid Discord webhook URL (expected https://discord.com/api/webhooks/...)")
+            print(f"  Got scheme: {parsed.scheme}")
+            print(f"  Got netloc: {parsed.netloc}")
+            print(f"  Got path:   {parsed.path[:50]}...")
             sys.exit(1)
 
     print("=" * 80)
