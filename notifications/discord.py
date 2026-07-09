@@ -149,6 +149,20 @@ class DiscordNotifier:
             AlertChannel.EXECUTIONS: settings.DISCORD_WEBHOOK_EXECUTIONS or None,
             AlertChannel.STATUS: settings.DISCORD_WEBHOOK_STATUS or None,
         }
+        # ── Per-asset-class signal webhooks (optional) ───────────────────
+        # If set, signals are routed to these channels by asset class
+        # instead of all going to #trade-signals. Falls back to the
+        # default SIGNALS webhook if not set.
+        #   DISCORD_WEBHOOK_CRYPTO    → crypto signals (BTC, ETH, SOL, etc.)
+        #   DISCORD_WEBHOOK_EQUITIES  → stock/ETF signals (SPY, QQQ, etc.)
+        #   DISCORD_WEBHOOK_METALS    → metals signals (Gold, Silver, etc.)
+        self._venue_webhooks: Dict[str, Optional[str]] = {
+            "crypto": getattr(settings, "DISCORD_WEBHOOK_CRYPTO", "") or None,
+            "equities": getattr(settings, "DISCORD_WEBHOOK_EQUITIES", "") or None,
+            "stocks": getattr(settings, "DISCORD_WEBHOOK_EQUITIES", "") or None,  # alias
+            "metals": getattr(settings, "DISCORD_WEBHOOK_METALS", "") or None,
+            "forex": getattr(settings, "DISCORD_WEBHOOK_FOREX", "") or None,
+        }
         self._rate_limiter = RateLimiter()
         self._http_client: Optional[httpx.AsyncClient] = None
 
@@ -169,6 +183,33 @@ class DiscordNotifier:
             await self._http_client.aclose()
             self._http_client = None
 
+    def _resolve_signal_webhook(self, asset_class: Optional[str] = None) -> Optional[str]:
+        """Resolve which webhook URL to use for a trade signal.
+
+        Priority:
+          1. Per-asset-class webhook (if configured for this asset class)
+          2. Default SIGNALS webhook (fallback)
+
+        Asset class routing lets you split signals across channels:
+          crypto   → #crypto-signals
+          equities → #equities-signals
+          metals   → #metals-signals
+        """
+        if asset_class:
+            ac = asset_class.lower().strip()
+            # Try exact match first (crypto, equities, metals, forex)
+            if ac in self._venue_webhooks and self._venue_webhooks[ac]:
+                return self._venue_webhooks[ac]
+            # Handle common variants
+            if ac in ("stock", "stocks", "etf", "equity"):
+                if self._venue_webhooks.get("equities"):
+                    return self._venue_webhooks["equities"]
+            elif ac in ("metal", "metals", "commodity", "commodities"):
+                if self._venue_webhooks.get("metals"):
+                    return self._venue_webhooks["metals"]
+        # Fallback to default SIGNALS webhook
+        return self._webhooks.get(AlertChannel.SIGNALS)
+
     # ── Core send method ──────────────────────────────────────────────
 
     async def _send_webhook(
@@ -176,20 +217,37 @@ class DiscordNotifier:
         channel: AlertChannel,
         embed: Dict[str, Any],
         content: Optional[str] = None,
+        url_override: Optional[str] = None,
     ) -> bool:
         """
         Send a Discord webhook message with a rich embed.
 
+        Parameters
+        ----------
+        channel : AlertChannel
+            The channel to send to (used for rate-limit labeling and
+            as the default URL source).
+        embed : dict
+            Discord embed payload.
+        content : str, optional
+            Text content to include before the embed.
+        url_override : str, optional
+            If provided, use this webhook URL instead of the channel's
+            default. Used for per-asset-class routing (e.g., crypto
+            signals go to the crypto webhook, not the default SIGNALS
+            webhook).
+
         Returns True if sent successfully, False otherwise.
         Never raises - all errors are caught and logged.
         """
-        url = self._webhooks.get(channel)
+        url = url_override or self._webhooks.get(channel)
         if not url:
             return False
 
         # Rate limit check
         if not self._rate_limiter.can_send(url):
-            logger.warning(f"Discord rate limit reached for {channel.value}, dropping message")
+            label = url_override or channel.value
+            logger.warning(f"Discord rate limit reached for {label}, dropping message")
             return False
 
         payload: Dict[str, Any] = {}
@@ -299,13 +357,21 @@ class DiscordNotifier:
         tp_bricks: Optional[int] = None,
         prev_regime: Optional[str] = None,
         regime_shift: Optional[str] = None,
+        asset_class: Optional[str] = None,
+        venue: Optional[str] = None,
     ) -> bool:
         """
-        Send a trading signal alert to #trade-signals.
+        Send a trading signal alert to #trade-signals (or per-asset-class
+        channel if configured).
 
         This is called when the Renko pattern detector produces a signal
         that passes all filter gates. The embed is color-coded by direction
         (green for LONG, red for SHORT).
+
+        Routing:
+          If DISCORD_WEBHOOK_CRYPTO/EQUITIES/METALS is configured, signals
+          are routed to the per-asset-class channel. Otherwise, all
+          signals go to the default #trade-signals channel (DISCORD_WEBHOOK_SIGNALS).
 
         Parameters
         ----------
@@ -413,6 +479,29 @@ class DiscordNotifier:
             {"name": "Pattern", "value": pattern, "inline": True},
         ] + price_fields + risk_fields + aggression_fields + perf_fields + regime_fields
 
+        # ── Venue + asset class info ──────────────────────────────────
+        # Shows where the signal is for (e.g., "Crypto / Alpaca" or
+        # "Equities / Alpaca"). Helps traders quickly identify which
+        # venue to execute on.
+        if venue is not None or asset_class is not None:
+            venue_parts = []
+            if asset_class:
+                ac_emoji = {
+                    "crypto": "₿",
+                    "equities": "📈",
+                    "stocks": "📈",
+                    "metals": "🥇",
+                    "forex": "💱",
+                }.get(asset_class.lower(), "📊")
+                venue_parts.append(f"{ac_emoji} {asset_class.title()}")
+            if venue:
+                venue_parts.append(venue)
+            fields.append({
+                "name": "Venue",
+                "value": " / ".join(venue_parts),
+                "inline": True,
+            })
+
         if confidence is not None:
             fields.append({
                 "name": "Confidence",
@@ -451,7 +540,15 @@ class DiscordNotifier:
             emoji=ALERT_EMOJI[AlertChannel.SIGNALS],
         )
 
-        return await self._send_webhook(AlertChannel.SIGNALS, embed)
+        # ── Route to per-asset-class webhook if configured ────────────
+        # Falls back to the default SIGNALS webhook if no venue-specific
+        # webhook is set for this asset class.
+        webhook_url = self._resolve_signal_webhook(asset_class)
+        return await self._send_webhook(
+            AlertChannel.SIGNALS,
+            embed,
+            url_override=webhook_url,
+        )
 
     # ── Public API: Execution Alerts ──────────────────────────────────
 

@@ -86,6 +86,18 @@ class Settings(BaseSettings):
     # Must also set DEBUG_SIGNALS=1 on the orchestrator to publish to the
     # "signal.debug.noble_trader" Redis channel.
     DISCORD_WEBHOOK_DEBUG: str = ""
+    # ── Per-asset-class signal webhooks (optional) ───────────────────────
+    # If set, trade signals are routed to these channels by asset class
+    # instead of all going to DISCORD_WEBHOOK_SIGNALS. This splits signals
+    # across channels so traders only see signals for their asset class:
+    #   crypto   → #crypto-signals    (BTC, ETH, SOL, etc.)
+    #   equities → #equities-signals  (SPY, QQQ, etc.)
+    #   metals   → #metals-signals    (Gold, Silver, etc.)
+    # Leave empty to use the default DISCORD_WEBHOOK_SIGNALS for all.
+    DISCORD_WEBHOOK_CRYPTO: str = ""
+    DISCORD_WEBHOOK_EQUITIES: str = ""
+    DISCORD_WEBHOOK_METALS: str = ""
+    DISCORD_WEBHOOK_FOREX: str = ""
 
     # ── Telegram ────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""

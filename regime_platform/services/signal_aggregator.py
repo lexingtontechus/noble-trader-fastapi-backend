@@ -397,6 +397,8 @@ class SignalAggregator:
                             if signal.data.get("regime_shift") == "true"
                             else None
                         ),
+                        asset_class=signal.data.get("asset_class"),
+                        venue=signal.data.get("venue"),
                     )
                 else:
                     # Regime-only update (neutral signal or no signal field).

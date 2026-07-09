@@ -401,6 +401,33 @@ def _price_decimals(symbol: str) -> int:
     return _PRICE_DECIMALS.get(symbol, 2)
 
 
+# ─── Venue derivation ───────────────────────────────────────────────
+
+
+def _derive_venue(sym: dict[str, Any]) -> str:
+    """Derive the execution venue from the symbol config.
+
+    The symbol config (from nt_symbol) has fields indicating which
+    execution venues are available for this symbol:
+      - alpaca_symbol    → Alpaca (stocks + crypto)
+      - hyperliquid_coin → Hyperliquid (crypto perpetuals)
+      - yahoo_ticker     → Yahoo Finance (data only, no execution)
+
+    Returns a human-readable venue string for Discord embeds. Priority:
+      1. Hyperliquid (if set) — primary crypto venue
+      2. Alpaca (if set) — stocks + crypto
+      3. Yahoo (if set) — data only
+      4. "Unknown" — fallback
+    """
+    if sym.get("hyperliquid_coin"):
+        return "Hyperliquid"
+    if sym.get("alpaca_symbol"):
+        return "Alpaca"
+    if sym.get("yahoo_ticker"):
+        return "Yahoo"
+    return "Unknown"
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────
 
 
@@ -1074,6 +1101,12 @@ class SweepOrchestrator:
             "type": "heartbeat",
             "symbol": symbol,
             "ts": now_ms,
+            # ── Venue + asset class info (for Discord routing) ───────────
+            # The signal aggregator uses asset_class to route signals to
+            # per-venue Discord webhooks (crypto/equities/metals). Venue
+            # is derived from the symbol config's execution fields.
+            "asset_class": sym.get("asset_class", ""),
+            "venue": _derive_venue(sym),
             "regime": regime_label,
             "regime_conf": round(regime_conf, 4),
             "signal": trade_signal["signal"],
