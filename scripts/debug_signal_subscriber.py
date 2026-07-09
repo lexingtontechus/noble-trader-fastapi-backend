@@ -304,10 +304,36 @@ async def main():
         print("ERROR: Set REDIS_URL or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN")
         sys.exit(1)
 
-    # Resolve Discord webhook URL
-    discord_webhook = args.discord_webhook or os.environ.get("DISCORD_WEBHOOK_DEBUG")
+    # Resolve Discord webhook URL — check multiple sources in priority order:
+    #   1. --discord-webhook CLI arg
+    #   2. DISCORD_WEBHOOK_DEBUG env var (os.environ)
+    #   3. settings.DISCORD_WEBHOOK_DEBUG (loaded by Pydantic from .env file)
+    #
+    # IMPORTANT: Pydantic Settings only loads env vars that match declared
+    # fields. DISCORD_WEBHOOK_DEBUG must be a field in the Settings class
+    # (see regime_platform/core/settings.py) for it to be loaded from .env.
+    # Without that declaration, putting it in .env has no effect —
+    # os.environ.get() returns None.
+    discord_webhook = (
+        args.discord_webhook
+        or os.environ.get("DISCORD_WEBHOOK_DEBUG")
+        or getattr(settings, "DISCORD_WEBHOOK_DEBUG", "")
+        or None
+    )
     if args.no_discord:
         discord_webhook = None
+
+    # Debug: show what we resolved (helps diagnose config issues)
+    if discord_webhook:
+        # Mask the token in the URL for safe display
+        masked = discord_webhook[:50] + "..." if len(discord_webhook) > 50 else discord_webhook
+        log.info(f"Discord webhook resolved: {masked}")
+    else:
+        log.warning(
+            "Discord webhook NOT configured. Set DISCORD_WEBHOOK_DEBUG in "
+            ".env (uncomment the line, don't use #), in Lightning Studio "
+            "secrets, or pass --discord-webhook URL. Running stdout-only."
+        )
 
     # Validate webhook URL if provided
     if discord_webhook:

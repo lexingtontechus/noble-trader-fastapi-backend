@@ -831,6 +831,12 @@ class SweepOrchestrator:
         # to "signal.debug.noble_trader" so you can subscribe and inspect
         # what's being filtered. This is essential for threshold tuning —
         # you can't optimize what you can't see.
+        # NOTE: decimals must be computed BEFORE this block because the
+        # debug payload uses it for price rounding. Previously decimals
+        # was defined later (at the Redis write section), causing
+        # UnboundLocalError when DEBUG_SIGNALS=1.
+        decimals = _price_decimals(symbol)
+
         if DEBUG_SIGNALS:
             _debug_ts = int(time.time() * 1000)
             debug_payload = json.dumps({
@@ -880,7 +886,8 @@ class SweepOrchestrator:
         # ── 8. Write to Redis ──
         # Single pipelined round-trip: config hash (+ TTL), heartbeat, and
         # the DOOM-agent pub/sub heartbeat. Bundling cuts 3 round-trips to 1.
-        decimals = _price_decimals(symbol)
+        # NOTE: decimals was already computed above (before the debug channel
+        # block) so it's available here too.
         config_key = f"trading:config:{symbol}"
         heartbeat_key = f"trading:heartbeat:{symbol}"
         agent_channel = f"agent:{symbol}"

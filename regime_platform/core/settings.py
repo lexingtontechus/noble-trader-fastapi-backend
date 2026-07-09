@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_SIGNALS: str = ""
     DISCORD_WEBHOOK_EXECUTIONS: str = ""
     DISCORD_WEBHOOK_STATUS: str = ""
+    # Debug webhook — used by scripts/debug_signal_subscriber.py to forward
+    # ALL signals (qualified AND rejected) to a debug Discord channel.
+    # Must also set DEBUG_SIGNALS=1 on the orchestrator to publish to the
+    # "signal.debug.noble_trader" Redis channel.
+    DISCORD_WEBHOOK_DEBUG: str = ""
 
     # ── Telegram ────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""
