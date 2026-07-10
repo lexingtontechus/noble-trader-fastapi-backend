@@ -1180,7 +1180,30 @@ class SweepOrchestrator:
             pipe.set(heartbeat_key, str(now_ms), ex=ttl)
             pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
             if qualified:
-                pipe.publish("signal.raw.noble_trader", agent_payload)  # Only qualified signals
+                # ── Publish qualified signals via BOTH pub/sub AND Streams ──
+                # Pub/sub (PUBLISH) is used by the in-process SignalAggregator
+                # for Discord/Telegram/webhook routing. It's fire-and-forget:
+                # if no subscriber is listening, the message is lost.
+                #
+                # Streams (XADD) is used by downstream external consumers
+                # (e.g., the DOOM agent, Hermes L0, your trading system).
+                # Streams persist messages, support consumer groups, and
+                # allow replay — so a consumer that restarts can read
+                # messages it missed. This is the correct primitive for
+                # reliable signal delivery to external systems.
+                #
+                # We publish to BOTH so existing pub/sub subscribers keep
+                # working AND stream consumers get the data they expect.
+                pipe.publish("signal.raw.noble_trader", agent_payload)
+                # XADD with MAXLEN ~10000 trims old entries so the stream
+                # doesn't grow unbounded. Use ~ for approximate trimming
+                # (faster than exact).
+                pipe.xadd(
+                    "signal.raw.noble_trader",  # same name, but as a Stream
+                    {"payload": agent_payload},
+                    maxlen=10000,
+                    approximate=True,
+                )
             await pipe.execute()
             logger.debug(
                 f"[sweep:orch] {symbol}: Redis write OK "
