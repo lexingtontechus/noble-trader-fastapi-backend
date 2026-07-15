@@ -425,11 +425,14 @@ async def fetch_tradingview_batch(
     }
 
     # Build batch request body
+    # IMPORTANT: range must be an integer (not string) per the API docs.
+    # The API example shows: {"symbol": "BINANCE:BTCUSDT", "timeframe": "60", "range": 20}
+    # Sending "range": "200" (string) causes: "invalid parameters method: create_series"
     requests_body = [
         {
             "symbol": s["tradingview_symbol"],
             "timeframe": tv_timeframe,
-            "range": str(range_bars),
+            "range": range_bars,  # integer, NOT string
         }
         for s in tv_symbols
     ]
@@ -547,6 +550,25 @@ async def fetch_tradingview_batch(
             "(1 API call for %d symbols, timeframe=%s, range=%s)",
             successful, total, len(tv_symbols), tv_timeframe, range_bars,
         )
+
+        # ── Fallback: if ALL batch symbols failed, try individual requests ──
+        # The batch endpoint can fail per-symbol (success=false) even when
+        # the HTTP response is 200. In that case, fall back to individual
+        # GET requests which are more reliable.
+        if successful == 0 and total > 0:
+            logger.warning(
+                "TradingView batch: all %d symbols failed (success=false). "
+                "Falling back to individual GET requests.", total,
+            )
+            fallback_results = {}
+            for s in tv_symbols:
+                prices = await fetch_tradingview_candles(
+                    s["symbol"], s["tradingview_symbol"], hours, interval
+                )
+                if prices:
+                    fallback_results[s["symbol"]] = prices
+            return fallback_results
+
         return results
 
     except httpx.HTTPStatusError as exc:
