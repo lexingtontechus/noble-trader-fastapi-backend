@@ -33,6 +33,7 @@ from renko.trading_heartbeat import CONFIG_TTL
 from regime_platform.sweep_orchestrator.market_hours import is_market_open
 from regime_platform.sweep_orchestrator.price_fetcher import (
     fetch_latest_candles,
+    fetch_tradingview_batch,
 )
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_active_symbols,
@@ -680,23 +681,48 @@ class SweepOrchestrator:
         if not active:
             return
 
-        # Parallel price fetch (latest 200 bars)
-        price_futs = [fetch_latest_candles(s, 200) for s in active]
-        price_results = await asyncio.gather(*price_futs, return_exceptions=True)
-
+        # ── Price fetch (batch for TradingView, parallel for others) ──
+        # TradingView symbols are fetched in ONE batch API call (POST /api/price/batch)
+        # to reduce API calls from N to 1. Non-TV symbols (HL, Alpaca) are
+        # fetched in parallel as before.
         valid_prices: dict[str, list[float]] = {}
-        for sym, prices in zip(active, price_results):
-            if isinstance(prices, Exception):
-                logger.warning("Price fetch failed for %s: %s", sym["symbol"], prices)
-                continue
-            if len(prices) < 81:
-                logger.warning(
-                    "%s: insufficient data (%d bars, need >=81)",
-                    sym["symbol"],
-                    len(prices),
-                )
-                continue
-            valid_prices[sym["symbol"]] = prices
+
+        # Split symbols by data source
+        tv_symbols = [s for s in active if s.get("data_source") == "tradingview"]
+        non_tv_symbols = [s for s in active if s.get("data_source") != "tradingview"]
+
+        # ── Batch fetch TradingView symbols (1 API call) ─────────────
+        if tv_symbols:
+            try:
+                tv_results = await fetch_tradingview_batch(tv_symbols, 200)
+                for sym_name, prices in tv_results.items():
+                    if len(prices) < 81:
+                        logger.warning(
+                            "%s: insufficient data (%d bars, need >=81)",
+                            sym_name, len(prices),
+                        )
+                        continue
+                    valid_prices[sym_name] = prices
+            except Exception as exc:
+                logger.warning("TradingView batch fetch failed: %s", exc)
+
+        # ── Parallel fetch non-TV symbols (HL, Alpaca) ───────────────
+        if non_tv_symbols:
+            price_futs = [fetch_latest_candles(s, 200) for s in non_tv_symbols]
+            price_results = await asyncio.gather(*price_futs, return_exceptions=True)
+
+            for sym, prices in zip(non_tv_symbols, price_results):
+                if isinstance(prices, Exception):
+                    logger.warning("Price fetch failed for %s: %s", sym["symbol"], prices)
+                    continue
+                if len(prices) < 81:
+                    logger.warning(
+                        "%s: insufficient data (%d bars, need >=81)",
+                        sym["symbol"],
+                        len(prices),
+                    )
+                    continue
+                valid_prices[sym["symbol"]] = prices
 
         if not valid_prices:
             return

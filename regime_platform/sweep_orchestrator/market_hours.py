@@ -9,7 +9,8 @@ Asset class rules
 ─────────────────
   crypto       : 24/7
   stocks       : Mon–Fri 14:30–21:00 UTC  (9:30am–4:00pm ET)
-  commodities  : Mon–Fri 14:30–21:00 UTC  (same as US equities)
+  commodities  : Sun 22:00 – Fri 22:00 UTC (gold/silver spot via OANDA —
+                 trades like forex, NOT stock market hours)
   forex        : Sun 22:00 – Fri 22:00 UTC
   default      : always True
 """
@@ -43,18 +44,19 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
         case "crypto":
             return True
 
-        case "forex":
-            # Forex is open from Sun 22:00 UTC through Fri 22:00 UTC
+        case "forex" | "commodities":
+            # Forex AND commodities (gold/silver spot via OANDA) trade
+            # Sun 22:00 UTC through Fri 22:00 UTC.
+            # Gold spot (XAUUSD) is a forex-like instrument — it trades
+            # nearly 24/5, NOT US stock market hours.
             if day == 6:                        # Sunday
                 return minute_of_day >= 1320     # 22:00
             if day == 5:                        # Friday
                 return minute_of_day < 1320      # before 22:00
-            if day == 4:                        # Thursday — full day
-                return True
-            # Mon–Wed — full days
+            # Mon–Thu — full days
             return True
 
-        case "stocks" | "commodities":
+        case "stocks":
             # US market hours: Mon–Fri 14:30–21:00 UTC
             if day >= 5:                         # Sat–Sun
                 return False

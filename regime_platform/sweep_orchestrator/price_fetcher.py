@@ -14,6 +14,7 @@ Fetches OHLC close-price arrays from the appropriate data source per symbol:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -29,6 +30,11 @@ LIGHT_CANDLE_BARS = 200
 
 HL_API_URL = "https://api.hyperliquid.xyz"
 ALPACA_DATA_URL = "https://data.alpaca.markets"
+
+# When True, disable the Yahoo/yfinance fallback. Yahoo is data-only (no
+# exchange), so signals based on Yahoo data can't be executed. If all your
+# active symbols use hyperliquid/alpaca/tradingview, set this to "1".
+DISABLE_YAHOO_FALLBACK = os.getenv("DISABLE_YAHOO_FALLBACK", "0") == "1"
 
 # Map internal symbols to Alpaca trading symbols
 ALPACA_SYMBOL_MAP: dict[str, str] = {
@@ -360,6 +366,215 @@ async def fetch_tradingview_candles(
         return []
 
 
+# ─── TradingView Batch API ────────────────────────────────────────
+
+
+async def fetch_tradingview_batch(
+    symbols: list[dict[str, Any]],
+    hours: int = LIGHT_CANDLE_BARS,
+    interval: str = "1h",
+) -> dict[str, list[float]]:
+    """Fetch candles for multiple TradingView symbols in ONE API call.
+
+    Uses POST /api/price/batch — sends all symbol requests in a single
+    HTTP request, reducing API calls from N to 1.
+
+    Parameters
+    ----------
+    symbols : list[dict]
+        List of symbol config dicts. Each must have:
+          - ``symbol``: internal name (e.g., "BTCUSD") — used as result key
+          - ``tradingview_symbol``: TV symbol (e.g., "COINBASE:BTCUSD")
+    hours : int
+        Number of bars to fetch (default: 200 for light sweep).
+    interval : str
+        Candle interval — "1h" or "1D".
+
+    Returns
+    -------
+    dict[str, list[float]]
+        Maps internal symbol name → list of close prices.
+        Symbols that failed are omitted from the dict.
+    """
+    from regime_platform.core.settings import settings
+    from urllib.parse import quote
+
+    api_key = settings.TRADINGVIEW_API_KEY
+    if not api_key:
+        logger.warning("TradingView credentials not configured — cannot batch fetch")
+        return {}
+
+    # Filter to only symbols that have a tradingview_symbol
+    tv_symbols = [
+        s for s in symbols
+        if s.get("tradingview_symbol") and s.get("data_source") == "tradingview"
+    ]
+    if not tv_symbols:
+        return {}
+
+    # Map interval to TradingView timeframe
+    interval_map = {"1h": "60", "1H": "60", "15m": "15", "5m": "5",
+                    "4h": "240", "4H": "240", "1D": "D", "1d": "D"}
+    tv_timeframe = interval_map.get(interval, "60")
+    range_bars = min(hours, 5000)
+
+    headers = {
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": settings.TRADINGVIEW_API_HOST,
+        "Content-Type": "application/json",
+    }
+
+    # Build batch request body
+    requests_body = [
+        {
+            "symbol": s["tradingview_symbol"],
+            "timeframe": tv_timeframe,
+            "range": str(range_bars),
+        }
+        for s in tv_symbols
+    ]
+
+    url = f"{settings.TRADINGVIEW_BASE_URL}/api/price/batch"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json={"requests": requests_body})
+
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After", "5")
+                logger.warning(
+                    "TradingView batch 429 rate limited — retry after %ss. "
+                    "Falling back to individual requests.", retry_after,
+                )
+                # Fall back to individual requests
+                results = {}
+                for s in tv_symbols:
+                    prices = await fetch_tradingview_candles(
+                        s["symbol"], s["tradingview_symbol"], hours, interval
+                    )
+                    if prices:
+                        results[s["symbol"]] = prices
+                return results
+
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Parse batch response:
+        # {
+        #   "success": true,
+        #   "data": {
+        #     "total": 4, "successful": 4, "failed": 0,
+        #     "data": [
+        #       {"success": true, "symbol": "COINBASE:BTCUSD", "current": {...}, "history": [...]},
+        #       {"success": true, "symbol": "OANDA:EURUSD", "current": {...}, "history": [...]},
+        #       ...
+        #     ]
+        #   }
+        # }
+
+        results: dict[str, list[float]] = {}
+
+        # Build a reverse map: TV symbol → internal symbol
+        tv_to_internal = {s["tradingview_symbol"]: s["symbol"] for s in tv_symbols}
+
+        batch_data = data.get("data", {})
+        if isinstance(batch_data, dict):
+            items = batch_data.get("data", [])
+        elif isinstance(batch_data, list):
+            items = batch_data
+        else:
+            items = []
+
+        total = len(items)
+        successful = 0
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("success", True):
+                tv_sym = item.get("symbol", "?")
+                logger.warning(
+                    "TradingView batch: symbol %s returned success=false: %s",
+                    tv_sym, str(item)[:200],
+                )
+                continue
+
+            tv_sym = item.get("symbol", "")
+            internal_sym = tv_to_internal.get(tv_sym, tv_sym)
+
+            # Extract close prices from history (same parser as individual)
+            data_obj = item.get("data", item)  # may be nested
+            bars = (
+                data_obj.get("history", [])
+                if isinstance(data_obj, dict)
+                else data_obj.get("candles", [])
+                if isinstance(data_obj, dict)
+                else []
+            )
+
+            prices: list[float] = []
+            if bars and isinstance(bars, list):
+                if isinstance(bars[0], dict):
+                    prices = [
+                        float(b.get("close", b.get("c", 0)))
+                        for b in bars
+                        if b.get("close") is not None or b.get("c") is not None
+                    ]
+                elif isinstance(bars[0], (list, tuple)):
+                    prices = [float(b[4]) if len(b) > 4 else 0.0 for b in bars]
+
+            # Fallback to "current" if no history
+            if not prices and isinstance(data_obj, dict):
+                current = data_obj.get("current", {})
+                if isinstance(current, dict) and current.get("close") is not None:
+                    prices = [float(current["close"])]
+
+            if prices:
+                results[internal_sym] = prices
+                successful += 1
+                logger.info(
+                    "TradingView batch %s (%s): %d candles",
+                    internal_sym, tv_sym, len(prices),
+                )
+            else:
+                logger.warning(
+                    "TradingView batch: no candles for %s (%s): %s",
+                    internal_sym, tv_sym, str(item)[:200],
+                )
+
+        logger.info(
+            "TradingView batch complete: %d/%d symbols successful "
+            "(1 API call for %d symbols, timeframe=%s, range=%s)",
+            successful, total, len(tv_symbols), tv_timeframe, range_bars,
+        )
+        return results
+
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TradingView batch HTTP %d: %s. Falling back to individual requests.",
+            exc.response.status_code, exc.response.text[:200],
+        )
+        # Fall back to individual requests
+        results = {}
+        for s in tv_symbols:
+            prices = await fetch_tradingview_candles(
+                s["symbol"], s["tradingview_symbol"], hours, interval
+            )
+            if prices:
+                results[s["symbol"]] = prices
+        return results
+    except Exception as exc:
+        logger.warning("TradingView batch failed: %s. Falling back to individual.", exc)
+        results = {}
+        for s in tv_symbols:
+            prices = await fetch_tradingview_candles(
+                s["symbol"], s["tradingview_symbol"], hours, interval
+            )
+            if prices:
+                results[s["symbol"]] = prices
+        return results
+
+
 # ─── Lightning AI / yfinance proxy ────────────────────────────────
 
 
@@ -429,7 +644,18 @@ async def fetch_sweep_candles(sym: dict[str, Any]) -> list[float]:
         tv_sym = sym.get("tradingview_symbol") or sym["symbol"]
         return await fetch_tradingview_candles(sym["symbol"], tv_sym, SWEEP_CANDLE_HOURS)
 
-    # Fallback: Lightning AI data proxy (yfinance)
+    # ── Yahoo fallback (optional) ──────────────────────────────────
+    # Yahoo/yfinance is data-only — no real exchange, can't execute trades.
+    # Set DISABLE_YAHOO_FALLBACK=1 to skip it entirely.
+    if DISABLE_YAHOO_FALLBACK:
+        logger.info(
+            "Yahoo fallback disabled (DISABLE_YAHOO_FALLBACK=1) — skipping %s "
+            "(data_source=%s). Set data_source to 'tradingview'/'alpaca'/'hyperliquid' "
+            "to enable real exchange data.",
+            sym.get("symbol", "?"), ds,
+        )
+        return []
+
     ticker = sym.get("yahoo_ticker") or sym["symbol"]
     return await fetch_proxy_candles(ticker, "90d", "1h")
 
@@ -464,6 +690,16 @@ async def fetch_latest_candles(
         tv_sym = sym.get("tradingview_symbol") or sym["symbol"]
         hours = min(n_bars, 500)
         return await fetch_tradingview_candles(sym["symbol"], tv_sym, hours)
+
+    # ── Yahoo fallback (optional) ──────────────────────────────────
+    if DISABLE_YAHOO_FALLBACK:
+        logger.info(
+            "Yahoo fallback disabled (DISABLE_YAHOO_FALLBACK=1) — skipping %s "
+            "(data_source=%s). Set data_source to 'tradingview'/'alpaca'/'hyperliquid' "
+            "to enable real exchange data.",
+            sym.get("symbol", "?"), ds,
+        )
+        return []
 
     ticker = sym.get("yahoo_ticker") or sym["symbol"]
     range_str = "5d" if n_bars <= 390 else "90d"
