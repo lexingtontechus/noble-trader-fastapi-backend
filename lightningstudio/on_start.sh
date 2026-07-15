@@ -31,10 +31,13 @@ cd "$SCRIPT_DIR/../noble-trader"
 
 # ── Config ─────────────────────────────────────────────────────────────────
 TIMESFM_READY_TIMEOUT="${TIMESFM_READY_TIMEOUT:-180}"
+# Max log file size in KB before truncation. Default: 10240 (10 MB).
+# Logs are truncated to the last N KB on each startup to prevent disk fill.
+LOG_MAX_KB="${LOG_MAX_KB:-10240}"
 
 # ── Setup log directory ───────────────────────────────────────────────────
 # Each service gets its own log file. Logs are appended to (not overwritten)
-# so you can see history across restarts. Rotate manually if they get large.
+# so you can see history across restarts. Truncated on each startup.
 LOG_DIR="$SCRIPT_DIR/../noble-trader/logs"
 mkdir -p "$LOG_DIR"
 
@@ -44,6 +47,30 @@ LOG_MAIN="$LOG_DIR/main.log"
 LOG_GATEWAY="$LOG_DIR/gateway.log"
 LOG_ORCH="$LOG_DIR/orchestrator.log"
 LOG_STARTUP="$LOG_DIR/startup.log"
+
+# ── Truncate logs to last N KB (prevent disk fill) ───────────────────────
+# Keeps the tail of each log file so recent history is preserved, but
+# removes old entries that exceed the size limit. Runs on every startup.
+truncate_log() {
+    local log_file="$1"
+    local max_kb="$2"
+    if [ -f "$log_file" ]; then
+        local size_kb=$(( $(wc -c < "$log_file") / 1024 ))
+        if [ "$size_kb" -gt "$max_kb" ]; then
+            local keep_bytes=$(( max_kb * 1024 ))
+            # Keep last N bytes using tail
+            tail -c "$keep_bytes" "$log_file" > "${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
+            echo "[log cleanup] $(date -u '+%Y-%m-%d %H:%M:%S') Truncated $(basename "$log_file") from ${size_kb}KB to ${max_kb}KB" >> "$LOG_STARTUP"
+        fi
+    fi
+}
+
+# Truncate all service logs on startup
+truncate_log "$LOG_TIMESFM" "$LOG_MAX_KB"
+truncate_log "$LOG_MAIN" "$LOG_MAX_KB"
+truncate_log "$LOG_GATEWAY" "$LOG_MAX_KB"
+truncate_log "$LOG_ORCH" "$LOG_MAX_KB"
+truncate_log "$LOG_STARTUP" "$LOG_MAX_KB"
 
 # Function: log a message to both stdout and the startup log
 log() {

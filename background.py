@@ -50,10 +50,13 @@ os.chdir(SCRIPT_DIR)
 
 # ── Config ─────────────────────────────────────────────────────────────────
 TIMESFM_READY_TIMEOUT = int(os.environ.get("TIMESFM_READY_TIMEOUT", "180"))
+# Max log file size in KB before truncation. Default: 10240 (10 MB).
+# Logs are truncated to the last N KB on each startup to prevent disk fill.
+LOG_MAX_KB = int(os.environ.get("LOG_MAX_KB", "10240"))
 
 # ── Setup log directory ───────────────────────────────────────────────────
 # Each service gets its own log file. Logs are appended to (not overwritten)
-# so history survives restarts.
+# so history survives restarts. Truncated on each startup.
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -62,6 +65,42 @@ LOG_MAIN = os.path.join(LOG_DIR, "main.log")
 LOG_GATEWAY = os.path.join(LOG_DIR, "gateway.log")
 LOG_ORCH = os.path.join(LOG_DIR, "orchestrator.log")
 LOG_STARTUP = os.path.join(LOG_DIR, "startup.log")
+
+
+def truncate_log(log_path: str, max_kb: int = LOG_MAX_KB) -> None:
+    """Truncate a log file to the last N KB if it exceeds the limit.
+
+    Keeps the tail of the file so recent history is preserved.
+    Writes a cleanup notice to startup.log.
+    """
+    try:
+        if not os.path.exists(log_path):
+            return
+        size_bytes = os.path.getsize(log_path)
+        size_kb = size_bytes // 1024
+        if size_kb > max_kb:
+            keep_bytes = max_kb * 1024
+            with open(log_path, "rb") as f:
+                f.seek(-keep_bytes, 2)  # Seek to last N bytes
+                tail = f.read()
+            with open(log_path, "wb") as f:
+                f.write(tail)
+            # Log the cleanup
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            with open(LOG_STARTUP, "a") as f:
+                f.write(f"[log cleanup] {ts} Truncated {os.path.basename(log_path)} "
+                        f"from {size_kb}KB to {max_kb}KB\n")
+    except Exception:
+        pass  # don't let log cleanup crash startup
+
+
+# Truncate all service logs on startup
+truncate_log(LOG_TIMESFM)
+truncate_log(LOG_MAIN)
+truncate_log(LOG_GATEWAY)
+truncate_log(LOG_ORCH)
+truncate_log(LOG_STARTUP)
 
 
 def log(msg=""):
