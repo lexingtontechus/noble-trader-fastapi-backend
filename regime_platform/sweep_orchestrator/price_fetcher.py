@@ -191,25 +191,12 @@ async def fetch_tradingview_candles(
 ) -> list[float]:
     """Fetch hourly candle closes from TradingView via RapidAPI.
 
-    Requires ``TRADINGVIEW_API_KEY`` env var (RapidAPI key).
+    API endpoint: GET /api/price/{symbol}
+    Params: timeframe (in minutes, or 'D' for daily), range (number of bars)
+    Headers: x-rapidapi-key, x-rapidapi-host
+
     The ``tv_symbol`` must be in TradingView's ``EXCHANGE:SYMBOL`` format,
     e.g. ``COINBASE:BTCUSD``, ``OANDA:EURUSD``, ``OANDA:XAUUSD``.
-
-    Parameters
-    ----------
-    symbol : str
-        Internal symbol name (e.g., "BTCUSD") — used for logging only.
-    tv_symbol : str
-        TradingView symbol in EXCHANGE:SYMBOL format (e.g., "COINBASE:BTCUSD").
-    hours : int
-        Number of hours of history to fetch (default: 2160 = 90 days).
-    interval : str
-        Candle interval — "1h" for hourly, "1D" for daily.
-
-    Returns
-    -------
-    list[float]
-        Close prices (oldest → newest), or empty list on failure.
     """
     from regime_platform.core.settings import settings
 
@@ -224,81 +211,129 @@ async def fetch_tradingview_candles(
 
     # Build RapidAPI headers
     headers = {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": settings.TRADINGVIEW_API_HOST,
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": settings.TRADINGVIEW_API_HOST,
     }
 
-    # Map interval to TradingView format
-    # TradingView uses: 1m, 5m, 15m, 30m, 1H, 2H, 4H, 1D, 1W, 1M
-    tv_interval = "1H" if interval == "1h" else "1D"
+    # ── Map interval to TradingView timeframe ─────────────────────
+    # TradingView uses minute-based timeframes: 1, 5, 15, 30, 60, 240
+    # and 'D' for daily, 'W' for weekly.
+    interval_map = {
+        "1h": "60",      # 60 minutes
+        "1H": "60",
+        "15m": "15",
+        "5m": "5",
+        "1m": "1",
+        "4h": "240",
+        "4H": "240",
+        "1D": "D",
+        "1d": "D",
+    }
+    tv_timeframe = interval_map.get(interval, "60")  # default to 1h
 
-    # Calculate time range (Unix timestamps in seconds)
-    end_ts = int(time.time())
-    start_ts = end_ts - (hours * 3600)
+    # ── Calculate range (number of bars to fetch) ─────────────────
+    # For 1h interval: hours = number of bars needed
+    # For daily: hours / 24
+    if tv_timeframe == "D":
+        range_bars = max(hours // 24, 1)
+    else:
+        range_bars = hours
 
-    # Build request URL
+    # Cap at 5000 bars (TradingView API limit)
+    range_bars = min(range_bars, 5000)
+
+    # Build request URL — correct endpoint is /api/price/{symbol}
     base_url = settings.TRADINGVIEW_BASE_URL
-    url = f"{base_url}/candles"
+    # URL-encode the symbol (e.g., "COINBASE:BTCUSD" → "COINBASE%3ABTCUSD")
+    from urllib.parse import quote
+    url = f"{base_url}/api/price/{quote(tv_symbol, safe='')}"
     params = {
-        "symbol": tv_symbol,
-        "interval": tv_interval,
-        "from": start_ts,
-        "to": end_ts,
+        "timeframe": tv_timeframe,
+        "range": str(range_bars),
     }
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, headers=headers, params=params)
+
+            # ── Handle rate limiting (429) ──────────────────────────
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After", "5")
+                logger.warning(
+                    "TradingView 429 rate limited for %s — retry after %ss. "
+                    "Consider reducing sweep frequency or adding stagger.",
+                    symbol, retry_after,
+                )
+                return []
+
             resp.raise_for_status()
             data = resp.json()
 
         # ── Parse response ────────────────────────────────────────────
-        # TradingView API returns candles in one of these formats:
+        # TradingView API returns:
+        # {
+        #   "success": true,
+        #   "data": {
+        #     "symbol": "COINBASE:BTCUSD",
+        #     "current": { "time": ..., "open": ..., "high": ..., "low": ..., "close": ... },
+        #     "candles": [
+        #       { "time": ..., "open": ..., "high": ..., "low": ..., "close": ..., "volume": ... },
+        #       ...
+        #     ]
+        #   }
+        # }
         #
-        # Format A — columnar (TradingView native):
-        #   {"s":"ok","t":[ts1,ts2,...],"c":[c1,c2,...],"o":[...],"h":[...],"l":[...],"v":[...]}
-        #
-        # Format B — array of candle objects:
-        #   [{"t":ts1,"o":o1,"h":h1,"l":l1,"c":c1,"v":v1}, ...]
-        #
-        # Format C — array of arrays:
-        #   [[ts1,o1,h1,l1,c1,v1], [ts2,...], ...]
-        #
-        # We handle all three for robustness.
+        # The "candles" array is what we want — each candle has "close".
 
         prices: list[float] = []
 
-        if isinstance(data, dict) and "c" in data:
-            # Format A — columnar
-            closes = data.get("c", [])
-            prices = [float(c) for c in closes if c is not None]
-        elif isinstance(data, list):
-            if data and isinstance(data[0], dict):
-                # Format B — array of candle objects
-                prices = [
-                    float(c.get("c", 0))
-                    for c in data
-                    if c.get("c") is not None
-                ]
-            elif data and isinstance(data[0], (list, tuple)):
-                # Format C — array of arrays
-                # Assume index 4 is close (standard OHLCV order: t,o,h,l,c,v)
-                prices = [
-                    float(candle[4])
-                    for candle in data
-                    if len(candle) > 4 and candle[4] is not None
-                ]
+        if isinstance(data, dict):
+            # Check for success flag
+            if not data.get("success", True):
+                logger.warning(
+                    "TradingView API returned success=false for %s (%s): %s",
+                    symbol, tv_symbol, str(data)[:200],
+                )
+                return []
+
+            # Extract candles from data.data.candles
+            candles = (
+                data.get("data", {}).get("candles", [])
+                if isinstance(data.get("data"), dict)
+                else data.get("candles", [])
+            )
+
+            if candles and isinstance(candles, list):
+                if isinstance(candles[0], dict):
+                    # Array of candle objects with 'close' key
+                    prices = [
+                        float(c.get("close", c.get("c", 0)))
+                        for c in candles
+                        if c.get("close") is not None or c.get("c") is not None
+                    ]
+                elif isinstance(candles[0], (list, tuple)):
+                    # Array of arrays: [time, open, high, low, close, volume]
+                    prices = [
+                        float(c[4]) if len(c) > 4 else 0.0
+                        for c in candles
+                    ]
+
+            # Fallback: check for columnar format
+            if not prices and isinstance(data.get("data"), dict):
+                closes = data["data"].get("c", [])
+                if closes:
+                    prices = [float(c) for c in closes if c is not None]
 
         if not prices:
             logger.warning(
                 "TradingView returned no candles for %s (%s) — response: %s",
-                symbol, tv_symbol, str(data)[:200],
+                symbol, tv_symbol, str(data)[:300],
             )
             return []
 
         logger.info(
-            "TradingView %s (%s): %d candles",
-            symbol, tv_symbol, len(prices),
+            "TradingView %s (%s): %d candles [timeframe=%s, range=%s]",
+            symbol, tv_symbol, len(prices), tv_timeframe, range_bars,
         )
         return prices
 
