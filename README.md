@@ -718,26 +718,42 @@ Without `REDIS_URL`, all state is in-memory with zero overhead.
 
 ---
 
-## Redis Config — `trading:config:{symbol}`
+## Redis Signal Delivery — Push Model (v9.0+)
 
-The `trading:config:{symbol}` hash in Redis is the single source of truth for the trading bot. Written by **SweepOrchestrator** (Python, APScheduler), read by trading bots every 15s.
+The platform has moved from a **poll model** (trading bots read `trading:config:{symbol}` every 15s) to a **push model** (qualified signals are pushed via Redis Streams).
+
+### What changed
+
+| Old (poll) | New (push) |
+|---|---|
+| `HSET trading:config:{symbol}` | **Deprecated** (commented out) |
+| `SET trading:heartbeat:{symbol}` | **Deprecated** (commented out) |
+| `PUBLISH agent:{symbol}` | **Deprecated** (commented out) |
+| `PUBLISH signal.raw.noble_trader` | ✅ Active — for in-process SignalAggregator |
+| `XADD signal.raw.noble_trader` | ✅ Active — for downstream consumers (persistent) |
+
+Downstream consumers now read from the Redis Stream `signal.raw.noble_trader` using `XREAD` or `XREADGROUP`, not from per-symbol config hashes.
 
 ### Signal Generation Architecture
 
 **Active path**: `regime_platform/sweep_orchestrator/`
 - Runs as standalone Python service (not Supabase edge functions)
-- Schedules per-symbol sweeps via APScheduler cron jobs
+- Schedules per-symbol sweeps via APScheduler cron jobs (`*/5 * * * *`)
 - Fetches TimesFM predictions (cached 15min) → 3-source EV blend
-- Enforces qualification gates before publishing
+- Enforces 7 qualification gates + cooldown before publishing
 
-**Key qualification gates**:
-| Gate | Threshold | Purpose |
-|------|-----------|---------|
-| Signal type | `buy` or `sell` (not `neutral`) | Only trade on clear direction |
-| Regime confidence | ≥ 0.60 | Ensure reliable HMM classification |
-| Kelly fraction | ≥ 0.02 | Minimum position sizing |
-| TimesFM confidence | ≥ 0.05 (|p-0.5|) | Require directional forecast certainty |
-| EV allowed | `ev > min_ev` AND `rr ≥ min_rr` | Minimum expected value |
+**Qualification gates** (all configurable via env vars):
+
+| Gate | Check | Env var | Default |
+|------|-------|---------|---------|
+| 1 | Signal is buy/sell (not neutral) | — | — |
+| 2 | HMM regime confidence ≥ threshold | `MIN_REGIME_CONF` | 0.60 |
+| 3 | Kelly fraction ≥ threshold | `MIN_KELLY` | 0.02 |
+| 4 | TimesFM available | — | — |
+| 5 | TimesFM confidence ≥ threshold (mode-dependent) | `MIN_TIMESFM_CONFIDENCE` / `TIMESFM_GATE_MODE` | 0.05 / hard |
+| 6 | EV allowed (ev > 0 AND rr ≥ threshold) | `MIN_EV` / `MIN_RR` | 0.0 / 2.0 |
+| 7 | Blended p_win ≥ threshold | `MIN_P_WIN` | 0.55 |
+| + | Cooldown (don't repeat same symbol+dir for N min) | `SIGNAL_COOLDOWN_MINUTES` | 60 |
 
 **Signal types**:
 - `heartbeat` (sweep_orchestrator) → **only qualified signals published to** `signal.raw.noble_trader`
@@ -745,8 +761,10 @@ The `trading:config:{symbol}` hash in Redis is the single source of truth for th
 
 **Redis publish targets**:
 ```
-agent:{symbol}          → always publishes (liveness heartbeat)
-signal.raw.noble_trader → only qualified signals (qualification gated)
+PUBLISH signal.raw.noble_trader  → for in-process SignalAggregator (Discord/Telegram)
+XADD   signal.raw.noble_trader   → for downstream consumers (persistent, consumer groups)
+  ↳ Stream maxlen: 10000 (auto-trimmed)
+  ↳ Field: 'payload' = JSON string of the qualified signal
 ```
 
 ### Core Fields (sweep_orchestrator)

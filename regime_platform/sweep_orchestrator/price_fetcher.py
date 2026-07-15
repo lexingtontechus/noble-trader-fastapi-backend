@@ -5,14 +5,16 @@ Price Candle Fetcher
 Ported from supabase/functions/_shared/utils.ts.
 
 Fetches OHLC close-price arrays from the appropriate data source per symbol:
-  • HyperLiquid — crypto perps (BTC, ETH, SOL via HL info API)
-  • Alpaca      — stocks/ETFs and crypto spot (AAPL, BTCUSD, etc.)
+  • HyperLiquid  — crypto perps (BTC, ETH, SOL via HL info API)
+  • Alpaca       — stocks/ETFs and crypto spot (AAPL, BTCUSD, etc.)
+  • TradingView  — crypto, forex, commodities via RapidAPI (BTCUSD, USDJPY, XAUUSD, etc.)
   • Lightning AI data proxy fallback — everything else (via yfinance)
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -178,6 +180,143 @@ async def fetch_alpaca_candles(
         return []
 
 
+# ─── TradingView (RapidAPI) ───────────────────────────────────────
+
+
+async def fetch_tradingview_candles(
+    symbol: str,
+    tv_symbol: str,
+    hours: int = SWEEP_CANDLE_HOURS,
+    interval: str = "1h",
+) -> list[float]:
+    """Fetch hourly candle closes from TradingView via RapidAPI.
+
+    Requires ``TRADINGVIEW_API_KEY`` env var (RapidAPI key).
+    The ``tv_symbol`` must be in TradingView's ``EXCHANGE:SYMBOL`` format,
+    e.g. ``COINBASE:BTCUSD``, ``OANDA:EURUSD``, ``OANDA:XAUUSD``.
+
+    Parameters
+    ----------
+    symbol : str
+        Internal symbol name (e.g., "BTCUSD") — used for logging only.
+    tv_symbol : str
+        TradingView symbol in EXCHANGE:SYMBOL format (e.g., "COINBASE:BTCUSD").
+    hours : int
+        Number of hours of history to fetch (default: 2160 = 90 days).
+    interval : str
+        Candle interval — "1h" for hourly, "1D" for daily.
+
+    Returns
+    -------
+    list[float]
+        Close prices (oldest → newest), or empty list on failure.
+    """
+    from regime_platform.core.settings import settings
+
+    api_key = settings.TRADINGVIEW_API_KEY
+    if not api_key:
+        logger.warning(
+            "TradingView credentials not configured (TRADINGVIEW_API_KEY) "
+            "— cannot fetch %s. Set this env var to enable TradingView data.",
+            symbol,
+        )
+        return []
+
+    # Build RapidAPI headers
+    headers = {
+        "X-RapidAPI-Key": api_key,
+        "X-RapidAPI-Host": settings.TRADINGVIEW_API_HOST,
+    }
+
+    # Map interval to TradingView format
+    # TradingView uses: 1m, 5m, 15m, 30m, 1H, 2H, 4H, 1D, 1W, 1M
+    tv_interval = "1H" if interval == "1h" else "1D"
+
+    # Calculate time range (Unix timestamps in seconds)
+    end_ts = int(time.time())
+    start_ts = end_ts - (hours * 3600)
+
+    # Build request URL
+    base_url = settings.TRADINGVIEW_BASE_URL
+    url = f"{base_url}/candles"
+    params = {
+        "symbol": tv_symbol,
+        "interval": tv_interval,
+        "from": start_ts,
+        "to": end_ts,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+        # ── Parse response ────────────────────────────────────────────
+        # TradingView API returns candles in one of these formats:
+        #
+        # Format A — columnar (TradingView native):
+        #   {"s":"ok","t":[ts1,ts2,...],"c":[c1,c2,...],"o":[...],"h":[...],"l":[...],"v":[...]}
+        #
+        # Format B — array of candle objects:
+        #   [{"t":ts1,"o":o1,"h":h1,"l":l1,"c":c1,"v":v1}, ...]
+        #
+        # Format C — array of arrays:
+        #   [[ts1,o1,h1,l1,c1,v1], [ts2,...], ...]
+        #
+        # We handle all three for robustness.
+
+        prices: list[float] = []
+
+        if isinstance(data, dict) and "c" in data:
+            # Format A — columnar
+            closes = data.get("c", [])
+            prices = [float(c) for c in closes if c is not None]
+        elif isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                # Format B — array of candle objects
+                prices = [
+                    float(c.get("c", 0))
+                    for c in data
+                    if c.get("c") is not None
+                ]
+            elif data and isinstance(data[0], (list, tuple)):
+                # Format C — array of arrays
+                # Assume index 4 is close (standard OHLCV order: t,o,h,l,c,v)
+                prices = [
+                    float(candle[4])
+                    for candle in data
+                    if len(candle) > 4 and candle[4] is not None
+                ]
+
+        if not prices:
+            logger.warning(
+                "TradingView returned no candles for %s (%s) — response: %s",
+                symbol, tv_symbol, str(data)[:200],
+            )
+            return []
+
+        logger.info(
+            "TradingView %s (%s): %d candles",
+            symbol, tv_symbol, len(prices),
+        )
+        return prices
+
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TradingView HTTP %d for %s (%s): %s",
+            exc.response.status_code, symbol, tv_symbol,
+            exc.response.text[:200],
+        )
+        return []
+    except Exception as exc:
+        logger.warning(
+            "TradingView candle fetch failed for %s (%s): %s",
+            symbol, tv_symbol, exc,
+        )
+        return []
+
+
 # ─── Lightning AI / yfinance proxy ────────────────────────────────
 
 
@@ -243,6 +382,10 @@ async def fetch_sweep_candles(sym: dict[str, Any]) -> list[float]:
         )
         return await fetch_alpaca_candles(sym["symbol"], alpaca_sym, SWEEP_CANDLE_HOURS)
 
+    if ds == "tradingview":
+        tv_sym = sym.get("tradingview_symbol") or sym["symbol"]
+        return await fetch_tradingview_candles(sym["symbol"], tv_sym, SWEEP_CANDLE_HOURS)
+
     # Fallback: Lightning AI data proxy (yfinance)
     ticker = sym.get("yahoo_ticker") or sym["symbol"]
     return await fetch_proxy_candles(ticker, "90d", "1h")
@@ -273,6 +416,11 @@ async def fetch_latest_candles(
             else min(n_bars * 4, 2000)
         )
         return await fetch_alpaca_candles(sym["symbol"], alpaca_sym, adjusted_hours)
+
+    if ds == "tradingview":
+        tv_sym = sym.get("tradingview_symbol") or sym["symbol"]
+        hours = min(n_bars, 500)
+        return await fetch_tradingview_candles(sym["symbol"], tv_sym, hours)
 
     ticker = sym.get("yahoo_ticker") or sym["symbol"]
     range_str = "5d" if n_bars <= 390 else "90d"

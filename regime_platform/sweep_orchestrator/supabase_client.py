@@ -46,7 +46,7 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
     url = _url("nt_symbol")
     params = {
         "select": "symbol,asset_class,data_source,regime_cron,heartbeat_ttl_seconds,"
-                  "yahoo_ticker,hyperliquid_coin,alpaca_symbol",
+                  "yahoo_ticker,hyperliquid_coin,alpaca_symbol,tradingview_symbol",
         "active": "eq.true",
         "order": "asset_class.asc,symbol.asc",
     }
@@ -127,12 +127,26 @@ NT_REGIME_LOG_COLUMNS: frozenset[str] = frozenset({
 })
 
 NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
+    # Original fields
     "symbol", "asset_class", "brick_size", "sl_bricks", "tp_bricks",
     "sharpe", "total_return", "annual_return", "max_drawdown_pct",
     "win_rate", "n_trades", "profit_factor",
     "regime", "regime_conf", "kelly_f",
     "markov_p_up", "markov_p_dn",
     "sweep_window", "sweep_duration_ms", "n_combos_tested",
+    "source",
+    # New fields (migration 029) — enriched sweep result
+    "effective_kelly",        # Kelly after EV scaling + markov multiplier
+    "signal",                 # buy / sell / neutral
+    "ev",                     # expected value
+    "p_win",                  # blended probability of winning
+    "qualified",              # whether signal passed all gates
+    "p_timesfm",              # TimesFM probability (null if unavailable)
+    "entry_price",            # trade entry price
+    "stop_loss",              # stop loss price
+    "take_profit",            # take profit price
+    "aggression",             # passive / mid / aggressive
+    "venue",                  # exchange name (e.g., Coinbase, OANDA, Hyperliquid)
 })
 
 

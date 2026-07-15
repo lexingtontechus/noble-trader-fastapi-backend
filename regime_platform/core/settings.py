@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     HL_API_URL: str = "https://api.hyperliquid.xyz"
     HL_WS_URL: str = "wss://api.hyperliquid.xyz/ws"
 
+    # ── TradingView (RapidAPI) ──────────────────────────────────────────────
+    # TradingView API via RapidAPI provides OHLCV candle data for crypto,
+    # forex, stocks, commodities, and more. Requires a RapidAPI key.
+    # Sign up at https://rapidapi.com/ and subscribe to the TradingView API.
+    # Plan: Ultra (100k requests/month)
+    TRADINGVIEW_API_KEY: str = os.getenv("TRADINGVIEW_API_KEY", "")
+    TRADINGVIEW_API_HOST: str = os.getenv("TRADINGVIEW_API_HOST", "tradingview-data1.p.rapidapi.com")
+    TRADINGVIEW_BASE_URL: str = os.getenv("TRADINGVIEW_BASE_URL", "https://tradingview-data1.p.rapidapi.com")
+
     # ── Interactive Brokers ─────────────────────────────────────────────────
     IB_HOST: str = "127.0.0.1"
     IB_PORT: int = 7497

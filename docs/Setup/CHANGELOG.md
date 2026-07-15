@@ -1,3 +1,105 @@
+## [9.0.0] - 2026-07-15
+
+### Major changes — TradingView integration, push model, signal qualification overhaul
+
+#### Added — TradingView API data source (RapidAPI)
+
+- **Migration 028**: Added `tradingview_symbol` column to `nt_symbol`. Updated `data_source` CHECK constraint to allow `'tradingview'`. Switched BTCUSD from Alpaca to TradingView (COINBASE:BTCUSD). Added 3 new symbols: USDJPY, EURUSD, XAUUSD (all OANDA via TradingView).
+- **Settings**: Added `TRADINGVIEW_API_KEY`, `TRADINGVIEW_API_HOST`, `TRADINGVIEW_BASE_URL` env vars.
+- **Price fetcher**: Added `fetch_tradingview_candles()` function with 3 response format parsers. Added dispatch branches in `fetch_sweep_candles()` and `fetch_latest_candles()`.
+- **Supabase client**: Added `tradingview_symbol` to SELECT clause.
+- **Orchestrator**: `_derive_venue()` now extracts the exchange name from `EXCHANGE:SYMBOL` format (e.g., `COINBASE:BTCUSD` → `Coinbase`).
+- **Symbol cron schedule**: `regime_cron='*/5 * * * *'` (every 5 min), `sweep_cron='0 20 * * 0'` (Sunday 20:00 UTC). The 4-hour heavy sweep is deprecated — TimesFM replaces it.
+
+#### Added — Redis Streams (push model)
+
+- The orchestrator now publishes qualified signals via **both** Redis Pub/Sub (`PUBLISH`) AND Redis Streams (`XADD`) to `signal.raw.noble_trader`.
+- Pub/Sub is used by the in-process SignalAggregator for Discord/Telegram routing.
+- Streams (persistent, supports consumer groups + XACK + replay) are used by downstream external consumers (trading system, DOOM agent).
+- Stream is auto-trimmed to ~10,000 entries via `MAXLEN ~`.
+
+#### Deprecated — Redis poll model (trading:config + trading:heartbeat)
+
+- **Commented out** the following Redis writes in the orchestrator (preserved for reference):
+  - `HSET trading:config:{symbol}` — was the poll-based config hash
+  - `SET trading:heartbeat:{symbol}` — was the poll-based heartbeat
+  - `PUBLISH agent:{symbol}` — was the per-symbol liveness pub/sub
+- Downstream consumers now read from the Redis Stream (`signal.raw.noble_trader`) instead of polling per-symbol config hashes.
+
+#### Added — Signal cooldown (anti-spam)
+
+- New env var `SIGNAL_COOLDOWN_MINUTES` (default: 60). After a qualified signal is published for a (symbol, direction) pair, subsequent signals for the same pair are suppressed until the cooldown expires.
+- Prevents the same BUY/SELL from being published every 5 minutes when the regime is stable.
+- Expected signal volume: ~3-8 per day per symbol (down from ~288 without cooldown).
+- Set to 0 to disable.
+
+#### Added — p_win threshold (dynamic quality filter)
+
+- New env var `MIN_P_WIN` (default: 0.55). Added as Gate 7 in the qualification pipeline.
+- Unlike `MIN_RR` (which is a static property of brick params), `p_win` changes sweep-to-sweep based on how regime + ext_signal + TimesFM agree via log-odds pooling.
+- Filters out signals where the blend is only marginally directional.
+
+#### Added — TIMESFM_GATE_MODE (hard/soft/off)
+
+- New env var `TIMESFM_GATE_MODE` (default: hard). Controls how TimesFM confidence affects qualification:
+  - `hard`: reject if `|p_timesfm - 0.5| < MIN_TIMESFM_CONFIDENCE` (binary veto)
+  - `soft`: reduce TimesFM's blend weight proportionally to confidence, don't reject (preserves blended EV philosophy)
+  - `off`: no TimesFM gate, rely entirely on blended EV
+- In soft mode, the orchestrator temporarily overrides EV engine weights, recomputes EV with reduced TimesFM weight, then restores.
+
+#### Changed — Qualification gates (7 gates, all configurable via env vars)
+
+All thresholds are now configurable via env vars (no code changes needed to tune):
+
+| Gate | Check | Env var | Default |
+|---|---|---|---|
+| 1 | Signal is buy/sell (not neutral) | — | — |
+| 2 | HMM regime confidence >= threshold | `MIN_REGIME_CONF` | 0.60 |
+| 3 | Kelly fraction >= threshold | `MIN_KELLY` | 0.02 |
+| 4 | TimesFM available (p_timesfm not None) | — | — |
+| 5 | TimesFM confidence >= threshold (mode-dependent) | `MIN_TIMESFM_CONFIDENCE` / `TIMESFM_GATE_MODE` | 0.05 / hard |
+| 6 | EV allowed (ev > 0 AND rr >= threshold) | `MIN_EV` / `MIN_RR` | 0.0 / 2.0 |
+| 7 | Blended p_win >= threshold | `MIN_P_WIN` | 0.55 |
+
+Plus: `SIGNAL_COOLDOWN_MINUTES` (post-gate cooldown, default 60).
+
+#### Changed — nt_sweep_result enriched (migration 029)
+
+Added 11 new columns to capture the full signal picture:
+- `effective_kelly`, `signal`, `ev`, `p_win`, `qualified`, `p_timesfm`
+- `entry_price`, `stop_loss`, `take_profit`, `aggression`, `venue`
+- `source` (was being sent but may not have been in schema)
+- Plus 3 indexes: `idx_nt_sweep_result_qualified`, `idx_nt_sweep_result_signal`, `idx_nt_sweep_result_venue`
+
+#### Changed — Discord embed format
+
+- Title now includes the exchange: `Signal: BTCUSD SELL (Coinbase)`
+- "Venue" field replaced with separate "Exchange" and "Asset Class" fields
+- `_derive_venue()` extracts exchange from `EXCHANGE:SYMBOL` format (e.g., `COINBASE:BTCUSD` → `Coinbase`)
+- Per-asset-class webhook routing: `DISCORD_WEBHOOK_CRYPTO/EQUITIES/METALS/FOREX`
+- Debug webhook support: `DISCORD_WEBHOOK_DEBUG` + `DEBUG_SIGNALS=1`
+
+#### Added — Diagnostic tools
+
+- `scripts/debug_signal_subscriber.py` — subscribes to debug channel, forwards to Discord, shows running stats
+- `scripts/test_signal_stream.py` — Redis Streams diagnostic (info, read, tail, publish-test, create-group, pending)
+- `scripts/timesfm_gate_simulator.py` — simulates hard/soft/off gate modes against live data
+- `scripts/signal_before_after.py` — shows raw signal → gate evaluation → treated payload
+- `scripts/qualification_simulator.py` — simulates cooldown/p_win/RR threshold effects on signal volume
+- `scripts/test_calibration_live.py` — live calibration record writer with timestamp validation
+- `scripts/timesfm_gate_simulator.py` — threshold tuning tool
+
+#### Fixed — Historical bugs from this session
+
+- **InputValidationMiddleware**: `__init__` signature had `exempt_paths` first instead of `app` — FastAPI passed app positionally to `exempt_paths`, causing `TypeError: 'CORSMiddleware' object is not iterable` on every request
+- **TimesFM fetcher**: cache-miss path was unreachable (nested inside `if cached:`); payload was `{symbol, prices}` but server.py expected `{horizon, inputs}`; missing `X-API-Key` header; treated raw forecasted price as probability
+- **Redis DataError**: `config_dict['p_timesfm']` was set to `None` when TimesFM unavailable — `hset(mapping=...)` raised `DataError: Invalid input of type 'NoneType'`
+- **SignalAggregator RateLimiter**: used `field(default_factory=list)` outside `@dataclass` — stored `Field` object instead of list, silently dropped every Discord message
+- **SignalAggregator HEARTBEAT routing**: fix documented in `DISCORD_DELIVERY_FIX.md` was never applied — all heartbeats went to `send_status()` instead of `send_signal()`
+- **TradeJournal calibration writer**: `asyncio.create_task()` in sync method raised `RuntimeError` when no event loop was running
+- **Duplicate nt_regime_log writes**: `log_sweep_result()` wrote to both `nt_sweep_result` AND `nt_regime_log`, while `log_regime_entry()` also wrote to `nt_regime_log` — two rows per sweep
+- **`decimals` UnboundLocalError**: debug channel code referenced `decimals` before it was defined
+
 ## [8.1.0] - 2026-07-05
 
 ### Added — Aggregate Heartbeat Channel

@@ -107,6 +107,27 @@ DEBUG_SIGNALS = os.getenv("DEBUG_SIGNALS", "0") == "1"
 # are always swept (24/7 and Sun-Fri respectively).
 SWEEP_AFTER_HOURS = os.getenv("SWEEP_AFTER_HOURS", "0") == "1"
 
+# ── Signal cooldown (prevents signal spam) ────────────────────────────────
+# After a qualified signal is published for a (symbol, direction) pair,
+# suppress subsequent qualified signals for the same pair until the
+# cooldown expires. This prevents the same BUY/SELL from being published
+# every 5 minutes when the regime is stable.
+#
+# Set to 0 to disable cooldown (every qualified sweep is published).
+# Recommended: 60 (1 hour) — gives ~3-8 signals per day per symbol.
+SIGNAL_COOLDOWN_MINUTES = float(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
+
+# ── Minimum p_win threshold ───────────────────────────────────────────────
+# Require the blended p_win (from the EV engine's log-odds pooling) to be
+# above this value. This is a DYNAMIC quality filter — unlike MIN_RR which
+# is a static property of brick params, p_win changes sweep-to-sweep based
+# on how regime + ext_signal + TimesFM agree.
+#
+# Set to 0.0 to disable (accept any positive-EV signal).
+# Recommended: 0.55 — filters out signals where the blend is only marginally
+# directional (p_win just barely above 0.5).
+MIN_P_WIN = float(os.getenv("MIN_P_WIN", "0.55"))
+
 # ── TimesFM fetcher with 15-minute cache ────────────────────────────────
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
 # Using a simple in-memory cache (not Redis for this hot path)
@@ -413,20 +434,41 @@ def _price_decimals(symbol: str) -> int:
 
 
 def _derive_venue(sym: dict[str, Any]) -> str:
-    """Derive the execution venue from the symbol config.
+    """Derive the execution venue / exchange from the symbol config.
 
-    The symbol config (from nt_symbol) has fields indicating which
-    execution venues are available for this symbol:
-      - alpaca_symbol    → Alpaca (stocks + crypto)
-      - hyperliquid_coin → Hyperliquid (crypto perpetuals)
-      - yahoo_ticker     → Yahoo Finance (data only, no execution)
+    Returns the EXCHANGE name (not the data source). For TradingView
+    symbols, the exchange is extracted from the ``tradingview_symbol``
+    field which is in ``EXCHANGE:SYMBOL`` format (e.g., ``COINBASE:BTCUSD``
+    → exchange is ``Coinbase``).
 
-    Returns a human-readable venue string for Discord embeds. Priority:
-      1. Hyperliquid (if set) — primary crypto venue
-      2. Alpaca (if set) — stocks + crypto
-      3. Yahoo (if set) — data only
-      4. "Unknown" — fallback
+    Priority:
+      1. TradingView — extract exchange from ``EXCHANGE:SYMBOL`` format
+      2. Hyperliquid — exchange is always ``Hyperliquid``
+      3. Alpaca — exchange is always ``Alpaca``
+      4. Yahoo — data source only, no exchange
+      5. ``Unknown`` — fallback
     """
+    tv_sym = sym.get("tradingview_symbol")
+    if tv_sym and ":" in tv_sym:
+        # Extract exchange from EXCHANGE:SYMBOL format
+        # e.g., "COINBASE:BTCUSD" → "Coinbase"
+        # e.g., "OANDA:EURUSD" → "OANDA"
+        exchange = tv_sym.split(":")[0].strip()
+        # Title-case common exchanges for readability
+        exchange_map = {
+            "COINBASE": "Coinbase",
+            "OANDA": "OANDA",
+            "BINANCE": "Binance",
+            "BYBIT": "Bybit",
+            "KRaken": "Kraken",
+            "KRAKEN": "Kraken",
+            "AMEX": "AMEX",
+            "NYSE": "NYSE",
+            "NASDAQ": "NASDAQ",
+            "TVC": "TradingView",
+            "FXCM": "FXCM",
+        }
+        return exchange_map.get(exchange.upper(), exchange.title())
     if sym.get("hyperliquid_coin"):
         return "Hyperliquid"
     if sym.get("alpaca_symbol"):
@@ -450,6 +492,11 @@ class SweepOrchestrator:
         self._last_ok: dict[str, float] = {}
         # Last-known regime labels per symbol (for shift detection)
         self._last_regime: dict[str, str] = {}
+        # ── Signal cooldown tracking ──────────────────────────────────
+        # Maps (symbol, direction) → timestamp of last PUBLISHED signal.
+        # Used to suppress duplicate signals within the cooldown window.
+        # Key: (symbol, "buy" or "sell"), Value: time.time() timestamp.
+        self._last_qualified_signal: dict[tuple[str, str], float] = {}
 
         # Shared engine instances
         self._sizer = PositionSizer()
@@ -468,6 +515,8 @@ class SweepOrchestrator:
             f"MIN_TIMESFM_CONFIDENCE={MIN_TIMESFM_CONFIDENCE}, "
             f"TIMESFM_GATE_MODE={TIMESFM_GATE_MODE}, "
             f"MIN_EV={MIN_EV}, MIN_RR={MIN_RR}, "
+            f"MIN_P_WIN={MIN_P_WIN}, "
+            f"SIGNAL_COOLDOWN_MINUTES={SIGNAL_COOLDOWN_MINUTES}, "
             f"DEBUG_SIGNALS={DEBUG_SIGNALS}"
         )
 
@@ -706,6 +755,18 @@ class SweepOrchestrator:
                     "n_trades": result.get("n_trades"),
                     "sweep_window": sweep_window,
                     "sweep_duration_ms": int((time.time() - start_ts) * 1000),
+                    # ── New fields (migration 029) ──────────────────────────
+                    "effective_kelly": round(result.get("effective_kelly", 0), 6),
+                    "signal": result.get("signal", "neutral"),
+                    "ev": round(result.get("ev", 0), 4),
+                    "p_win": round(result.get("p_win", 0), 4),
+                    "qualified": result.get("qualified", False),
+                    "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
+                    "entry_price": round(result.get("entry_price", 0), 6),
+                    "stop_loss": round(result.get("stop_loss", 0), 6),
+                    "take_profit": round(result.get("take_profit", 0), 6),
+                    "aggression": result.get("aggression", "mid"),
+                    "venue": _derive_venue(sym),
                 })
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
@@ -942,6 +1003,12 @@ class SweepOrchestrator:
             "timesfm_available": p_timesfm is not None,
             "timesfm_confidence_ok": timesfm_confidence_ok,
             "ev_allowed": effective_ev_result.allowed,
+            # ── New: p_win threshold (dynamic quality filter) ───────
+            # Unlike MIN_RR (static per symbol), p_win changes sweep-to-
+            # sweep based on how regime + ext_signal + TimesFM agree.
+            # Filters out signals where the blend is only marginally
+            # directional (p_win just barely above 0.5).
+            "p_win_ok": ev_result.p_win >= MIN_P_WIN,
         }
 
         passed_gates = {
@@ -954,6 +1021,7 @@ class SweepOrchestrator:
             "ev": round(effective_ev_result.ev, 4),
             "ev_per_dollar": round(effective_ev_result.ev_per_dollar, 4),
             "rr": round(effective_ev_result.rr, 4),
+            "p_win": round(ev_result.p_win, 4),
             "ev_reason": effective_ev_result.reason,
             "timesfm_gate_mode": TIMESFM_GATE_MODE,
         }
@@ -961,7 +1029,32 @@ class SweepOrchestrator:
         # A signal is qualified only if ALL gates pass.
         qualified = all(gate_results.values())
 
-        if not qualified:
+        # ── Cooldown check (suppress signal spam) ────────────────────
+        # Even if all gates pass, suppress the signal if the same
+        # (symbol, direction) was published recently. This prevents the
+        # same BUY/SELL from being published every 5 minutes when the
+        # regime is stable.
+        cooldown_suppressed = False
+        if qualified and SIGNAL_COOLDOWN_MINUTES > 0:
+            cooldown_key = (symbol, trade_signal["signal"])
+            last_ts = self._last_qualified_signal.get(cooldown_key, 0)
+            elapsed_min = (time.time() - last_ts) / 60.0
+            if elapsed_min < SIGNAL_COOLDOWN_MINUTES:
+                cooldown_suppressed = True
+                logger.info(
+                    f"[sweep:orch] {symbol}: COOLDOWN SUPPRESSED — "
+                    f"{trade_signal['signal']} signal suppressed "
+                    f"({elapsed_min:.1f}min since last, cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
+                )
+                # Mark as not qualified so it doesn't get published
+                qualified = False
+                gate_results["cooldown_ok"] = False
+            else:
+                gate_results["cooldown_ok"] = True
+        else:
+            gate_results["cooldown_ok"] = True
+
+        if not qualified and not cooldown_suppressed:
             # ── Detailed rejection log ────────────────────────────────
             # Show EVERY gate's status + actual value vs threshold, so
             # the user can see exactly what's blocking signals and tune
@@ -989,6 +1082,8 @@ class SweepOrchestrator:
                 f"      ev={ev_result.ev:.4f}  rr={ev_result.rr:.4f}  "
                 f"ev_allowed={ev_result.allowed}  "
                 f"(need ev>{MIN_EV} AND rr>={MIN_RR})\n"
+                f"      p_win={ev_result.p_win:.4f}  >= {MIN_P_WIN}? "
+                f"{'✓' if gate_results['p_win_ok'] else '✗ FAIL'}\n"
                 f"      ev_reason={ev_result.reason or 'passed'}\n"
                 f"    brick_params: sl={sl_bricks}, tp={tp_bricks}, "
                 f"brick_size={brick_size}  -> rr={ev_result.rr:.4f}"
@@ -1052,66 +1147,59 @@ class SweepOrchestrator:
         self._last_regime[symbol] = regime_label
 
         # ── 8. Write to Redis ──
-        # Single pipelined round-trip: config hash (+ TTL), heartbeat, and
-        # the DOOM-agent pub/sub heartbeat. Bundling cuts 3 round-trips to 1.
-        # NOTE: decimals was already computed above (before the debug channel
-        # block) so it's available here too.
-        config_key = f"trading:config:{symbol}"
-        heartbeat_key = f"trading:heartbeat:{symbol}"
-        agent_channel = f"agent:{symbol}"
+        # DEPRECATED: trading:config:{symbol} HSET and trading:heartbeat:{symbol}
+        # SET were the "poll" backup mechanism. The platform has moved to a
+        # push model (Redis Streams XADD + pub/sub PUBLISH to
+        # signal.raw.noble_trader). Downstream consumers now read from the
+        # stream, not from per-symbol config hashes.
+        #
+        # The config_dict, heartbeat_key, and agent_channel code below is
+        # commented out but preserved for reference. The agent_payload
+        # (pub/sub + stream) is still active.
+        #
+        # config_key = f"trading:config:{symbol}"
+        # heartbeat_key = f"trading:heartbeat:{symbol}"
+        # agent_channel = f"agent:{symbol}"
         now_ms = int(time.time() * 1000)
 
-        config_dict: dict[str, str | float] = {
-            "regime": regime_label,
-            "regime_conf": round(regime_conf, 4),
-            "brick_size": brick_size,
-            "sl_bricks": sl_bricks,
-            "tp_bricks": tp_bricks,
-            "markov_p_up": round(p_up, 4),
-            "markov_p_dn": round(p_dn, 4),
-            "kelly_f": round(kelly_f, 6),
-            "effective_kelly": round(effective_kelly, 6),
-            "last_update": now_ms,
-            "sweep_timestamp": now_ms,
-            "signal": trade_signal["signal"],
-            "entry_price": round(trade_signal["entry_price"], decimals),
-            "stop_loss": round(trade_signal["stop_loss"], decimals),
-            "take_profit": round(trade_signal["take_profit"], decimals),
-            "ev": round(ev_result.ev, 4),
-            "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
-            "p_win": round(ev_result.p_win, 4),
-            "p_regime": round(ev_result.p_regime, 4),
-            "p_markov": round(ev_result.p_markov, 4),
-            "aggression": ev_result.aggression,
-            "ev_scale": round(ev_result.ev_scale, 4),
-            "regime_shift": "true" if regime_shift else "false",
-            "prev_regime": prev_regime or "",
-            "shift_at": str(now_ms) if regime_shift else "0",
-            # ── CRITICAL: Redis HSET cannot store None values ───────────
-            # The previous implementation did:
-            #   "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None
-            # When p_timesfm was None (TimesFM unavailable), this put None
-            # into the dict, and redis-py's hset(mapping=...) raised:
-            #   DataError: Invalid input of type: 'NoneType'. Convert to
-            #   a bytes, string, int or float first.
-            # This cascaded: TimesFM down → p_timesfm=None → Redis write
-            # failed → NO Redis state at all (no heartbeat, no config hash,
-            # no agent pub/sub). Fix: omit the field entirely when None.
-            # Downstream readers should use HGET with a default, or check
-            # field presence via HEXISTS.
-            "price_decimals": decimals,
-            # config_ts (float seconds) lets get_config()'s staleness check
-            # treat orchestrator-written keys consistently with the TTL below.
-            "config_ts": round(time.time(), 3),
-        }
-        # Only include p_timesfm when we actually have a value. Omitting
-        # the field is safer than storing a sentinel ("" or "null") because
-        # it can't be misinterpreted as a real forecast value.
-        if p_timesfm is not None:
-            config_dict["p_timesfm"] = round(p_timesfm, 4)
-        if cal:
-            config_dict["calibration_bias"] = round(cal["bias"], 4)
-            config_dict["calibration_status"] = cal["status"]
+        # ── DEPRECATED: config_dict was written to trading:config:{symbol} ──
+        # Preserved for reference. Downstream consumers now read from the
+        # Redis Stream (signal.raw.noble_trader) instead of polling this hash.
+        #
+        # config_dict: dict[str, str | float] = {
+        #     "regime": regime_label,
+        #     "regime_conf": round(regime_conf, 4),
+        #     "brick_size": brick_size,
+        #     "sl_bricks": sl_bricks,
+        #     "tp_bricks": tp_bricks,
+        #     "markov_p_up": round(p_up, 4),
+        #     "markov_p_dn": round(p_dn, 4),
+        #     "kelly_f": round(kelly_f, 6),
+        #     "effective_kelly": round(effective_kelly, 6),
+        #     "last_update": now_ms,
+        #     "sweep_timestamp": now_ms,
+        #     "signal": trade_signal["signal"],
+        #     "entry_price": round(trade_signal["entry_price"], decimals),
+        #     "stop_loss": round(trade_signal["stop_loss"], decimals),
+        #     "take_profit": round(trade_signal["take_profit"], decimals),
+        #     "ev": round(ev_result.ev, 4),
+        #     "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
+        #     "p_win": round(ev_result.p_win, 4),
+        #     "p_regime": round(ev_result.p_regime, 4),
+        #     "p_markov": round(ev_result.p_markov, 4),
+        #     "aggression": ev_result.aggression,
+        #     "ev_scale": round(ev_result.ev_scale, 4),
+        #     "regime_shift": "true" if regime_shift else "false",
+        #     "prev_regime": prev_regime or "",
+        #     "shift_at": str(now_ms) if regime_shift else "0",
+        #     "price_decimals": decimals,
+        #     "config_ts": round(time.time(), 3),
+        # }
+        # if p_timesfm is not None:
+        #     config_dict["p_timesfm"] = round(p_timesfm, 4)
+        # if cal:
+        #     config_dict["calibration_bias"] = round(cal["bias"], 4)
+        #     config_dict["calibration_status"] = cal["status"]
 
         # Compute size multiplier based on TimesFM confidence
         size_mult = 1.0
@@ -1158,57 +1246,48 @@ class SweepOrchestrator:
 
         ttl = sym.get("heartbeat_ttl_seconds", 900)
         try:
-            # ── Defensive: strip any None values from config_dict ────────
-            # Redis HSET(mapping=...) raises DataError if any value is None.
-            # We've already handled p_timesfm above, but other fields
-            # (calibration_bias, etc.) could theoretically be None too.
-            # Filter them out as a safety net so a single bad field can't
-            # abort the entire pipeline write.
-            safe_config_dict = {
-                k: v for k, v in config_dict.items() if v is not None
-            }
-            if len(safe_config_dict) != len(config_dict):
-                dropped = set(config_dict) - set(safe_config_dict)
-                logger.warning(
-                    f"[sweep:orch] {symbol}: dropped None-valued fields from "
-                    f"Redis config_dict: {sorted(dropped)}"
-                )
-
+            # ── Redis push model (replaces deprecated poll model) ────────
+            # The old poll model wrote to:
+            #   HSET trading:config:{symbol}  — DEPRECATED (commented out above)
+            #   SET  trading:heartbeat:{symbol} — DEPRECATED
+            #   PUBLISH agent:{symbol}          — DEPRECATED (liveness)
+            #
+            # The new push model publishes qualified signals via:
+            #   PUBLISH signal.raw.noble_trader  — for in-process SignalAggregator
+            #   XADD   signal.raw.noble_trader   — for downstream consumers (persistent)
+            #
+            # Only qualified signals are pushed. Non-qualified sweeps don't
+            # produce a Redis message — the downstream consumer only sees
+            # actionable signals.
             pipe = self._redis.pipeline(transaction=False)
-            pipe.hset(config_key, mapping=safe_config_dict)
-            pipe.expire(config_key, CONFIG_TTL)   # 1h TTL — aligns with get_config staleness check
-            pipe.set(heartbeat_key, str(now_ms), ex=ttl)
-            pipe.publish(agent_channel, agent_payload)  # Always publish to agent:{symbol} (liveness)
+
+            # DEPRECATED — kept for reference. Downstream now reads from stream.
+            # pipe.hset(config_key, mapping=safe_config_dict)
+            # pipe.expire(config_key, CONFIG_TTL)
+            # pipe.set(heartbeat_key, str(now_ms), ex=ttl)
+            # pipe.publish(agent_channel, agent_payload)
+
             if qualified:
                 # ── Publish qualified signals via BOTH pub/sub AND Streams ──
-                # Pub/sub (PUBLISH) is used by the in-process SignalAggregator
-                # for Discord/Telegram/webhook routing. It's fire-and-forget:
-                # if no subscriber is listening, the message is lost.
-                #
-                # Streams (XADD) is used by downstream external consumers
-                # (e.g., the DOOM agent, Hermes L0, your trading system).
-                # Streams persist messages, support consumer groups, and
-                # allow replay — so a consumer that restarts can read
-                # messages it missed. This is the correct primitive for
-                # reliable signal delivery to external systems.
-                #
-                # We publish to BOTH so existing pub/sub subscribers keep
-                # working AND stream consumers get the data they expect.
                 pipe.publish("signal.raw.noble_trader", agent_payload)
-                # XADD with MAXLEN ~10000 trims old entries so the stream
-                # doesn't grow unbounded. Use ~ for approximate trimming
-                # (faster than exact).
                 pipe.xadd(
-                    "signal.raw.noble_trader",  # same name, but as a Stream
+                    "signal.raw.noble_trader",
                     {"payload": agent_payload},
                     maxlen=10000,
                     approximate=True,
                 )
+                # ── Record cooldown timestamp ──────────────────────────
+                # Mark this (symbol, direction) as published so subsequent
+                # sweeps within the cooldown window are suppressed.
+                self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
+                logger.info(
+                    f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} signal "
+                    f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
+                )
             await pipe.execute()
             logger.debug(
-                f"[sweep:orch] {symbol}: Redis write OK "
-                f"(config_key={config_key}, qualified={qualified}, "
-                f"fields={len(safe_config_dict)})"
+                f"[sweep:orch] {symbol}: Redis push OK "
+                f"(qualified={qualified})"
             )
         except Exception as redis_exc:
             # The previous implementation let this exception propagate,
@@ -1246,6 +1325,10 @@ class SweepOrchestrator:
             "sl_bricks": sl_bricks,
             "tp_bricks": tp_bricks,
             "signal": trade_signal["signal"],
+            "entry_price": trade_signal["entry_price"],
+            "stop_loss": trade_signal["stop_loss"],
+            "take_profit": trade_signal["take_profit"],
+            "aggression": ev_result.aggression,
             "ev": ev_result.ev,
             "p_win": ev_result.p_win,
             "sharpe": kelly_result.sharpe_ratio,

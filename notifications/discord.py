@@ -480,25 +480,29 @@ class DiscordNotifier:
         ] + price_fields + risk_fields + aggression_fields + perf_fields + regime_fields
 
         # ── Venue + asset class info ──────────────────────────────────
-        # Shows where the signal is for (e.g., "Crypto / Alpaca" or
-        # "Equities / Alpaca"). Helps traders quickly identify which
-        # venue to execute on.
-        if venue is not None or asset_class is not None:
-            venue_parts = []
-            if asset_class:
-                ac_emoji = {
-                    "crypto": "₿",
-                    "equities": "📈",
-                    "stocks": "📈",
-                    "metals": "🥇",
-                    "forex": "💱",
-                }.get(asset_class.lower(), "📊")
-                venue_parts.append(f"{ac_emoji} {asset_class.title()}")
-            if venue:
-                venue_parts.append(venue)
+        # Shows the exchange/venue and asset class separately for clarity.
+        # Format: "Exchange" field = venue (e.g., "Coinbase", "Hyperliquid")
+        #         "Asset Class" field = crypto/forex/stocks/commodities
+        # Previously these were combined as "₿ Crypto / TradingView" which
+        # was misleading — TradingView is the data source, not the exchange.
+        if venue is not None:
             fields.append({
-                "name": "Venue",
-                "value": " / ".join(venue_parts),
+                "name": "Exchange",
+                "value": venue,
+                "inline": True,
+            })
+        if asset_class is not None:
+            ac_emoji = {
+                "crypto": "₿",
+                "equities": "📈",
+                "stocks": "📈",
+                "metals": "🥇",
+                "forex": "💱",
+                "commodities": "🥇",
+            }.get(asset_class.lower(), "📊")
+            fields.append({
+                "name": "Asset Class",
+                "value": f"{ac_emoji} {asset_class.title()}",
                 "inline": True,
             })
 
@@ -531,8 +535,19 @@ class DiscordNotifier:
         # implementation also appended a duplicate "Kelly %" field here,
         # producing two Kelly entries in the embed — removed.
 
+        # ── Build title with exchange/venue ────────────────────────────
+        # Format: "Signal: BTCUSD SELL (Coinbase)"
+        # The exchange comes from the venue param (already extracted from
+        # the symbol config by _derive_venue() in the orchestrator).
+        # For TradingView symbols, venue is the exchange (e.g., "Coinbase",
+        # "OANDA"). For HL/Alpaca, venue is the platform name.
+        if venue:
+            title = f"Signal: {symbol} {direction} ({venue})"
+        else:
+            title = f"Signal: {symbol} {direction}"
+
         embed = self._build_embed(
-            title=f"Signal: {symbol} {direction}",
+            title=title,
             description=f"**{pattern}** pattern detected at ${price:.2f}",
             color=color,
             fields=fields,
