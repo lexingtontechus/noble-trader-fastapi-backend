@@ -147,6 +147,10 @@ NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
     "take_profit",            # take profit price
     "aggression",             # passive / mid / aggressive
     "venue",                  # exchange name (e.g., Coinbase, OANDA, Hyperliquid)
+    # Additional fields (migration 030) — regime context + sizing
+    "regime_shift",           # whether regime changed from previous sweep
+    "prev_regime",            # previous regime label (empty if first sweep)
+    "size_mult",              # TimesFM confidence-based size multiplier (0.6/1.0/1.2)
 })
 
 

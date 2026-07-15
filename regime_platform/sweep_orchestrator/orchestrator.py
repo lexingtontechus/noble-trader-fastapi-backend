@@ -793,6 +793,9 @@ class SweepOrchestrator:
                     "take_profit": round(result.get("take_profit", 0), 6),
                     "aggression": result.get("aggression", "mid"),
                     "venue": _derive_venue(sym),
+                    "regime_shift": result.get("regime_shift", False),
+                    "prev_regime": result.get("prev_regime", ""),
+                    "size_mult": result.get("size_mult", 1.0),
                 })
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
@@ -1366,6 +1369,9 @@ class SweepOrchestrator:
             "n_trades": len(returns),
             "passed_gates": passed_gates,
             "qualified": qualified,
+            "regime_shift": regime_shift,
+            "prev_regime": prev_regime or "",
+            "size_mult": size_mult,
         }
 
     # ── Stale-symbol background check ─────────────────────────────
