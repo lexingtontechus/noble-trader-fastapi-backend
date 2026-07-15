@@ -274,16 +274,18 @@ async def fetch_tradingview_candles(
         # {
         #   "success": true,
         #   "data": {
-        #     "symbol": "COINBASE:BTCUSD",
-        #     "current": { "time": ..., "open": ..., "high": ..., "low": ..., "close": ... },
-        #     "candles": [
-        #       { "time": ..., "open": ..., "high": ..., "low": ..., "close": ..., "volume": ... },
+        #     "symbol": "OANDA:EURUSD",
+        #     "current": { "time": ..., "open": ..., "close": ..., "max": ..., "min": ..., "volume": ... },
+        #     "history": [
+        #       { "time": ..., "open": ..., "close": ..., "max": ..., "min": ..., "volume": ... },
         #       ...
         #     ]
         #   }
         # }
         #
-        # The "candles" array is what we want — each candle has "close".
+        # NOTE: The key is "history" (not "candles"), and OHLC keys are
+        # "max"/"min" (not "high"/"low"). The "current" object is the
+        # latest bar — we include it so the most recent price isn't lost.
 
         prices: list[float] = []
 
@@ -296,29 +298,35 @@ async def fetch_tradingview_candles(
                 )
                 return []
 
-            # Extract candles from data.data.candles
-            candles = (
-                data.get("data", {}).get("candles", [])
-                if isinstance(data.get("data"), dict)
-                else data.get("candles", [])
-            )
+            # Extract the data object
+            data_obj = data.get("data", {}) if isinstance(data.get("data"), dict) else {}
 
-            if candles and isinstance(candles, list):
-                if isinstance(candles[0], dict):
-                    # Array of candle objects with 'close' key
+            # Try "history" first (the actual key name per the API response)
+            bars = data_obj.get("history", []) or data_obj.get("candles", [])
+
+            if bars and isinstance(bars, list):
+                if isinstance(bars[0], dict):
+                    # Array of candle objects — keys are "close" (not "c")
                     prices = [
-                        float(c.get("close", c.get("c", 0)))
-                        for c in candles
-                        if c.get("close") is not None or c.get("c") is not None
+                        float(b.get("close", b.get("c", 0)))
+                        for b in bars
+                        if b.get("close") is not None or b.get("c") is not None
                     ]
-                elif isinstance(candles[0], (list, tuple)):
+                elif isinstance(bars[0], (list, tuple)):
                     # Array of arrays: [time, open, high, low, close, volume]
                     prices = [
-                        float(c[4]) if len(c) > 4 else 0.0
-                        for c in candles
+                        float(b[4]) if len(b) > 4 else 0.0
+                        for b in bars
                     ]
 
-            # Fallback: check for columnar format
+            # If no history, try "current" (single-bar response for very
+            # short ranges, or when the symbol has limited data)
+            if not prices:
+                current = data_obj.get("current", {})
+                if isinstance(current, dict) and current.get("close") is not None:
+                    prices = [float(current["close"])]
+
+            # Fallback: columnar format
             if not prices and isinstance(data.get("data"), dict):
                 closes = data["data"].get("c", [])
                 if closes:
