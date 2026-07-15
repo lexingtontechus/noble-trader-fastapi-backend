@@ -587,6 +587,8 @@ async def _log_calibration_record(trade: TradeRecord) -> None:
             "p_timesfm": trade.p_timesfm,
             "entered_at": datetime.fromtimestamp(trade.entry_ts, tz=timezone.utc).isoformat(),
             "closed_at": datetime.fromtimestamp(trade.exit_ts, tz=timezone.utc).isoformat(),
+            # venue column (migration 031) — exchange where the trade was executed
+            "venue": getattr(trade, "venue", None),
         }
 
         headers = {

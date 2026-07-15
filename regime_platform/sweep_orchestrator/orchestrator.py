@@ -443,25 +443,42 @@ def _derive_venue(sym: dict[str, Any]) -> str:
     → exchange is ``Coinbase``).
 
     Priority:
-      1. TradingView — extract exchange from ``EXCHANGE:SYMBOL`` format
-      2. Hyperliquid — exchange is always ``Hyperliquid``
-      3. Alpaca — exchange is always ``Alpaca``
-      4. Yahoo — data source only, no exchange
-      5. ``Unknown`` — fallback
+      1. exchange column (if set directly in nt_symbol)
+      2. TradingView — extract exchange from ``EXCHANGE:SYMBOL`` format
+      3. Hyperliquid — exchange is always ``Hyperliquid``
+      4. Alpaca — exchange is always ``Alpaca``
+      5. Yahoo — data source only, no exchange
+      6. ``Unknown`` — fallback
     """
-    tv_sym = sym.get("tradingview_symbol")
-    if tv_sym and ":" in tv_sym:
-        # Extract exchange from EXCHANGE:SYMBOL format
-        # e.g., "COINBASE:BTCUSD" → "Coinbase"
-        # e.g., "OANDA:EURUSD" → "OANDA"
-        exchange = tv_sym.split(":")[0].strip()
-        # Title-case common exchanges for readability
+    # Check the exchange column first (migration 031)
+    if sym.get("exchange") and sym["exchange"] != "UNKNOWN":
+        ex = sym["exchange"]
         exchange_map = {
             "COINBASE": "Coinbase",
             "OANDA": "OANDA",
             "BINANCE": "Binance",
             "BYBIT": "Bybit",
-            "KRaken": "Kraken",
+            "KRAKEN": "Kraken",
+            "AMEX": "AMEX",
+            "NYSE": "NYSE",
+            "NASDAQ": "NASDAQ",
+            "TVC": "TradingView",
+            "FXCM": "FXCM",
+            "HYPERLIQUID": "Hyperliquid",
+            "ALPACA": "Alpaca",
+            "YAHOO": "Yahoo",
+        }
+        return exchange_map.get(ex.upper(), ex.title())
+
+    # Fall back to extracting from tradingview_symbol
+    tv_sym = sym.get("tradingview_symbol")
+    if tv_sym and ":" in tv_sym:
+        exchange = tv_sym.split(":")[0].strip()
+        exchange_map = {
+            "COINBASE": "Coinbase",
+            "OANDA": "OANDA",
+            "BINANCE": "Binance",
+            "BYBIT": "Bybit",
             "KRAKEN": "Kraken",
             "AMEX": "AMEX",
             "NYSE": "NYSE",
@@ -1163,7 +1180,8 @@ class SweepOrchestrator:
         # Only fetch calibration when the signal is qualified — it's an
         # extra Supabase round-trip that's only useful for sizing decisions
         # on signals we'll actually publish.
-        cal = await fetch_calibration_bias(symbol) if qualified else None
+        venue_name = _derive_venue(sym)
+        cal = await fetch_calibration_bias(symbol, venue=venue_name) if qualified else None
 
         # ── 7. Regime shift detection ──
         prev_regime = self._last_regime.get(symbol)
@@ -1341,6 +1359,7 @@ class SweepOrchestrator:
             kelly_f=effective_kelly,
             prev_regime=prev_regime,
             regime_shift=regime_shift,
+            venue=_derive_venue(sym),
         )
 
         return {

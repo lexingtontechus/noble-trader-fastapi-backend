@@ -45,7 +45,7 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
 
     url = _url("nt_symbol")
     params = {
-        "select": "symbol,asset_class,data_source,regime_cron,heartbeat_ttl_seconds,"
+        "select": "symbol,asset_class,data_source,exchange,regime_cron,heartbeat_ttl_seconds,"
                   "yahoo_ticker,hyperliquid_coin,alpaca_symbol,tradingview_symbol",
         "active": "eq.true",
         "order": "asset_class.asc,symbol.asc",
@@ -75,6 +75,7 @@ async def log_regime_entry(
     kelly_f: float,
     prev_regime: str | None = None,
     regime_shift: bool = False,
+    venue: str | None = None,
 ) -> None:
     """Insert a row into ``nt_regime_log``."""
     if not settings.SUPABASE_URL:
@@ -91,6 +92,8 @@ async def log_regime_entry(
         "prev_regime": prev_regime,
         "regime_shift": regime_shift,
     }
+    if venue:
+        payload["venue"] = venue
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
@@ -120,10 +123,7 @@ NT_REGIME_LOG_COLUMNS: frozenset[str] = frozenset({
     "symbol", "source", "regime", "regime_conf",
     "markov_p_up", "markov_p_dn", "kelly_f",
     "prev_regime", "regime_shift",
-    # NOTE: 'annual_return', 'sharpe', 'total_return', 'max_drawdown_pct',
-    # 'win_rate', 'profit_factor', 'n_trades', 'sweep_window',
-    # 'sweep_duration_ms', 'asset_class', 'brick_size', 'sl_bricks',
-    # 'tp_bricks' are sweep-result fields → they belong in nt_sweep_result.
+    "venue",  # exchange name (e.g., Coinbase, OANDA, Hyperliquid)
 })
 
 NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
@@ -252,10 +252,14 @@ async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
 
 async def fetch_calibration_bias(
     symbol: str,
+    venue: str | None = None,
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
 
     Returns ``{bias: float, status: str}`` or ``None`` on failure.
+    If ``venue`` is provided, filters by both symbol AND venue (exchange).
+    This ensures calibration is tracked per exchange, not mixed across
+    exchanges for the same symbol.
     """
     if not settings.SUPABASE_URL:
         return None
@@ -265,6 +269,8 @@ async def fetch_calibration_bias(
         "select": "predicted_p_win,outcome",
         "symbol": f"eq.{symbol}",
     }
+    if venue:
+        params["venue"] = f"eq.{venue}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, headers=_headers(), params=params)

@@ -62,6 +62,7 @@ async def _db_available() -> bool:
 class CalibrationLogRequest(BaseModel):
     """Record a trade outcome for calibration bias analysis."""
     symbol: str = Field(..., description="Trading symbol (e.g. BTC, SPY)")
+    venue: Optional[str] = Field(None, description="Exchange name (e.g., Coinbase, OANDA)")
     predicted_p_win: float = Field(..., ge=0, le=1, description="Blended P_win at moment of entry")
     outcome: Literal["win", "loss"] = Field(..., description="Trade outcome")
     aggression: Literal["passive", "mid", "aggressive"] = Field(
@@ -141,6 +142,7 @@ async def log_calibration(
     row = {
         "id": record_id,
         "symbol": req.symbol,
+        "venue": req.venue,
         "predicted_p_win": req.predicted_p_win,
         "outcome": req.outcome,
         "aggression": req.aggression,
