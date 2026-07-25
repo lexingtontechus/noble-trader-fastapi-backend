@@ -163,6 +163,18 @@ class DiscordNotifier:
             "metals": getattr(settings, "DISCORD_WEBHOOK_METALS", "") or None,
             "forex": getattr(settings, "DISCORD_WEBHOOK_FOREX", "") or None,
         }
+        # ── Per-plan signal webhooks (P5 — multi-tenant routing) ─────────
+        # When set, signals are routed to the plan-specific Discord channel
+        # based on nt_symbol.plan_ids membership. Falls back to per-asset-class
+        # routing, then to the default SIGNALS webhook.
+        #   DISCORD_WEBHOOK_SIGNAL_SCOUT   → #signal-scout (Signal Scout $79/mo)
+        #   DISCORD_WEBHOOK_SIGNAL_PRECISION → #precision-pro (Precision Pro $199/mo)
+        self._plan_webhooks: Dict[str, Optional[str]] = {
+            # Keyed by plan_id (UUID string) → webhook URL
+            # Populated lazily from settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID
+            # and settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID at first lookup.
+        }
+        self._plan_webhooks_initialized = False
         self._rate_limiter = RateLimiter()
         self._http_client: Optional[httpx.AsyncClient] = None
 
@@ -183,18 +195,40 @@ class DiscordNotifier:
             await self._http_client.aclose()
             self._http_client = None
 
-    def _resolve_signal_webhook(self, asset_class: Optional[str] = None) -> Optional[str]:
+    def _resolve_signal_webhook(
+        self,
+        asset_class: Optional[str] = None,
+        plan_ids: Optional[list[str]] = None,
+    ) -> Optional[str]:
         """Resolve which webhook URL to use for a trade signal.
 
-        Priority:
-          1. Per-asset-class webhook (if configured for this asset class)
-          2. Default SIGNALS webhook (fallback)
+        Priority (P5):
+          1. Per-plan webhook (if configured for any plan in `plan_ids`)
+          2. Per-asset-class webhook (if configured for this asset class)
+          3. Default SIGNALS webhook (fallback)
 
         Asset class routing lets you split signals across channels:
           crypto   → #crypto-signals
           equities → #equities-signals
           metals   → #metals-signals
+
+        Per-plan routing (P5) lets you split signals by subscription tier:
+          Signal Scout subscribers   → #signal-scout
+          Precision Pro subscribers  → #precision-pro
+
+        When a symbol belongs to BOTH plans (backfilled in P2 migration),
+        the FIRST configured plan webhook wins. This is intentional — it
+        lets operators choose a primary channel by ordering the plan
+        webhook env vars in their preferred priority.
         """
+        # ── 1. Plan routing (P5) ──────────────────────────────────────
+        if plan_ids:
+            self._init_plan_webhooks_if_needed()
+            for plan_id, webhook_url in self._plan_webhooks.items():
+                if plan_id in plan_ids and webhook_url:
+                    return webhook_url
+
+        # ── 2. Asset-class routing (existing) ────────────────────────
         if asset_class:
             ac = asset_class.lower().strip()
             # Try exact match first (crypto, equities, metals, forex)
@@ -207,8 +241,36 @@ class DiscordNotifier:
             elif ac in ("metal", "metals", "commodity", "commodities"):
                 if self._venue_webhooks.get("metals"):
                     return self._venue_webhooks["metals"]
-        # Fallback to default SIGNALS webhook
+
+        # ── 3. Default fallback ───────────────────────────────────────
         return self._webhooks.get(AlertChannel.SIGNALS)
+
+    def _init_plan_webhooks_if_needed(self) -> None:
+        """Lazily populate the plan_id → webhook URL map from settings.
+
+        Done lazily so test fixtures can set env vars BEFORE the map is
+        built — same pattern as the proxy's settings module.
+        """
+        if self._plan_webhooks_initialized:
+            return
+
+        scout_id = settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID
+        precision_id = settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID
+
+        if scout_id:
+            self._plan_webhooks[scout_id] = (
+                settings.DISCORD_WEBHOOK_SIGNAL_SCOUT or None
+            )
+        if precision_id:
+            self._plan_webhooks[precision_id] = (
+                settings.DISCORD_WEBHOOK_SIGNAL_PRECISION or None
+            )
+
+        self._plan_webhooks_initialized = True
+        logger.debug(
+            "Discord plan webhooks initialized: %d plan(s) mapped",
+            len(self._plan_webhooks),
+        )
 
     # ── Core send method ──────────────────────────────────────────────
 
@@ -359,19 +421,24 @@ class DiscordNotifier:
         regime_shift: Optional[str] = None,
         asset_class: Optional[str] = None,
         venue: Optional[str] = None,
+        plan_ids: Optional[list[str]] = None,
     ) -> bool:
         """
-        Send a trading signal alert to #trade-signals (or per-asset-class
-        channel if configured).
+        Send a trading signal alert to #trade-signals (or per-plan /
+        per-asset-class channel if configured).
 
         This is called when the Renko pattern detector produces a signal
         that passes all filter gates. The embed is color-coded by direction
         (green for LONG, red for SHORT).
 
-        Routing:
-          If DISCORD_WEBHOOK_CRYPTO/EQUITIES/METALS is configured, signals
-          are routed to the per-asset-class channel. Otherwise, all
-          signals go to the default #trade-signals channel (DISCORD_WEBHOOK_SIGNALS).
+        Routing (P5 priority):
+          1. If `plan_ids` is provided AND a per-plan webhook is configured
+             for any of those plan_ids (DISCORD_WEBHOOK_SIGNAL_SCOUT or
+             DISCORD_WEBHOOK_SIGNAL_PRECISION), route there.
+          2. Else if DISCORD_WEBHOOK_CRYPTO/EQUITIES/METALS is configured,
+             route to the per-asset-class channel.
+          3. Else fall back to the default #trade-signals channel
+             (DISCORD_WEBHOOK_SIGNALS).
 
         Parameters
         ----------
@@ -411,6 +478,10 @@ class DiscordNotifier:
             Sharpe ratio for strategy performance
         win_rate : float, optional
             Win rate (0.0-1.0) for strategy
+        plan_ids : list[str], optional (P5)
+            List of plan_id UUIDs the symbol belongs to. Used to route
+            the signal to a per-plan Discord channel. If None or empty,
+            plan routing is skipped and the next-priority routing applies.
         """
         dir_emoji = "🟢" if direction.upper() in ("LONG", "BUY") else "🔴"
         color = DIRECTION_COLORS.get(direction.upper(), 0x3498DB)
@@ -555,10 +626,13 @@ class DiscordNotifier:
             emoji=ALERT_EMOJI[AlertChannel.SIGNALS],
         )
 
-        # ── Route to per-asset-class webhook if configured ────────────
-        # Falls back to the default SIGNALS webhook if no venue-specific
-        # webhook is set for this asset class.
-        webhook_url = self._resolve_signal_webhook(asset_class)
+        # ── Route to per-plan or per-asset-class webhook if configured ─
+        # P5 priority:
+        #   1. Per-plan webhook (DISCORD_WEBHOOK_SIGNAL_SCOUT / _PRECISION)
+        #      — selected when `plan_ids` contains a configured plan UUID.
+        #   2. Per-asset-class webhook (DISCORD_WEBHOOK_CRYPTO/EQUITIES/METALS)
+        #   3. Default SIGNALS webhook (fallback)
+        webhook_url = self._resolve_signal_webhook(asset_class, plan_ids=plan_ids)
         return await self._send_webhook(
             AlertChannel.SIGNALS,
             embed,

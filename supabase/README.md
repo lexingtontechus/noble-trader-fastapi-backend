@@ -1,6 +1,8 @@
 # Noble Trader Admin
 
 > **DEPRECATED — Supabase Edge Functions (Deno) as the sweep engine.** The Python `SweepOrchestrator` on **LightningAI** is now the unified engine. Supabase PostgreSQL remains the system-of-record for the symbol registry (`nt_symbol`), per-symbol cron schedules (`regime_cron`), sweep results, and regime history — read by the orchestrator. The `supabase/functions/` code below is retained for reference/rollback only.
+>
+> **v7.7.0 update (2026-07-24):** The `p_markov` source described below as a "real Markov transition matrix" is now produced by a **5-state multivariate Gaussian HMM** (9 features: log_return + 3 microstructure + 5 TA indicators) trained live via Baum-Welch in `regime_platform/services/hmm/`. The discrete `MarkovChain` (`regime_platform/services/statistics/markov_chain.py`) is preserved internally for the renko router's ad-hoc `/ev/compute` endpoint only. The 5 TA values (ADX, AO, BB Power, MACD, RSI) are persisted per sweep tick in `nt_sweep_result` + `nt_regime_log` (migration 036). The v3-era weight split described below (`0.40×P_regime + 0.30×P_imbalance + 0.30×P_markov`) has also been superseded — see the v7.5.0 + v7.7.0 CHANGELOG entries for the current 4-source log-odds blend.
 
 **Intelligent Trading Dashboard — HMM Regime Detection, EV Engine v3, TimesFM Foundation Model, Parameter Optimization & AI-Powered Market Intelligence**
 

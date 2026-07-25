@@ -110,7 +110,7 @@ docker run -p 8000:8000 regime-platform
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REDIS_URL` | `""` | Redis URL for pipeline state persistence |
-| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins (read by main.py middleware) |
 
 ---
 

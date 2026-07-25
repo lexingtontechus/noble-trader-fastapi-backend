@@ -367,7 +367,8 @@ class SignalAggregator:
                     price=signal.data.get("price", 0.0),
                     confidence=signal.data.get("confidence", 0.0),
                     brick_size=signal.data.get("brick_size", 0.0),
-                    regime=signal.data.get("regime", "")
+                    regime=signal.data.get("regime", ""),
+                    plan_ids=signal.data.get("plan_ids"),
                 )
 
             elif signal.type == SignalType.HEARTBEAT:
@@ -399,6 +400,9 @@ class SignalAggregator:
                         ),
                         asset_class=signal.data.get("asset_class"),
                         venue=signal.data.get("venue"),
+                        # P5: pass plan_ids through so Discord can route to
+                        # #signal-scout or #precision-pro if configured.
+                        plan_ids=signal.data.get("plan_ids"),
                     )
                 else:
                     # Regime-only update (neutral signal or no signal field).

@@ -270,7 +270,23 @@ class KillSwitchService:
         """
         Cancel all open orders for a user via ExecutorFactory.
         Returns dict with count of cancelled orders.
+
+        .. deprecated:: P5 (2026-07-20)
+            Execution is disabled on noble server. This method now returns
+            a no-op result with `cancelled_count=0` and a `deprecated=True`
+            flag when the execution gate is active. The hermes agent owns
+            order cancellation now.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.warning(
+                "KillSwitch.cancel_all_orders: execution disabled on noble server. "
+                "Use hermes agent (noble-trader-agent) for order cancellation. "
+                "user_id=%s", user_id,
+            )
+            return {"cancelled_count": 0, "order_ids": [], "deprecated": True}
+
         cancelled = []
         try:
             from regime_platform.services.operational.executor_factory import executor_factory
@@ -295,7 +311,23 @@ class KillSwitchService:
         """
         Close all open positions for a user via ExecutorFactory.
         Returns dict with count of closed positions.
+
+        .. deprecated:: P5 (2026-07-20)
+            Execution is disabled on noble server. This method now returns
+            a no-op result with `closed_count=0` and a `deprecated=True`
+            flag when the execution gate is active. The hermes agent owns
+            position management now.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.warning(
+                "KillSwitch.close_all_positions: execution disabled on noble server. "
+                "Use hermes agent (noble-trader-agent) for position management. "
+                "user_id=%s", user_id,
+            )
+            return {"closed_count": 0, "symbols": [], "deprecated": True}
+
         closed = []
         try:
             from regime_platform.services.operational.executor_factory import executor_factory

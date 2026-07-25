@@ -100,7 +100,7 @@ class ModeManager:
         """Get current trading mode. Defaults to PAPER if not set.
 
         v7.3: Reads from Supabase nt_system_config first (durable source of truth),
-	        then falls back to Redis (L1 cache), then Alpaca config inference.
+                then falls back to Redis (L1 cache), then Alpaca config inference.
         """
         # Check in-memory cache first (O(1), zero latency)
         if self._cached_state:
@@ -393,16 +393,31 @@ class ModeManager:
     async def _switch_executor_mode(self, target_mode: TradingMode):
         """
         Switch the AlpacaExecutor to the target mode by updating base_url.
-        
+
+        .. deprecated:: P5 (2026-07-20)
+            Mode switching is now a no-op when the execution gate is active.
+            The noble server has no executor to switch. The hermes agent
+            handles paper/live mode via its own env vars.
+
         PAPER: https://paper-api.alpaca.markets
         LIVE:  https://api.alpaca.markets
-        
+
         Uses ExecutorFactory to ensure all services get the updated executor.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.warning(
+                "ModeManager._switch_executor_mode: execution disabled — "
+                "no-op (target=%s). The hermes agent owns paper/live mode.",
+                target_mode.value,
+            )
+            return
+
         try:
             from regime_platform.core.settings import settings
             from regime_platform.services.operational.executor_factory import executor_factory
-            
+
             if target_mode == TradingMode.LIVE:
                 live_url = getattr(settings, 'ALPACA_LIVE_BASE_URL', None) or 'https://api.alpaca.markets'
                 settings.ALPACA_BASE_URL = live_url

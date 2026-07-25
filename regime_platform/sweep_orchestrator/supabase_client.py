@@ -44,9 +44,20 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
         return []
 
     url = _url("nt_symbol")
+    # Phase B: data_source / yahoo_ticker / hyperliquid_coin / alpaca_symbol
+    # removed from select — all symbols now route through TDVA via
+    # tradingview_symbol. The columns remain in the schema for backward
+    # compatibility but are no longer read by the orchestrator.
+    #
+    # sweep_cron added — heavy sweep (Phase B) groups symbols by this column,
+    # mirroring how the light sweep groups by regime_cron. Default is
+    # '0 20 * * 0,6' (Sat/Sun 20:00 UTC, migration 026) when NULL.
+    # plan_ids (UUID[]) added in migration 032 — needed so downstream consumers
+    # (sweep orchestrator, future Railway Redis fan-out) can route signals per
+    # subscription plan (Signal Scout / Precision Pro).
     params = {
-        "select": "symbol,asset_class,data_source,exchange,regime_cron,heartbeat_ttl_seconds,"
-                  "yahoo_ticker,hyperliquid_coin,alpaca_symbol,tradingview_symbol",
+        "select": "symbol,asset_class,exchange,regime_cron,sweep_cron,heartbeat_ttl_seconds,"
+                  "tradingview_symbol,plan_ids",
         "active": "eq.true",
         "order": "asset_class.asc,symbol.asc",
     }
@@ -76,8 +87,23 @@ async def log_regime_entry(
     prev_regime: str | None = None,
     regime_shift: bool = False,
     venue: str | None = None,
+    # ── TA indicators (migration 036) ───────────────────────────────
+    # The 5 TA values from the HMM's feature buffer at the sweep tick.
+    # All optional — best-effort, may be None if the TA fetch failed
+    # or the buffer was empty (e.g. on cold start before the first
+    # /api/ta poll landed).
+    ta_adx: float | None = None,
+    ta_ao: float | None = None,
+    ta_bb_power: float | None = None,
+    ta_macd: float | None = None,
+    ta_rsi: float | None = None,
 ) -> None:
-    """Insert a row into ``nt_regime_log``."""
+    """Insert a row into ``nt_regime_log``.
+
+    The 5 ta_* kwargs (migration 036) persist the HMM's latest TA
+    observation alongside the regime transition, so regime analytics
+    can be run join-free against nt_regime_log alone.
+    """
     if not settings.SUPABASE_URL:
         return
 
@@ -91,6 +117,11 @@ async def log_regime_entry(
         "kelly_f": round(kelly_f, 6),
         "prev_regime": prev_regime,
         "regime_shift": regime_shift,
+        "ta_adx": ta_adx,
+        "ta_ao": ta_ao,
+        "ta_bb_power": ta_bb_power,
+        "ta_macd": ta_macd,
+        "ta_rsi": ta_rsi,
     }
     if venue:
         payload["venue"] = venue
@@ -124,6 +155,9 @@ NT_REGIME_LOG_COLUMNS: frozenset[str] = frozenset({
     "markov_p_up", "markov_p_dn", "kelly_f",
     "prev_regime", "regime_shift",
     "venue",  # exchange name (e.g., Coinbase, OANDA, Hyperliquid)
+    # TA indicators (migration 036) — mirror of nt_sweep_result.ta_*
+    # so regime analytics can run join-free.
+    "ta_adx", "ta_ao", "ta_bb_power", "ta_macd", "ta_rsi",
 })
 
 NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
@@ -151,6 +185,10 @@ NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
     "regime_shift",           # whether regime changed from previous sweep
     "prev_regime",            # previous regime label (empty if first sweep)
     "size_mult",              # TimesFM confidence-based size multiplier (0.6/1.0/1.2)
+    # TA indicators (migration 036) — HMM's latest TA observation per sweep.
+    # All nullable; populated from FeatureBuffer.latest() via the
+    # regime_platform.services.hmm.latest_ta helper.
+    "ta_adx", "ta_ao", "ta_bb_power", "ta_macd", "ta_rsi",
 })
 
 

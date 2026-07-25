@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform - FastAPI Service  v7.2.0       ║
+║     Dynamic Regime Risk Management Platform - FastAPI Service  v7.7.0       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -138,7 +138,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v7.2.0 ...")
+    log.info("Starting up v7.7.0 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -198,7 +198,24 @@ async def lifespan(app: FastAPI):
                 log.warning("Telegram notifications module not available")
             except Exception as e:
                 log.error(f"Failed to initialize Telegram notifications: {e}")
-        
+
+        # Audit 2026-07-22: Wire StreamSplitter into lifespan.
+        # Without this, signals:signal_scout and signals:precision_pro streams
+        # stay empty (the splitter is the only writer). Downstream consumers
+        # that subscribe to those per-plan streams (per docs/Setup/REDIS_ACL_SETUP.md)
+        # receive nothing. Gated by NOBLE_TRADER_STREAM_SPLIT_ENABLED env var
+        # (default True per settings.py:76) so operators can disable if needed.
+        try:
+            from regime_platform.core.settings import settings as _settings
+            if getattr(_settings, "NOBLE_TRADER_STREAM_SPLIT_ENABLED", True):
+                from regime_platform.services.stream_splitter import get_stream_splitter
+                await get_stream_splitter()
+                log.info("StreamSplitter service started (signals:signal_scout + signals:precision_pro)")
+            else:
+                log.info("StreamSplitter disabled via NOBLE_TRADER_STREAM_SPLIT_ENABLED=false")
+        except Exception as e:
+            log.warning(f"StreamSplitter start failed: {e}")
+
         # Start periodic reconciliation (every 15 minutes)
 
         # Start periodic reconciliation (every 15 minutes)
@@ -238,25 +255,49 @@ async def lifespan(app: FastAPI):
         log.warning(f"Runtime config callback registration failed: {e}")
 
     # Phase 10: Start L2 order book feeds
+    # ── HIGH #11 (audit 2026-07-23): L2 imbalance dead-signal ──────────
+    # The L2FeedManager starts Alpaca + HL WebSocket adapters per symbol
+    # and feeds snapshots into L2ImbalanceComputer.compute(), but the
+    # v5 EV engine no longer accepts `external_signal` — the computed
+    # imbalance value is discarded. P3.5 deprecated L2 entirely; HIGH #9
+    # wired the proxy's SSE stream as the replacement microstructure
+    # source. Running the WS adapters wastes 1 connection per symbol +
+    # CPU on snapshot processing.
+    #
+    # Default: NOBLE_TRADER_DISABLE_L2_FEED=true (see settings.py:71-85).
+    # Set to False ONLY for research/simulation harnesses that consume
+    # L2 via a downstream path (e.g. /api/ta/{symbol}/indicators?source=l2).
+    # The L2FeedManager code is preserved for that path.
     try:
-        l2_enabled = await runtime_config.get_bool("l2.enabled", default=True)
-        if l2_enabled:
-            from regime_platform.services.l2_feed_manager import L2FeedManager
-            app.state.l2_feed_manager = L2FeedManager(enabled=True)
-
-            # Subscribe to symbols from the pipeline registry
-            symbols = list(getattr(app.state, '_registered_symbols', []))
-            if not symbols:
-                # Fallback: core symbols from Renko pipeline defaults
-                from regime_platform.core.runtime_config import sync_config
-                default_sym = sync_config.get_str("renko.default_symbol", "SPY")
-                symbols = [default_sym, "QQQ", "BTC", "ETH"]
-
-            await app.state.l2_feed_manager.start(symbols)
-            log.info("L2 feed manager started for %d symbol(s): %s", len(symbols), symbols)
-        else:
+        from regime_platform.core.settings import settings as _settings
+        l2_hard_disabled = bool(getattr(_settings, "NOBLE_TRADER_DISABLE_L2_FEED", True))
+        if l2_hard_disabled:
             app.state.l2_feed_manager = None
-            log.info("L2 feed manager disabled (l2.enabled=false)")
+            log.info(
+                "L2 feed manager DISABLED via NOBLE_TRADER_DISABLE_L2_FEED=true "
+                "(audit HIGH #11 — L2 imbalance dead signal; v5 EV engine no "
+                "longer accepts external_signal; SSE consumer is the replacement). "
+                "Set NOBLE_TRADER_DISABLE_L2_FEED=false to re-enable for research."
+            )
+        else:
+            l2_enabled = await runtime_config.get_bool("l2.enabled", default=True)
+            if l2_enabled:
+                from regime_platform.services.l2_feed_manager import L2FeedManager
+                app.state.l2_feed_manager = L2FeedManager(enabled=True)
+
+                # Subscribe to symbols from the pipeline registry
+                symbols = list(getattr(app.state, '_registered_symbols', []))
+                if not symbols:
+                    # Fallback: core symbols from Renko pipeline defaults
+                    from regime_platform.core.runtime_config import sync_config
+                    default_sym = sync_config.get_str("renko.default_symbol", "SPY")
+                    symbols = [default_sym, "QQQ", "BTC", "ETH"]
+
+                await app.state.l2_feed_manager.start(symbols)
+                log.info("L2 feed manager started for %d symbol(s): %s", len(symbols), symbols)
+            else:
+                app.state.l2_feed_manager = None
+                log.info("L2 feed manager disabled (l2.enabled=false)")
     except Exception as e:
         log.warning(f"L2 feed manager start failed: {e}")
         app.state.l2_feed_manager = None
@@ -293,7 +334,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f"L2 feed manager stop error: {e}")
 
-	    # Close Signal Aggregator service
+            # Close Signal Aggregator service
     try:
         from regime_platform.services.signal_aggregator import signal_aggregator
         if signal_aggregator:
@@ -378,7 +419,7 @@ def create_app() -> FastAPI:
         - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
         - Snapshot management (save/restore pipeline state)
         """,
-        version="7.2.0",
+        version="7.7.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -549,7 +590,7 @@ def create_app() -> FastAPI:
         
         return {
             "status": "ok",
-            "version": "7.2.0",
+            "version": "7.7.0",
             "mode": "paper" if settings.ALPACA_API_KEY else "live",
             "renko_pipelines": renko_status,
         }

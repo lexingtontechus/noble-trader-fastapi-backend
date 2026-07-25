@@ -1,6 +1,24 @@
 """
 Alpaca Order Executor - places and tracks orders via Alpaca API.
 
+.. deprecated:: P5 (2026-07-20)
+    This module is **deprecated**. noble-trader-fastapi-backend is no longer
+    a trade executor — execution lives in the hermes agent (noble-trader-agent).
+
+    All public entry points (`AlpacaExecutor.__init__`, `execute()`,
+    `close_position()`) now call `assert_execution_enabled()` from
+    `regime_platform.services.execution_deprecation`. When
+    `NOBLE_TRADER_DISABLE_EXECUTION=true` (the default after P5), these
+    methods raise `ExecutionDisabledError` immediately.
+
+    The file is retained for:
+      * Emergency rollback (set NOBLE_TRADER_DISABLE_EXECUTION=false)
+      * Reference for the hermes agent's new executor implementation
+      * Backward-compat with `renko/__init__.py` imports
+
+    Do NOT add new callers. New execution code belongs in
+    `noble-trader-agent/src/hermes/executors/`.
+
 Supports:
   - Bracket orders (entry + SL + TP in one atomic call)
   - Market and limit orders
@@ -27,6 +45,7 @@ from renko.pattern_detector import SignalDirection
 from renko.signal_filter import FilteredSignal
 from regime_platform.core.settings import settings
 from regime_platform.core.resilience import CircuitBreaker, CircuitOpenError, retry_with_backoff
+from regime_platform.services.execution_deprecation import assert_execution_enabled
 
 def _resolve_alpaca_credentials(api_key, api_secret):
     """Resolve Alpaca credentials from args or global settings fallback."""
@@ -153,6 +172,11 @@ class AlpacaExecutor:
         paper: bool = True,
         use_bracket_orders: bool = True,
     ):
+        # P5: Gate construction — execution is deprecated on noble server.
+        # This raises ExecutionDisabledError unless NOBLE_TRADER_DISABLE_EXECUTION=false.
+        # The hermes agent (noble-trader-agent) is the canonical executor now.
+        assert_execution_enabled(context="AlpacaExecutor.__init__")
+
         # Resolve credentials from global settings if not explicitly provided
         api_key, api_secret = _resolve_alpaca_credentials(api_key, api_secret)
         self.api_key = api_key

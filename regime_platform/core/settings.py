@@ -9,7 +9,6 @@ Usage:
     from regime_platform.core.settings import settings
 
     secret = settings.JWT_SECRET_KEY
-    origins = settings.cors_origins_list
     keys = settings.api_keys_set
 
 Environment variables are loaded from a .env file (if present) and
@@ -56,7 +55,52 @@ class Settings(BaseSettings):
     CLERK_SECRET_KEY: str = ""
     CLERK_JWKS_URL: str = ""
 
-    # ── Alpaca ──────────────────────────────────────────────────────────────
+    # ── Noble Trader Multi-Tenant Architecture ─────────────────────────────
+    # P5 (2026-07-20): noble-trader-fastapi-backend is the SWEEP ORCHESTRATOR.
+    # It computes signals and publishes them to Redis. It is NOT a trade
+    # executor anymore — execution lives in the hermes agent (noble-trader-agent).
+    # The flags below enforce that contract and wire in multi-tenant routing.
+    #
+    # NOBLE_TRADER_DISABLE_EXECUTION (default True):
+    #   When True, all execution codepaths (renko/executor.py, operational/*,
+    #   /live/toggle, /reconcile/*, /executor/status, /sse/pnl) raise
+    #   ExecutionDisabledError. Set to False only for emergency rollback.
+    NOBLE_TRADER_DISABLE_EXECUTION: bool = True
+
+    # NOBLE_TRADER_DISABLE_L2_FEED (default True, audit HIGH #11, 2026-07-23):
+    #   When True, the L2FeedManager is NOT started in main.py lifespan.
+    #   The L2 imbalance value it computes (regime_platform/services/
+    #   statistics/l2_imbalance.py) is NOT consumed by any live path —
+    #   the v5 EV engine removed external_signal (compute_ev() no longer
+    #   accepts it), and the replacement microstructure source is the
+    #   proxy's SSE stream (HIGH #9 wired the agent-side consumer).
+    #   Keeping the L2 WebSocket adapters running wastes one WS
+    #   connection per symbol + CPU on snapshot processing.
+    #
+    #   Set to False ONLY for research/simulation harnesses that want
+    #   to push L2 snapshots to a downstream consumer (e.g. a future
+    #   `/api/ta/{symbol}/indicators?source=l2` endpoint). The
+    #   L2FeedManager code is preserved (not deleted) for that path.
+    NOBLE_TRADER_DISABLE_L2_FEED: bool = True
+
+    # NOBLE_TRADER_STREAM_SPLIT_ENABLED (default True):
+    #   When True, the StreamSplitter background task republishes signals from
+    #   `signal.raw.noble_trader` to per-plan streams `signals:signal_scout`
+    #   and `signals:precision_pro` based on nt_symbol.plan_ids membership.
+    #   The raw stream is preserved — proxy + agent can still subscribe to it.
+    NOBLE_TRADER_STREAM_SPLIT_ENABLED: bool = True
+
+    # Plan UUIDs — resolved at startup from nobletradingapp's `plans` table.
+    # Used by StreamSplitter and Discord plan-routing to bucket signals.
+    # If left empty, plan routing is skipped (signals go to both streams).
+    NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID: str = ""
+    NOBLE_TRADER_PLAN_PRECISION_PRO_ID: str = ""
+
+    # ── Alpaca (DATA FEED ONLY — execution deprecated) ─────────────────────
+    # ALPACA_API_KEY/SECRET are still used as READ-ONLY data credentials by
+    # sweep_orchestrator/price_fetcher.py and adapters/l2_adapters.py.
+    # They MUST NOT be used for order placement — that path is gated behind
+    # NOBLE_TRADER_DISABLE_EXECUTION above.
     ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", os.getenv("ALPACA_APIKEY", ""))
     ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", os.getenv("ALPACA_SECRETKEY", ""))
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
@@ -107,6 +151,18 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_EQUITIES: str = ""
     DISCORD_WEBHOOK_METALS: str = ""
     DISCORD_WEBHOOK_FOREX: str = ""
+    # ── Per-plan signal webhooks (P5 — multi-tenant routing) ─────────────
+    # When set, signals are routed to the plan-specific Discord channel
+    # based on nt_symbol.plan_ids membership. This is the canonical
+    # 4-channel Discord layout for Noble Trader's multi-tenant model:
+    #   1. #signal-scout       ← Signal Scout ($79/mo) subscriber signals
+    #   2. #precision-pro      ← Precision Pro ($199/mo) subscriber signals
+    #   3. #system-status      ← System health + regime updates (DISCORD_WEBHOOK_STATUS)
+    #   4. #trade-executions   ← Hermes agent execution alerts (DISCORD_WEBHOOK_EXECUTIONS)
+    # If both plan webhooks are empty, signals fall back to per-asset-class
+    # routing, then to DISCORD_WEBHOOK_SIGNALS.
+    DISCORD_WEBHOOK_SIGNAL_SCOUT: str = ""
+    DISCORD_WEBHOOK_SIGNAL_PRECISION: str = ""
 
     # ── Telegram ────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""
@@ -131,9 +187,6 @@ class Settings(BaseSettings):
             return f"rediss://:{token}@{host}:6379"
         return ""
 
-    # ── CORS ────────────────────────────────────────────────────────────────
-    CORS_ORIGINS: str = "http://localhost:3000"
-
     # ── Rate Limiting ───────────────────────────────────────────────────────
     RATE_LIMIT_DEFAULT: str = "60/minute"
     RATE_LIMIT_COMPUTE: str = "10/minute"
@@ -148,11 +201,6 @@ class Settings(BaseSettings):
     MCP_ISSUER: str = ""
 
     # ── Computed properties ─────────────────────────────────────────────────
-
-    @property
-    def cors_origins_list(self) -> list[str]:
-        """Split CORS_ORIGINS by comma, strip whitespace, filter empty strings."""
-        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     @property
     def api_keys_set(self) -> set[str]:

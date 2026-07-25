@@ -1,3 +1,79 @@
+## [9.1.0] - 2026-07-24
+
+### Major changes — Multivariate Gaussian HMM replaces discrete MarkovChain + TA indicator persistence
+
+#### Added — Multivariate Gaussian HMM for `p_markov` source
+
+The discrete 3-state price-only `MarkovChain` (`regime_platform/services/statistics/markov_chain.py`) is replaced as the live `p_markov` source by a **5-state Gaussian HMM** trained on a 9-feature observation vector per symbol. The HMM is a drop-in replacement at the contract level — it emits the same 3×3 transition matrix (`{UP, DOWN, FLAT}`, rows sum to 1.0) and the same `current_state` string that the EV engine v4 expects — but the underlying model is substantially better-informed.
+
+- **5 new files** in `regime_platform/services/hmm/`:
+  - `__init__.py` — public API (`FeatureBuffer`, `HmmModel`, `latest_ta`, constants)
+  - `feature_buffer.py` — thread-safe per-symbol rolling 300-bar window, 9 features per vector
+  - `model.py` — `HmmModel` class with `bootstrap_from_ohlcv()`, `fit()` (Baum-Welch via `hmmlearn`), `emit_markov()` (5-state → 3-state aggregation by per-state mean log_return), `save()`/`load()` (pickle), `status()`
+  - `quote_fetcher.py` — async concurrent fetch of TVDA `/api/quote/{symbol}` for 20 symbols via `asyncio.gather`, extracts 3 microstructure features (effective spread bps, imbalance, volume persistence)
+  - `ta_fetcher.py` — async concurrent fetch of TVDA `/api/ta/{symbol}/indicators` for 20 symbols via `asyncio.gather`, extracts 5 TA indicators (ADX, AO, BB Power, MACD, RSI)
+  - `ta_extract.py` — `latest_ta(buffer, symbol)` helper that returns the 5 TA values from the buffer's latest bar as a Supabase-shaped dict (nullable)
+
+- **Feature vector (9 features, indices matter)**:
+  - 0: `log_return` (from `/api/price/batch`)
+  - 1: `effective_spread_bps` (from `/api/quote`)
+  - 2: `imbalance_I` (from `/api/quote`)
+  - 3: `volume_persistence` (from `/api/quote`)
+  - 4: `adx` (from `/api/ta`)
+  - 5: `ao` (from `/api/ta`)
+  - 6: `bb_power` (from `/api/ta`)
+  - 7: `macd` (from `/api/ta`)
+  - 8: `rsi` (from `/api/ta`)
+
+- **Lifecycle**: The HMM bootstraps from `/api/price/batch` (200 bars) on first sweep for each symbol — computes log_return + 5 TA indicators locally from close prices (microstructure features are 0.0 until the first live `/api/quote` poll lands, typically within the same sweep tick). Every subsequent sweep tick does a concurrent `asyncio.gather` over 20 symbols for both `/api/quote` and `/api/ta`, pushes the new feature vector to the buffer, refits the HMM (Baum-Welch on 300 bars × 9 features — cheap), and emits the 3×3 transition matrix + current state.
+
+- **5→3 state aggregation**: The 5 latent Gaussian states are mapped to `{UP, DOWN, FLAT}` by clustering on per-state mean log_return. States with mean log_return more than 0.25 std from zero are `UP` (positive) or `DOWN` (negative); the rest are `FLAT`. The 5×5 transition matrix is then aggregated to 3×3 by summing the relevant rows/columns.
+
+- **No new env vars. No gates. No shadow mode. No cold-start handling.** The HMM fits from t=0 on whatever data is in the buffer; if the buffer is empty, `emit_markov()` returns `(None, None)` and the orchestrator falls back to `p_up = p_dn = 0.5` (neutral defaults — same behavior as the old chain when no data was available).
+
+#### Changed — Orchestrator + heavy sweep rewired to use HMM
+
+- **`orchestrator.py`**: `SweepOrchestrator.__init__` now constructs `self._hmm_buffer = FeatureBuffer()` and `self._hmm_model = HmmModel(self._hmm_buffer)`. In `_sweep_group` (after the price fetch, before per-symbol processing), the orchestrator bootstraps any unbootstrapped symbols from the 200-bar price history, then concurrently fetches `/api/quote` + `/api/ta` for all 20 symbols via `asyncio.gather`, then refits the HMM for each symbol. In `_process_symbol`, the call to the old `_build_markov_chain()` is replaced with `self._hmm_model.emit_markov(symbol)`.
+- **`heavy_sweep.py`**: Same rewiring — the heavy sweep now bootstraps any unbootstrapped symbols from the 2160-bar (90d) price history and calls `emit_markov()` instead of `_build_markov_chain()`.
+- **`statistics/__init__.py`**: `MarkovChain` removed from the public `__all__` exports. The `markov_chain.py` module is preserved as an internal module because the renko router's ad-hoc `/ev/compute` endpoint (which takes arbitrary user-supplied prices and can't use the persistent HMM) still imports it directly.
+
+#### Added — TA indicator persistence (migration 036)
+
+- **Migration 036** (`036_add_ta_indicators_to_sweep_result_regime_log.sql`) adds 5 nullable `DOUBLE PRECISION` columns to BOTH `nt_sweep_result` and `nt_regime_log`:
+  - `ta_adx`, `ta_ao`, `ta_bb_power`, `ta_macd`, `ta_rsi`
+- The 5 TA values are pulled from the HMM `FeatureBuffer`'s latest bar via the new `latest_ta(buffer, symbol)` helper (`regime_platform/services/hmm/ta_extract.py`) and injected into:
+  - `log_sweep_result({...})` calls in both `orchestrator.py` (light sweep) and `heavy_sweep.py` (heavy sweep)
+  - `log_regime_entry(...)` calls in `orchestrator.py` (light sweep only — heavy sweep doesn't write to `nt_regime_log`)
+- The 5 columns are added to the `NT_SWEEP_RESULT_COLUMNS` and `NT_REGIME_LOG_COLUMNS` whitelists in `supabase_client.py` so `_filter_payload()` doesn't drop them silently.
+- `log_regime_entry()` signature extended with 5 `ta_*` kwargs (default `None`).
+- 2 partial indexes on `nt_sweep_result`: `(symbol, ta_rsi) WHERE ta_rsi IS NOT NULL` and `(symbol, ta_adx) WHERE ta_adx IS NOT NULL` — supports the most common dashboard queries ("show me sweeps for symbol X where RSI was oversold"). No indexes on `nt_regime_log` (smaller table).
+- **Both tables can be queried standalone for TA-aware analytics without a JOIN** — the data is duplicated intentionally so `nt_regime_log` (the skinny regime-transition table) remains a fast analytic surface.
+- All 5 columns are nullable — best-effort. `None` is written when the HMM feature buffer is empty (e.g. cold start before the first `/api/ta` poll landed) or when the TA fetch failed for that tick (HTTP 429 / network error).
+
+#### Added — Tests
+
+- **`tests/test_hmm_feature_buffer.py`** — 13 tests (push, matrix, latest, n_bars, symbols, clear, window trimming, shape validation, multi-symbol independence).
+- **`tests/test_hmm_model.py`** — 13 tests (bootstrap, fit, emit, 5→3 state aggregation, status).
+- **`tests/test_hmm_ta_extract.py`** — 10 tests (latest_ta extraction, empty-buffer fallback, latest-not-oldest, column-order contract, whitelist membership, signature check).
+- **36/36 HMM tests pass.** `hmmlearn>=0.3.2` was already in `requirements.txt`.
+
+#### Migration order
+
+1. Apply migration 036 to Supabase first.
+2. Deploy the updated backend.
+3. Verify with: `SELECT symbol, ta_adx, ta_ao, ta_bb_power, ta_macd, ta_rsi FROM nt_sweep_result WHERE created_at > now() - interval '1 hour' ORDER BY created_at DESC LIMIT 20;`
+
+#### What's NOT changed
+
+- The 4-source blend weights (p_pattern 0.30 + p_regime 0.25 + p_markov 0.20 + p_timesfm 0.25) are unchanged.
+- The 8 qualification gates are unchanged.
+- BayesianAlpha is untouched (it operates on realized trade outcomes, not on the HMM).
+- The agent and proxy are untouched.
+- `markov_chain.py` is preserved internally for the renko router's ad-hoc `/ev/compute` endpoint.
+- The heartbeat schema is unchanged (`p_markov_hold_n` + `p_markov_single_step` + `markov_transition_matrix` + `markov_current_state` are still produced, just by the HMM instead of the discrete chain).
+
+---
+
 ## [9.0.0] - 2026-07-15
 
 ### Major changes — TradingView integration, push model, signal qualification overhaul

@@ -4,13 +4,21 @@ A production-grade FastAPI web service for quantitative trading risk management.
 Detects market regimes with 4-state Hidden Markov Models, gates position sizes
 via a unified Dynamic Masaniello + Kelly Criterion engine, computes real-time risk
 metrics (VaR/CVaR), streams live regime snapshots and alerts over WebSocket and SSE,
-and produces 24-feature observation vectors for downstream RL/ML policy layers.
+and produces 24-feature observation vectors for downstream RL/ML policy layers. The
+`p_markov` source in the EV Engine v4 4-source log-odds blend is now produced by a
+**multivariate Gaussian HMM** (5 states, 9 features: log_return + 3 microstructure +
+5 TA indicators) trained live via Baum-Welch — replacing the legacy discrete 3-state
+price-only Markov chain — with all 5 TA values persisted per sweep tick in Supabase.
 
 ---
 
 ## Version
 
-**v7.5.0** — TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling) · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
+**v7.7.0** — Multivariate Gaussian HMM for `p_markov` (5 states, 9 features) · TA indicator persistence (migration 036) · Concurrent TVDA fetch via `asyncio.gather` for 20 symbols · TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling + Public Weight API) · P5 Execution-Deprecation Contract · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
+
+> **v7.7.0 changelog:** The discrete 3-state `MarkovChain` is replaced as the live `p_markov` source by a 5-state Gaussian HMM (`regime_platform/services/hmm/`). The HMM emits the same 3×3 transition matrix contract (`{UP, DOWN, FLAT}`, rows sum to 1.0) and the same `current_state` string that the EV engine v4 expects — drop-in replacement. The HMM is trained live on a 9-feature observation vector per symbol (log_return + 3 microstructure + 5 TA), bootstrapped from `/api/price/batch` on first sweep and enriched every tick via concurrent `asyncio.gather` calls to TVDA `/api/quote` (microstructure) + `/api/ta` (TA). The 5 TA values are persisted per sweep tick in both `nt_sweep_result` and `nt_regime_log` (migration 036) for post-hoc calibration analytics. No new env vars, no gates, no shadow mode, no cold-start handling. See `TALARIA-MULTIVARIATE-HMM-PROPOSAL.md` (v4) for the full design.
+
+> **v7.6.0 changelog:** EVEngine now exposes a validated public weight API (`set_weights()` / `temp_weights()` / `restore_default_weights()`); the soft-TimesFM-gate block in the sweep orchestrator no longer reaches into private `_full_weights`. `BayesianUpdater` is formally deprecated (use the agent's `BayesianAlpha` for live persistence). `renko/trade_journal.py:TradeJournal.record()` is gated behind `assert_execution_enabled()` — the backend is a sweep orchestrator only; live trade journaling lives in the Hermes agent (Talaria).
 
 ---
 
@@ -72,8 +80,8 @@ noble-trader-fastapi-backend/
 │   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
 │   │   └── backtest_store.py      Supabase persistence for backtest results
 │   ├── services/statistics/
-│   │   ├── ev_engine.py              EV Engine v3 — 4-source P_win (regime + imbalance + Markov + TimesFM), tail risk, regime shift validation
-│   │   └── bayesian_updater.py       Bayesian Updater with TimesFM-enhanced prior
+│   │   ├── ev_engine.py              EV Engine v4 — 4-source P_win log-odds blend + public set_weights()/temp_weights()/restore_default_weights() API + calibration_bias shrink
+│   │   └── bayesian_updater.py       [DEPRECATED P5] BayesianUpdater — use agent's BayesianAlpha for live persistence; backend's copy retained for backtest-replay only
 │   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
 │   ├── notifications/               Discord notifier
 │   ├── middleware/
@@ -169,6 +177,39 @@ Client → proxy:8000
   /health     → aggregated from both
   /*          → main.py:8001
 ```
+
+### Signal pipeline (system topology)
+
+This service is the **signal producer**. It qualifies signals and publishes them
+to Redis; the proxy and agent are downstream consumers (fan-out), and the agent
+executes via the MT4/MT5 bridge.
+
+```
+noble-trader-fastapi-backend (LightningAI sweep orchestrator)
+   │  XADD "signal.raw.noble_trader"  (QUALIFIED signals; gated by EV/kelly/regime)
+   ▼
+Redis Stream: signal.raw.noble_trader
+   ├─► noble-trader-proxy   (consumer group "proxy")            → /quotes /history /api/ta /sse/alerts (HTTP+SSE to agents)
+   │        └─► re-publishes each qualified signal to signal.proxy.noble_trader
+   │             (via its write-capable REDIS_FANOUT_URL / pub_<32hex> ACL user)
+   └─► noble-trader-agent   (consumer group "noble-1")          → ingest → loops → mt4/5 bridge execution
+            reads signal.proxy.noble_trader (falls back to signal.raw.noble_trader
+            if the proxy stream is absent), consumer "noble-l0-worker"
+
+# Per-plan fan-out (backend-side, optional):
+StreamSplitter also republishes signal.raw.noble_trader →
+   signals:signal_scout  and  signals:precision_pro   (by nt_symbol.plan_ids)
+```
+
+- **Version:** `v7.7.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
+- **CORS:** live middleware (`main.py`) reads **`CORS_ALLOWED_ORIGINS`** (default
+  `http://localhost:3000`). The legacy `CORS_ORIGINS` var was removed — do not use it.
+- **License validation:** the proxy validates subscriber `X-License-Key` via the
+  Supabase Edge Function `license-validate`. **Note:** that Edge Function is
+  owned by the `nobletradingapp` repo and is **not yet present** in this backend
+  repo's `supabase/functions/` — cross-repo wiring is pending.
+- **Execution:** this backend is **sweep-only (P5 contract)** — it never executes
+  trades. Execution lives in `noble-trader-agent` via the MT4/MT5 bridge.
 
 ### Project Setup
 
@@ -791,9 +832,11 @@ XADD   signal.raw.noble_trader   → for downstream consumers (persistent, consu
 | `tp_bricks` | int | `5` | Orchestrator (LightningAI) | Take-profit in bricks |
 | `sl_bricks` | int | `3` | Orchestrator (LightningAI) | Stop-loss in bricks |
 | `kelly_f` | float | `0.15` | Kelly sizing | Base Kelly fraction |
-| `markov_p_up` | float | `0.52` | Markov chain | Probability of UP transition |
-| `markov_p_dn` | float | `0.48` | Markov chain | Probability of DOWN transition |
-| `markov_current_state` | string | `FLAT` | Markov chain | Current Markov state |
+| `markov_p_up` | float | `0.52` | Multivariate HMM | Probability of UP transition (5-state Gaussian HMM aggregated to 3 states) |
+| `markov_p_dn` | float | `0.48` | Multivariate HMM | Probability of DOWN transition |
+| `markov_current_state` | string | `FLAT` | Multivariate HMM | Current Markov state (`UP`/`DOWN`/`FLAT`) |
+| `p_markov_single_step` | float | `0.55` | Multivariate HMM | T[current][target] for one step (trending-regime detector for agent's synthesizer) |
+| `markov_transition_matrix` | dict | `{"UP": {...}, ...}` | Multivariate HMM | Full 3×3 transition matrix (rows sum to 1.0) — agent can re-derive other step counts |
 | `last_update` | timestamp | `1782015223299` | — | Unix ms of last update |
 | `sweep_timestamp` | timestamp | `1782015223299` | Orchestrator (LightningAI) | Unix ms of last sweep |
 
@@ -961,6 +1004,42 @@ The `renko/` module is a self-contained 6-layer Renko brick pipeline with 14 end
 | `GET` | `/renko/live/status` | Check live execution mode status | Any |
 | `POST` | `/renko/live/toggle` | Enable/disable live execution | Admin |
 | `POST` | `/renko/snapshot/restore` | Restore pipeline from Supabase snapshot | Write |
+
+---
+
+## Execution Boundary (P5) — Sweep Orchestrator Only
+
+As of v7.6.0, the FastAPI backend is a **sweep orchestrator only** — it does NOT execute trades, manage positions, or operate as the canonical trade journal. The execution layer has been migrated to the Hermes agent (`noble-trader-agent`, branded **Talaria**) which owns live trade journaling, BayesianAlpha persistence, and order routing to brokers. This split reflects an architectural clarification rather than a capability reduction: the backend was always a research and sweep system at heart, while the agent repo grew into the execution authority organically through P3–P5. The P5 contract codifies the boundary with a single environment flag and a runtime guard that all execution-touching code paths must call before doing anything that would touch a live broker or write to a live trade journal.
+
+| Concern | Backend (this repo) | Agent (Talaria) |
+|---|---|---|
+| Sweep signal generation | ✓ canonical | consumes via Redis stream |
+| EV Engine (4-source blend) | ✓ canonical (orchestrator) | consumes synthesized P_win |
+| Trade execution | ✗ disabled (P5) | ✓ canonical (MT4/MT5 bridge, Alpaca, Hyperliquid) |
+| Live trade journal | ✗ gated behind `assert_execution_enabled()` | ✓ canonical (DuckDB `trade_journal`) |
+| Bayesian alpha persistence | ✗ deprecated module (`BayesianUpdater`) | ✓ canonical (`BayesianAlpha`, DuckDB-backed) |
+| Risk gates / circuit breakers | ✓ orchestrator-side | ✓ execution-side (defense in depth) |
+
+The default environment flag `NOBLE_TRADER_DISABLE_EXECUTION=true` enforces this boundary at the module level. Any code path that would attempt to write a live trade journal entry, schedule a Supabase calibration write, or route an order to a broker must call `regime_platform.services.execution_deprecation.assert_execution_enabled()` first. Calls that pass the gate in the disabled default state raise `ExecutionDisabledError`, which is caught by the orchestrator's per-symbol error boundary and logged.
+
+### What this means for callers
+
+- **Backtest replay is unaffected.** `renko/trade_journal.py:TradeJournal.record()` still appends to the in-memory deque and runs the full statistical-rigor pipeline for offline backtests. The execution gate only short-circuits the Supabase calibration write — the in-memory data structures remain intact so backtests stay reproducible across environments.
+- **Live Supabase calibration writes are silently skipped** with a WARNING log when execution is disabled. The agent's DuckDB-backed `trade_journal` table is the source of truth for live trades; the backend's Supabase calibration tables are no longer written to from the live path and remain queryable for historical replay.
+- **BayesianUpdater is formally deprecated.** A `DeprecationWarning` fires on construction; the canonical live-persistence path is the agent's `hermes/agent/bayesian_alpha.py:BayesianAlpha` (decay-weighted, floor/ceiling-clamped, thread-safe, DuckDB-persistent). A `BayesianUpdater.apply_to_ev_engine(ev_engine)` bridge method exists for backtest code that still constructs a `BayesianUpdater` to apply its rolling posterior to an `EVEngine` instance without bypassing the validated `set_weights()` API.
+
+### EV Engine v4 — Public Weight API
+
+The `EVEngine` class (`regime_platform/services/statistics/ev_engine.py`) now exposes a validated public API for runtime weight overrides. This replaces the prior pattern of reaching into `ev_engine._full_weights` directly, which silently bypassed validation and could leave the engine in an inconsistent state on exception. The sweep orchestrator's soft-TimesFM-gate path now uses `with ev_engine.temp_weights({"p_timesfm": base * scale}):` exclusively, guaranteeing that the original weights are restored even when the gated evaluation raises.
+
+| Method | Purpose |
+|---|---|
+| `set_weights(overrides: dict)` | Persistently overrides one or more of the 4 canonical weight keys (`p_pattern`, `p_regime`, `p_markov_hold_n`, `p_timesfm`). Validates key names and value ranges; raises `ValueError` on unknown keys, `TypeError` on non-dict input, `ValueError` on non-finite or out-of-range values. |
+| `temp_weights(overrides: dict)` | Context manager that applies overrides for the duration of a `with`-block, then restores the prior weights in a `finally` clause (survives exceptions, returns, breaks). Validation runs before the body so a bad override set never leaks a partial mutation. |
+| `restore_default_weights()` | Restores the default weight vector loaded from `config/default.yaml`. Useful in test teardown and after long-running override sessions. |
+| `get_weights()` | Returns a deep copy of the current weight dict. Mutation of the returned dict does not affect the engine. |
+
+The v4 weight keys are non-negotiable: legacy v3 keys like `p_ext_signal` are explicitly rejected with a migration message pointing the caller to the new canonical names. This prevents silent weight-set drift across the codebase as the v3→v4 migration completes.
 
 ---
 

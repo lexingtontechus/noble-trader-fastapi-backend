@@ -2,6 +2,38 @@
 Trade Journal + Stats Engine - records every trade and computes
 performance metrics for strategy evaluation and Kelly sizing.
 
+.. deprecated:: P5 (2026-07-23)
+    The Noble Trader backend (``noble-trader-fastapi-backend``) is the
+    SWEEP ORCHESTRATOR ONLY — it does NOT execute trades (see P5
+    execution-deprecation contract in
+    ``regime_platform/services/execution_deprecation.py``). Therefore:
+
+    * **Live recording is gated.** ``TradeJournal.record()`` calls
+      ``assert_execution_enabled()`` before scheduling the Supabase
+      calibration write. With ``NOBLE_TRADER_DISABLE_EXECUTION=true``
+      (the default since P5), the live calibration write is a no-op;
+      the trade is still appended to the in-memory deque for stats
+      purposes (so any local backtest harness that constructs a
+      ``TradeJournal`` directly still works).
+    * **Live trade execution lives in the agent.** The agent
+      (``noble-trader-agent``) writes its own ``trade_journal`` DuckDB
+      table (see ``hermes/db/schema.sql:153`` +
+      ``hermes/agent/learning.py:336``) — that is the canonical
+      trade journal. The agent also writes calibration records via
+      its own learning loop; the backend's calibration-record
+      fire-and-forget path (lines 495-645 below) is preserved only
+      for backtest/replay harnesses that still use this module.
+
+    The module is NOT deleted because:
+      1. The ``TradeRecord`` dataclass + ``TradeJournal.get_stats()``
+         are used by ``tests/test_execution_modeling.py`` and
+         ``tests/test_statistical_rigor.py`` for backtest replay.
+      2. The calibration-record writer is still useful for any
+         backend-side research/simulation harness that wants to push
+         synthetic trades into Supabase for analysis.
+      3. Removing the module would break ``renko/__init__.py:18``
+         re-exports and the renko pipeline import chain.
+
 Tracks:
   - Every signal, filter decision, and order result
   - P&L in both bricks and dollars
@@ -86,7 +118,7 @@ class TradeRecord:
     predicted_p_win: float = 0.5        # Blended P_win at entry for calibration
     aggression: str = "mid"             # passive | mid | aggressive
     p_regime: Optional[float] = None    # P_regime breakdown for calibration
-    p_ext_signal: Optional[float] = None # External signal vote breakdown
+    p_pattern: Optional[float] = None   # P_pattern breakdown (historical win-rate; v5 rename of v4 p_ext_signal)
     p_markov: Optional[float] = None    # P_markov breakdown
     p_timesfm: Optional[float] = None   # TimesFM component
 
@@ -134,7 +166,7 @@ class TradeRecord:
             "predicted_p_win": self.predicted_p_win,
             "aggression": self.aggression,
             "p_regime": self.p_regime,
-            "p_ext_signal": self.p_ext_signal,
+            "p_pattern": self.p_pattern,
             "p_markov": self.p_markov,
             "p_timesfm": self.p_timesfm,
         }
@@ -186,10 +218,51 @@ class TradeJournal:
           2. No running loop, but loop is set on this thread → use
              ``run_coroutine_threadsafe`` (cross-thread safe)
           3. No loop at all → log a warning (can't schedule)
+
+        .. deprecated:: P5 (2026-07-23)
+            The Supabase calibration write is gated behind
+            ``assert_execution_enabled()`` from
+            ``regime_platform/services/execution_deprecation.py``. When
+            the backend is in sweep-orchestrator-only mode (the default
+            since P5), the live write is a no-op and a WARNING is
+            logged. The trade is still appended to the in-memory deque
+            so local stats (win rate, profit factor, etc.) remain
+            correct for any backtest/replay harness that constructs a
+            ``TradeJournal`` directly. The canonical live trade
+            journal is in the agent repo's DuckDB ``trade_journal``
+            table — see module docstring.
         """
         self.trades.append(trade)
         self._trade_counter += 1
-        # Fire-and-forget calibration record to Supabase
+
+        # P5 execution-deprecation gate: skip the Supabase calibration
+        # write when the backend is in sweep-orchestrator-only mode.
+        # The agent owns live trade execution + journaling now.
+        try:
+            from regime_platform.services.execution_deprecation import (
+                assert_execution_enabled,
+                ExecutionDisabledError,
+            )
+        except ImportError:
+            # If the deprecation module isn't importable (e.g. running
+            # this file outside the backend package), fall back to the
+            # pre-P5 behavior and attempt the write. This preserves
+            # backtest harness compatibility.
+            self._schedule_calibration_write(trade)
+            return
+
+        try:
+            assert_execution_enabled(context="TradeJournal.record")
+        except ExecutionDisabledError:
+            log.warning(
+                "calibration write skipped for %s — backend is in "
+                "sweep-orchestrator-only mode (P5 execution-deprecation). "
+                "Live trade journaling lives in the agent repo.",
+                trade.symbol,
+            )
+            return
+
+        # Execution enabled (research/simulation harness) → fire-and-forget.
         self._schedule_calibration_write(trade)
 
     def _schedule_calibration_write(self, trade: TradeRecord) -> None:
@@ -242,7 +315,7 @@ class TradeJournal:
         # Use prediction data if provided, otherwise use defaults
         p_win = prediction_data.get("predicted_p_win", 0.5) if prediction_data else 0.5
         p_regime = prediction_data.get("p_regime") if prediction_data else None
-        p_ext_signal = prediction_data.get("p_ext_signal") if prediction_data else None
+        p_pattern = prediction_data.get("p_pattern") if prediction_data else None
         p_markov = prediction_data.get("p_markov") if prediction_data else None
         p_timesfm = prediction_data.get("p_timesfm") if prediction_data else None
 
@@ -270,7 +343,7 @@ class TradeJournal:
             predicted_p_win=p_win,
             aggression=filtered.aggression if hasattr(filtered, 'aggression') else "mid",
             p_regime=p_regime,
-            p_ext_signal=p_ext_signal,
+            p_pattern=p_pattern,
             p_markov=p_markov,
             p_timesfm=p_timesfm,
         )
@@ -582,7 +655,10 @@ async def _log_calibration_record(trade: TradeRecord) -> None:
             "entry_price": trade.entry_price,
             "exit_price": trade.exit_price,
             "p_regime": trade.p_regime,
-            "p_ext_signal": trade.p_ext_signal,  # renamed from p_imbalance in migration 024
+            # DB column is still named 'p_ext_signal' (migration 024) — keep
+            # the column name as-is on the wire, but source the value from
+            # the v5 ``p_pattern`` attribute (renamed from v4 p_ext_signal).
+            "p_ext_signal": trade.p_pattern,
             "p_markov": trade.p_markov,
             "p_timesfm": trade.p_timesfm,
             "entered_at": datetime.fromtimestamp(trade.entry_ts, tz=timezone.utc).isoformat(),

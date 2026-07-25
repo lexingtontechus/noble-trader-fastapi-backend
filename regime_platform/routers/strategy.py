@@ -146,26 +146,9 @@ async def strategy_signal(req: StrategySignalRequest, user: TokenData = Depends(
         raise_http_exception(e, "strategy signal")
 
 
-@router.post(
-    "/sync-journal",
-    summary="Sync live TradeJournal memory to nt_pattern_stats database"
-)
-async def sync_journal(user: TokenData = Depends(get_authed_user)):
-    """
-    Triggers the EVEngine to extract the current edge from the active backend's 
-    TradeJournal memory and persist it to the database.
-    """
-    try:
-        from regime_platform.services.statistics.ev_engine import EVEngine
-        from ..core.database import get_db_session 
-        
-        ev_engine = EVEngine()
-        async with get_db_session() as session:
-            result = await ev_engine.sync_journal_to_stats(session)
-            
-        if result["status"] == "error":
-            raise HTTPException(status_code=500, detail=result["message"])
-            
-        return result
-    except Exception as e:
-        raise_http_exception(e, "sync journal")
+# ── /sync-journal endpoint REMOVED in v5 ────────────────────────────
+# The endpoint called EVEngine.sync_journal_to_stats() which was deleted
+# in v5. The nt_pattern_stats table is deprecated (see migration
+# 034_deprecate_nt_pattern_stats.sql). Pattern stats now flow from the
+# agent's DuckDB to the EV engine via the orchestrator's agent_payload
+# (p_pattern field), not via a server-side DB write.

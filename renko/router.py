@@ -275,7 +275,6 @@ class EVComputeRequest(BaseModel):
     direction: str = Field("long", description="Trade direction: 'long' or 'short'")
     # Optional signal sources (if not provided, computed from prices)
     trend_probs: Optional[Dict[str, float]] = Field(None, description="HMM trend posterior probabilities (e.g. {'bear': 0.1, 'neutral': 0.3, 'bull': 0.6})")
-    external_signal: Optional[Dict[str, float]] = Field(None, description="External directional signal vote with keys: signal, confidence, persistence (from any source: L2 order book, sentiment, etc.)")
     base_kelly: float = Field(0.0, description="Base Kelly fraction for EV scaling")
     markov_window: int = Field(200, description="Rolling window for Markov chain observations")
 
@@ -284,7 +283,7 @@ class EVComputeResponse(BaseModel):
     """Full EV computation response with blended P_win breakdown and execution strategy."""
     p_win: float
     p_regime: float
-    p_ext_signal: float
+    p_pattern: float  # v5: was p_ext_signal in v4 (microstructure deprecated from EV)
     p_markov: float
     ev: float
     ev_per_dollar: float
@@ -1859,14 +1858,17 @@ if FASTAPI_AVAILABLE:
         user: TokenData = Depends(get_authed_user),
     ) -> EVComputeResponse:
         """
-	        Compute full Expected Value with blended P_win from multiple signal sources:
-	        
-	        1. **P_regime** — from HMM trend posteriors (auto-detected if not provided)
-	        2. **P_ext_signal** — from external directional vote (e.g. L2 order book, sentiment)
-	        3. **P_markov** — from Markov transition matrix (built from prices)
-	        
-	        Blended P_win = w_r * P_regime + w_x * P_ext_signal + w_m * P_markov [+ w_t * P_timesfm]
-        
+        Compute full Expected Value with 4-source logit-pooled P_win (v5):
+
+        1. **P_pattern**     — historical win-rate for this pattern+regime+direction
+                               (None when agent DuckDB is not available server-side)
+        2. **P_regime**      — from HMM trend posteriors (auto-detected if not provided)
+        3. **P_markov_hold_N** — T^N multi-step hold probability from the Markov
+                               transition matrix (built from prices)
+        4. **P_timesfm**     — TimesFM next-bar up forecast (optional)
+
+        logit(P_win) = Σ w_i * logit(p_i)  (weights renormalised over available sources)
+
         Also returns aggression dispatch (passive/mid/aggressive) with order type,
         limit offset, patience bars, and EV-scaled Kelly factor.
         """
@@ -1896,7 +1898,6 @@ if FASTAPI_AVAILABLE:
         ev_result = ev_engine.compute_ev(
             trend_probs=trend_probs,
             direction=req.direction,
-            external_signal=req.external_signal,
             transition_matrix=transition_matrix,
             current_state=mc.current_state,
             tp_bricks=req.tp_bricks,
@@ -1924,7 +1925,7 @@ if FASTAPI_AVAILABLE:
         return EVComputeResponse(
             p_win=ev_result.p_win,
             p_regime=ev_result.p_regime,
-            p_ext_signal=ev_result.p_ext_signal,
+            p_pattern=ev_result.p_pattern,
             p_markov=ev_result.p_markov,
             ev=ev_result.ev,
             ev_per_dollar=ev_result.ev_per_dollar,
@@ -1941,43 +1942,13 @@ if FASTAPI_AVAILABLE:
             markov_n_observations=mc.n_observations,
         )
 
-    @renko_router.post("/ev/sync-journal", summary="Sync trade journal to nt_pattern_stats")
-    async def sync_journal_to_stats(user=Depends(require_write)) -> Dict[str, Any]:
-        """
-        Extract historical trade data from the active TradeJournal memory
-        and upsert aggregated win rates/PnL into nt_pattern_stats.
-        
-        This enables the EV engine's DB lookup path to use real historical
-        win rates instead of defaults.
-        """
-        try:
-            from regime_platform.services.statistics.ev_engine import EVEngine
-            from regime_platform.core.database import get_session
-            
-            ev_engine = EVEngine()
-            async for session in get_session():
-                result = await ev_engine.sync_journal_to_stats(session)
-                return result
-        except ImportError:
-            # Fallback if database module not available
-            try:
-                from regime_platform.services.statistics.ev_engine import EVEngine
-                ev_engine = EVEngine()
-                # Try with a generic session approach
-                from regime_platform.core.settings import settings
-                if settings.DATABASE_URL:
-                    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-                    from sqlalchemy.orm import sessionmaker
-                    engine = create_async_engine(settings.DATABASE_URL)
-                    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-                    async with async_session() as session:
-                        result = await ev_engine.sync_journal_to_stats(session)
-                        return result
-                return {"status": "error", "message": "No database session available"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+    # ── /ev/sync-journal endpoint REMOVED in v5 ─────────────────────
+    # The endpoint called EVEngine.sync_journal_to_stats() which was
+    # deleted in v5 (pattern stats live in the agent's DuckDB, not the
+    # server). The nt_pattern_stats table is deprecated (see migration
+    # 034_deprecate_nt_pattern_stats.sql). Pattern stats now flow from
+    # the agent to the EV engine via the orchestrator's agent_payload
+    # (p_pattern field), not via a server-side DB write.
 
 else:
     # Stub router for environments without FastAPI
@@ -2015,20 +1986,24 @@ def _notify_tick_result(symbol: str, result: Dict[str, Any], pipeline: RenkoPipe
             regime = pipeline._current_regime
             brick_size = pipeline.config.get_brick_size()
 
+            # Get SL/TP bricks from YAML-backed brick params (v5).
+            # The previous implementation hardcoded 3 (sl) and 5 (tp), which
+            # drifted from the YAML config after the heavy sweep rewrote
+            # brick_params.yaml. Use load_brick_params() so the Discord /
+            # Telegram signal embeds match the actual trade SL/TP values.
+            from regime_platform.config.brick_params import load_brick_params
+            _, sl_bricks, tp_bricks = load_brick_params(symbol)
+
             # Calculate SL/TP prices for the execution embed
             if direction.upper() in ("LONG", "BUY"):
-                sl_price = round(price - 3 * brick_size, 4) if price else None
-                tp_price = round(price + 5 * brick_size, 4) if price else None
+                sl_price = round(price - sl_bricks * brick_size, 4) if price else None
+                tp_price = round(price + tp_bricks * brick_size, 4) if price else None
             else:
-                sl_price = round(price + 3 * brick_size, 4) if price else None
-                tp_price = round(price - 5 * brick_size, 4) if price else None
+                sl_price = round(price + sl_bricks * brick_size, 4) if price else None
+                tp_price = round(price - tp_bricks * brick_size, 4) if price else None
 
             # Update regime shift tracking
             regime_shift = pipeline._update_regime_shift(regime)
-            
-            # Get SL/TP bricks from config
-            sl_bricks = pipeline.config.sl_bricks
-            tp_bricks = pipeline.config.tp_bricks
             
             # Signal alert -> #trade-signals
             asyncio.create_task(discord_notifier.send_signal(

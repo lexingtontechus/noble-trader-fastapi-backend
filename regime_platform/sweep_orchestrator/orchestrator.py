@@ -13,6 +13,7 @@ any symbol whose last successful sweep is older than 20 minutes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -29,10 +30,13 @@ from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine
 from regime_platform.services.redis_pool import redis_pool
+from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
+from regime_platform.services.hmm import quote_fetcher as hmm_quote_fetcher
+from regime_platform.services.hmm import ta_fetcher as hmm_ta_fetcher
 from renko.trading_heartbeat import CONFIG_TTL
 from regime_platform.sweep_orchestrator.market_hours import is_market_open
 from regime_platform.sweep_orchestrator.price_fetcher import (
-    fetch_latest_candles,
+    fetch_candles_for_symbols,
     fetch_tradingview_batch,
 )
 from regime_platform.sweep_orchestrator.supabase_client import (
@@ -42,6 +46,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     log_error,
     fetch_calibration_bias,
 )
+from regime_platform.sweep_orchestrator.heavy_sweep import HeavySweepMixin
 
 logger = logging.getLogger("regime.sweep.orch")
 
@@ -52,6 +57,34 @@ STALE_CHECK_INTERVAL_S = 60       # check every 60 s
 REFRESH_SYMBOLS_INTERVAL_S = 300  # re-read nt_symbol every 5 min
 LIGHT_LOCK_TTL_S = 90             # per-symbol lock TTL (matches edge fn)
 STAGGER_SECONDS = 5               # gap between symbols within a group
+
+# ── Markov chain parameters (v5 EV engine) ──────────────────────────
+# Rolling window for the Markov transition matrix.
+#
+# User decision 7.3: rolling window = 7 days.
+# User decision 7.4: Markov chain states ≈ 200 bars (renko bricks).
+#
+# Both decisions point at the same parameter: the rolling window size.
+# 7.3 sets it to 7 days; 7.4 says ≈200 bars. With the default 1h candle
+# interval (see price_fetcher.py:68), 7 days = 7 × 24 = 168 bars — close
+# to 200. We default to 168 (exact 7-day window) and let the user
+# override via either MARKOV_WINDOW_BARS or MARKOV_WINDOW_DAYS env var.
+#
+# 7 days balances adaptivity (recovers from regime shifts within a week)
+# against stability (avoids thrashing on noisy intraday windows).
+MARKOV_WINDOW_DAYS = int(os.getenv("MARKOV_WINDOW_DAYS", "7"))
+# Bars-per-day derived from candle interval. 1h candles = 24 bars/day.
+# Override only if you change the candle interval away from 1h.
+MARKOV_BARS_PER_DAY = int(os.getenv("MARKOV_BARS_PER_DAY", "24"))
+MARKOV_WINDOW_BARS = int(
+    os.getenv("MARKOV_WINDOW_BARS", str(MARKOV_WINDOW_DAYS * MARKOV_BARS_PER_DAY))
+)
+# Multi-step hold horizon (T^N). User decision 7.5: max steps = 10.
+# Covers a typical TP-brick count for swing trades (5-10 bricks at 1
+# brick/bar). Can be overridden per-call via compute_ev(n_steps=...).
+# When None, the EV engine uses tp_bricks as N (brick velocity model:
+# 1 brick = 1 bar).
+MARKOV_HOLD_STEPS = int(os.getenv("MARKOV_HOLD_STEPS", "10"))
 
 # ─── Qualification gate thresholds (configurable via env vars) ───────────
 # These determine which sweep signals get published to Redis pub/sub
@@ -365,18 +398,34 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
         return None
 
 
-def _markov_probs(regime_label: str) -> tuple[float, float]:
-    """Return (p_up, p_dn) for a given regime label, matching TS computeMarkovProbs."""
-    lower = regime_label.lower()
-    is_bull = "bull" in lower
-    is_bear = "bear" in lower
-    is_high_vol = "high_vol" in lower
+def _build_markov_chain(
+    prices: list[float],
+    brick_size: float,
+    window: int = MARKOV_WINDOW_BARS,
+) -> tuple[MarkovChain | None, dict[str, dict[str, float]] | None, str]:
+    """Build a MarkovChain from the price series and return (chain, T, current_state).
 
-    if is_bull:
-        return (0.55, 0.45) if is_high_vol else (0.65, 0.35)
-    if is_bear:
-        return (0.45, 0.55) if is_high_vol else (0.35, 0.65)
-    return (0.5, 0.5)
+    DEPRECATED: This function is kept for backward compat with the renko
+    router's /ev/compute endpoint, which builds a Markov chain from a
+    user-supplied price list. The live sweep path now uses the multivariate
+    HMM via ``HmmModel.emit_markov()`` (see ``_emit_hmm_markov`` below).
+
+    Returns ``(None, None, "FLAT")`` when there are insufficient prices
+    (<3) or brick_size is non-positive.
+    """
+    from regime_platform.services.statistics.markov_chain import MarkovChain
+    if not prices or len(prices) < 3 or brick_size <= 0:
+        return None, None, "FLAT"
+    try:
+        chain = MarkovChain(brick_size=brick_size, window=window)
+        T = chain.fit_from_prices(prices)
+        return chain, T, chain.current_state
+    except Exception as exc:
+        logger.warning(
+            f"[sweep:orch] MarkovChain build failed ({type(exc).__name__}: {exc}) — "
+            f"proceeding without Markov source"
+        )
+        return None, None, "FLAT"
 
 
 def _compute_trade_signal(
@@ -499,8 +548,15 @@ def _derive_venue(sym: dict[str, Any]) -> str:
 # ─── Orchestrator ─────────────────────────────────────────────────
 
 
-class SweepOrchestrator:
-    """Reads symbols from Supabase, schedules sweep groups, handles stale retry."""
+class SweepOrchestrator(HeavySweepMixin):
+    """Reads symbols from Supabase, schedules sweep groups, handles stale retry.
+
+    Inherits heavy-sweep methods from HeavySweepMixin (Phase B):
+      • run_heavy_sweep_for_symbol(sym, prices=None)
+      • _heavy_sweep_group(cron_expr, symbols)  — cron tick handler
+      • _renko_grid_search_sync / _regime_sync / _kelly_sync  — CPU-bound helpers
+      • _persist_brick_params_to_yaml / _push_heavy_signal
+    """
 
     def __init__(self) -> None:
         self._scheduler: AsyncIOScheduler | None = None
@@ -516,9 +572,25 @@ class SweepOrchestrator:
         # Key: (symbol, "buy" or "sell"), Value: time.time() timestamp.
         self._last_qualified_signal: dict[tuple[str, str], float] = {}
 
+        # ── Content-hash dedup (D5) ──────────────────────────────────
+        # Even after cooldown expires, the same signal content (same
+        # regime + price-band + brick-params) should NOT be republished.
+        # We hash a small subset of the agent_payload to detect content
+        # duplication independent of the cooldown timer.
+        # Key: (symbol, direction), Value: hash string of last published content.
+        self._last_signal_hash: dict[tuple[str, str], str] = {}
+
         # Shared engine instances
         self._sizer = PositionSizer()
         self._ev_engine = EVEngine()
+        # ── Multivariate HMM (replaces discrete MarkovChain) ─────────
+        # The HMM is the p_markov source. It boots from the sweep's
+        # existing /api/price/batch data (log_return + 5 TA indicators
+        # computed locally) and enriches with live /api/quote + /api/ta
+        # data each sweep tick.
+        self._hmm_buffer = FeatureBuffer()
+        self._hmm_model = HmmModel(self._hmm_buffer)
+        self._hmm_bootstrapped: set[str] = set()
         # ── Patch EV engine thresholds from env vars ──────────────────
         # EVEngine.__init__ defaults to min_ev=0.0, min_rr=2.0. Override
         # with env-configured values so the user can tune without code
@@ -546,6 +618,44 @@ class SweepOrchestrator:
         if not self._redis:
             logger.error("Redis not available — sweep orchestrator cannot start")
             return
+
+        # ── TimesFM startup self-check (v5) ───────────────────────────
+        # Fail loud when TimesFM env vars are unset — every fetch will
+        # 401 silently and p_timesfm will be None for all symbols. We
+        # don't hard-abort (the orchestrator can still run without
+        # TimesFM, blending 3 sources instead of 4), but we log a
+        # prominent warning so ops can fix the env vars before relying
+        # on the signals. Set TIMESFM_REQUIRED=1 to make this fatal.
+        _timesfm_keys = os.getenv("TIMESFM_API_KEYS")
+        _timesfm_url = (
+            os.getenv("TIMESFM_INFERENCE_URL")
+            or os.getenv("TIMESFM_URL")
+            or os.getenv("TIMESFM_SERVICE_URL")
+        )
+        if not _timesfm_keys:
+            msg = (
+                "TIMESFM_API_KEYS env var is not set — every TimesFM fetch "
+                "will 401 and p_timesfm will be None for all symbols. The "
+                "EV engine will fall back to a 3-source blend (no TimesFM), "
+                "reducing P_win accuracy. Set TIMESFM_API_KEYS or expect "
+                "degraded signal quality."
+            )
+            if os.getenv("TIMESFM_REQUIRED", "0") == "1":
+                logger.error(f"FATAL: {msg}")
+                raise RuntimeError(msg)
+            else:
+                logger.warning(f"WARNING: {msg}")
+        elif not _timesfm_url:
+            logger.warning(
+                "TIMESFM_API_KEYS is set but no TIMESFM_INFERENCE_URL / "
+                "TIMESFM_URL env var found — will default to "
+                "http://localhost:8000/forecast (the gateway). If the "
+                "gateway is not running, p_timesfm will be None."
+            )
+        else:
+            logger.info(
+                f"TimesFM startup OK — API keys set, URL={_timesfm_url}"
+            )
 
         self._scheduler = AsyncIOScheduler(timezone="UTC")
 
@@ -577,11 +687,35 @@ class SweepOrchestrator:
     # ── Symbol registry ───────────────────────────────────────────
 
     async def _refresh_symbols(self) -> None:
-        """Fetch active symbols from Supabase and (re)schedule groups."""
+        """Fetch active symbols from Supabase and (re)schedule groups.
+
+        Also synchronises the local brick_params.yaml ``symbols:`` section
+        with ``nt_symbol.active=true`` — adds seed defaults for newly-active
+        symbols and prunes entries for symbols no longer active. The heavy
+        sweep (weekly) is still the only writer of OPTIMISED params; this
+        sync only ensures the YAML has entries for every active symbol so
+        the light sweep can read them between heavy-sweep runs.
+        """
         symbols = await fetch_active_symbols()
         if not symbols:
             logger.warning("No active symbols found; sweep groups will be empty")
             return
+
+        # Sync YAML brick_params to nt_symbol.active=true
+        try:
+            from regime_platform.config.brick_params import sync_yaml_to_nt_symbol
+            sync_result = sync_yaml_to_nt_symbol(symbols)
+            if sync_result["added"] or sync_result["pruned"]:
+                logger.info(
+                    "[sweep:orch] YAML sync: +%d -%d (~%d unchanged)",
+                    sync_result["added"], sync_result["pruned"],
+                    sync_result["unchanged"],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[sweep:orch] YAML sync failed (%s) — proceeding with stale YAML",
+                exc,
+            )
 
         # Group by regime_cron expression
         # Support multi-expression cron (e.g. "5,20 * * * 1-5 / 35 * * * 0,6")
@@ -600,13 +734,40 @@ class SweepOrchestrator:
 
         total = sum(len(v) for v in groups.values())
         logger.info(
-            "Symbol registry refreshed: %d symbols in %d cron group(s)",
+            "Symbol registry refreshed: %d symbols in %d light-sweep cron group(s)",
             total,
             len(groups),
         )
         for cron_expr, sym_list in groups.items():
             logger.info(
-                "  Group [%s]: %s",
+                "  Light [%s]: %s",
+                cron_expr,
+                [s["symbol"] for s in sym_list],
+            )
+
+        # ── Phase B: group by sweep_cron for heavy sweep jobs ──────
+        # Mirrors the light-sweep grouping above. Default sweep_cron is
+        # '0 20 * * 0,6' (Sat/Sun 20:00 UTC, migration 026) when NULL.
+        # TimesFM confidence gate skips ~70% of runs, so effective heavy
+        # sweep frequency is ~0.6 runs/week/symbol.
+        heavy_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for sym in symbols:
+            cron_raw = sym.get("sweep_cron") or "0 20 * * 0,6"
+            for cron in self._split_cron(cron_raw):
+                heavy_groups[cron].append(sym)
+        for cron in heavy_groups:
+            heavy_groups[cron].sort(key=lambda s: s["symbol"])
+        self._reschedule_heavy_groups(heavy_groups)
+
+        heavy_total = sum(len(v) for v in heavy_groups.values())
+        logger.info(
+            "Heavy sweep registry: %d symbols in %d heavy-sweep cron group(s)",
+            heavy_total,
+            len(heavy_groups),
+        )
+        for cron_expr, sym_list in heavy_groups.items():
+            logger.info(
+                "  Heavy [%s]: %s",
                 cron_expr,
                 [s["symbol"] for s in sym_list],
             )
@@ -659,6 +820,65 @@ class SweepOrchestrator:
             except Exception:
                 pass
 
+    def _reschedule_heavy_groups(
+        self, groups: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """Replace all heavy-sweep-* jobs to reflect current groups.
+
+        Phase B — mirrors ``_reschedule_groups`` but for heavy sweep jobs.
+        Heavy sweep jobs use the ``heavy-sweep-{cron_id}`` ID prefix so
+        they don't collide with light sweep jobs (which use ``sweep-{cron_id}``).
+
+        Heavy sweep jobs have a larger ``misfire_grace_time`` (1h) because
+        they run infrequently (weekend 20:00 UTC by default) and we don't
+        want a brief backend restart at 20:01 UTC to skip the entire week's
+        heavy sweep.
+        """
+        assert self._scheduler is not None
+
+        existing = {
+            job.id
+            for job in self._scheduler.get_jobs()
+            if job.id.startswith("heavy-sweep-")
+        }
+        desired: set[str] = set()
+
+        for cron_expr, sym_list in groups.items():
+            safe_id = (
+                cron_expr.replace(" ", "_")
+                .replace("*", "star")
+                .replace("/", "sl")
+                .replace(",", "com")
+                .replace("-", "min")
+            )
+            job_id = f"heavy-sweep-{safe_id}"
+            desired.add(job_id)
+
+            if job_id in existing:
+                continue
+
+            self._scheduler.add_job(
+                func=self._heavy_sweep_group,
+                trigger=CronTrigger.from_crontab(cron_expr),
+                args=[cron_expr, sym_list],
+                id=job_id,
+                name=f"Heavy sweep [{cron_expr}] {len(sym_list)} symbols",
+                misfire_grace_time=3600,   # 1h — don't skip the week's sweep
+                coalesce=True,
+            )
+            logger.info(
+                "Scheduled heavy: %s → %s",
+                cron_expr,
+                [s["symbol"] for s in sym_list],
+            )
+
+        for job_id in existing - desired:
+            try:
+                self._scheduler.remove_job(job_id)
+                logger.info("Removed stale heavy-sweep job: %s", job_id)
+            except Exception:
+                pass
+
     # ── Sweep group runner ────────────────────────────────────────
 
     async def _sweep_group(
@@ -698,51 +918,69 @@ class SweepOrchestrator:
         if not active:
             return
 
-        # ── Price fetch (batch for TradingView, parallel for others) ──
-        # TradingView symbols are fetched in ONE batch API call (POST /api/price/batch)
-        # to reduce API calls from N to 1. Non-TV symbols (HL, Alpaca) are
-        # fetched in parallel as before.
+        # ── Price fetch (TDVA batch — Phase B consolidation) ──────
+        # All symbols route through TDVA's POST /api/price/batch endpoint.
+        # The fetcher auto-chunks into groups of 10 (TV hard limit per
+        # request) and makes ⌈N/10⌉ HTTP calls for N symbols.
         valid_prices: dict[str, list[float]] = {}
 
-        # Split symbols by data source
-        tv_symbols = [s for s in active if s.get("data_source") == "tradingview"]
-        non_tv_symbols = [s for s in active if s.get("data_source") != "tradingview"]
-
-        # ── Batch fetch TradingView symbols (1 API call) ─────────────
-        if tv_symbols:
-            try:
-                tv_results = await fetch_tradingview_batch(tv_symbols, 200)
-                for sym_name, prices in tv_results.items():
-                    if len(prices) < 81:
-                        logger.warning(
-                            "%s: insufficient data (%d bars, need >=81)",
-                            sym_name, len(prices),
-                        )
-                        continue
-                    valid_prices[sym_name] = prices
-            except Exception as exc:
-                logger.warning("TradingView batch fetch failed: %s", exc)
-
-        # ── Parallel fetch non-TV symbols (HL, Alpaca) ───────────────
-        if non_tv_symbols:
-            price_futs = [fetch_latest_candles(s, 200) for s in non_tv_symbols]
-            price_results = await asyncio.gather(*price_futs, return_exceptions=True)
-
-            for sym, prices in zip(non_tv_symbols, price_results):
-                if isinstance(prices, Exception):
-                    logger.warning("Price fetch failed for %s: %s", sym["symbol"], prices)
-                    continue
+        try:
+            tv_results = await fetch_tradingview_batch(active, 200)
+            for sym_name, prices in tv_results.items():
                 if len(prices) < 81:
                     logger.warning(
                         "%s: insufficient data (%d bars, need >=81)",
-                        sym["symbol"],
-                        len(prices),
+                        sym_name, len(prices),
                     )
                     continue
-                valid_prices[sym["symbol"]] = prices
+                valid_prices[sym_name] = prices
+        except Exception as exc:
+            logger.warning("TDVA batch fetch failed: %s", exc)
 
         if not valid_prices:
             return
+
+        # ── HMM: bootstrap + concurrent fetch + fit ──────────────────
+        # On first sweep for a symbol, bootstrap the feature buffer from
+        # the price history (log_return + 5 TA indicators computed locally).
+        # Then fetch live /api/quote + /api/ta concurrently for all symbols
+        # and refit the HMM. This replaces the old discrete MarkovChain.
+        hmm_symbols = [
+            s for s in active if s["symbol"] in valid_prices
+        ]
+
+        # Bootstrap any symbols not yet bootstrapped
+        for sym in hmm_symbols:
+            symbol = sym["symbol"]
+            if symbol not in self._hmm_bootstrapped:
+                pushed = self._hmm_model.bootstrap_from_ohlcv(
+                    symbol, valid_prices[symbol],
+                )
+                if pushed > 0:
+                    self._hmm_bootstrapped.add(symbol)
+
+        # Concurrent fetch: /api/quote + /api/ta for all symbols (~1-2s)
+        prev_closes = {
+            s["symbol"]: valid_prices[s["symbol"]][-1]
+            for s in hmm_symbols
+        }
+        try:
+            await hmm_quote_fetcher.fetch_and_update(
+                hmm_symbols, self._hmm_buffer, prev_closes,
+            )
+        except Exception as exc:
+            logger.warning("HMM quote fetch failed: %s", exc)
+
+        try:
+            await hmm_ta_fetcher.fetch_and_update(
+                hmm_symbols, self._hmm_buffer,
+            )
+        except Exception as exc:
+            logger.warning("HMM TA fetch failed: %s", exc)
+
+        # Refit HMM for each symbol (cheap: Baum-Welch on 300 bars × 9 features)
+        for sym in hmm_symbols:
+            self._hmm_model.fit(sym["symbol"])
 
         # Sequential processing with stagger
         symbols_to_process = [s for s in active if s["symbol"] in valid_prices]
@@ -813,6 +1051,16 @@ class SweepOrchestrator:
                     "regime_shift": result.get("regime_shift", False),
                     "prev_regime": result.get("prev_regime", ""),
                     "size_mult": result.get("size_mult", 1.0),
+                    # ── TA indicators (migration 036) ──────────────────────
+                    # Populated from the HMM feature buffer's latest bar
+                    # for this symbol (captured in _process_symbol §3a).
+                    # All nullable — None when buffer is empty or TA fetch
+                    # failed for this tick.
+                    "ta_adx": result.get("ta_adx"),
+                    "ta_ao": result.get("ta_ao"),
+                    "ta_bb_power": result.get("ta_bb_power"),
+                    "ta_macd": result.get("ta_macd"),
+                    "ta_rsi": result.get("ta_rsi"),
                 })
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
@@ -913,8 +1161,25 @@ class SweepOrchestrator:
         gross_loss = abs(float(np.sum(np_returns[np_returns < 0]))) if np.any(np_returns < 0) else 0.0
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
 
-        # ── 3. Markov probabilities ──
-        p_up, p_dn = _markov_probs(regime_label)
+        # ── 3. HMM markov emit (replaces discrete MarkovChain) ──────────
+        # The multivariate Gaussian HMM was refit earlier in this sweep
+        # tick (in _sweep_group). Here we emit the 3-state transition matrix
+        # + current state — a drop-in replacement for the old
+        # _build_markov_chain() return shape.
+        #
+        # p_up / p_dn are kept for backward-compat with the Supabase
+        # nt_sweep_result schema (legacy columns). They are read directly
+        # from the transition matrix: P(UP|current_state) and P(DOWN|current_state).
+        _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
+        p_up, p_dn = 0.5, 0.5  # neutral defaults; replaced if HMM emits
+
+        # ── 3a. TA indicator snapshot (migration 036) ──────────────────
+        # Pull the latest 5 TA values (ADX, AO, BB Power, MACD, RSI) from
+        # the HMM feature buffer for persistence to nt_sweep_result +
+        # nt_regime_log. Best-effort: returns {None × 5} if the buffer is
+        # empty (e.g. cold start before the first /api/ta poll landed).
+        # See regime_platform/services/hmm/ta_extract.py.
+        _ta_snapshot = latest_ta(self._hmm_buffer, symbol)
 
         # ── 4. Direction & trade signal ──
         current_price = float(np_prices[-1])
@@ -922,21 +1187,39 @@ class SweepOrchestrator:
 
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
 
+        # Extract p_up / p_dn from the HMM's 3x3 transition matrix
+        if _markov_T is not None and _markov_current_state:
+            try:
+                state_row = _markov_T.get(_markov_current_state, {})
+                p_up = float(state_row.get("UP", 0.5))
+                p_dn = float(state_row.get("DOWN", 0.5))
+            except Exception:
+                pass
+
         trade_signal = _compute_trade_signal(
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
         )
 
-        # ── 5. EV Engine ──
+        # ── 5. EV Engine (v5 — 4-source logit pool) ──
+        # Pattern stats (p_pattern) are NOT available server-side — they
+        # live in the agent DuckDB. The EV engine renormalises around the
+        # missing source. Pattern stats will be re-blended by the agent's
+        # synthesizer when it re-evaluates the signal locally.
         ev_result = self._ev_engine.compute_ev(
             trend_probs=trend_probs,
             direction=direction,
+            p_pattern=None,  # server-side: not available; agent re-blends locally
+            transition_matrix=_markov_T,
+            current_state=_markov_current_state,
             p_timesfm=p_timesfm,
             brick_size=brick_size,
             sl_bricks=sl_bricks,
             tp_bricks=tp_bricks,
+            n_steps=MARKOV_HOLD_STEPS,
         )
-        # EVFullResult is a dataclass — use attribute access
-        effective_kelly = kelly_f * ev_result.ev_scale * ev_result.markov_multiplier
+        # EVFullResult is a dataclass — use attribute access.
+        # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
+        effective_kelly = kelly_f * ev_result.ev_scale
 
         # ── 5a. Qualification gates ──
         # Only publish qualified signals to signal.raw.noble_trader
@@ -975,39 +1258,38 @@ class SweepOrchestrator:
             )
         elif TIMESFM_GATE_MODE == "soft":
             # Soft gate: don't reject, but recompute EV with reduced weight.
-            # The EV engine's log-odds blend already weights TimesFM at 0.35.
-            # When confidence is low, we reduce that weight proportionally,
-            # then recompute p_win and EV. This way, a low-confidence TimesFM
-            # forecast doesn't veto the signal — it just contributes less.
+            # The EV engine v5 log-odds blend weights TimesFM at 0.25 by
+            # default. When confidence is low, we reduce that weight
+            # proportionally, then recompute p_win and EV. This way, a
+            # low-confidence TimesFM forecast doesn't veto the signal —
+            # it just contributes less. The engine itself renormalises
+            # remaining weights to sum to 1.0 over available sources.
             if p_timesfm is not None and confidence is not None:
-                base_weight = 0.35  # matches P_WIN_WEIGHTS_TIMESFM["p_timesfm"]
+                base_weight = 0.25  # matches P_WIN_WEIGHTS_FULL["p_timesfm"]
                 scale = min(1.0, confidence / MIN_TIMESFM_CONFIDENCE) if MIN_TIMESFM_CONFIDENCE > 0 else 1.0
                 if scale < 1.0:
-                    # Recompute EV with adjusted TimesFM weight.
-                    # We need to re-run the EV engine with custom weights.
-                    # The EV engine supports runtime weight override via
-                    # set_weights(), but that mutates shared state. Instead,
-                    # we temporarily override, compute, then restore.
-                    original_weights = dict(self._ev_engine._timesfm_weights)
-                    adjusted_weights = dict(original_weights)
-                    adjusted_weights["p_timesfm"] = base_weight * scale
-                    # Renormalize so weights sum to 1.0
-                    total_w = sum(adjusted_weights.values())
-                    if total_w > 0:
-                        adjusted_weights = {k: v / total_w for k, v in adjusted_weights.items()}
-                    self._ev_engine._timesfm_weights = adjusted_weights
-                    try:
+                    # Recompute EV with adjusted TimesFM weight using the
+                    # EVEngine.temp_weights() context manager. This replaces
+                    # the previous direct mutation of
+                    # ``self._ev_engine._full_weights`` (audit 2026-07-23):
+                    # the public API guarantees weight restoration even if
+                    # compute_ev raises, and validates the key/value shape
+                    # before the override is applied.
+                    with self._ev_engine.temp_weights(
+                        {"p_timesfm": base_weight * scale}
+                    ):
                         adjusted_ev_result = self._ev_engine.compute_ev(
                             trend_probs=trend_probs,
                             direction=direction,
+                            p_pattern=None,
+                            transition_matrix=_markov_T,
+                            current_state=_markov_current_state,
                             p_timesfm=p_timesfm,
                             brick_size=brick_size,
                             sl_bricks=sl_bricks,
                             tp_bricks=tp_bricks,
+                            n_steps=MARKOV_HOLD_STEPS,
                         )
-                    finally:
-                        # Restore original weights
-                        self._ev_engine._timesfm_weights = original_weights
                     # In soft mode, the TimesFM gate always "passes" —
                     # the penalty is applied via the reduced weight, not
                     # via a binary reject.
@@ -1039,8 +1321,38 @@ class SweepOrchestrator:
         # In hard/off mode, effective_ev_result IS ev_result (no change).
         if TIMESFM_GATE_MODE == "soft" and effective_ev_result is not ev_result:
             ev_result = effective_ev_result
-            # Recompute effective_kelly with the adjusted ev_scale
-            effective_kelly = kelly_f * ev_result.ev_scale * ev_result.markov_multiplier
+            # Recompute effective_kelly with the adjusted ev_scale.
+            # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
+            effective_kelly = kelly_f * ev_result.ev_scale
+
+        # ── p_win soft-gate (v5): modulator, not hard gate ────────
+        # Hard floor: p_win < 0.50 = negative EV = NEVER publish.
+        # Soft band: 0.50 ≤ p_win < MIN_P_WIN = publish with kelly shrink.
+        #   kelly_shrink = (p_win - 0.50) / (MIN_P_WIN - 0.50)
+        #   At p_win=0.50 → shrink=0.0 (zero kelly)
+        #   At p_win=MIN_P_WIN → shrink=1.0 (full kelly)
+        # Above MIN_P_WIN: full kelly, no shrink.
+        #
+        # This lets the agent's autonomy_gate decide whether to trade
+        # marginal signals (with reduced size) rather than the backend
+        # silently rejecting them. The agent gets more data to work with
+        # and can apply its own Bayesian alpha + calibration bias on top.
+        P_WIN_HARD_FLOOR = 0.50
+        if ev_result.p_win < P_WIN_HARD_FLOOR:
+            p_win_ok = False
+            p_win_kelly_shrink = 0.0
+        elif ev_result.p_win < MIN_P_WIN:
+            # Soft band — publish but with reduced kelly
+            p_win_ok = True  # passes the gate (publish)
+            if MIN_P_WIN > P_WIN_HARD_FLOOR:
+                p_win_kelly_shrink = (ev_result.p_win - P_WIN_HARD_FLOOR) / (MIN_P_WIN - P_WIN_HARD_FLOOR)
+            else:
+                p_win_kelly_shrink = 1.0
+        else:
+            p_win_ok = True
+            p_win_kelly_shrink = 1.0
+
+        p_win_kelly_shrink = max(0.0, min(1.0, p_win_kelly_shrink))
 
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
@@ -1049,12 +1361,12 @@ class SweepOrchestrator:
             "timesfm_available": p_timesfm is not None,
             "timesfm_confidence_ok": timesfm_confidence_ok,
             "ev_allowed": effective_ev_result.allowed,
-            # ── New: p_win threshold (dynamic quality filter) ───────
-            # Unlike MIN_RR (static per symbol), p_win changes sweep-to-
-            # sweep based on how regime + ext_signal + TimesFM agree.
-            # Filters out signals where the blend is only marginally
-            # directional (p_win just barely above 0.5).
-            "p_win_ok": ev_result.p_win >= MIN_P_WIN,
+            # ── p_win soft-gate (v5) ────────────────────────────────────
+            # Hard floor at p_win < 0.50 (negative EV, never publish).
+            # Soft band 0.50 ≤ p_win < MIN_P_WIN publishes with kelly
+            # shrink so the agent can still choose to trade at reduced
+            # size. Above MIN_P_WIN: full kelly.
+            "p_win_ok": p_win_ok,
         }
 
         passed_gates = {
@@ -1068,6 +1380,7 @@ class SweepOrchestrator:
             "ev_per_dollar": round(effective_ev_result.ev_per_dollar, 4),
             "rr": round(effective_ev_result.rr, 4),
             "p_win": round(ev_result.p_win, 4),
+            "p_win_kelly_shrink": round(p_win_kelly_shrink, 4),
             "ev_reason": effective_ev_result.reason,
             "timesfm_gate_mode": TIMESFM_GATE_MODE,
         }
@@ -1259,7 +1572,15 @@ class SweepOrchestrator:
             else:
                 size_mult = 0.6
 
-        effective_kelly_final = effective_kelly * size_mult if qualified else 0.0
+        # ── Apply p_win soft-gate kelly shrink (v5) ────────────────────
+        # In the soft band (0.50 ≤ p_win < MIN_P_WIN), kelly is shrunk
+        # linearly toward 0. The agent still sees the signal and can
+        # choose to trade at the reduced size (or skip via its own
+        # autonomy_gate). Above MIN_P_WIN: shrink = 1.0 (no effect).
+        if qualified:
+            effective_kelly_final = effective_kelly * size_mult * p_win_kelly_shrink
+        else:
+            effective_kelly_final = 0.0
 
         agent_payload = json.dumps({
             "type": "heartbeat",
@@ -1271,6 +1592,14 @@ class SweepOrchestrator:
             # is derived from the symbol config's execution fields.
             "asset_class": sym.get("asset_class", ""),
             "venue": _derive_venue(sym),
+            # ── plan_ids (Fix #17 — per-plan Discord routing) ───────────
+            # UUID[] from nt_symbol.plan_ids (migration 032). Source:
+            # fetch_active_symbols() in supabase_client.py:60 already
+            # SELECTs this column, so no extra DB call is needed here.
+            # Downstream Discord notifier uses this array to fan out the
+            # alert only to subscribers whose plan_id is in the list.
+            # Empty/None = no plan routing (falls back to broadcast).
+            "plan_ids": sym.get("plan_ids") or [],
             "regime": regime_label,
             "regime_conf": round(regime_conf, 4),
             "signal": trade_signal["signal"],
@@ -1284,7 +1613,57 @@ class SweepOrchestrator:
             "kelly_f": round(kelly_f, 6),
             "effective_kelly": round(effective_kelly_final, 6),
             "ev": round(ev_result.ev, 4),
+            "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
+            "rr": round(ev_result.rr, 4),
+            "ev_scale": round(ev_result.ev_scale, 4),
             "p_win": round(ev_result.p_win, 4),
+            # ── P_win source breakdown (v5) ─────────────────────────────
+            # Agent uses these to re-blend locally with pattern stats from
+            # its own DuckDB (which the server doesn't have access to).
+            "p_regime": round(ev_result.p_regime, 4),
+            "p_markov": round(ev_result.p_markov, 4),
+            "p_timesfm": round(ev_result.p_timesfm, 4) if p_timesfm is not None else None,
+            "p_pattern": round(ev_result.p_pattern, 4) if ev_result.p_pattern else None,
+            "sources_used": list(ev_result.sources_used),
+            "weights_used": ev_result.weights_used or {},
+            "timesfm_available": p_timesfm is not None,
+            # ── HIGH #8 (2026-07-23): single-step Markov T ──────────────
+            # The agent's synthesizer uses `markov_persistence` to detect
+            # trending regimes via decision-tree adaptive thresholds
+            # (markov_persistence > 0.7 ⇒ "let winners run" branch).
+            # Previously the agent used heartbeat.p_markov (the T^N
+            # multi-step hold probability) as a proxy for single-step
+            # persistence. That approximation is conservative but wrong
+            # in mean-reverting regimes (T^N can be high while single-
+            # step T is low → adaptive thresholds fire incorrectly).
+            #
+            # We now send the single-step T[current][target] value
+            # explicitly so the agent doesn't have to approximate.
+            # `p_markov_single_step` = T[current_state][target_state]
+            # where target = "UP" for long, "DOWN" for short. We also
+            # send `markov_transition_matrix` so the agent can re-derive
+            # it (or compute other step counts) if needed.
+            "p_markov_single_step": round(
+                _markov_T.get(_markov_current_state, {}).get(
+                    "UP" if direction == "long" else "DOWN", 0.5
+                ), 4
+            ) if _markov_T and _markov_current_state else 0.5,
+            "markov_transition_matrix": _markov_T,
+            "markov_current_state": _markov_current_state,
+            # ── p_win soft-gate kelly shrink (v5) ───────────────────────
+            # 1.0 = full kelly (p_win >= MIN_P_WIN). <1.0 = linearly shrunk
+            # in the soft band (0.50 ≤ p_win < MIN_P_WIN). 0.0 = hard floor
+            # (p_win < 0.50, but those signals are not published anyway).
+            # Agent can use this to decide whether to trade at reduced size
+            # or skip via its autonomy_gate.
+            "p_win_kelly_shrink": round(p_win_kelly_shrink, 4),
+            # ── Calibration bias (v5 — actually wired now) ─────────────
+            # Used by the agent's synthesizer to shrink regime_conf
+            # toward 0.5 when the server-side P_win is overconfident
+            # (bias > 0.10). Also applied in backtest/sim as a P_win
+            # correction (see backtest/engine.py).
+            "calibration_bias": round(cal["bias"], 4) if cal else None,
+            "calibration_status": cal["status"] if cal else None,
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
             "size_mult": round(size_mult, 2),
@@ -1313,6 +1692,65 @@ class SweepOrchestrator:
             # pipe.expire(config_key, CONFIG_TTL)
             # pipe.set(heartbeat_key, str(now_ms), ex=ttl)
             # pipe.publish(agent_channel, agent_payload)
+
+            if qualified:
+                # ── D5: Content-hash dedup ────────────────────────────
+                # Hash the signal's "meaningful" content (symbol, direction,
+                # regime, brick params, price band) to detect duplicates
+                # even after cooldown expires. This prevents placeholder
+                # spam when the regime is stable but cooldown has lapsed.
+                #
+                # We hash a small subset of agent_payload — not the whole
+                # thing — because timestamps + kelly_f + EV fluctuate even
+                # when the actionable signal content is unchanged.
+                try:
+                    payload_obj = (
+                        json.loads(agent_payload) if isinstance(agent_payload, str)
+                        else agent_payload
+                    )
+                    content_fields = {
+                        "symbol": payload_obj.get("symbol"),
+                        "direction": payload_obj.get("direction") or payload_obj.get("signal"),
+                        "regime": payload_obj.get("regime"),
+                        "brick_size": payload_obj.get("brick_size"),
+                        "sl_bricks": payload_obj.get("sl_bricks"),
+                        "tp_bricks": payload_obj.get("tp_bricks"),
+                        # Price band (rounded to brick_size granularity so
+                        # small intra-band moves don't trigger republish)
+                        "price_band": (
+                            round(
+                                float(payload_obj.get("entry_price", 0))
+                                / max(float(payload_obj.get("brick_size", 1)), 1e-9)
+                            )
+                            if payload_obj.get("entry_price")
+                            else None
+                        ),
+                    }
+                    content_hash = hashlib.sha256(
+                        json.dumps(content_fields, sort_keys=True).encode("utf-8")
+                    ).hexdigest()[:16]
+                except Exception as exc:
+                    logger.warning(
+                        f"[sweep:orch] {symbol}: content-hash failed ({exc}) — publishing without dedup"
+                    )
+                    content_hash = ""
+
+                dedup_key = (symbol, trade_signal["signal"])
+                if (
+                    content_hash
+                    and content_hash == self._last_signal_hash.get(dedup_key)
+                ):
+                    # Same content as last publish — suppress even if cooldown expired
+                    qualified = False
+                    gate_results["content_dedup_ok"] = False
+                    logger.info(
+                        f"[sweep:orch] {symbol}: DEDUP SUPPRESSED — "
+                        f"signal content unchanged (hash={content_hash[:8]}...)"
+                    )
+                else:
+                    gate_results["content_dedup_ok"] = True
+                    if content_hash:
+                        self._last_signal_hash[dedup_key] = content_hash
 
             if qualified:
                 # ── Publish qualified signals via BOTH pub/sub AND Streams ──
@@ -1360,6 +1798,12 @@ class SweepOrchestrator:
             prev_regime=prev_regime,
             regime_shift=regime_shift,
             venue=_derive_venue(sym),
+            # TA indicators (migration 036) — best-effort, may be None.
+            ta_adx=_ta_snapshot["ta_adx"],
+            ta_ao=_ta_snapshot["ta_ao"],
+            ta_bb_power=_ta_snapshot["ta_bb_power"],
+            ta_macd=_ta_snapshot["ta_macd"],
+            ta_rsi=_ta_snapshot["ta_rsi"],
         )
 
         return {
@@ -1391,6 +1835,11 @@ class SweepOrchestrator:
             "regime_shift": regime_shift,
             "prev_regime": prev_regime or "",
             "size_mult": size_mult,
+            # ── TA indicators (migration 036) ──────────────────────────
+            # Spread the latest TA snapshot (captured in §3a above) into
+            # the result dict so the caller (_sweep_group) can persist
+            # them to nt_sweep_result via log_sweep_result().
+            **_ta_snapshot,
         }
 
     # ── Stale-symbol background check ─────────────────────────────
@@ -1421,7 +1870,15 @@ class SweepOrchestrator:
                 if not is_market_open(sym.get("asset_class", "")):
                     continue
 
-                prices = await fetch_latest_candles(sym, 200)
+                # Single-symbol batch fetch (TDVA — Phase B consolidation)
+                try:
+                    batch = await fetch_candles_for_symbols([sym], 200)
+                    prices = batch.get(symbol, [])
+                except Exception as exc:
+                    logger.warning(
+                        "%s: stale retry — fetch failed: %s", symbol, exc
+                    )
+                    continue
                 if len(prices) < 81:
                     logger.warning(
                         "%s: stale retry — insufficient data (%d)", symbol, len(prices)
@@ -1481,22 +1938,14 @@ class SweepOrchestrator:
         return ["*/15 * * * *"]
 
     async def _load_brick_params(self, symbol: str) -> tuple[float, int, int]:
-        """Load brick_size, sl_bricks, tp_bricks from Redis config or defaults.
+        """Load brick_size, sl_bricks, tp_bricks from the YAML config (v5).
 
-        Uses ``hmget`` to fetch only the three fields actually needed rather
-        than the full ~28-field hash — cheaper on every run, and on a cold
-        start (new Redis instance) it returns ``None`` values that fall back
-        to the defaults below.
+        Replaces the Redis ``trading:config:{symbol}`` hash lookup. The
+        YAML file (``config/brick_params.yaml``) is the source of truth;
+        the heavy sweep (weekly) rewrites it with ATR-scaled optimised
+        values. Light sweep reads from the YAML — no Redis round-trip.
+
+        Falls back to (0.5, 3, 6) if the YAML is missing or malformed.
         """
-        try:
-            brick_size_s, sl_s, tp_s = await self._redis.hmget(
-                f"trading:config:{symbol}", "brick_size", "sl_bricks", "tp_bricks"
-            )
-            return (
-                float(brick_size_s) if brick_size_s is not None else 0.5,
-                int(sl_s) if sl_s is not None else 3,
-                int(tp_s) if tp_s is not None else 5,
-            )
-        except Exception:
-            pass
-        return (0.5, 3, 5)
+        from regime_platform.config.brick_params import load_brick_params
+        return load_brick_params(symbol)

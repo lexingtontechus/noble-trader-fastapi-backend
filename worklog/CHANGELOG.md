@@ -1,3 +1,176 @@
+## [7.7.0] - 2026-07-24
+
+### Changed — Multivariate Gaussian HMM for `p_markov` + TA persistence
+- Replaces the discrete 3-state `MarkovChain` as the live `p_markov` source with a 5-state multivariate Gaussian HMM (`regime_platform/services/hmm/`), trained live via Baum-Welch on a 9-feature observation vector (log_return + 3 microstructure + 5 TA). Emits the same 3x3 transition matrix contract (`{UP, DOWN, FLAT}`) and `current_state` string the EV Engine v4 expects — drop-in replacement.
+- Persists the 5 TA values (ADX, AO, BB Power, MACD, RSI) per sweep tick in `nt_sweep_result` + `nt_regime_log` (migration 036) for post-hoc calibration analytics.
+- Concurrent TVDA fetch via `asyncio.gather` for 20 symbols (microstructure `/api/quote` + TA `/api/ta`).
+- Version metadata bumped to 7.7.0 across `pyproject.toml`, `main.py`, and `docs/openapi.yaml` (resolves prior 7.2.0 drift; see audit worklog H2).
+
+## [7.2.0] - 2026-07-20
+
+### Added — P5: Multi-tenant stream split + execution deprecation + Discord plan routing
+
+P5 reorients noble-trader-fastapi-backend as a **sweep orchestrator only**. Trade execution is deprecated (the hermes agent owns it now), and signals are split into per-plan Redis streams so the proxy + agent can subscribe to a single plan-specific channel. Discord routing is extended to a 4-channel layout (Signal Scout / Precision Pro / system-status / trade-executions).
+
+#### `regime_platform/core/settings.py` — MODIFIED
+- Added 5 new env vars:
+  - `NOBLE_TRADER_DISABLE_EXECUTION: bool = True` — feature flag gating all execution codepaths. Default ON after P5. Set `false` only for emergency rollback.
+  - `NOBLE_TRADER_STREAM_SPLIT_ENABLED: bool = True` — enables the `StreamSplitter` background task.
+  - `NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID: str = ""` — UUID of the Signal Scout plan (resolved from `nobletradingapp.plans.title = 'Signal Scout'`).
+  - `NOBLE_TRADER_PLAN_PRECISION_PRO_ID: str = ""` — UUID of the Precision Pro plan.
+  - `DISCORD_WEBHOOK_SIGNAL_SCOUT: str = ""` and `DISCORD_WEBHOOK_SIGNAL_PRECISION: str = ""` — per-plan Discord webhook URLs.
+- The `# ── Alpaca ──` section is renamed to `# ── Alpaca (DATA FEED ONLY — execution deprecated) ──` and annotated to clarify ALPACA_API_KEY/SECRET are read-only data credentials now, not order-placement credentials.
+
+#### `regime_platform/services/execution_deprecation.py` — NEW FILE
+- Central gate `assert_execution_enabled(context=None)` that raises `ExecutionDisabledError` when `settings.NOBLE_TRADER_DISABLE_EXECUTION` is True.
+- `execution_enabled()` convenience helper for callers that want to skip work without paying the exception cost.
+- `ExecutionDisabledError` carries a `context` field for audit logging (e.g. `"AlpacaExecutor.__init__"`, `"kill_switch.cancel_all_orders"`).
+- The error message is operator-actionable: explains the deprecation, points to the hermes agent, and tells operators how to re-enable in an emergency.
+
+#### `renko/executor.py` — MODIFIED
+- Module docstring rewritten with `.. deprecated:: P5 (2026-07-20)` directive.
+- `AlpacaExecutor.__init__` now calls `assert_execution_enabled(context="AlpacaExecutor.__init__")` as its first statement. Constructing the executor raises immediately when the gate is active.
+- File is retained for emergency rollback (`NOBLE_TRADER_DISABLE_EXECUTION=false`) and as reference for the hermes agent's new executor implementation.
+
+#### `regime_platform/services/operational/executor_factory.py` — MODIFIED
+- `ExecutorFactory.get_executor()` now calls `assert_execution_enabled(context="ExecutorFactory.get_executor")` — short-circuits before reaching the Alpaca import.
+- `ExecutorFactory.get_alpaca_rest()` returns `None` when the gate is active (instead of constructing a `TradingClient`). This makes `kill_switch` and `reconciler` callers see "no API client" and follow their existing no-op paths, rather than crashing on Alpaca SDK init.
+
+#### `regime_platform/services/operational/kill_switch.py` — MODIFIED
+- `cancel_all_orders()` and `close_all_positions()` short-circuit when the gate is active, returning `{"cancelled_count": 0, ..., "deprecated": True}` (or `closed_count` for close). The `deprecated` flag lets admin UIs surface a "this endpoint is retired" banner without parsing the error stream.
+- Both methods log a WARNING with the user_id so operators can audit any emergency-action attempts that hit the disabled gate.
+
+#### `regime_platform/services/operational/reconciler.py` — MODIFIED
+- `reconcile_order()` returns a synthetic `ReconciliationResult` with `status=PENDING` and a `discrepancy_notes` field explaining "P5: execution disabled — reconciliation is the hermes agent's responsibility."
+- `reconcile_all_recent()` returns `[]` (empty list).
+- `reconcile_positions()` returns a synthetic `PositionReconciliationResult(our_positions=0, alpaca_positions=0, matched=True, discrepancies=[])` — i.e. "nothing to compare because we hold nothing."
+
+#### `regime_platform/services/operational/mode_manager.py` — MODIFIED
+- `_switch_executor_mode()` is a no-op when the gate is active. Logs a WARNING explaining the hermes agent owns paper/live mode via its own env vars. The HTTP route `/operational/mode/confirm` will succeed but produce no state change — operators should rely on the hermes agent's mode configuration.
+
+#### `regime_platform/core/exceptions.py` — MODIFIED
+- `classify_exception()` now returns `410 Gone` for `ExecutionDisabledError`. This is distinct from `503 Service Unavailable` (which would imply temporary outage) — `410` is the correct HTTP semantic for "permanently retired, look elsewhere." The error body explains where to find the replacement (hermes agent).
+
+#### `regime_platform/services/stream_splitter.py` — NEW FILE (~330 lines)
+- `StreamSplitter` background task — consumes `signal.raw.noble_trader` via `XREADGROUP` (consumer group `stream_splitter`, block=30000ms matching the agent's block time).
+- Resolves `nt_symbol.plan_ids` for each signal's symbol via PostgREST, with a 5-minute in-process cache (the nt_symbol universe changes rarely).
+- Republishes to `signals:signal_scout` and/or `signals:precision_pro` based on plan membership, enriching each republished entry with `plan_id`, `plan_name`, `split_at`, `source_entry_id`.
+- **Fail-open policy**: if Supabase is unreachable OR `plan_ids` is empty (symbol not curated), publishes to ALL configured plan streams. This matches the proxy's `plan_resolver` fail-closed semantics — when the proxy can't verify membership, it serves nothing; the splitter publishing to both ensures the proxy still has the signal in its stream.
+- **Raw stream is preserved**: the splitter ACKs its own consumer-group entries but does not trim the stream. Proxy and agent read the same raw stream independently via their own consumer groups.
+- `invalidate_cache(symbol=None)` for admin-triggered evictions after `nt_symbol.plan_ids` updates.
+- `health()` returns stats (consumed, republished_scout, republished_precision, errors, cache hit/miss, last activity timestamps) for observability.
+- Singleton via `get_stream_splitter()` — started by the FastAPI lifespan handler.
+
+#### `notifications/discord.py` — MODIFIED
+- `DiscordNotifier.__init__` adds `_plan_webhooks` dict (plan_id UUID → webhook URL), populated lazily via `_init_plan_webhooks_if_needed()`. Lazy init lets test fixtures set env vars before the map is built.
+- `_resolve_signal_webhook()` accepts a new `plan_ids: Optional[list[str]]` parameter. Routing priority (P5):
+  1. Per-plan webhook (if `plan_ids` contains a configured plan UUID)
+  2. Per-asset-class webhook (existing behavior)
+  3. Default `DISCORD_WEBHOOK_SIGNALS` (fallback)
+- When a symbol belongs to BOTH plans (the backfill default from P2), the FIRST configured plan webhook wins. Operators can choose a primary channel by ordering the env vars.
+- `send_signal()` accepts a new `plan_ids: Optional[list[str]]` parameter, threaded through to `_resolve_signal_webhook`. Existing callers are unaffected (the parameter is optional).
+- 4-channel canonical Discord layout for Noble Trader:
+  1. `#signal-scout` ← `DISCORD_WEBHOOK_SIGNAL_SCOUT` — Signal Scout ($79/mo) subscriber signals
+  2. `#precision-pro` ← `DISCORD_WEBHOOK_SIGNAL_PRECISION` — Precision Pro ($199/mo) subscriber signals
+  3. `#system-status` ← `DISCORD_WEBHOOK_STATUS` — system health + regime updates
+  4. `#trade-executions` ← `DISCORD_WEBHOOK_EXECUTIONS` — hermes agent execution alerts (rare on noble server now; mostly fired by agent itself)
+
+#### `regime_platform/services/signal_aggregator.py` — MODIFIED
+- `_route_to_discord()` now passes `plan_ids=signal.data.get("plan_ids")` to both `send_signal()` call sites (RENKO_SIGNAL and HEARTBEAT-with-buy/sell). The orchestrator's signal payload already includes `plan_ids` from P2's `supabase_client.py` projection change — no orchestrator code change needed here.
+- Comment added explaining the P5 plan routing flow.
+
+#### `docs/Setup/REDIS_ACL_SETUP.md` — NEW FILE
+- Comprehensive guide for creating the `sub_<32hex>` (proxy) and `agent_<32hex>` (agent) ACL users on Railway Redis.
+- Documents the ACL URL format: `rediss://<username>:<password>@<host>.railway.app:<port>/0` — RFC 3986 compliant, parsed natively by `redis-py` and `aioredis.from_url()`.
+- Covers `ACL SETUSER`, `ACL SAVE` (for persistence across restarts), verification commands, troubleshooting common errors (`NOAUTH`, `WRONGPASS`, `NOPERM`, `BUSYGROUP`), and migration from pre-P5 default-user deployments.
+- Notes that `XAUTOCLAIM` for stale PEL entries is intentionally NOT automated — operators should monitor `/health` `stats.pending` and reclaim manually if it grows past 100.
+
+### Architectural decisions
+
+1. **Gate, don't delete** — Execution code is gated behind `assert_execution_enabled()` rather than deleted. This preserves the code for emergency rollback (`NOBLE_TRADER_DISABLE_EXECUTION=false`), provides reference for the hermes agent's new executor, and avoids breaking imports in `renko/__init__.py` and `regime_platform/services/operational/__init__.py`. The gate is the contract; deletion would be a forcing function we don't need yet.
+
+2. **410 Gone, not 503 Service Unavailable** — `ExecutionDisabledError` maps to HTTP 410, not 503. 503 implies "try again later"; 410 means "permanently retired, look elsewhere." Operators and admin UIs can branch on the status code to show a deprecation banner vs. a retry button.
+
+3. **Fail-open on Supabase outage, fail-closed on unknown symbol** — The StreamSplitter publishes to BOTH plan streams when Supabase is unreachable (fail-open: better to over-deliver than under-deliver; the proxy is the canonical gate). But it returns an empty set when the symbol isn't in `nt_symbol` (fail-closed: an unknown symbol is a hard error regardless of gate state).
+
+4. **Sequential XADDs in StreamSplitter, not parallel** — Per-signal XADDs to multiple plan streams are sequential. Parallel would add latency complexity for ~0ms gain (Redis pipeline round-trip is sub-ms locally, ~2ms over TLS to Railway). Sequential is easier to reason about and matches the orchestrator's existing sequential XADD pattern.
+
+5. **Plan UUIDs in env vars, not derived at runtime** — `NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID` and `NOBLE_TRADER_PLAN_PRECISION_PRO_ID` are env vars, not derived from `plans.title` at startup. This avoids a Supabase round-trip during boot and keeps the plan-routing logic testable without a live database. Operators resolve the UUIDs once via `SELECT id FROM plans WHERE title = 'Signal Scout'` and bake them into the env.
+
+6. **Lazy plan-webhook initialization** — `_init_plan_webhooks_if_needed()` populates the `_plan_webhooks` dict on first use, not at module import. This lets test fixtures set `NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID` etc. AFTER importing the discord module, mirroring the lazy-settings pattern used in the P3 proxy codebase.
+
+### Verification checklist
+
+- [x] New modules import cleanly: `from regime_platform.services.execution_deprecation import ...` and `from regime_platform.services.stream_splitter import ...`
+- [x] `assert_execution_enabled(context='smoke_test')` raises `ExecutionDisabledError` when `NOBLE_TRADER_DISABLE_EXECUTION=true`; does not raise when `false`.
+- [x] `DiscordNotifier._resolve_signal_webhook(asset_class, plan_ids)` routes correctly:
+  - Scout UUID in plan_ids → Scout webhook
+  - Precision UUID in plan_ids → Precision webhook
+  - Empty/None plan_ids → falls back to asset-class routing → falls back to default SIGNALS webhook
+  - Unknown UUID in plan_ids → falls back to default
+- [ ] `StreamSplitter.start()` creates consumer group `stream_splitter` on `signal.raw.noble_trader` (requires live Redis — integration test deferred)
+- [ ] `StreamSplitter._process_entry()` correctly resolves plan_ids from PostgREST and republishes to the right streams (integration test deferred)
+- [ ] HTTP routes in `routers/operational.py` return 410 Gone when execution is disabled (smoke-test via TestClient deferred)
+- [ ] End-to-end: orchestrator publishes → splitter republishes to both plan streams → proxy consumes from plan stream → agent consumes from plan stream (deferred to P5 integration testing)
+
+### Deferred to later phases
+
+- **P6 (nobletradingapp)**: Admin UI for curating `nt_symbol.plan_ids` — let operators move a symbol from "both plans" to "Precision Pro only" with one click. Will call a new Edge Function `nt_symbol_set_plan_ids` (wraps the UPDATE so the UI never needs service-role key).
+- **P6 (nobletradingapp)**: Edge Functions `license-validate` and `symbols-for-plan` — required for the proxy (P3) to actually validate licenses. Until they exist, the proxy 503s on `/quotes` calls.
+- **StreamSplitter test coverage** — needs `fakeredis` + `respx` mocking. Deferred to keep P5 scoped.
+- **`XAUTOCLAIM` automation** — currently manual per the ACL setup doc. Could be automated as a periodic background task if PEL growth becomes an issue.
+- **Removal of `alpaca-py` from `requirements.txt`** — The SDK is still used by `adapters/l2_adapters.py` and `adapters/feed_adapters.py` for L2/market-data feeds. Phase 2 of the deprecation (post-P5) will migrate these to raw `httpx` + `websockets` so `alpaca-py` can be dropped entirely.
+- **`renko/executor.py` deletion** — File is gated, not deleted. Deletion target: post-P6 once the hermes agent's executor is stable in production for 30 days.
+
+### Known gaps
+
+- **StreamSplitter not wired into FastAPI lifespan yet** — The class exists and is fully functional, but `main.py` / `app.py` doesn't yet call `get_stream_splitter()` on startup. Will be added in the deployment-focused sub-phase before P5 ships to Railway. (One-line addition: `await get_stream_splitter()` in the lifespan handler.)
+- **`/health` endpoint doesn't expose StreamSplitter stats yet** — The `health()` method exists but isn't surfaced in the existing `/health` route. Same deployment sub-phase will add a `stream_splitter` section to the response.
+- **Orchestrator doesn't publish `plan_ids` in the signal payload yet** — P2 added `plan_ids` to the `fetch_active_symbols()` SELECT, but the orchestrator's `_process_symbol()` doesn't copy it into the published Redis payload. The StreamSplitter works around this by fetching plan_ids itself via PostgREST, but a future optimization is to have the orchestrator embed `plan_ids` directly in the payload (eliminates the splitter's Supabase round-trip).
+- **No deprecation log on import** — `renko/executor.py` logs the gate block at WARNING level when `AlpacaExecutor.__init__` is called, but doesn't log at import time. Operators won't see "execution is deprecated" until someone tries to construct an executor. A startup log line in `main.py` would be more visible — deferred.
+
+---
+
+## [7.1.0] - 2026-07-20
+
+### Added — P2: nt_symbol plan assignment (multi-plan curation)
+
+#### `supabase/migrations/032_nt_symbol_plan_assignment.sql` — NEW FILE
+- Adds three columns to `nt_symbol`:
+  - `plan_ids UUID[]` — array of `public.plans.id` values (NULL = unassigned)
+  - `curated_at TIMESTAMPTZ` — when plan_ids was last manually curated (NULL = system backfill)
+  - `curated_by UUID` — `public.users.id` of the admin who last curated (FK with ON DELETE SET NULL)
+- Adds GIN index `idx_nt_symbol_plan_ids_gin` for `WHERE plan_ids @> ARRAY[<plan_uuid>]::uuid[]` queries (single round-trip plan membership lookup)
+- Adds trigger `trg_nt_symbol_plan_ids_fk` (BEFORE INSERT OR UPDATE OF plan_ids) that validates every array element exists in `public.plans(id)`. Postgres cannot enforce FK on array elements natively — this trigger closes that gap and raises `foreign_key_violation` on orphaned UUIDs.
+- Backfills all currently-active symbols to BOTH `Signal Scout` and `Precision Pro` plans via a `plans.title IN (...)` subquery (NOT hardcoded UUIDs) so the backfill is idempotent and works regardless of the auto-generated plan UUID.
+- `curated_at` / `curated_by` left NULL on backfill to distinguish "system-assigned" from "human-curated". A subsequent admin-UI edit will populate these fields.
+- Includes verification SELECTs at the bottom showing symbol → plan_ids mapping and the new trigger/index registrations.
+
+#### `regime_platform/sweep_orchestrator/supabase_client.py` — MODIFIED
+- `fetch_active_symbols()` SELECT projection extended to include `plan_ids` (line 52). The field is now present in every row returned to the orchestrator. The orchestrator itself does not yet consume `plan_ids` — plan filtering happens proxy-side (per the new `noble-trader-proxy` codebase in P3). Exposing the field now means the orchestrator's symbol dict is forward-compatible with any downstream consumer that needs plan membership.
+
+#### Architectural note — why `plan_ids` lives on `nt_symbol` and not in a join table
+- A symbol can belong to 0, 1, or 2 plans (today) — possibly more in the future.
+- The access pattern is "give me all symbols for plan X" → `WHERE plan_ids @> ARRAY[X]::uuid[]` against a GIN index. This is a single index scan, faster than a join-table lookup for a 2-plan universe.
+- The array is small (≤ a handful of plans), so per-row storage overhead is negligible.
+- Referential integrity is preserved by the trigger; orphaned plan UUIDs cannot be written.
+- The join-table alternative (`nt_symbol_plans(symbol_id, plan_id)`) was rejected because it would require an additional hop on every proxy symbol-validation call, and the universe of plans is tiny enough that array storage is simpler.
+
+#### Verification checklist
+- [ ] Migration applies cleanly on a Supabase project with `nobletradingapp` 0001_init.sql + 0002_seed_plans.sql already applied (dependency: `public.plans`, `public.users`).
+- [ ] GIN index `idx_nt_symbol_plan_ids_gin` shows in `pg_indexes`.
+- [ ] Trigger `trg_nt_symbol_plan_ids_fk` shows in `pg_trigger` for `nt_symbol`.
+- [ ] Inserting a row with an orphaned plan UUID raises `foreign_key_violation`.
+- [ ] All currently-active symbols now have `plan_ids` populated with both plan UUIDs.
+- [ ] `fetch_active_symbols()` returns rows containing `plan_ids` as a list of UUID strings.
+
+#### Deferred to later phases
+- P3: proxy reads `nt_symbol.plan_ids` via a Supabase Edge Function (license-validate or a new `symbols-for-plan` endpoint) to validate that an agent's selected symbols are in its plan.
+- P6: nobletradingapp admin UI for curating `plan_ids` (set/unset plan membership per symbol, populate `curated_at` + `curated_by`).
+- A future admin-only Edge Function `nt_symbol_set_plan_ids` will wrap the UPDATE so the UI never needs service-role key access.
+
+---
+
 ## [7.0.1] - 2026-05-24
 
 ### Fixed - Renko Endpoint 500s + Supabase Env Var Clarification

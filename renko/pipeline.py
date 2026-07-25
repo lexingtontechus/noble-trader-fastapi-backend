@@ -1063,8 +1063,8 @@ class RenkoPipeline:
                 prediction_data["predicted_p_win"] = float(config_data["p_win"])
             if "p_regime" in config_data:
                 prediction_data["p_regime"] = float(config_data["p_regime"])
-            if "p_ext_signal" in config_data:
-                prediction_data["p_ext_signal"] = float(config_data["p_ext_signal"])
+            if "p_pattern" in config_data:
+                prediction_data["p_pattern"] = float(config_data["p_pattern"])
             if "p_markov" in config_data:
                 prediction_data["p_markov"] = float(config_data["p_markov"])
             if "p_timesfm" in config_data:

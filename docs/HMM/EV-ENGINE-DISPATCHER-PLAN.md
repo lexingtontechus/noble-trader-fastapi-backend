@@ -1,13 +1,15 @@
 # EV Engine + Aggression Dispatcher — Full Architecture Plan
 
-> **⚠️ STATUS: IMPLEMENTED (v7.5.0)**
-> This plan has been executed. See CHANGELOG for the v7.5.0 delta.
+> **⚠️ STATUS: IMPLEMENTED (v7.5.0), updated v7.7.0**
+> This plan has been executed. See CHANGELOG for the v7.5.0 + v7.7.0 delta.
 > Key differences from original plan:
 > - Markov chain is a **sizing multiplier** not a P_win blend (was double-counting)
 > - Weights are now **40% Regime + 25% External + 35% TimesFM** (log-odds pooled)
 > - L2 pipeline is **live** (Alpaca + Hyperliquid) not just planned
 > - `p_imbalance` renamed to `p_ext_signal` for honest naming
 > - `CalibrationTracker` added with Brier scores and reliability diagrams
+>
+> **v7.7.0 update:** The `p_markov` source is now produced by a **5-state multivariate Gaussian HMM** (9 features: log_return + 3 microstructure + 5 TA indicators) trained live via Baum-Welch, replacing the discrete 3-state price-only `MarkovChain`. The HMM emits the same 3×3 transition matrix contract (`{UP, DOWN, FLAT}`, rows sum to 1.0) — drop-in replacement. The 5 TA values are persisted per sweep tick in `nt_sweep_result` + `nt_regime_log` (migration 036). The discrete `MarkovChain` module is preserved internally for the renko router's ad-hoc `/ev/compute` endpoint. See `TALARIA-MULTIVARIATE-HMM-PROPOSAL.md` (v4) for the full design.
 
 ## The Short Answer: EV IS Built In, But It Was Crippled
 

@@ -179,10 +179,20 @@ class ExecutorFactory:
         """
         Get a properly-configured AlpacaExecutor.
 
+        .. deprecated:: P5 (2026-07-20)
+            noble-trader-fastapi-backend is no longer a trade executor.
+            This method now calls `assert_execution_enabled()` and raises
+            `ExecutionDisabledError` when the gate is active (default).
+            The hermes agent is the canonical executor.
+
         Re-creates the executor if:
         - It hasn't been created yet
         - The base URL has changed (e.g., after mode switch)
         """
+        # P5: Gate — execution is deprecated on noble server.
+        from regime_platform.services.execution_deprecation import assert_execution_enabled
+        assert_execution_enabled(context="ExecutorFactory.get_executor")
+
         settings = self._get_settings()
         current_base_url = settings.ALPACA_BASE_URL
 
@@ -224,11 +234,26 @@ class ExecutorFactory:
         """
         Get the Alpaca REST API client directly.
 
+        .. deprecated:: P5 (2026-07-20)
+            Used historically by kill_switch (cancel_all_orders,
+            close_all_positions) and reconciler (list_orders, get_order,
+            list_positions). All of those codepaths are now gated.
+            Returns None when the execution gate is active (default).
+
         This is used by kill_switch (cancel_all_orders, close_all_positions)
         and reconciler (list_orders, get_order, list_positions).
 
         Returns None if API keys are not configured (simulation mode).
         """
+        # P5: Gate — no execution codepath should hold a live REST client.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.debug(
+                "ExecutorFactory.get_alpaca_rest: execution disabled, "
+                "returning None (kill_switch/reconciler must short-circuit)."
+            )
+            return None
+
         if self._api_client is not None:
             return self._api_client
 

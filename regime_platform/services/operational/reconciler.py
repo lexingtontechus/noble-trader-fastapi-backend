@@ -128,7 +128,33 @@ class ReconciliationService:
     ) -> ReconciliationResult:
         """
         Reconcile a single order by checking its fill status against expectations.
+
+        .. deprecated:: P5 (2026-07-20)
+            noble-trader-fastapi-backend no longer places orders, so there's
+            nothing to reconcile. Returns a synthetic "skipped" result when
+            the execution gate is active. The hermes agent owns reconciliation.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.info(
+                "Reconciler.reconcile_order: execution disabled — skipping. "
+                "order_id=%s", order_id,
+            )
+            return ReconciliationResult(
+                order_id=order_id,
+                symbol=symbol,
+                direction=direction,
+                expected_price=expected_price,
+                expected_quantity=expected_quantity,
+                status=ReconciliationStatus.PENDING,
+                discrepancy_notes=(
+                    "P5: execution disabled on noble server — "
+                    "reconciliation is the hermes agent's responsibility."
+                ),
+                reconciled_at=datetime.now(timezone.utc),
+            )
+
         result = ReconciliationResult(
             order_id=order_id,
             symbol=symbol,
@@ -235,7 +261,21 @@ class ReconciliationService:
         """
         Reconcile all orders from the last 24 hours.
         This is called by the periodic reconciliation scheduler.
+
+        .. deprecated:: P5 (2026-07-20)
+            Returns an empty list when the execution gate is active —
+            the noble server doesn't place orders anymore, so there's
+            nothing to reconcile.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.info(
+                "Reconciler.reconcile_all_recent: execution disabled — "
+                "returning empty list (noble server no longer places orders)."
+            )
+            return []
+
         results = []
         try:
             from regime_platform.services.operational.executor_factory import executor_factory
@@ -311,7 +351,26 @@ class ReconciliationService:
     async def reconcile_positions(self, user_id: str = "default") -> PositionReconciliationResult:
         """
         Compare our DB positions against Alpaca's reported positions.
+
+        .. deprecated:: P5 (2026-07-20)
+            Returns a synthetic "matched, 0/0" result when the execution
+            gate is active — the noble server no longer holds positions.
+            The hermes agent owns position state.
         """
+        # P5: Short-circuit if execution is disabled.
+        from regime_platform.services.execution_deprecation import execution_enabled
+        if not execution_enabled():
+            logger.info(
+                "Reconciler.reconcile_positions: execution disabled — "
+                "returning 0/0 matched (noble server holds no positions)."
+            )
+            return PositionReconciliationResult(
+                our_positions=0,
+                alpaca_positions=0,
+                matched=True,
+                discrepancies=[],
+            )
+
         result = PositionReconciliationResult(
             our_positions=0,
             alpaca_positions=0,

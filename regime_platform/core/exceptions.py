@@ -10,6 +10,7 @@ def classify_exception(exc: Exception) -> int:
     """Map an exception to the appropriate HTTP status code.
 
     Rules:
+        ExecutionDisabledError          -> 410  (Gone — execution deprecated on noble server)
         ValueError, TypeError           -> 400  (bad input)
         KeyError, AttributeError        -> 400  (missing required field)
         numpy.linalg.LinAlgError        -> 422  (valid input, computation failed)
@@ -21,6 +22,16 @@ def classify_exception(exc: Exception) -> int:
         Generic Exception                -> 500  (unexpected failure)
     """
     import numpy
+
+    # P5: Execution-deprecation gate — return 410 Gone so callers know
+    # this endpoint is permanently retired (vs. 503 which would imply
+    # temporary outage). Body explains where to find the replacement.
+    try:
+        from regime_platform.services.execution_deprecation import ExecutionDisabledError
+        if isinstance(exc, ExecutionDisabledError):
+            return 410
+    except ImportError:
+        pass  # execution_deprecation not yet imported (rare)
 
     if isinstance(exc, (ValueError, TypeError)):
         return 400

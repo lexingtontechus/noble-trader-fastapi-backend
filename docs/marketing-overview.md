@@ -3,6 +3,8 @@
 > **Where quantitative finance meets production-grade AI.**  
 > A FastAPI-powered trading intelligence platform that detects market regimes, computes real-time risk metrics, and drives RL/ML-powered trading policies.
 
+> **v7.7.0 update (2026-07-24):** The `p_markov` source is now produced by a **5-state multivariate Gaussian HMM** (9 features: log_return + 3 microstructure + 5 TA indicators) trained live via Baum-Welch, replacing the legacy discrete 3-state price-only `MarkovChain`. The 5 TA values (ADX, AO, BB Power, MACD, RSI) are persisted per sweep tick in `nt_sweep_result` + `nt_regime_log` (migration 036) for post-hoc calibration analytics.
+
 ---
 
 ## 🔥 The Problem
@@ -138,7 +140,7 @@ Tick → Brick Construction → Swing Classification → Pattern Detection
                  │ Risk Mgr   │         └─────────────┘
                  └────┬───────┘
                       │
-	          ┌───────────┼──────────────────┐
+                  ┌───────────┼──────────────────┐
           │           │                  │
      ┌────▼───┐ ┌────▼────┐  ┌──────▼─────────┐
      │ Redis  │ │Supabase │  │   Alpaca        │

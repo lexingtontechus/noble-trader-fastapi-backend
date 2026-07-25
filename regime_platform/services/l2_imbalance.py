@@ -1,6 +1,59 @@
 """
-L2 Order Book Imbalance Computer
-══════════════════════════════════
+L2 Order Book Imbalance Computer  [SOFT-DEPRECATED — P3.5 / P7 removal candidate]
+═════════════════════════════════════════════════════════════════════════════════
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  ⚠️  P3.5 DEPRECATION NOTICE (2026-07-21)                                  ║
+║  ────────────────────────────────────────────────────────────────────────  ║
+║  This module computes the L2-derived `p_imbalance` field that fed the     ║
+║  EV engine's external_signal parameter.                                   ║
+║                                                                            ║
+║  P3.5 REPLACES p_imbalance with `p_microstructure` (composite of L1-      ║
+║  derived microstructure + TVDA TA), computed in the proxy:                ║
+║    noble-trader-proxy/src/proxy/microstructure/                           ║
+║                                                                            ║
+║  Reasons for replacement:                                                  ║
+║    1. L2 coverage gap — Alpaca L2 is crypto-only; HL L2 is crypto-only.   ║
+║       No equity/forex/commodity L2 source exists. This created a          ║
+║       structural bias: crypto got 4 EV components, non-crypto got 3.      ║
+║    2. Single data plane — TVDA SSE L1 is the proxy's only data source.    ║
+║       Keeping L2 meant a permanent second data plane (Alpaca WS + HL WS)  ║
+║       with timestamp reconciliation overhead.                             ║
+║    3. Backtest comparability — p_microstructure is computed identically   ║
+║       for all 20 curated symbols, making EV threshold tuning comparable   ║
+║       across the basket.                                                  ║
+║                                                                            ║
+║  Disposition:                                                              ║
+║    - This module is PRESERVED (not deleted) for the P3.5 rollout window.  ║
+║    - p_imbalance continues to return its existing value for any caller    ║
+║      that still references it (the field is "soft-deprecated", not        ║
+║      removed).                                                            ║
+║    - STALE COMMENT FIX (audit §5 #20, 2026-07-22): the EV engine no       ║
+║      longer reads p_imbalance at all. The `external_signal` parameter     ║
+║      was REMOVED from compute_ev() in v5 (see ev_engine.py:22). The L2    ║
+║      imbalance value this module computes is currently NOT consumed by    ║
+║      any live path — it's preserved only for backward-compat replay of   ║
+║      historical backtest runs. P3.5 deprecated L2 entirely; the live      ║
+║      replacement input is `p_microstructure` from the proxy's             ║
+║      /sse/alerts microstructure event stream (HIGH #9 wired the SSE       ║
+║      consumer into the synthesizer's MetaRegimeClassifier as the          ║
+║      replacement microstructure source).                                  ║
+║    - P7 REMOVAL: scheduled for after 30 days of stable SSE operation      ║
+║      (target: 2026-08-21). At P7, this file + l2_adapters.py + the L2     ║
+║      subscriber paths in the agent (alpaca_adapter.stream_order_book +    ║
+║      hyperliquid_adapter.stream_order_book) will be DELETED.              ║
+║                                                                            ║
+║  Migration path for callers:                                               ║
+║    OLD:  signal = l2_imbalance.compute(snap)["imbalance_ratio"]           ║
+║    NEW:  micro = await proxy_microstructure_client.get(symbol)            ║
+║          p = micro["p_microstructure"]  # range [-1, +1]                  ║
+║                                                                            ║
+║  See:                                                                     ║
+║    - proxy: noble-trader-proxy/src/proxy/microstructure/composite.py      ║
+║    - design: P3.5 changelog in /home/z/my-project/worklog.md              ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+Original docstring (preserved for reference):
 
 Converts raw ``L2Snapshot`` order book depth data into the
 ``{signal, confidence, persistence}`` dict consumed by the
