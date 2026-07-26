@@ -99,6 +99,28 @@ BLOCK_MS = 30000
 # republish adds ~1KB to the consumer's pending list; 1000 is generous.
 MAX_PENDING_REPUBLISH = 1000
 
+# Plan titles stored in public.plans (see nobletradingapp 0001_init.sql).
+# Used to auto-resolve plan UUIDs from Supabase at startup so the two
+# NOBLE_TRADER_PLAN_*_ID env vars are optional overrides, not requirements.
+PLAN_TITLE_SIGNAL_SCOUT = "Signal Scout"
+PLAN_TITLE_PRECISION_PRO = "Precision Pro"
+
+# Cache TTL for the startup plan-UUID lookup from public.plans. The plan
+# table changes rarely (admin-curated), so 5 min is safe. Forced re-fetch
+# on cache expiry; invalidate via invalidate_plan_cache().
+PLAN_ID_CACHE_TTL_SEC = 300
+
+# ── Plan→symbol map published to Redis for the proxy (Option A) ──────────
+# Key holding the authoritative symbol→plan_ids map (sourced from
+# nt_symbol) so the proxy / Discord can authorize plan symbols without
+# calling Supabase. Written by the splitter on startup + on invalidation.
+# Proxy polls this key (with its own in-process TTL) and falls back to its
+# static PLAN_SYMBOLS if the key is absent.
+PROXY_PLAN_SYMBOLS_KEY = "proxy:plan_symbols"
+PROXY_PLAN_SYMBOLS_TTL_SEC = 3600  # 1h safety-net expiry (not a rewrite timer)
+# Pub/sub channel used to tell proxies to refresh immediately after a rewrite.
+PROXY_PLAN_SYMBOLS_INVALIDATE_CH = "proxy:plan_symbols:invalidate"
+
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -151,8 +173,10 @@ class StreamSplitter:
         # Stats — exposed via /health
         self.stats = SplitStats()
 
-        # Plan targets — resolved from settings at start() time
+        # Plan targets — resolved from settings / public.plans at start() time
         self._targets: list[PlanStreamTarget] = []
+        # Cache for the startup plan-UUID lookup from public.plans
+        self._plan_id_cache: Optional[Tuple[dict, float]] = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -175,8 +199,8 @@ class StreamSplitter:
             )
             return
 
-        # Resolve plan targets from settings.
-        self._targets = self._resolve_plan_targets()
+        # Resolve plan targets (explicit env override, else public.plans lookup).
+        self._targets = await self._resolve_plan_targets()
         if not self._targets:
             log.warning(
                 "StreamSplitter: no plan UUIDs configured "
@@ -212,6 +236,11 @@ class StreamSplitter:
             "StreamSplitter: started (consumer=%s, targets=%d, block_ms=%d)",
             CONSUMER_NAME, len(self._targets), BLOCK_MS,
         )
+
+        # Option A: publish the authoritative plan→symbol map to Redis for
+        # the proxy / Discord (avoids each consumer hitting Supabase).
+        # Fire-and-forget; failures are logged, never block startup.
+        asyncio.create_task(self._publish_plan_symbols_to_redis())
 
     async def stop(self) -> None:
         """Stop the background consumer task gracefully."""
@@ -345,22 +374,205 @@ class StreamSplitter:
 
     # ── Plan resolution ────────────────────────────────────────────────
 
-    def _resolve_plan_targets(self) -> list[PlanStreamTarget]:
-        """Build the list of (stream, plan_id) targets from settings."""
-        targets = []
-        if settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID:
+    async def _resolve_plan_targets(self) -> list[PlanStreamTarget]:
+        """Build the list of (stream, plan_id) targets.
+
+        Resolution priority per plan:
+          1. Explicit env override (NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID /
+             NOBLE_TRADER_PLAN_PRECISION_PRO_ID) — highest precedence.
+          2. Auto-load from public.plans by title (Signal Scout /
+             Precision Pro) via Supabase PostgREST.
+
+        If a plan UUID cannot be resolved from either source, that plan's
+        target is omitted. When NO targets resolve at all, the caller
+        falls back to fail-open (publish to both streams) — see start().
+        """
+        targets: list[PlanStreamTarget] = []
+
+        # 1) Explicit env overrides (may be partial — e.g. only one set).
+        scout_id = settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID or ""
+        pro_id = settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID or ""
+
+        # 2) Fill any missing UUIDs from public.plans (keyed by title).
+        if not scout_id or not pro_id:
+            try:
+                resolved = await self._fetch_plan_ids_from_supabase()
+            except Exception as e:  # fail-open: don't crash startup
+                log.warning(
+                    "StreamSplitter: could not auto-resolve plan UUIDs from "
+                    "public.plans — %s. Env overrides (if any) still apply.",
+                    e,
+                )
+                resolved = {}
+            scout_id = scout_id or resolved.get(PLAN_TITLE_SIGNAL_SCOUT, "")
+            pro_id = pro_id or resolved.get(PLAN_TITLE_PRECISION_PRO, "")
+
+        src = "env override"
+        if not (settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID
+                and settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID):
+            src = "public.plans lookup"
+
+        if scout_id:
             targets.append(PlanStreamTarget(
                 stream=STREAM_SIGNAL_SCOUT,
-                plan_id=settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID,
+                plan_id=scout_id,
                 plan_name="Signal Scout",
             ))
-        if settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID:
+        if pro_id:
             targets.append(PlanStreamTarget(
                 stream=STREAM_PRECISION_PRO,
-                plan_id=settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID,
+                plan_id=pro_id,
                 plan_name="Precision Pro",
             ))
+
+        if targets:
+            log.info(
+                "StreamSplitter: resolved %d plan target(s) via %s: %s",
+                len(targets), src,
+                ", ".join(f"{t.plan_name}={t.plan_id[:8]}…" for t in targets),
+            )
         return targets
+
+    async def _fetch_plan_ids_from_supabase(self) -> dict[str, str]:
+        """Fetch plan UUIDs from public.plans, keyed by title.
+
+        Returns a dict {plan_title: plan_id}. Only returns plans whose
+        titles match the two known plan names. Raises on Supabase error so
+        the caller can decide fail-open behavior.
+
+        Uses a short in-process cache (PLAN_ID_CACHE_TTL_SEC) since the
+        plan table rarely changes.
+        """
+        now = time.monotonic()
+        if self._plan_id_cache is not None:
+            cached, expires_at = self._plan_id_cache
+            if now < expires_at:
+                return cached
+
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+            raise RuntimeError("Supabase not configured")
+
+        import httpx
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/rest/v1/plans"
+        params = {
+            "select": "id,title",
+            "title": f"in.({PLAN_TITLE_SIGNAL_SCOUT},{PLAN_TITLE_PRECISION_PRO})",
+        }
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        resolved: dict[str, str] = {}
+        for row in data:
+            title = row.get("title")
+            pid = row.get("id")
+            if title in (PLAN_TITLE_SIGNAL_SCOUT, PLAN_TITLE_PRECISION_PRO) and pid:
+                resolved[title] = str(pid)
+
+        self._plan_id_cache = (resolved, now + PLAN_ID_CACHE_TTL_SEC)
+        return resolved
+
+    async def _fetch_all_symbol_plans(self) -> dict[str, list[str]]:
+        """Fetch every active symbol's plan_ids from nt_symbol in ONE query.
+
+        Returns {symbol: [plan_uuid, ...]}. This replaces the per-symbol
+        per-5-min Supabase chatter: the splitter builds the authoritative
+        plan→symbol map once and publishes it to Redis (proxy:plan_symbols)
+        for downstream authorization, instead of each consumer hitting
+        Supabase independently.
+        """
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+            raise RuntimeError("Supabase not configured")
+
+        import httpx
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/rest/v1/nt_symbol"
+        params = {
+            "select": "symbol,plan_ids",
+            "active": "eq.true",
+        }
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        result: dict[str, list[str]] = {}
+        for row in data:
+            sym = (row.get("symbol") or "").upper()
+            pids = row.get("plan_ids") or []
+            if sym:
+                result[sym] = [str(p) for p in pids if p]
+        return result
+
+    async def _publish_plan_symbols_to_redis(self) -> None:
+        """Publish the authoritative symbol→plan map to Redis (Option A).
+
+        Builds {plan_slug: [symbols]} from nt_symbol and writes it to
+        proxy:plan_symbols (TTL = PROXY_PLAN_SYMBOLS_TTL_SEC). Downstream
+        consumers (proxy plan_resolver, Discord) read this key instead of
+        calling Supabase. Falls back to no-op if Supabase/Redis unavailable
+        so startup is never blocked.
+        """
+        if self._redis is None:
+            return
+        try:
+            symbol_plans = await self._fetch_all_symbol_plans()
+        except Exception as e:
+            log.warning(
+                "StreamSplitter: could not fetch nt_symbol plan map — "
+                "proxy:plan_symbols not refreshed. error=%s", e,
+            )
+            return
+
+        # Resolve plan UUID -> slug via public.plans lookup.
+        try:
+            title_to_uuid = await self._fetch_plan_ids_from_supabase()
+        except Exception as e:
+            log.warning(
+                "StreamSplitter: could not resolve plan UUIDs — "
+                "proxy:plan_symbols not refreshed. error=%s", e,
+            )
+            return
+        uuid_to_slug = {
+            uuid: ("signal_scout" if title == PLAN_TITLE_SIGNAL_SCOUT
+                   else "precision_pro")
+            for title, uuid in title_to_uuid.items()
+        }
+
+        # Build slug -> set(symbols).
+        by_slug: dict[str, set[str]] = {"signal_scout": set(), "precision_pro": set()}
+        for sym, pids in symbol_plans.items():
+            for pid in pids:
+                slug = uuid_to_slug.get(pid)
+                if slug:
+                    by_slug[slug].add(sym)
+
+        payload = {slug: sorted(syms) for slug, syms in by_slug.items()}
+        try:
+            await self._redis.set(
+                PROXY_PLAN_SYMBOLS_KEY,
+                json.dumps(payload),
+                ex=PROXY_PLAN_SYMBOLS_TTL_SEC,
+            )
+            # Tell any listening proxies to refresh their in-process cache now.
+            await self._redis.publish(PROXY_PLAN_SYMBOLS_INVALIDATE_CH, "1")
+            log.info(
+                "StreamSplitter: published proxy:plan_symbols "
+                "(scout=%d, pro=%d symbols)",
+                len(payload["signal_scout"]), len(payload["precision_pro"]),
+            )
+        except Exception as e:
+            log.warning(
+                "StreamSplitter: failed to write proxy:plan_symbols — %s", e,
+            )
 
     def _select_targets(self, plan_ids: Set[str]) -> list[PlanStreamTarget]:
         """Select which target streams to republish to, given plan membership.
@@ -473,6 +685,10 @@ class StreamSplitter:
             if symbol is None:
                 self._symbol_plan_cache.clear()
                 log.info("StreamSplitter: invalidated entire symbol→plan cache")
+                # Admin likely curated nt_symbol.plan_ids — refresh the
+                # authoritative proxy:plan_symbols map for downstream consumers.
+                if self._redis is not None:
+                    asyncio.create_task(self._publish_plan_symbols_to_redis())
             else:
                 self._symbol_plan_cache.pop(symbol, None)
                 log.info("StreamSplitter: invalidated cache for symbol %s", symbol)

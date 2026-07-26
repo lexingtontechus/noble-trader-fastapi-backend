@@ -178,14 +178,20 @@ class Settings(BaseSettings):
     
     @property
     def redis_url_effective(self) -> str:
-        """Return REDIS_URL, falling back to UPSTASH_REDIS_REST_URL if set."""
-        if self.REDIS_URL:
-            return self.REDIS_URL
-        if self.UPSTASH_REDIS_REST_URL:
-            token = self.UPSTASH_REDIS_REST_TOKEN
-            host = self.UPSTASH_REDIS_REST_URL.replace("https://", "").rstrip("/")
-            return f"rediss://:{token}@{host}:6379"
-        return ""
+        """Return REDIS_URL — the single source of truth for the Redis connection.
+
+        The legacy UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN fallback has
+        been removed deliberately: a missing or misconfigured REDIS_URL must
+        surface clearly (no Redis configured) instead of silently connecting to
+        a stale Upstash instance. If REDIS_URL is empty, callers that require
+        Redis (stream_splitter, redis_pool, signal_aggregator, webhook service)
+        will raise/log "no Redis configured" rather than hang on a dead host.
+
+        Set REDIS_URL in the deployment environment (e.g. the new Railway Redis)
+        and ensure it is present on every fresh instance — env vars are
+        per-instance and are NOT carried over when a Studio is re-created.
+        """
+        return self.REDIS_URL
 
     # ── Rate Limiting ───────────────────────────────────────────────────────
     RATE_LIMIT_DEFAULT: str = "60/minute"

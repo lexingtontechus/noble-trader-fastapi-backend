@@ -341,9 +341,10 @@ class ExternalWebhookService:
         log.info("Starting External Webhook Service")
         
         # Initialize Redis client
-        if settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL:
+        redis_url = settings.redis_url_effective
+        if redis_url:
             self.redis_client = redis.from_url(
-                settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL,
+                redis_url,
                 decode_responses=False
             )
         else:
