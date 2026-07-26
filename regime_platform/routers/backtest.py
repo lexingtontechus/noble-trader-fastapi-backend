@@ -528,10 +528,10 @@ async def optimize_backtest(
 
         try:
             from regime_platform.services.statistics.deflated_sharpe import (
-                compute_dsr_for_backtest,
+                deflated_sharpe_ratio,
             )
             from regime_platform.services.statistics.multiple_testing import (
-                multiple_testing_correction,
+                apply_all_corrections,
             )
 
             # 6A: Deflated Sharpe Ratio
@@ -544,22 +544,16 @@ async def optimize_backtest(
                     approx_std = 1.0
                     approx_mean = best_sharpe * approx_std
                     approx_returns = rng.normal(approx_mean, approx_std, n_trades_best)
-                    dsr_obj = compute_dsr_for_backtest(
-                        trade_pnls=approx_returns,
+                    dsr_result = deflated_sharpe_ratio(
+                        observed_sharpe=best_sharpe,
                         n_trials=n_combos,
-                        is_daily_returns=True,
+                        sample_length=n_trades_best,
+                        returns=approx_returns,
                     )
-                    dsr_result = dsr_obj.to_dict()
 
             # 6C: Multiple Testing Correction
-            multiple_testing = {}
-            mt_results = multiple_testing_correction(
-                results=results,
-                alpha=0.05,
-                n_observations=max(r.get("n_trades", 100) for r in results) if results else 100,
-            )
-            for method_name, mt_result in mt_results.items():
-                multiple_testing[method_name] = mt_result.to_dict()
+            p_values = [float(r.get("p_value", 0.5)) for r in results] if results else []
+            multiple_testing = apply_all_corrections(p_values=p_values, alpha=0.05)
 
         except Exception as exc:
             logger.warning(f"Phase 6 statistical analysis failed: {exc}")
