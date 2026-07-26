@@ -66,6 +66,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, Tuple
 
 import redis.asyncio as redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from regime_platform.core.settings import settings
 
@@ -167,6 +169,10 @@ class StreamSplitter:
         self._symbol_plan_cache: Dict[str, Tuple[Set[str], float]] = {}
         self._cache_lock = asyncio.Lock()
 
+        # Guard for reconnecting the Redis client (a dropped Railway
+        # connection must not be retried on a dead socket).
+        self._reconnect_lock = asyncio.Lock()
+
         # Supabase client (lazy — only created if plan UUIDs are configured)
         self._supabase_client = None
 
@@ -208,7 +214,22 @@ class StreamSplitter:
                 "Falling back to fail-open: every signal will be published to BOTH plan streams."
             )
 
-        self._redis = redis.from_url(redis_url, decode_responses=True)
+        self._redis = redis.from_url(
+            redis_url,
+            decode_responses=True,
+            # Reuse-or-reconnect: ping the connection before handing it out
+            # so a connection the Railway proxy silently dropped (idle/blocked
+            # reads time out) is discarded instead of raising mid-command.
+            health_check_interval=30,
+            # Retry once on transient timeouts rather than killing the loop.
+            retry_on_timeout=True,
+            # Bound connection setup; the blocking XREADGROUP uses BLOCK_MS,
+            # not socket_timeout, so a 30s block is NOT treated as a timeout.
+            socket_connect_timeout=10,
+            socket_timeout=10,
+            # Auto-reconnect at the TCP layer on dropped links.
+            retry=redis.retry.Retry(redis.backoff.ConstantBackoff(1), 3),
+        )
 
         # Idempotently create the consumer group on the raw stream.
         # MKSTREAM=False because the orchestrator must already be publishing
@@ -242,6 +263,43 @@ class StreamSplitter:
         # Fire-and-forget; failures are logged, never block startup.
         asyncio.create_task(self._publish_plan_symbols_to_redis())
 
+    async def _reconnect(self) -> bool:
+        """Close and recreate the Redis client. Returns True if reconnected.
+
+        Called when a connection-class error (TimeoutError / ConnectionError)
+        is detected in the consumer loop — retrying on a dead socket in the
+        pool would time out forever. Guarded by a lock so concurrent errors
+        don't open duplicate clients.
+        """
+        async with self._reconnect_lock:
+            if self._redis is not None:
+                try:
+                    await self._redis.aclose()
+                except Exception:
+                    pass
+                self._redis = None
+            redis_url = settings.redis_url_effective
+            if not redis_url:
+                return False
+            self._redis = redis.from_url(
+                redis_url,
+                decode_responses=True,
+                health_check_interval=30,
+                retry_on_timeout=True,
+                socket_connect_timeout=10,
+                socket_timeout=10,
+                retry=redis.retry.Retry(redis.backoff.ConstantBackoff(1), 3),
+            )
+            # Re-create the consumer group if the stream still exists.
+            try:
+                await self._redis.xgroup_create(
+                    RAW_STREAM, CONSUMER_GROUP, id="0", mkstream=False
+                )
+            except redis.ResponseError as e:
+                if "BUSYGROUP" not in str(e):
+                    raise
+            return True
+
     async def stop(self) -> None:
         """Stop the background consumer task gracefully."""
         if not self._running:
@@ -267,10 +325,18 @@ class StreamSplitter:
     # ── Consumer loop ──────────────────────────────────────────────────
 
     async def _run(self) -> None:
-        """Main consumer loop — XREADGROUP → resolve plans → XADD per plan."""
+        """Main consumer loop — XREADGROUP → resolve plans → XADD per plan.
+
+        Resilient to the Railway proxy silently dropping idle/blocked
+        connections: a connection-class error triggers a full client
+        reconnect (the dead socket is discarded) rather than retrying on a
+        broken pool connection. The broad Exception guard ensures the
+        background task never dies — splitting always keeps running.
+        """
         assert self._redis is not None
         log.info("StreamSplitter: consumer loop started (consumer=%s)", CONSUMER_NAME)
 
+        backoff = 1.0
         while self._running:
             try:
                 # XREADGROUP with block=BLOCK_MS — returns [] on timeout,
@@ -284,6 +350,8 @@ class StreamSplitter:
                 )
 
                 if not response:
+                    # Normal idle timeout — reset backoff and continue.
+                    backoff = 1.0
                     continue
 
                 for _stream, entries in response:
@@ -293,11 +361,28 @@ class StreamSplitter:
             except asyncio.CancelledError:
                 log.info("StreamSplitter: consumer loop cancelled")
                 break
+
+            except (RedisConnectionError, RedisTimeoutError) as e:
+                # The Railway proxy dropped the connection. Reconnect on a
+                # fresh socket instead of retrying the dead one, with capped
+                # exponential backoff so we don't hammer Redis while it's down.
+                self.stats.errors += 1
+                log.warning(
+                    "StreamSplitter: Redis connection error (%s) — reconnecting "
+                    "(backoff=%.1fs)", type(e).__name__, backoff,
+                )
+                if self._redis is not None:
+                    await self._reconnect()
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
             except Exception as e:
+                # Any other unexpected error: count it, log it, and keep the
+                # loop alive (never let the background task die).
                 self.stats.errors += 1
                 log.error("StreamSplitter: consumer loop error: %s", e, exc_info=True)
-                # Backoff to avoid tight error loop hammering Redis
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
         log.info("StreamSplitter: consumer loop exited")
 
