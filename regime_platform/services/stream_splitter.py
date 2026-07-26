@@ -292,7 +292,7 @@ class StreamSplitter:
                 health_check_interval=30,
                 retry_on_timeout=True,
                 socket_connect_timeout=10,
-                socket_timeout=10,
+                socket_timeout=40,
                 retry=Retry(ConstantBackoff(1), 3),
             )
             # Re-create the consumer group if the stream still exists.
