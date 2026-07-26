@@ -226,9 +226,12 @@ class StreamSplitter:
             # Retry once on transient timeouts rather than killing the loop.
             retry_on_timeout=True,
             # Bound connection setup; the blocking XREADGROUP uses BLOCK_MS,
-            # not socket_timeout, so a 30s block is NOT treated as a timeout.
+            # socket_timeout MUST exceed BLOCK_MS (30s): a blocked XREADGROUP
+            # waits up to BLOCK_MS for data, and redis-py applies socket_timeout
+            # to that read. A smaller socket_timeout makes every idle read raise
+            # TimeoutError -> reconnect loop. Buffer of 10s covers jitter.
             socket_connect_timeout=10,
-            socket_timeout=10,
+            socket_timeout=40,
             # Auto-reconnect at the TCP layer on dropped links.
             retry=Retry(ConstantBackoff(1), 3),
         )
