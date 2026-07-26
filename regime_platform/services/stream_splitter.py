@@ -66,6 +66,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, Tuple
 
 import redis.asyncio as redis
+from redis.backoff import ConstantBackoff
+from redis.retry import Retry
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -228,7 +230,7 @@ class StreamSplitter:
             socket_connect_timeout=10,
             socket_timeout=10,
             # Auto-reconnect at the TCP layer on dropped links.
-            retry=redis.retry.Retry(redis.backoff.ConstantBackoff(1), 3),
+            retry=Retry(ConstantBackoff(1), 3),
         )
 
         # Idempotently create the consumer group on the raw stream.
@@ -288,7 +290,7 @@ class StreamSplitter:
                 retry_on_timeout=True,
                 socket_connect_timeout=10,
                 socket_timeout=10,
-                retry=redis.retry.Retry(redis.backoff.ConstantBackoff(1), 3),
+                retry=Retry(ConstantBackoff(1), 3),
             )
             # Re-create the consumer group if the stream still exists.
             try:
