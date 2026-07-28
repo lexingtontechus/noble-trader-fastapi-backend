@@ -580,6 +580,15 @@ class SweepOrchestrator(HeavySweepMixin):
         # Key: (symbol, direction), Value: hash string of last published content.
         self._last_signal_hash: dict[tuple[str, str], str] = {}
 
+        # ── Regime-shift tracking for the agent heartbeat ─────────────
+        # Per-symbol list of epoch-ms timestamps when a regime shift was
+        # detected. Used to compute `shifts_24h` (count of shifts in the
+        # trailing 24h) for the heartbeat payload the agent consumes.
+        # (The agent's NobleTraderHeartbeat schema requires shift_at +
+        # shifts_24h; the proxy forwards the payload verbatim, so the
+        # backend must supply them.)
+        self._shift_counts: dict[str, list[float]] = {}
+
         # Shared engine instances
         self._sizer = PositionSizer()
         self._ev_engine = EVEngine()
@@ -1084,6 +1093,24 @@ class SweepOrchestrator(HeavySweepMixin):
                 await asyncio.sleep(STAGGER_SECONDS)
 
     # ─── Per-symbol processing ─────────────────────────────────────
+
+    def _count_shifts_24h(
+        self, symbol: str, now_ms: float, regime_shift: bool
+    ) -> int:
+        """Count regime shifts for `symbol` in the trailing 24h.
+
+        Maintains a per-symbol list of shift timestamps (epoch ms) and prunes
+        anything older than 24h. If this signal itself is a shift, its
+        timestamp is recorded before counting. Returns the count (>= 0).
+        """
+        window_ms = 24 * 60 * 60 * 1000
+        stamps = self._shift_counts.get(symbol, [])
+        if regime_shift:
+            stamps.append(now_ms)
+        # Prune entries older than 24h.
+        stamps = [t for t in stamps if (now_ms - t) <= window_ms]
+        self._shift_counts[symbol] = stamps
+        return len(stamps)
 
     async def _process_symbol(
         self,
@@ -1667,6 +1694,22 @@ class SweepOrchestrator(HeavySweepMixin):
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
             "size_mult": round(size_mult, 2),
+            # ── Regime-shift bookkeeping (agent NobleTraderHeartbeat requires
+            # these; the proxy forwards the payload verbatim, so the backend
+            # must emit them). shift_at = ms timestamp of the last shift (0 if
+            # no shift on this signal); shifts_24h = count of shifts in the
+            # trailing 24h, tracked per-symbol on this orchestrator instance.
+            "shift_at": int(now_ms) if regime_shift else 0,
+            "shifts_24h": self._count_shifts_24h(symbol, now_ms, regime_shift),
+            # ── p_imbalance (order-flow imbalance, 0-1) ──────────────────
+            # NOTE: the backend deprecated the true L2-derived p_imbalance in
+            # favour of p_microstructure (composite of L1/L2). The agent still
+            # requires p_imbalance, so we supply the closest available
+            # order-flow/persistence proxy: p_markov (the HMM multi-step hold
+            # probability), which is already in [0,1] and order-flow-flavoured.
+            # When a real L2 imbalance is unavailable this is a best-effort
+            # stand-in — not the legacy L2 top-of-book imbalance.
+            "p_imbalance": round(float(ev_result.p_markov), 4) if ev_result.p_markov is not None else 0.5,
             "qualified": qualified,
         })
 
