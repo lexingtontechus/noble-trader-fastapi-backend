@@ -541,9 +541,14 @@ class HeavySweepMixin:
                 "p_win": round(ev_result.p_win, 4),
                 "qualified": qualified,
                 "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
-                "entry_price": round(trade_signal["entry_price"], decimals),
-                "stop_loss": round(trade_signal["stop_loss"], decimals),
-                "take_profit": round(trade_signal["take_profit"], decimals),
+                # ── FULL PRECISION PRICES (2026-08-05) ──────────────────
+                # Round to 6dp, NOT `decimals` — `decimals` defaulted to
+                # 2dp for XAUUSD/XAUEUR/XAUAUD/XAGUSD and truncated the
+                # entry/stop/tp stored in nt_sweep_result. The full value
+                # must be stored so Discord can deliver the same value.
+                "entry_price": round(trade_signal["entry_price"], 6),
+                "stop_loss": round(trade_signal["stop_loss"], 6),
+                "take_profit": round(trade_signal["take_profit"], 6),
                 "venue": venue_name,
                 # ── TA indicators (migration 036) ──────────────────────
                 # From HMM feature buffer's latest bar for this symbol
@@ -789,9 +794,13 @@ class HeavySweepMixin:
             "regime": regime_label,
             "regime_conf": round(regime_conf, 4),
             "signal": trade_signal["signal"],
-            "entry_price": round(trade_signal["entry_price"], decimals),
-            "stop_loss": round(trade_signal["stop_loss"], decimals),
-            "take_profit": round(trade_signal["take_profit"], decimals),
+            # ── FULL PRECISION PRICES (2026-08-05) ──────────────────────
+            # Same rule as the light sweep heartbeat: 6dp, NOT `decimals`,
+            # so Discord receives the same full entry/stop/tp values that
+            # are stored in nt_sweep_result.
+            "entry_price": round(trade_signal["entry_price"], 6),
+            "stop_loss": round(trade_signal["stop_loss"], 6),
+            "take_profit": round(trade_signal["take_profit"], 6),
             "aggression": ev_result.aggression,
             "brick_size": best.brick_size,
             "sl_bricks": best.sl_bricks,

@@ -473,6 +473,13 @@ _PRICE_DECIMALS: dict[str, int] = {
     "MSFT": 2, "NVDA": 2, "TSLA": 2, "SPY": 2, "QQQ": 2,
     "EURUSD": 5, "GBPUSD": 5, "USDJPY": 3, "AUDUSD": 5, "USDCAD": 5,
     "GOLD": 2, "SILVER": 2, "OIL": 2, "COPPER": 2,
+    # ── OANDA metals (migration 031 multi-exchange symbols) ──────
+    # XAUUSD / XAUEUR / XAUAUD / XAGUSD are quoted with 3-4 decimal
+    # places on OANDA. Do NOT truncate them to the 2dp default — the
+    # full value must survive the sweep → Redis → Discord → Supabase
+    # pipeline (see nt_sweep_result.entry_price / stop_loss / take_profit).
+    "XAUUSD": 3, "XAUEUR": 4, "XAUAUD": 4, "XAGUSD": 4,
+    "XAU": 3, "XAG": 4,
 }
 
 
@@ -1480,11 +1487,12 @@ class SweepOrchestrator(HeavySweepMixin):
         # to "signal.debug.noble_trader" so you can subscribe and inspect
         # what's being filtered. This is essential for threshold tuning —
         # you can't optimize what you can't see.
-        # NOTE: decimals must be computed BEFORE this block because the
-        # debug payload uses it for price rounding. Previously decimals
-        # was defined later (at the Redis write section), causing
-        # UnboundLocalError when DEBUG_SIGNALS=1.
-        decimals = _price_decimals(symbol)
+        # NOTE (2026-08-05): prices are now rounded to 6dp (full value) in
+        # both the debug payload and the Redis heartbeat — see the comments
+        # at the round() call sites. `_price_decimals()` is retained for
+        # heavy_sweep.py and any display-only formatting, but is no longer
+        # applied to entry/stop/tp on the signal path (it defaulted to 2dp
+        # for XAUUSD/XAUEUR/XAUAUD/XAGUSD and truncated the values).
 
         if DEBUG_SIGNALS:
             _debug_ts = int(time.time() * 1000)
@@ -1504,9 +1512,15 @@ class SweepOrchestrator(HeavySweepMixin):
                 "ev_allowed": ev_result.allowed,
                 "ev_reason": ev_result.reason,
                 "failed_gates": [k for k, v in gate_results.items() if not v],
-                "entry_price": round(trade_signal["entry_price"], decimals),
-                "stop_loss": round(trade_signal["stop_loss"], decimals),
-                "take_profit": round(trade_signal["take_profit"], decimals),
+                # ── FULL PRECISION PRICES (2026-08-05) ──────────────────
+                # Do NOT round to `decimals` here. `decimals` was 2dp for
+                # XAUUSD/XAUEUR/XAUAUD/XAGUSD (not in _PRICE_DECIMALS),
+                # which truncated the entry/stop/tp to 2dp in the debug
+                # channel. Round to 6dp so the debug stream carries the
+                # same full value as nt_sweep_result.
+                "entry_price": round(trade_signal["entry_price"], 6),
+                "stop_loss": round(trade_signal["stop_loss"], 6),
+                "take_profit": round(trade_signal["take_profit"], 6),
                 "sl_bricks": sl_bricks,
                 "tp_bricks": tp_bricks,
                 "brick_size": brick_size,
@@ -1630,9 +1644,16 @@ class SweepOrchestrator(HeavySweepMixin):
             "regime": regime_label,
             "regime_conf": round(regime_conf, 4),
             "signal": trade_signal["signal"],
-            "entry_price": round(trade_signal["entry_price"], decimals),
-            "stop_loss": round(trade_signal["stop_loss"], decimals),
-            "take_profit": round(trade_signal["take_profit"], decimals),
+            # ── FULL PRECISION PRICES (2026-08-05) ──────────────────────
+            # The heartbeat payload feeds the Discord signal embed via the
+            # SignalAggregator. Rounding to `decimals` (2dp default for
+            # XAUUSD/XAUEUR/XAUAUD/XAGUSD) truncated entry/stop/tp before
+            # Discord ever saw them — the card showed $0.70 SL for AUDUSD
+            # and $432.16 TP for XAUUSD. Keep 6dp so Discord delivers the
+            # SAME full value that is stored in nt_sweep_result.
+            "entry_price": round(trade_signal["entry_price"], 6),
+            "stop_loss": round(trade_signal["stop_loss"], 6),
+            "take_profit": round(trade_signal["take_profit"], 6),
             "aggression": ev_result.aggression,
             "brick_size": brick_size,
             "sl_bricks": sl_bricks,

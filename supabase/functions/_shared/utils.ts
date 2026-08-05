@@ -177,6 +177,17 @@ export const PRICE_TICK_DECIMALS: Record<string, number> = {
   BTCUSD: 1, // same tick as BTC perp
   ETHUSD: 2, // same tick as ETH perp
   SOLUSD: 4, // same tick as SOL perp
+  // ── OANDA metals (2026-08-05) ──
+  // XAUUSD / XAUEUR / XAUAUD / XAGUSD are quoted with 3-4 decimal places
+  // on OANDA. Do NOT truncate to the commodities 2dp default — the full
+  // value must survive computeTradeSignal → heartbeat → nt_sweep_result
+  // (entry_price / stop_loss / take_profit) and Discord delivery.
+  XAUUSD: 3,
+  XAUEUR: 4,
+  XAUAUD: 4,
+  XAGUSD: 4,
+  XAU: 3,
+  XAG: 4,
 };
 
 /** Set of Hyperliquid perp symbols for sig-fig rounding */

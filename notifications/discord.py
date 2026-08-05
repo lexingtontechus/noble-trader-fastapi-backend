@@ -86,6 +86,44 @@ LEVEL_EMOJI = {
 }
 
 
+# ── Full-value price formatting (2026-08-05) ────────────────────────────
+# Discord signal embeds MUST deliver the SAME full value that is stored in
+# Supabase nt_sweep_result (entry_price / stop_loss / take_profit). The
+# previous hardcoded ``f"${price:.2f}"`` truncated 3-5 decimal prices to
+# 2dp — e.g. AUDUSD SL 0.697 rendered as "$0.70" (identical to entry) and
+# XAUUSD TP 4032.16 rendered as "$432.16" when the leading digit was lost
+# in the payload. Format at 6dp then strip trailing zeros (keeping at
+# least 2dp for readability), so 4030.325 → "$4030.325", 0.697 → "$0.697",
+# 163.7225 → "$163.7225", 4036.32 → "$4036.32".
+
+def _fmt_price(value: Optional[float]) -> str:
+    """Format a price preserving its full stored precision.
+
+    Returns a currency string WITHOUT the ``$`` prefix (callers add it) —
+    e.g. ``"4030.325"`` / ``"0.697"`` / ``"4036.32"``. ``None`` → ``""``.
+    """
+    if value is None:
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    # 6dp keeps the full value; rstrip trailing zeros, keep >= 2dp.
+    s = f"{v:.6f}".rstrip("0").rstrip(".")
+    if "." not in s:
+        return f"{v:.2f}"
+    frac = s.split(".", 1)[1]
+    if len(frac) < 2:
+        return f"{v:.2f}"
+    return s
+
+
+def _fmt_price_usd(value: Optional[float]) -> str:
+    """Full-value price with a ``$`` prefix (``None`` → empty string)."""
+    s = _fmt_price(value)
+    return f"${s}" if s else ""
+
+
 # ── Rate Limiter ─────────────────────────────────────────────────────────
 
 
@@ -486,14 +524,18 @@ class DiscordNotifier:
         dir_emoji = "🟢" if direction.upper() in ("LONG", "BUY") else "🔴"
         color = DIRECTION_COLORS.get(direction.upper(), 0x3498DB)
 
-        # Price levels formatting
+        # Price levels formatting — FULL VALUE (2026-08-05). The previous
+        # ``f"${price:.2f}"`` truncated entry/stop/tp to 2dp. Use the
+        # full-precision formatter so the embed delivers the SAME values
+        # stored in nt_sweep_result (e.g. 4030.325 → "$4030.325",
+        # 0.697 → "$0.697").
         price_fields = []
-        price_fields.append({"name": "Entry Price", "value": f"${price:.2f}", "inline": True})
-        
+        price_fields.append({"name": "Entry Price", "value": _fmt_price_usd(price), "inline": True})
+
         if sl_price is not None:
-            price_fields.append({"name": "Stop Loss", "value": f"${sl_price:.2f}", "inline": True})
+            price_fields.append({"name": "Stop Loss", "value": _fmt_price_usd(sl_price), "inline": True})
         if tp_price is not None:
-            price_fields.append({"name": "Take Profit", "value": f"${tp_price:.2f}", "inline": True})
+            price_fields.append({"name": "Take Profit", "value": _fmt_price_usd(tp_price), "inline": True})
         
         # Risk levels in bricks
         risk_fields = []
@@ -619,7 +661,7 @@ class DiscordNotifier:
 
         embed = self._build_embed(
             title=title,
-            description=f"**{pattern}** pattern detected at ${price:.2f}",
+            description=f"**{pattern}** pattern detected at {_fmt_price_usd(price)}",
             color=color,
             fields=fields,
             footer="Noble Trader Agent | Renko HFT Pipeline",
@@ -704,7 +746,7 @@ class DiscordNotifier:
 
         if price is not None:
             fields.append({
-                "name": "Price", "value": f"${price:.2f}", "inline": True,
+                "name": "Price", "value": _fmt_price_usd(price), "inline": True,
             })
         if order_id is not None:
             fields.append({
@@ -712,11 +754,11 @@ class DiscordNotifier:
             })
         if sl_price is not None:
             fields.append({
-                "name": "Stop-Loss", "value": f"${sl_price:.2f}", "inline": True,
+                "name": "Stop-Loss", "value": _fmt_price_usd(sl_price), "inline": True,
             })
         if tp_price is not None:
             fields.append({
-                "name": "Take-Profit", "value": f"${tp_price:.2f}", "inline": True,
+                "name": "Take-Profit", "value": _fmt_price_usd(tp_price), "inline": True,
             })
         if pnl_bricks is not None:
             pnl_emoji = "📈" if pnl_bricks >= 0 else "📉"

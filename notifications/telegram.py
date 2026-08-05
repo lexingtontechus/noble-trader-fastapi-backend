@@ -440,14 +440,14 @@ class TelegramNotifier:
             f"{direction_emoji} <b>{symbol} Trading Signal</b>",
             f"{pattern_emoji} <i>{pattern_name}</i>",
             "",
-            f"💰 <b>Entry:</b> ${price:.2f}",
+            f"💰 <b>Entry:</b> {_fmt_price_usd(price)}",
         ]
         
         # Add price levels
         if sl_price is not None:
-            message_lines.append(f"🛡️ <b>SL:</b> ${sl_price:.2f}")
+            message_lines.append(f"🛡️ <b>SL:</b> {_fmt_price_usd(sl_price)}")
         if tp_price is not None:
-            message_lines.append(f"🚀 <b>TP:</b> ${tp_price:.2f}")
+            message_lines.append(f"🚀 <b>TP:</b> {_fmt_price_usd(tp_price)}")
         
         message_lines.extend([
             f"📊 <b>Confidence:</b> {confidence_color} {confidence_pct:.0f}%",
@@ -597,6 +597,29 @@ def _utc_now_iso() -> str:
     """Return current UTC time in ISO 8601 format."""
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt_price_usd(value: Optional[float]) -> str:
+    """Format a price preserving its full stored precision (2026-08-05).
+
+    Mirrors notifications/discord.py — the previous ``f"${price:.2f}"``
+    truncated 3-5 decimal prices (OANDA metals/forex) to 2dp. Format at
+    6dp then strip trailing zeros (keeping at least 2dp), so 4030.325 →
+    "$4030.325", 0.697 → "$0.697", 163.7225 → "$163.7225".
+    """
+    if value is None:
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    s = f"{v:.6f}".rstrip("0").rstrip(".")
+    if "." not in s:
+        return f"${v:.2f}"
+    frac = s.split(".", 1)[1]
+    if len(frac) < 2:
+        return f"${v:.2f}"
+    return f"${s}"
 
 
 # ── Singleton ────────────────────────────────────────────────────────────
