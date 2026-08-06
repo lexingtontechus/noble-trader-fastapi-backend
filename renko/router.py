@@ -300,6 +300,236 @@ class EVComputeResponse(BaseModel):
     markov_n_observations: int
 
 
+# ── DEPRECATED backward-compat Renko* API (pre-v7.3, 2026-08-05) ────────
+# The v7.3 refactor (Redis usage optimization) renamed the Renko backtest
+# request/response models to `BacktestRequest` / `OptimizationRequest` /
+# `StatisticalRigorRequest` etc. and removed the walk-forward / Monte-Carlo
+# pipeline helpers. Several legacy tests (test_renko_backtest.py,
+# test_data_quality.py::TestRouterDataQuality, test_backtest_cache.py::
+# TestCachedField) still import the OLD `Renko*` names. These deprecated
+# aliases keep that surface importable so the suite collects. New code must
+# use the current models — do NOT extend these.
+
+class RenkoBacktestRequest(BaseModel):
+    """DEPRECATED (v7.3) — use `BacktestRequest`. Kept for legacy tests.
+
+    Restored in full (incl. Phase-4/5 fields) because the legacy tests
+    assert on these exact defaults (symbol='SPY', regime_gate=True,
+    universe_mode='current_constituents', ...) — a bare subclass of
+    BacktestRequest would not satisfy them.
+    """
+    prices: List[float] = Field(..., min_length=50, description="Historical price series (min 50 ticks).")
+    symbol: str = Field(default="SPY", description="Trading symbol.")
+    # Brick Engine
+    brick_size: float = Field(default=0.50, gt=0, description="Fixed brick size in dollars.")
+    brick_size_mode: str = Field(default="fixed", description="fixed | atr | dynamic")
+    reversal_bricks: int = Field(default=2, ge=1, description="Bricks needed for reversal.")
+    # Pattern Detector
+    bull_trigger_n: int = Field(default=3, ge=1, description="N consecutive HH/HL for bull trigger.")
+    bear_trigger_n: int = Field(default=3, ge=1, description="N consecutive LL/LH for bear trigger.")
+    # Risk Manager
+    sl_bricks: int = Field(default=3, ge=1, description="Stop-loss in brick units.")
+    tp_bricks: int = Field(default=5, ge=1, description="Take-profit in brick units.")
+    trailing_stop: bool = Field(default=True, description="Enable trailing stop.")
+    trail_after_bricks: int = Field(default=3, ge=1, description="Activate trail after N bricks profit.")
+    trail_distance_bricks: int = Field(default=2, ge=1, description="Trail distance in bricks.")
+    # Signal Filter
+    max_trades_per_session: int = Field(default=15, ge=1, description="Max trades per session.")
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0, description="Max daily loss in bricks.")
+    max_consecutive_losses: int = Field(default=3, ge=1, description="Pause after N consecutive losses.")
+    cooldown_seconds: float = Field(default=30.0, ge=0, description="Min seconds between trades.")
+    regime_gate: bool = Field(default=True, description="Only trade with HMM regime alignment.")
+    # Transaction Costs
+    slippage_bps: float = Field(default=2.0, ge=0, description="Slippage in basis points (adverse fill).")
+    commission_bps: float = Field(default=5.0, ge=0, description="Commission in basis points of position value.")
+    spread_bps: float = Field(default=1.0, ge=0, description="Bid-ask spread in basis points (half-spread each side).")
+    # Execution Realism
+    oco_priority: str = Field(default="sl_first", description="OCO resolution: sl_first | tp_first | worst_case.")
+    # Capital / Dollar P&L (Phase 4A)
+    initial_capital: float = Field(default=100000.0, gt=0, description="Starting capital for dollar P&L.")
+    # Optional overrides
+    timestamps: Optional[List[float]] = Field(default=None, description="Matching timestamps for prices.")
+    regimes: Optional[List[str]] = Field(default=None, description="Pre-computed regime labels aligned with prices.")
+    signal_confidence_min: Optional[float] = Field(default=None, ge=0, le=1, description="Min signal confidence to trade.")
+    # ── Data Quality (Phase 5) ─────────────────────────────────────────
+    universe_mode: str = Field(default="current_constituents", description="Universe filtering: current_constituents (default) | pit_constituents.")
+    index_name: Optional[str] = Field(default=None, description="Index for PIT filtering (e.g. 'sp500').")
+    price_adjustment: str = Field(default="raw", description="Price adjustment mode: raw | split_adjusted | fully_adjusted.")
+    look_ahead_audit: bool = Field(default=False, description="Enable look-ahead bias audit.")
+
+
+class RenkoBacktestResponse(BaseModel):
+    """DEPRECATED (v7.3) — response contract used by legacy backtest tests."""
+    symbol: str
+    total_ticks: int
+    total_bricks: int
+    config_used: Dict[str, Any] = Field(default_factory=dict)
+    stats: Dict[str, Any] = Field(default_factory=dict)
+    trades: List[Dict[str, Any]] = Field(default_factory=list)
+    cached: bool = Field(default=False, description="True if served from cache (1h TTL).")
+    # ── Data Quality (Phase 5) ─────────────────────────────────────────
+    data_hash: Optional[str] = Field(default=None, description="SHA-256 hash of input price data.")
+    data_source: Dict[str, Any] = Field(default_factory=dict, description="Provenance metadata.")
+    survivorship_bias: Optional[Dict[str, Any]] = Field(default=None, description="Survivorship bias warning/info.")
+    price_adjustments_applied: List[Dict[str, Any]] = Field(default_factory=list, description="Corporate action adjustments applied.")
+    data_quality_warnings: List[str] = Field(default_factory=list, description="Data quality warnings (NaN, inf, jumps, etc.).")
+    look_ahead_audit_result: Optional[Dict[str, Any]] = Field(default=None, description="Look-ahead bias audit results.")
+
+
+class RenkoCompareConfig(BaseModel):
+    """DEPRECATED (v7.3) — use `OptimizationRequest`. Kept for legacy tests."""
+    label: str = Field(..., description="Label for this config (e.g. 'aggressive').")
+    brick_size: float = Field(default=0.50, gt=0)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    regime_gate: bool = Field(default=True)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
+    oco_priority: str = Field(default="sl_first")
+
+
+class RenkoBacktestCompareRequest(BaseModel):
+    """DEPRECATED (v7.3) — legacy compare request. Kept for tests."""
+    prices: List[float] = Field(..., min_length=50)
+    symbol: str = Field(default="SPY")
+    configs: List[RenkoCompareConfig] = Field(..., min_length=2, max_length=10)
+    timestamps: Optional[List[float]] = Field(default=None)
+    regimes: Optional[List[str]] = Field(default=None)
+
+
+class RenkoBacktestCompareResponse(BaseModel):
+    """DEPRECATED (v7.3) — legacy compare response. Kept for tests."""
+    comparisons: List[RenkoBacktestResponse]
+    diff: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RenkoBacktestOptimizeRequest(BaseModel):
+    """DEPRECATED (v7.3) — use `OptimizationRequest`. Kept for tests."""
+    prices: List[float] = Field(..., min_length=50)
+    symbol: str = Field(default="SPY")
+    param_grid: Dict[str, List] = Field(...)
+    brick_size: float = Field(default=0.50, gt=0)
+    brick_size_mode: str = Field(default="fixed")
+    reversal_bricks: int = Field(default=2, ge=1)
+    bull_trigger_n: int = Field(default=3, ge=1)
+    bear_trigger_n: int = Field(default=3, ge=1)
+    sl_bricks: int = Field(default=3, ge=1)
+    tp_bricks: int = Field(default=5, ge=1)
+    trailing_stop: bool = Field(default=True)
+    trail_after_bricks: int = Field(default=3, ge=1)
+    trail_distance_bricks: int = Field(default=2, ge=1)
+    max_trades_per_session: int = Field(default=15, ge=1)
+    max_daily_loss_bricks: float = Field(default=10.0, gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    regime_gate: bool = Field(default=True)
+    timestamps: Optional[List[float]] = Field(default=None)
+    regimes: Optional[List[str]] = Field(default=None)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    commission_bps: float = Field(default=5.0, ge=0)
+    spread_bps: float = Field(default=1.0, ge=0)
+    oco_priority: str = Field(default="sl_first")
+
+
+class RenkoBacktestOptimizeResponse(BaseModel):
+    """DEPRECATED (v7.3) — legacy optimize response. Kept for tests."""
+    results: List[Dict[str, Any]] = Field(...)
+    best_by_sharpe: Optional[Dict[str, Any]] = Field(default=None)
+    best_by_return: Optional[Dict[str, Any]] = Field(default=None)
+    n_combinations: int = Field(...)
+
+
+class RenkoWalkForwardRequest(BaseModel):
+    """DEPRECATED (v7.3) — walk-forward pipeline methods were removed.
+    Kept only so legacy model-validation tests can import it."""
+    prices: List[float] = Field(..., min_length=200)
+    symbol: str = Field(default="SPY")
+    train_window: int = Field(default=500, ge=100)
+    test_window: int = Field(default=250, ge=50)
+    min_trades_for_stats: int = Field(default=5, ge=1)
+
+
+class RenkoWalkForwardResponse(BaseModel):
+    """DEPRECATED (v7.3) — see RenkoWalkForwardRequest."""
+    windows: List[Dict[str, Any]] = Field(default_factory=list)
+    aggregate: Dict[str, Any] = Field(default_factory=dict)
+    config_used: Dict[str, Any] = Field(default_factory=dict)
+    total_ticks: int = 0
+
+
+class RenkoMonteCarloRequest(BaseModel):
+    """DEPRECATED (v7.3) — Monte-Carlo pipeline methods were removed.
+    Kept only so legacy model-validation tests can import it."""
+    prices: List[float] = Field(..., min_length=100)
+    symbol: str = Field(default="SPY")
+    n_simulations: int = Field(default=1000, ge=100, le=10000)
+
+
+class RenkoMonteCarloResponse(BaseModel):
+    """DEPRECATED (v7.3) — see RenkoMonteCarloRequest."""
+    original: Dict[str, Any] = Field(default_factory=dict)
+    confidence_bands: Dict[str, Any] = Field(default_factory=dict)
+    p_profitable: float = 0.0
+    p_beat_original: float = 0.0
+    n_trades: int = 0
+    simulation_count: int = 0
+
+
+def _build_renko_config(req: "RenkoBacktestRequest") -> "RenkoConfig":
+    """DEPRECATED (v7.3) — legacy helper used by test_renko_backtest.py.
+    Builds a RenkoConfig from the legacy backtest request (now an alias of
+    the current BacktestRequest)."""
+    from renko.config import RenkoConfig as _RenkoConfig
+    return _RenkoConfig(
+        brick_size=req.brick_size,
+        brick_size_mode=req.brick_size_mode,
+        reversal_bricks=req.reversal_bricks,
+        bull_trigger_n=req.bull_trigger_n,
+        bear_trigger_n=req.bear_trigger_n,
+        sl_bricks=req.sl_bricks,
+        tp_bricks=req.tp_bricks,
+        trailing_stop=req.trailing_stop,
+        trail_after_bricks=req.trail_after_bricks,
+        trail_distance_bricks=req.trail_distance_bricks,
+        max_trades_per_session=req.max_trades_per_session,
+        max_daily_loss_bricks=req.max_daily_loss_bricks,
+        max_consecutive_losses=req.max_consecutive_losses,
+        cooldown_seconds=req.cooldown_seconds,
+        regime_gate=req.regime_gate,
+        slippage_bps=req.slippage_bps,
+        commission_bps=req.commission_bps,
+        spread_bps=req.spread_bps,
+        oco_priority=req.oco_priority,
+        initial_capital=req.initial_capital,
+        symbol=req.symbol,
+    )
+
+
+def _run_isolated_backtest(
+    prices: List[float],
+    config: "RenkoConfig",
+    timestamps: Optional[List[float]] = None,
+    regimes: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """DEPRECATED (v7.3) — legacy helper used by test_renko_backtest.py.
+    Runs a backtest in an isolated pipeline (never touches live state)."""
+    from renko.pipeline import RenkoPipeline as _RenkoPipeline
+    pipeline = _RenkoPipeline(config)
+    return pipeline.backtest(
+        prices=prices,
+        timestamps=timestamps,
+        regimes=regimes,
+    )
+
+
 # ── Pipeline registry ─────────────────────────────────────────────
 
 # In-memory registry of active pipelines - keyed by composite user_id:symbol

@@ -172,10 +172,12 @@ class AlpacaExecutor:
         paper: bool = True,
         use_bracket_orders: bool = True,
     ):
-        # P5: Gate construction — execution is deprecated on noble server.
-        # This raises ExecutionDisabledError unless NOBLE_TRADER_DISABLE_EXECUTION=false.
+        # P5: Execution is deprecated on noble server. The gate is enforced
+        # at the ORDER-PLACING entry points (execute/close_position/_submit_order)
+        # so that pure backtests / simulations can still construct the pipeline.
+        # Live order placement raises ExecutionDisabledError unless
+        # NOBLE_TRADER_DISABLE_EXECUTION=false.
         # The hermes agent (noble-trader-agent) is the canonical executor now.
-        assert_execution_enabled(context="AlpacaExecutor.__init__")
 
         # Resolve credentials from global settings if not explicitly provided
         api_key, api_secret = _resolve_alpaca_credentials(api_key, api_secret)
@@ -237,6 +239,10 @@ class AlpacaExecutor:
         Defense in depth: checks kill switch BEFORE submitting.
         Even if middleware fails, the executor itself will refuse to trade.
 
+        P5 gate: execution is deprecated on this server — placing a real
+        order raises ExecutionDisabledError unless
+        NOBLE_TRADER_DISABLE_EXECUTION=false (emergency rollback).
+
         Parameters
         ----------
         filtered : FilteredSignal
@@ -256,6 +262,11 @@ class AlpacaExecutor:
         -------
         OrderResult
         """
+        # ── P5 gate: execution deprecated on noble server ────────────
+        # Placing a real order raises ExecutionDisabledError unless
+        # NOBLE_TRADER_DISABLE_EXECUTION=false (emergency rollback).
+        assert_execution_enabled(context="AlpacaExecutor.execute")
+
         # ── Defense in depth: Kill switch check ──
         # Even if middleware fails, the executor itself refuses to trade
         try:
@@ -318,6 +329,8 @@ class AlpacaExecutor:
 
     async def close_position(self, symbol: str) -> OrderResult:
         """Close the current position for a symbol."""
+        # P5 gate: execution deprecated on noble server (see execute()).
+        assert_execution_enabled(context="AlpacaExecutor.close_position")
         result = await self._close_alpaca_position(symbol)
         self._order_history.append(result)
         return result

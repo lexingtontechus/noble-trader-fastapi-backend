@@ -73,9 +73,12 @@ if _auth_warnings:
     log.warning(f"Authentication configuration warning: {_auth_warnings}")
 
 if AUTH_ENABLED and not JWT_SECRET_KEY:
-    log.error(
-        "FATAL: JWT_SECRET_KEY is not set but AUTH_ENABLED=true. "
-        "All JWT authentication will fail. Set JWT_SECRET_KEY or set AUTH_ENABLED=false for development."
+    # DEPRECATED (2026-08-05): in dev/test the missing secret is a warning,
+    # not a FATAL error — auth simply won't work without it. Only
+    # production/staging refuse to start (see the raise below).
+    log.warning(
+        "JWT_SECRET_KEY is not set but AUTH_ENABLED=true. "
+        "JWT authentication will fail. Set JWT_SECRET_KEY or set AUTH_ENABLED=false for development."
     )
     # In production, refuse to start without a secret key
     _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()

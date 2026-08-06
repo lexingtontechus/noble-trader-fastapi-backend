@@ -4,8 +4,11 @@ Multivariate Gaussian HMM — replaces the discrete MarkovChain as the p_markov 
 Public API:
   • FeatureBuffer  — in-memory rolling per-symbol feature store
   • HmmModel       — 5-state Gaussian HMM with 3-state emit contract
-  • quote_fetcher  — TVDA /api/quote concurrent fetcher
-  • ta_fetcher     — TVDA /api/ta concurrent fetcher (5 indicators)
+  • quote_fetcher  — TVDA /api/quote/batch fetcher (⌈N/10⌉ chunked POSTs;
+                     full batch consolidation 2026-08-05)
+  • ta_fetcher     — computes 5 TA indicators LOCALLY from the sweep's
+                     batch OHLCV (no per-symbol HTTP — TVDA has no batch
+                     TA endpoint)
   • latest_ta      — extract the 5 TA values from a buffer for persistence
 
 See TALARIA-MULTIVARIATE-HMM-PROPOSAL.md for the full design.

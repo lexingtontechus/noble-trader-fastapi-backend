@@ -51,7 +51,9 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
     #
     # sweep_cron added — heavy sweep (Phase B) groups symbols by this column,
     # mirroring how the light sweep groups by regime_cron. Default is
-    # '0 20 * * 0,6' (Sat/Sun 20:00 UTC, migration 026) when NULL.
+    # '0 20 * * sun' (Sunday 20:00 UTC, migration 026) when NULL.
+    # NOTE: APScheduler uses PYTHON weekday convention (0=Monday); use the
+    # 'sun' name (or '6') for Sunday, NOT '0'.
     # plan_ids (UUID[]) added in migration 032 — needed so downstream consumers
     # (sweep orchestrator, future Railway Redis fan-out) can route signals per
     # subscription plan (Signal Scout / Precision Pro).

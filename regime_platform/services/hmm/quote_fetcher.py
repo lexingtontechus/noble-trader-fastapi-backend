@@ -1,9 +1,22 @@
 """
-TVDA /api/quote/{symbol} concurrent fetcher for the HMM.
+TVDA /api/quote/batch concurrent fetcher for the HMM (Phase B — full
+batch consolidation, 2026-08-05).
 
-Fetches bid/ask/size/volume data for 20 symbols concurrently via asyncio.gather,
-per TVDA's recommendation for multi-symbol batches. Called from the sweep cron
-tick — no separate poller task.
+Fetches bid/ask/size/volume data for ALL symbols in ⌈N/10⌉ batched POST
+calls (TVDA hard-limits /api/quote/batch to 10 symbols per request),
+instead of the old per-symbol `GET /api/quote/{symbol}` fan-out that
+tripped RapidAPI's 429 rate limit (11 concurrent single-symbol calls →
+"fetched 0/11 symbols" every tick).
+
+Request:
+    POST /api/quote/batch
+    {"symbols": ["COINBASE:BTCUSD", "OANDA:XAUUSD", ...]}   # max 10
+
+Response:
+    {"success": true, "data": {"total": N, "successful": N, "failed": 0,
+      "data": [{"success": true, "symbol": "COINBASE:BTCUSD",
+                "data": {"bid": ..., "ask": ..., "lp": ...,
+                         "volume": ..., "average_volume": ...}}, ...]}}
 
 Extracts 3 microstructure features:
   - effective_spread_bps = (ask - bid) / mid * 10000
@@ -12,12 +25,12 @@ Extracts 3 microstructure features:
 
 These features are pushed into the FeatureBuffer at indices 1-3 (see
 feature_buffer.py). Feature 0 (log_return) comes from the sweep's existing
-price fetch; features 4-8 (TA) come from ta_fetcher.py.
+price fetch; features 4-8 (TA) come from ta_fetcher.py (now computed
+locally from the same batch OHLCV — see ta_fetcher.py).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from typing import Any
@@ -30,8 +43,12 @@ from regime_platform.services.hmm.feature_buffer import N_FEATURES, FeatureBuffe
 
 logger = logging.getLogger("regime.hmm.quote_fetcher")
 
+# TVDA /api/quote/batch hard-limits to 10 symbols per request (same limit
+# as /api/price/batch). Larger lists are chunked into groups automatically.
+BATCH_CHUNK_SIZE = 10
 
-# ─── Concurrent fetch ───────────────────────────────────────────────────────
+
+# ─── Batched fetch ────────────────────────────────────────────────────────
 
 
 async def fetch_and_update(
@@ -39,13 +56,13 @@ async def fetch_and_update(
     buffer: FeatureBuffer,
     prev_closes: dict[str, float] | None = None,
 ) -> int:
-    """Fetch /api/quote for all symbols concurrently and push to the buffer.
+    """Fetch /api/quote/batch for all symbols and push to the buffer.
 
-    Called from the sweep cron tick. Uses asyncio.gather to fetch all 20
-    symbols in parallel (~1-2s total). Each symbol's 3 microstructure
-    features are combined with the latest log_return (from prev_closes) and
-    the latest TA values (from the buffer's previous bar) into a full
-    9-feature vector, then pushed.
+    Called from the sweep cron tick. Uses ⌈N/10⌉ batched POST calls instead
+    of the old per-symbol fan-out (which 429'd on RapidAPI). Each symbol's
+    3 microstructure features are combined with the latest log_return (from
+    prev_closes) and the latest TA values (from the buffer's previous bar)
+    into a full 9-feature vector, then pushed.
 
     Args:
         symbols: list of symbol config dicts, each with "symbol" and
@@ -65,37 +82,128 @@ async def fetch_and_update(
         logger.warning("hmm.quote: TRADINGVIEW_API_KEY not set — skipping")
         return 0
 
-    # Fetch all symbols concurrently
-    tasks = [_fetch_one(sym, api_key) for sym in symbols]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Map bare TV symbol → internal symbol for the batch response
+    tv_to_internal = {
+        _bare_tv_symbol(s): s["symbol"]
+        for s in symbols
+        if s.get("tradingview_symbol") or s.get("symbol")
+    }
+    if not tv_to_internal:
+        return 0
 
-    pushed = 0
-    for sym, result in zip(symbols, results):
-        symbol = sym["symbol"]
-        if isinstance(result, Exception):
+    # Chunk into BATCH_CHUNK_SIZE groups (TVDA hard-limits per request)
+    chunks = [
+        symbols[i:i + BATCH_CHUNK_SIZE]
+        for i in range(0, len(symbols), BATCH_CHUNK_SIZE)
+    ]
+
+    headers = {
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": settings.TRADINGVIEW_API_HOST,
+        "Content-Type": "application/json",
+    }
+    url = f"{settings.TRADINGVIEW_BASE_URL}/api/quote/batch"
+
+    quotes: dict[str, dict[str, Any]] = {}
+    for chunk_idx, chunk in enumerate(chunks):
+        body = {
+            "symbols": [
+                _bare_tv_symbol(s)
+                for s in chunk
+                if s.get("tradingview_symbol") or s.get("symbol")
+            ]
+        }
+        if not body["symbols"]:
+            continue
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, headers=headers, json=body)
+
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After", "5")
+                logger.warning(
+                    "hmm.quote: batch 429 rate limited (chunk %d/%d) — "
+                    "retry after %ss. Skipping chunk.",
+                    chunk_idx + 1, len(chunks), retry_after,
+                )
+                continue
+
+            if resp.status_code >= 400:
+                logger.warning(
+                    "hmm.quote: batch HTTP %d (chunk %d/%d): %s. Skipping chunk.",
+                    resp.status_code, chunk_idx + 1, len(chunks),
+                    resp.text[:200],
+                )
+                continue
+
+            data = resp.json()
+        except Exception as exc:
             logger.warning(
-                "hmm.quote: %s — fetch failed (%s: %s)",
-                symbol, type(result).__name__, result,
+                "hmm.quote: batch failed (chunk %d/%d): %s. Skipping chunk.",
+                chunk_idx + 1, len(chunks), exc,
             )
             continue
-        if result is None:
+
+        # Parse batch response:
+        # {"success": true, "data": {"total": N, "successful": N, "failed": 0,
+        #   "data": [{"success": true, "symbol": "...",
+        #             "data": {"bid": ..., "ask": ..., ...}}, ...]}}
+        batch_data = data.get("data", {}) if isinstance(data, dict) else {}
+        if isinstance(batch_data, dict):
+            items = batch_data.get("data", [])
+        elif isinstance(batch_data, list):
+            items = batch_data
+        else:
+            items = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("success") is False:
+                tv_sym = item.get("symbol", "?")
+                logger.warning(
+                    "hmm.quote: symbol %s returned success=false: %s",
+                    tv_sym, str(item)[:200],
+                )
+                continue
+
+            tv_sym = item.get("symbol", "")
+            internal_sym = tv_to_internal.get(tv_sym) or tv_to_internal.get(
+                _bare_tv_symbol({"tradingview_symbol": tv_sym}), tv_sym,
+            )
+            quote = item.get("data", item)
+            if isinstance(quote, dict) and (
+                "bid" in quote or "ask" in quote or "lp" in quote or "last" in quote
+            ):
+                quotes[internal_sym] = quote
+
+    if not quotes:
+        logger.warning("hmm.quote: fetched 0/%d symbols (no batch quotes)", len(symbols))
+        return 0
+
+    # Build the 9-feature vector per symbol
+    pushed = 0
+    for sym in symbols:
+        symbol = sym["symbol"]
+        result = quotes.get(symbol)
+        if not result:
             continue
 
-        # Build the 9-feature vector
         vector = np.zeros(N_FEATURES, dtype=float)
 
         # Feature 0: log_return
-        last = result.get("last", 0.0)
+        last = float(result.get("last") or result.get("lp") or 0.0)
         if prev_closes and symbol in prev_closes and prev_closes[symbol] > 0 and last > 0:
             vector[0] = math.log(last / prev_closes[symbol])
 
         # Features 1-3: microstructure
-        bid = float(result.get("bid", 0.0))
-        ask = float(result.get("ask", 0.0))
-        bid_size = float(result.get("bid_size", 0.0))
-        ask_size = float(result.get("ask_size", 0.0))
-        volume = float(result.get("volume", 0.0))
-        avg_volume = float(result.get("average_volume", 0.0))
+        bid = float(result.get("bid", 0.0) or 0.0)
+        ask = float(result.get("ask", 0.0) or 0.0)
+        bid_size = float(result.get("bid_size", 0.0) or 0.0)
+        ask_size = float(result.get("ask_size", 0.0) or 0.0)
+        volume = float(result.get("volume", 0.0) or 0.0)
+        avg_volume = float(result.get("average_volume", 0.0) or 0.0)
 
         mid = (bid + ask) / 2.0
         if mid > 0:
@@ -126,75 +234,9 @@ async def fetch_and_update(
     return pushed
 
 
-async def _fetch_one(
-    sym: dict[str, Any],
-    api_key: str,
-) -> dict[str, Any] | None:
-    """Fetch /api/quote/{symbol} for one symbol.
-
-    Uses the tradingview_symbol (e.g., "COINBASE:BTCUSD") — the same format
-    as the existing price_fetcher. The symbol is URL-encoded for the path.
-
-    Returns the parsed JSON response dict, or None on failure.
-    """
+def _bare_tv_symbol(sym: dict[str, Any]) -> str:
+    """Extract the bare TV ticker from a symbol config (same normalization
+    as the proxy's _normalize_symbol())."""
     tv_sym = sym.get("tradingview_symbol") or sym.get("symbol", "")
-    if not tv_sym:
-        return None
-
-    # TVDA quote endpoint uses bare ticker (no exchange prefix)
-    # Same normalization as the proxy's _normalize_symbol()
-    bare_sym = tv_sym.split(":")[-1] if ":" in tv_sym else tv_sym
-    bare_sym = bare_sym.replace("/", "").upper()
-
-    url = f"{settings.TRADINGVIEW_BASE_URL}/api/quote/{bare_sym}"
-    headers = {
-        "x-rapidapi-key": api_key,
-        "x-rapidapi-host": settings.TRADINGVIEW_API_HOST,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers=headers)
-
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After", "5")
-                logger.warning(
-                    "hmm.quote: %s — 429 rate limited (retry after %ss)",
-                    bare_sym, retry_after,
-                )
-                return None
-
-            if resp.status_code >= 400:
-                logger.warning(
-                    "hmm.quote: %s — HTTP %d: %s",
-                    bare_sym, resp.status_code, resp.text[:200],
-                )
-                return None
-
-            data = resp.json()
-
-        # TVDA response shapes vary — extract the quote fields
-        # Common shapes:
-        #   {"symbol": "...", "bid": ..., "ask": ..., "last": ..., ...}
-        #   {"data": {"symbol": ..., "bid": ..., ...}}
-        if isinstance(data, dict):
-            if "bid" in data or "ask" in data or "last" in data:
-                return data
-            inner = data.get("data", {})
-            if isinstance(inner, dict) and ("bid" in inner or "ask" in inner):
-                return inner
-
-        return None
-
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "hmm.quote: %s — HTTP error %d: %s",
-            bare_sym, exc.response.status_code, str(exc)[:200],
-        )
-        return None
-    except Exception as exc:
-        logger.warning(
-            "hmm.quote: %s — error (%s: %s)",
-            bare_sym, type(exc).__name__, str(exc)[:200],
-        )
-        return None
+    bare = tv_sym.split(":")[-1] if ":" in tv_sym else tv_sym
+    return bare.replace("/", "").upper()

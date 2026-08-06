@@ -7,7 +7,10 @@ Ports the heavy sweep from the deprecated Supabase Edge Function
 backend Python ``SweepOrchestrator``.
 
 Heavy sweep runs on a per-symbol cron schedule defined by
-``nt_symbol.sweep_cron`` (default ``0 20 * * 0,6`` — Sat/Sun 20:00 UTC).
+``nt_symbol.sweep_cron`` (default ``0 20 * * sun`` — Sunday 20:00 UTC).
+NOTE: APScheduler's ``from_crontab`` uses PYTHON weekday convention
+(0=Monday), so the cron-conventional ``0 20 * * 0`` fires MONDAY — use
+the ``sun`` name (or ``6``) for Sunday.
 TimesFM confidence gate skips ~70 % of scheduled runs, so the effective
 frequency is ~0.6 runs/week/symbol.
 

@@ -233,10 +233,10 @@ class RenkoPipeline:
                 "type": "renko_signal",
                 "symbol": filtered_signal.original_signal.symbol,
                 "timestamp": time.time(),
-                "pattern": filtered_signal.original_signal.pattern.value,
+                "pattern": filtered_signal.original_signal.pattern_type.value,
                 "direction": filtered_signal.original_signal.direction.value,
                 "price": filtered_signal.original_signal.price,
-                "confidence": filtered_signal.original_signal.confidence,
+                "confidence": filtered_signal.original_signal.strength,
                 "passed_filters": filtered_signal.passed_filters,
                 "regime_aligned": filtered_signal.regime_aligned,
                 "position_size_usd": filtered_signal.position_size_usd,
@@ -360,10 +360,16 @@ class RenkoPipeline:
             if self._on_signal:
                 self._on_signal(filtered)
             
-            # Publish qualified signal to Redis for external subscribers
-            if filtered_signal.original_signal.pattern.value != "no_pattern":
-                # Use asyncio.create_task to avoid blocking the tick processing
-                asyncio.create_task(self._publish_qualified_signal(filtered))
+            # Publish qualified signal to Redis for external subscribers.
+            # Only fire when an event loop is running (live path); the sync
+            # backtest path has no loop and must not fail on this.
+            if filtered.original_signal.pattern_type.value != "no_pattern":
+                try:
+                    asyncio.get_running_loop()
+                    asyncio.create_task(self._publish_qualified_signal(filtered))
+                except RuntimeError:
+                    # No running event loop (sync backtest) — skip publish.
+                    pass
 
             # Stage 5: Open position (if none active)
             if not self.risk_manager.has_position:

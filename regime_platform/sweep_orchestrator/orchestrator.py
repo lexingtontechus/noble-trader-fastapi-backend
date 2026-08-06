@@ -763,12 +763,13 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── Phase B: group by sweep_cron for heavy sweep jobs ──────
         # Mirrors the light-sweep grouping above. Default sweep_cron is
-        # '0 20 * * 0,6' (Sat/Sun 20:00 UTC, migration 026) when NULL.
-        # TimesFM confidence gate skips ~70% of runs, so effective heavy
-        # sweep frequency is ~0.6 runs/week/symbol.
+        # '0 20 * * sun' (Sunday 20:00 UTC, migration 026) when NULL.
+        # NOTE: APScheduler's from_crontab uses PYTHON weekday convention
+        # (0=Monday) — the cron-conventional '0 20 * * 0' fires MONDAY.
+        # Use the 'sun' name (or '6') for Sunday.
         heavy_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for sym in symbols:
-            cron_raw = sym.get("sweep_cron") or "0 20 * * 0,6"
+            cron_raw = sym.get("sweep_cron") or "0 20 * * sun"
             for cron in self._split_cron(cron_raw):
                 heavy_groups[cron].append(sym)
         for cron in heavy_groups:
@@ -956,11 +957,15 @@ class SweepOrchestrator(HeavySweepMixin):
         if not valid_prices:
             return
 
-        # ── HMM: bootstrap + concurrent fetch + fit ──────────────────
+        # ── HMM: bootstrap + batch fetch + fit ─────────────────────────
         # On first sweep for a symbol, bootstrap the feature buffer from
         # the price history (log_return + 5 TA indicators computed locally).
-        # Then fetch live /api/quote + /api/ta concurrently for all symbols
-        # and refit the HMM. This replaces the old discrete MarkovChain.
+        # Then fetch live /api/quote/batch (⌈N/10⌉ batched POSTs — TVDA
+        # hard-limits to 10 symbols/request) and compute the 5 TA values
+        # LOCALLY from the same batch OHLCV (TVDA has no batch TA endpoint;
+        # the old 11× per-symbol /api/quote + /api/ta fan-out tripped the
+        # RapidAPI 429 rate limit → "fetched 0/11 symbols" every tick).
+        # Then refit the HMM. This replaces the old discrete MarkovChain.
         hmm_symbols = [
             s for s in active if s["symbol"] in valid_prices
         ]
@@ -975,7 +980,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 if pushed > 0:
                     self._hmm_bootstrapped.add(symbol)
 
-        # Concurrent fetch: /api/quote + /api/ta for all symbols (~1-2s)
+        # Batch fetch: /api/quote/batch + local TA computation (~1-2s)
         prev_closes = {
             s["symbol"]: valid_prices[s["symbol"]][-1]
             for s in hmm_symbols
@@ -990,6 +995,7 @@ class SweepOrchestrator(HeavySweepMixin):
         try:
             await hmm_ta_fetcher.fetch_and_update(
                 hmm_symbols, self._hmm_buffer,
+                closes_by_symbol=valid_prices,
             )
         except Exception as exc:
             logger.warning("HMM TA fetch failed: %s", exc)
