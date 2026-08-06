@@ -123,9 +123,13 @@ COMMENT ON COLUMN nt_eod_actions.detail IS
 -- functions) only. Same policy shape as migration 100.
 
 ALTER TABLE nt_signal_sim ENABLE ROW LEVEL SECURITY;
+-- CREATE POLICY has no IF NOT EXISTS — drop first so re-running the
+-- combined migration (104) is idempotent.
+DROP POLICY IF EXISTS "Service role full access" ON nt_signal_sim;
 CREATE POLICY "Service role full access" ON nt_signal_sim
   FOR ALL USING (true) WITH CHECK (true);
 
 ALTER TABLE nt_eod_actions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Service role full access" ON nt_eod_actions;
 CREATE POLICY "Service role full access" ON nt_eod_actions
   FOR ALL USING (true) WITH CHECK (true);
