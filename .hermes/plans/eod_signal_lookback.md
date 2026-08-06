@@ -212,11 +212,68 @@ Goal: compare signal-driven paper portfolio vs naive/optimized allocation.
    optimizer-driven allocation over the same window.
 4. Gated on Phase 2 having ≥ N days of resolved outcomes (suggest ≥ 7).
 
+### Phase 3 — STATUS (2026-08-06): BUILT, in place, gated on data
+- `regime_platform/sweep_orchestrator/portfolio_compare.py` — builds a
+  (days × assets) log-return matrix from nt_signal_sim resolved outcomes
+  (pnl/notional proxy), runs the real `DrawdownOptimiser` (same engine as
+  /multi_asset), computes three-way equity (paper / equal-weight /
+  optimised), enforces the `MIN_DAYS=7` data gate.
+- `supabase/migrations/106_paper_vs_optimized.sql` — read-only views
+  `v_paper_vs_optimized_daily` (paper vs equal-weight daily PnL) and
+  `v_paper_vs_optimized_symbol` (per-symbol win rate, signal PnL, paper
+  realized PnL, equal-weight share) so the comparison is SQL-auditable.
+- `tests/test_portfolio_compare.py` — 8 tests (returns matrix, equal-weight
+  equity, paper equity, compare gate + optimizer run).
+- CLI: `python -m regime_platform.sweep_orchestrator.portfolio_compare`
+- Returns `insufficient_data=True` until ≥7 days of resolved outcomes
+  exist (the plan gate). No scheduler hook — run manually or as a weekly
+  report once data accumulates.
+
+## Part II — Phase 4: Execution-gap harness (MetaApi MT4/5 demo) — TBD
+
+**Status: TBD — deliberately NOT built (2026-08-06).** Documented so the
+design is ready when/if the user green-lights it.
+
+**What it would be:** a backend-side, closed-loop signal-validation harness
+that executes qualified signals on a MetaApi MT4/5 **demo** account — purely
+for validating the execution gap between the paper sim and real fills. NOT
+production trading, NOT the deprecated BFF workflow. The backend remains
+sweep-orchestrator-only for production (P5); this is a validation consumer
+of the same signal stream the agent already consumes.
+
+**Why it matters:** the paper book resolves outcomes against TDVA price bars
+(no spread/slippage/fill realism). A demo harness measures:
+- spread + slippage erosion on tp_hit/sl_hit
+- MT4 lot-size rounding (0.01 min lot) vs kelly-sized notional ($40–200 →
+  some symbols' units are unexpressible as real lots — needs a notional
+  floor / lot-aware sizing)
+- fill timing vs the close-walk convention the EOD resolver assumes
+- the "execution gap": paper outcome vs demo-trade outcome per signal
+
+**Design sketch (for when it's approved):**
+1. Reuse `MetaApiBroker` (agent repo `execution/brokers/metaapi_broker.py`)
+   or a thin backend wrapper — demo creds `METAAPI_TOKEN_DEMO` /
+   `METAAPI_ACCOUNT_ID_DEMO` already exist in the onboarding flow.
+2. New table `nt_demo_trades` (or extend nt_paper_positions with
+   `execution_venue`, `fill_price`, `fill_qty`, `spread_cost`, `slippage`).
+3. Trigger: on qualified signal → open demo trade (lot-aware sizing);
+   EOD job compares realized demo PnL vs paper PnL → writes
+   `execution_gap` + feeds the same calibration/self-correction loop.
+4. Caveats: notional floor for lot rounding, MetaApi CPU credit cost, and
+   a hard "validation-only, never production" boundary in docs + code.
+
+**Not blocking Phase 3.** Phase 3 compares allocation strategies over the
+paper book; the execution harness measures fill realism on top.
+
 ## Part II — Verification
 1. Migration 105 applies (dashboard SQL editor, same pattern as 102/104)
 2. Paper-book builder creates positions for qualified rows on next sweep
 3. Resolver close pass updates positions; realized_pnl matches pnl_dollars × scale
 4. v_paper_equity / v_paper_perf return rows after first closes
 5. Full suite stays green (267 passed / 23 skipped baseline)
+6. Phase 3: `portfolio_compare` returns insufficient_data until ≥7 days;
+   then returns optimizer weights + three-way equity stats
+7. Phase 4 (TBD): demo-trade rows populate; execution_gap computable
+
 
 
