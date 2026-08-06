@@ -14,6 +14,11 @@ httpx>=0.28.1
 clerk-backend-api>=0.1.0
 # MCP (Model Context Protocol) - exposes FastAPI endpoints as AI agent tools
 fastapi-mcp>=0.4.0
+# Pin mcp below 2.0 — fastapi-mcp 0.4.0 calls Server(name, description), but
+# mcp 2.0 changed Server.__init__ to a single positional arg → TypeError on
+# startup (Render deploy 2026-08-06). Local venv has mcp 1.28.1; keep the
+# upper bound so pip resolves a compatible 1.x.
+mcp>=1.12.0,<2.0.0
 # v3.0 GPU HMM (install for 10-50x speedup on large datasets)
 # pomegranate>=1.0.0
 # TimesFM forecasting service (server.py)
