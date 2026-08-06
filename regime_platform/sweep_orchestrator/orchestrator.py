@@ -20,6 +20,7 @@ import math
 import os
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -43,6 +44,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_active_symbols,
     log_regime_entry,
     log_sweep_result,
+    log_signal_sim,
     log_error,
     fetch_calibration_bias,
 )
@@ -552,6 +554,58 @@ def _derive_venue(sym: dict[str, Any]) -> str:
     return "Unknown"
 
 
+# ─── Signal-sim capture (nt_signal_sim) ───────────────────────────
+
+
+def _build_signal_sim_payload(
+    *,
+    symbol: str,
+    venue: str,
+    ts: str,
+    signal: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    brick_size: float,
+    sl_bricks: int,
+    tp_bricks: int,
+    p_win: float,
+    ev: float,
+    regime: str,
+    regime_conf: float,
+    source: str,
+    qualified: bool,
+) -> dict[str, Any]:
+    """Build the ``nt_signal_sim`` payload for one generated signal.
+
+    Called from ``_process_symbol`` for every non-neutral BUY/SELL
+    signal (qualified or not) so the EOD signal simulator can evaluate
+    it later. Prices are rounded to 6dp (full value) — same rule as the
+    rest of the signal path (2026-08-05 price-precision fix); do NOT
+    round to ``_price_decimals()`` (2dp default for XAUUSD truncates).
+    Outcome/exit/PNL fields are intentionally absent here — the EOD
+    resolver fills them later.
+    """
+    return {
+        "symbol": symbol,
+        "venue": venue,
+        "ts": ts,
+        "signal": signal,
+        "entry_price": round(float(entry_price), 6),
+        "stop_loss": round(float(stop_loss), 6),
+        "take_profit": round(float(take_profit), 6),
+        "brick_size": brick_size,
+        "sl_bricks": sl_bricks,
+        "tp_bricks": tp_bricks,
+        "p_win": round(float(p_win), 4),
+        "ev": round(float(ev), 4),
+        "regime": regime,
+        "regime_conf": round(float(regime_conf), 4),
+        "source": source,
+        "qualified": qualified,
+    }
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────
 
 
@@ -686,6 +740,19 @@ class SweepOrchestrator(HeavySweepMixin):
             id="refresh-symbols",
             name="Refresh symbol registry",
             misfire_grace_time=60,
+        )
+
+        # EOD signal-lookback: forward-resolve pending nt_signal_sim rows
+        # then run the calibration self-correction audit. Daily 00:30 UTC —
+        # after the market day closes (forex 22:00 UTC / equities 21:00 UTC)
+        # and before the 05:00 UTC weekend heavy-sweep window.
+        self._scheduler.add_job(
+            self._run_eod_lookback,
+            trigger=CronTrigger.from_crontab("30 0 * * *"),
+            id="eod-lookback",
+            name="EOD signal lookback (resolve + correct)",
+            misfire_grace_time=3600,
+            coalesce=True,
         )
 
         self._scheduler.start()
@@ -898,6 +965,51 @@ class SweepOrchestrator(HeavySweepMixin):
 
     # ── Sweep group runner ────────────────────────────────────────
 
+    async def _run_eod_lookback(self) -> None:
+        """EOD signal-lookback: resolve pending signals + self-correction.
+
+        Scheduled daily 00:30 UTC (job id ``eod-lookback``). Runs the two
+        EOD modules in order:
+
+          1. ``eod_resolver.resolve_pending_signals`` — forward-resolve every
+             ``nt_signal_sim`` row with ``outcome IS NULL`` against post-entry
+             TDVA 1h bars (48-bar expiry, close-walk TP/SL) and write outcomes
+             + calibration records.
+          2. ``eod_correction.run_eod_correction`` — read per-symbol
+             calibration bias; when |bias| > 0.10 write audit rows
+             (emergency_heavy_sweep / bayesian_penalty / kelly_reduction),
+             otherwise flag parameter decay.
+
+        Best-effort: failures are logged and counted, never raised out of
+        the scheduler tick.
+        """
+        from regime_platform.sweep_orchestrator.eod_resolver import (
+            resolve_pending_signals,
+        )
+        from regime_platform.sweep_orchestrator.eod_correction import (
+            run_eod_correction,
+        )
+
+        try:
+            resolver_summary = await resolve_pending_signals()
+            logger.info(
+                "[eod:lookback] resolver done: %s",
+                {k: v for k, v in resolver_summary.items() if k != "errors"},
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] resolver failed: %s", exc)
+
+        try:
+            correction_summary = await run_eod_correction()
+            logger.info(
+                "[eod:lookback] correction done: %d symbols checked, %d actions, %d errors",
+                correction_summary.get("checked", 0),
+                len(correction_summary.get("actions", [])),
+                correction_summary.get("errors", 0),
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] correction failed: %s", exc)
+
     async def _sweep_group(
         self, cron_expr: str, symbols: list[dict[str, Any]]
     ) -> None:
@@ -1035,7 +1147,7 @@ class SweepOrchestrator(HeavySweepMixin):
 
             result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
             try:
-                result = await self._process_symbol(sym, prices, p_timesfm)
+                result = await self._process_symbol(sym, prices, p_timesfm, source="sweep-light")
                 self._last_ok[symbol] = time.time()
                 await log_sweep_result({
                     "symbol": symbol,
@@ -1130,8 +1242,17 @@ class SweepOrchestrator(HeavySweepMixin):
         sym: dict[str, Any],
         prices: list[float],
         p_timesfm: float | None = None,
+        source: str = "sweep-light",
     ) -> dict[str, Any]:
         """Run one light-sweep cycle for a single symbol.
+
+        Args:
+            sym: nt_symbol row dict.
+            prices: Hourly close prices.
+            p_timesfm: TimesFM probability (cached), if available.
+            source: Sweep provenance — ``"sweep-light"`` (default, from
+                ``_sweep_group`` / stale-retry) or ``"sweep-heavy"``.
+                Stamped onto the ``nt_signal_sim`` capture row.
 
         Returns a dict with sweep result fields for logging.
         """
@@ -1855,6 +1976,40 @@ class SweepOrchestrator(HeavySweepMixin):
                 f"Continuing without Redis state update; downstream "
                 f"consumers may see stale data until next sweep."
             )
+
+        # ── 11a. Signal-sim capture (nt_signal_sim) ─────────────────
+        # Fire-and-forget persistence of EVERY generated non-neutral
+        # signal (qualified or not) for the EOD signal simulator. Placed
+        # here — AFTER the Redis publish block — so `qualified` is FINAL
+        # (cooldown suppression AND content-dedup suppression have both
+        # already flipped it to False where applicable).
+        # Must NEVER break the sweep: log_signal_sim swallows insert
+        # failures, and a missing event loop only skips the capture.
+        if trade_signal["signal"] not in ("neutral", "unknown"):
+            try:
+                sim_payload = _build_signal_sim_payload(
+                    symbol=symbol,
+                    venue=venue_name,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    signal=trade_signal["signal"],
+                    entry_price=trade_signal["entry_price"],
+                    stop_loss=trade_signal["stop_loss"],
+                    take_profit=trade_signal["take_profit"],
+                    brick_size=brick_size,
+                    sl_bricks=sl_bricks,
+                    tp_bricks=tp_bricks,
+                    p_win=ev_result.p_win,
+                    ev=ev_result.ev,
+                    regime=regime_label,
+                    regime_conf=regime_conf,
+                    source=source,
+                    qualified=qualified,
+                )
+                asyncio.create_task(log_signal_sim(sim_payload))
+            except RuntimeError:
+                # No running event loop (e.g. a test invoking
+                # _process_symbol synchronously) — skip the capture.
+                pass
 
         # ── 11. Log to Supabase ──
         await log_regime_entry(

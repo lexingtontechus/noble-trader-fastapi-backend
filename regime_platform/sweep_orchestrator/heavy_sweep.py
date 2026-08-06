@@ -563,6 +563,46 @@ class HeavySweepMixin:
                 "ta_rsi": ta_snapshot["ta_rsi"],
             })
 
+            # ── 10a. Signal-sim capture (nt_signal_sim) ───────────────
+            # Mirror the light-sweep capture so heavy-sweep signals are
+            # also scored by the EOD resolver. Fire-and-forget; must never
+            # break the sweep.
+            if trade_signal["signal"] not in ("neutral", "unknown"):
+                try:
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        log_signal_sim,
+                    )
+                    from regime_platform.sweep_orchestrator.orchestrator import (
+                        _build_signal_sim_payload,
+                    )
+                    sim_payload = _build_signal_sim_payload(
+                        symbol=symbol,
+                        venue=venue_name,
+                        ts=datetime.now(timezone.utc).isoformat(),
+                        signal=trade_signal["signal"],
+                        entry_price=trade_signal["entry_price"],
+                        stop_loss=trade_signal["stop_loss"],
+                        take_profit=trade_signal["take_profit"],
+                        brick_size=best.brick_size,
+                        sl_bricks=best.sl_bricks,
+                        tp_bricks=best.tp_bricks,
+                        p_win=ev_result.p_win,
+                        ev=ev_result.ev,
+                        regime=result.regime_label,
+                        regime_conf=result.regime_conf,
+                        source="sweep-heavy",
+                        qualified=qualified,
+                    )
+                    asyncio.create_task(log_signal_sim(sim_payload))
+                except RuntimeError:
+                    # No running event loop — skip capture.
+                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: signal-sim capture failed: %s",
+                        symbol, exc,
+                    )
+
             result.duration_ms = int((time.time() - start_ts) * 1000)
             logger.info(
                 "[sweep:heavy] %s: DONE in %dms (qualified=%s, combos=%d)",

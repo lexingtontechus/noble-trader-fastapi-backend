@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any
 
 import httpx
@@ -193,6 +194,21 @@ NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
     "ta_adx", "ta_ao", "ta_bb_power", "ta_macd", "ta_rsi",
 })
 
+NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
+    # Fields populated at signal-capture time (light/heavy sweep).
+    "signal_id",              # PK — normally DB-generated (uuid); capture omits it
+    "symbol", "venue", "ts", "signal",
+    "entry_price", "stop_loss", "take_profit",
+    "brick_size", "sl_bricks", "tp_bricks",
+    "p_win", "ev", "regime", "regime_conf",
+    "source", "qualified",
+    # Fields filled later by the EOD signal resolver. They stay NULL at
+    # capture time but are part of the schema so a resolver insert is
+    # a plain filtered insert into the same table.
+    "outcome", "exit_price", "exit_ts", "hold_bars",
+    "mfe", "mae", "pnl_bricks", "pnl_dollars", "resolved_at",
+})
+
 
 def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any]:
     """Return a copy of ``payload`` containing only keys in ``allowed``.
@@ -268,6 +284,32 @@ async def log_sweep_result(payload: dict[str, Any]) -> None:
     await _insert_row("nt_sweep_result", sweep_payload)
 
 
+async def log_signal_sim(payload: dict[str, Any]) -> None:
+    """Persist one generated signal to ``nt_signal_sim`` (best-effort).
+
+    Captures EVERY generated non-neutral signal (qualified or not) at
+    sweep time. Outcome/exit/PNL fields (outcome, exit_price, exit_ts,
+    hold_bars, mfe, mae, pnl_bricks, pnl_dollars, resolved_at) are left
+    NULL here — the EOD signal resolver fills them later against the
+    same table via a plain filtered insert (they are included in
+    ``NT_SIGNAL_SIM_COLUMNS`` so the resolver needs no schema changes).
+
+    Never raises: a missing Supabase config or a failed insert is
+    logged and swallowed, exactly like ``log_sweep_result``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    sim_payload = _filter_payload(payload, NT_SIGNAL_SIM_COLUMNS)
+    # nt_signal_sim.signal_id is UUID PRIMARY KEY with no DB default —
+    # the capture path must supply it. Generated here (not in the payload
+    # builder) so every call site gets a fresh id.
+    sim_payload["signal_id"] = str(uuid.uuid4())
+
+    # Best-effort insert. Failures are logged but don't propagate.
+    await _insert_row("nt_signal_sim", sim_payload)
+
+
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
     """Insert a row into ``nt_errors``."""
     if not settings.SUPABASE_URL:
@@ -296,7 +338,9 @@ async def fetch_calibration_bias(
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
 
-    Returns ``{bias: float, status: str}`` or ``None`` on failure.
+    Returns ``{bias: float, status: str, n: int, win_rate: float,
+    avg_pred: float}`` or ``None`` on failure (or when fewer than 20
+    records exist — ``n`` is too small for the bias to be meaningful).
     If ``venue`` is provided, filters by both symbol AND venue (exchange).
     This ensures calibration is tracked per exchange, not mixed across
     exchanges for the same symbol.
@@ -342,4 +386,10 @@ async def fetch_calibration_bias(
     else:
         status = "UNDERCONFIDENT"
 
-    return {"bias": bias, "status": status}
+    return {
+        "bias": bias,
+        "status": status,
+        "n": n,
+        "win_rate": round(win_rate, 4),
+        "avg_pred": round(avg_pred, 4),
+    }
