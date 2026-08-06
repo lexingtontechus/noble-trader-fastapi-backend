@@ -670,11 +670,13 @@ class HeavySweepMixin:
         # Build a minimal neutral regime snapshot
         from regime_platform.core.regime_engine import RegimeSnapshot
         neutral = RegimeSnapshot(
+            vol_probs=[0.5, 0.5],
+            trend_probs=[0.34, 0.33, 0.33],
+            vol_state="med",
+            trend_state="neutral",
             regime_label="unknown",
             confidence=0.5,
-            trend_probs=[0.34, 0.33, 0.33],
-            volatility_probs=[0.5, 0.5],
-            risk_multiplier=1.0,
+            n_bars_fitted=0,
         )
         return self._sizer.size(
             PositionRequest(

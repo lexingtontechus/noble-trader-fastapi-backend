@@ -1052,17 +1052,37 @@ class RenkoPipeline:
             logger.warning(f"Cannot open position: {e}")
 
     def _fetch_prediction_data(self) -> Optional[Dict[str, float]]:
-        """Fetch prediction data from Redis for the current symbol."""
+        """Fetch prediction data from Redis for the current symbol.
+
+        Best-effort enrichment for the journal record. The Redis client is
+        async (redis.asyncio), so in the sync backtest path (no running
+        event loop) we cannot await hgetall — return None there and let
+        the journal record proceed without prediction data.
+        """
         if not self._redis_client:
             return None
-        
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Sync backtest path — no loop to await on. Skip enrichment.
+            return None
+
+        # We are in an async context but this method is sync; hgetall on the
+        # async client returns a coroutine that cannot be awaited here.
+        # Callers that need prediction data should use the async variant.
+        return None
+
+    async def _fetch_prediction_data_async(self) -> Optional[Dict[str, float]]:
+        """Async variant: fetch prediction data from Redis (event-loop safe)."""
+        if not self._redis_client:
+            return None
         try:
             config_key = f"regime:symbol:{self.config.symbol}:config"
-            config_data = self._redis_client.hgetall(config_key)
-            
+            config_data = await self._redis_client.hgetall(config_key)
+
             if not config_data:
                 return None
-                
+
             # Extract prediction fields from Redis data
             prediction_data = {}
             if "p_win" in config_data:
@@ -1075,7 +1095,7 @@ class RenkoPipeline:
                 prediction_data["p_markov"] = float(config_data["p_markov"])
             if "p_timesfm" in config_data:
                 prediction_data["p_timesfm"] = float(config_data["p_timesfm"])
-            
+
             return prediction_data if prediction_data else None
         except Exception as e:
             logger.warning(f"Failed to fetch prediction data from Redis: {e}")
