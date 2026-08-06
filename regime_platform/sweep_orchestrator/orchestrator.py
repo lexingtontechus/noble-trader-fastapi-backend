@@ -575,6 +575,8 @@ def _build_signal_sim_payload(
     regime_conf: float,
     source: str,
     qualified: bool,
+    kelly_f: float | None = None,
+    effective_kelly: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -585,6 +587,10 @@ def _build_signal_sim_payload(
     round to ``_price_decimals()`` (2dp default for XAUUSD truncates).
     Outcome/exit/PNL fields are intentionally absent here — the EOD
     resolver fills them later.
+
+    ``kelly_f`` / ``effective_kelly`` (kelly × EV scale) are the sizing
+    inputs for the Part II paper portfolio (migration 105 adds the
+    columns); nullable so legacy callers are unaffected.
     """
     return {
         "symbol": symbol,
@@ -603,6 +609,8 @@ def _build_signal_sim_payload(
         "regime_conf": round(float(regime_conf), 4),
         "source": source,
         "qualified": qualified,
+        "kelly_f": round(float(kelly_f), 6) if kelly_f is not None else None,
+        "effective_kelly": round(float(effective_kelly), 6) if effective_kelly is not None else None,
     }
 
 
@@ -989,6 +997,7 @@ class SweepOrchestrator(HeavySweepMixin):
         from regime_platform.sweep_orchestrator.eod_correction import (
             run_eod_correction,
         )
+        from regime_platform.sweep_orchestrator.paper_book import reconcile
 
         try:
             resolver_summary = await resolve_pending_signals()
@@ -998,6 +1007,18 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] resolver failed: %s", exc)
+
+        # Part II paper portfolio: reconcile open/close after resolution.
+        try:
+            paper_summary = await reconcile()
+            logger.info(
+                "[eod:lookback] paper reconcile done: opened=%d closed=%d errors=%d",
+                paper_summary.get("opened", 0),
+                paper_summary.get("closed", 0),
+                paper_summary.get("errors", 0),
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] paper reconcile failed: %s", exc)
 
         try:
             correction_summary = await run_eod_correction()
@@ -2004,8 +2025,15 @@ class SweepOrchestrator(HeavySweepMixin):
                     regime_conf=regime_conf,
                     source=source,
                     qualified=qualified,
+                    kelly_f=kelly_f,
+                    effective_kelly=effective_kelly,
                 )
                 asyncio.create_task(log_signal_sim(sim_payload))
+                # Part II paper portfolio: open a kelly-sized paper position
+                # for QUALIFIED signals (fire-and-forget; never breaks sweep).
+                if qualified:
+                    from regime_platform.sweep_orchestrator.paper_book import open_position
+                    asyncio.create_task(open_position(sim_payload))
             except RuntimeError:
                 # No running event loop (e.g. a test invoking
                 # _process_symbol synchronously) — skip the capture.

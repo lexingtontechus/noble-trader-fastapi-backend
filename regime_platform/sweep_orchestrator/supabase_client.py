@@ -202,6 +202,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "brick_size", "sl_bricks", "tp_bricks",
     "p_win", "ev", "regime", "regime_conf",
     "source", "qualified",
+    # Part II paper-portfolio sizing inputs (migration 105). Nullable;
+    # filled at capture when kelly is available.
+    "kelly_f", "effective_kelly",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.

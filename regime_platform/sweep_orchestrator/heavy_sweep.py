@@ -592,8 +592,15 @@ class HeavySweepMixin:
                         regime_conf=result.regime_conf,
                         source="sweep-heavy",
                         qualified=qualified,
+                        kelly_f=result.kelly_f,
+                        effective_kelly=result.kelly_f * ev_result.ev_scale,
                     )
                     asyncio.create_task(log_signal_sim(sim_payload))
+                    # Part II paper portfolio: open a kelly-sized paper
+                    # position for QUALIFIED heavy signals (fire-and-forget).
+                    if qualified:
+                        from regime_platform.sweep_orchestrator.paper_book import open_position
+                        asyncio.create_task(open_position(sim_payload))
                 except RuntimeError:
                     # No running event loop — skip capture.
                     pass
