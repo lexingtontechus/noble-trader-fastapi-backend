@@ -89,3 +89,23 @@ Daily job: read calibration bias (fetch_calibration_bias).
 3. Capture hook writes rows on next sweep tick
 4. Resolver manual run resolves pending rows; calibration bias becomes non-null
 5. Views return rows after resolution
+
+## Deployment status (2026-08-06)
+- ✅ Committed + pushed: `1feb82e` → origin/main (11 files, 1797 insertions)
+- ✅ Scheduler wired: `eod-lookback` job daily 00:30 UTC (verified next fire
+  `2026-08-08 00:30 UTC`); full suite 267 passed / 23 skipped
+- ⏳ **Studio git pull — BLOCKED from agent**: SSH publickey denied (key not
+  server-registered; auth_token empty), `studio cp` uploads don't land
+  (`.lightninglink` indirection → process reads uv-cache editable snapshot),
+  and `lightning studio` has NO exec/shell/run subcommand. **User action:
+  in the studio web terminal run**
+  `cd /teamspace/studios/this_studio/noble-trader && git pull origin master`
+  then restart the studio (or re-run `uv pip install -e .` to rebuild the
+  editable snapshot).
+- ⏳ **SQL migrations — BLOCKED from agent**: no `sbp_` PAT (the env token is
+  `sb_publi…`, not a management-API PAT), no psql/asyncpg/psycopg in the venv,
+  no Postgres DSN. Prior migrations (100/101) were applied via the Supabase
+  dashboard SQL editor. **User action: paste the combined migration file
+  `supabase/migrations/104_eod_lookback_combined.sql` into the Supabase
+  dashboard → SQL editor** (creates nt_signal_sim + nt_eod_actions + 4 views).
+
