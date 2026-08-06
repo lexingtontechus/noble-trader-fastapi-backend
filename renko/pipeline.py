@@ -1058,7 +1058,7 @@ class RenkoPipeline:
         
         try:
             config_key = f"regime:symbol:{self.config.symbol}:config"
-            config_data = self.redis_client.hgetall(config_key)
+            config_data = self._redis_client.hgetall(config_key)
             
             if not config_data:
                 return None
