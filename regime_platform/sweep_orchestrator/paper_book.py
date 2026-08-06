@@ -155,6 +155,38 @@ async def _patch_position(position_id: Any, patch: dict[str, Any]) -> bool:
         return False
 
 
+async def _lookup_signal_id(symbol: Any, ts: Any) -> Any:
+    """Look up the nt_signal_sim signal_id for (symbol, ts).
+
+    The capture payload does not carry signal_id (log_signal_sim generates
+    the UUID at insert), so the paper book resolves it from the ledger by
+    matching symbol + timestamp. Returns the signal_id or None.
+    """
+    if not symbol or not ts:
+        return None
+    try:
+        from regime_platform.core.settings import settings
+        import httpx
+        url = (
+            f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+            "?select=signal_id&symbol=eq.{}&ts=eq.{}&limit=1"
+            .format(symbol, str(ts).replace("+00:00", "Z").replace(" ", "T"))
+        )
+        headers = {
+            "apikey": settings.SUPABASE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        }
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            rows = resp.json()
+            if isinstance(rows, list) and rows:
+                return rows[0].get("signal_id")
+    except Exception as exc:
+        logger.warning("paper_book: signal_id lookup for %s failed: %s", symbol, exc)
+    return None
+
+
 async def _fetch_qualified_without_position(limit: int = 200) -> list[dict[str, Any]]:
     """Qualified nt_signal_sim rows that have no paper position yet."""
     try:
@@ -232,7 +264,26 @@ async def _fetch_resolved_signals(limit: int = 500) -> list[dict[str, Any]]:
 
 
 async def open_position(sig: dict[str, Any]) -> bool:
-    """Open a paper position for one qualified signal (best-effort)."""
+    """Open a paper position for one qualified signal (best-effort).
+
+    ``sig`` is the nt_signal_sim payload from the capture path — it does
+    NOT carry ``signal_id`` (log_signal_sim generates the UUID at insert).
+    The actual signal_id is looked up from nt_signal_sim by (symbol, ts)
+    so the paper position can be joined back to the signal ledger. If the
+    lookup fails, the position is skipped (the reconcile pass will retry
+    on the next run).
+    """
+    signal_id = sig.get("signal_id")
+    if not signal_id:
+        signal_id = await _lookup_signal_id(
+            sig.get("symbol"), sig.get("ts"),
+        )
+    if not signal_id:
+        logger.warning(
+            "paper_book: no signal_id for %s ts=%s — skipping open",
+            sig.get("symbol"), sig.get("ts"),
+        )
+        return False
     entry = sig.get("entry_price")
     if not entry:
         return False
@@ -243,7 +294,7 @@ async def open_position(sig: dict[str, Any]) -> bool:
     )
     row = _filter_payload({
         "position_id": str(uuid.uuid4()),
-        "signal_id": sig.get("signal_id"),
+        "signal_id": signal_id,
         "symbol": sig.get("symbol"),
         "venue": sig.get("venue"),
         "direction": sig.get("signal") or "buy",
