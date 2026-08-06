@@ -176,7 +176,7 @@ ORDER BY day DESC;
 -- ─── 2. v_eod_sweep_drift — realized wr vs. latest backtest wr per symbol ──
 -- Realized win rate is computed over the same 7-day lookback window as the
 -- calibration view; backtest_wr is the MOST RECENT nt_sweep_result.win_rate
--- for the symbol (DISTINCT ON symbol, ordered by created_at DESC).
+-- for the symbol (DISTINCT ON symbol, ordered by sweep_timestamp DESC).
 -- win_rate_drift > 0 ⇒ backtest outperforms live signals (optimism gap).
 CREATE OR REPLACE VIEW v_eod_sweep_drift AS
 SELECT
@@ -198,10 +198,10 @@ LEFT JOIN (
   SELECT DISTINCT ON (symbol)
     symbol,
     win_rate,
-    created_at AS last_sweep_ts
+    sweep_timestamp AS last_sweep_ts
   FROM nt_sweep_result
   WHERE win_rate IS NOT NULL
-  ORDER BY symbol, created_at DESC
+  ORDER BY symbol, sweep_timestamp DESC
 ) bt ON bt.symbol = sig.symbol;
 
 -- ─── 3. v_eod_exit_attribution — regime × signal × outcome breakdown ─────
