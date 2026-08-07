@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_KEY: str = ""
 
+    # ── Supabase Realtime broadcast (Talaria dashboard) ─────────────────────
+    # NOBLE_REALTIME_BROADCAST=1 (default) enables fire-and-forget broadcast
+    # publishing of qualified signals (realtime:signals) and paper portfolio
+    # events (realtime:paper). Set to "0" to disable publishing entirely.
+    NOBLE_REALTIME_BROADCAST: str = "1"
+
     # ── MCP ─────────────────────────────────────────────────────────────────
     MCP_AUTH_ENABLED: bool = True
     MCP_ISSUER: str = ""

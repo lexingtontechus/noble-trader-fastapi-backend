@@ -2035,6 +2035,26 @@ class SweepOrchestrator(HeavySweepMixin):
                 if qualified:
                     from regime_platform.sweep_orchestrator.paper_book import open_position
                     asyncio.create_task(open_position(sim_payload))
+                    # ── 11a1. Realtime broadcast (Talaria dashboard) ──────
+                    # Fire-and-forget publish of the QUALIFIED signal to the
+                    # realtime:signals broadcast channel. Built from the sim
+                    # payload so the dashboard sees exactly the same prices
+                    # (6dp full-value) and sizing inputs that were persisted.
+                    # Never raises: broadcast_signal swallows failures and
+                    # skips silently when there is no running event loop.
+                    from regime_platform.sweep_orchestrator.realtime_publisher import (
+                        broadcast_signal,
+                        build_signal_payload,
+                    )
+                    broadcast_signal(build_signal_payload(
+                        symbol=symbol,
+                        direction=trade_signal["signal"],
+                        entry_price=sim_payload["entry_price"],
+                        stop_loss=sim_payload["stop_loss"],
+                        take_profit=sim_payload["take_profit"],
+                        kelly_f=sim_payload.get("kelly_f"),
+                        effective_kelly=sim_payload.get("effective_kelly"),
+                    ))
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and
                 # persist one row per brick for the admin plugin's chart.

@@ -41,6 +41,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -314,6 +315,19 @@ async def open_position(sig: dict[str, Any]) -> bool:
             sig.get("symbol"), sig.get("signal"),
             sizing["size_notional"], sizing["size_units"],
         )
+        # ── Realtime broadcast (Talaria dashboard) ─────────────────────
+        # Fire-and-forget 'opened' event on realtime:paper. Never raises:
+        # broadcast_paper swallows failures and skips silently when there
+        # is no running event loop.
+        from regime_platform.sweep_orchestrator.realtime_publisher import broadcast_paper
+        broadcast_paper({
+            "type": "opened",
+            "symbol": sig.get("symbol"),
+            "direction": sig.get("signal") or "buy",
+            "size_units": sizing["size_units"],
+            "entry_price": round(float(entry), 6),
+            "ts": _signal_epoch_ts(sig),
+        })
     return ok
 
 
@@ -344,7 +358,35 @@ async def close_position(sig: dict[str, Any], position_id: Any, size_units: floa
             "paper_book: CLOSE %s %s pnl=%.4f",
             sig.get("symbol"), outcome, pnl["realized_pnl"],
         )
+        # ── Realtime broadcast (Talaria dashboard) ─────────────────────
+        # Fire-and-forget 'closed' event on realtime:paper (never raises).
+        from regime_platform.sweep_orchestrator.realtime_publisher import broadcast_paper
+        broadcast_paper({
+            "type": "closed",
+            "symbol": sig.get("symbol"),
+            "direction": sig.get("signal") or sig.get("direction"),
+            "size_units": size_units,
+            "exit_price": round(float(sig["exit_price"]), 6) if sig.get("exit_price") is not None else None,
+            "realized_pnl": pnl["realized_pnl"],
+            "r_multiple": pnl["r_multiple"],
+            "ts": _signal_epoch_ts(sig),
+        })
     return ok
+
+
+def _signal_epoch_ts(sig: dict[str, Any]) -> float:
+    """Epoch seconds from the signal's ISO ``ts``/``resolved_at`` (best-effort).
+
+    Falls back to ``time.time()`` when the timestamp is missing or unparsable
+    — a broadcast timestamp is telemetry, never worth raising over.
+    """
+    raw = sig.get("ts") or sig.get("resolved_at")
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+    return time.time()
 
 
 async def reconcile(limit: int = 200) -> dict[str, Any]:

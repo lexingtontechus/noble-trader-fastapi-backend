@@ -601,6 +601,25 @@ class HeavySweepMixin:
                     if qualified:
                         from regime_platform.sweep_orchestrator.paper_book import open_position
                         asyncio.create_task(open_position(sim_payload))
+                        # ── 10a1. Realtime broadcast (Talaria dashboard) ──
+                        # Fire-and-forget publish of the QUALIFIED heavy
+                        # signal to the realtime:signals broadcast channel,
+                        # built from the sim payload (6dp full-value prices).
+                        # Never raises: broadcast_signal swallows failures
+                        # and skips silently without a running event loop.
+                        from regime_platform.sweep_orchestrator.realtime_publisher import (
+                            broadcast_signal,
+                            build_signal_payload,
+                        )
+                        broadcast_signal(build_signal_payload(
+                            symbol=symbol,
+                            direction=trade_signal["signal"],
+                            entry_price=sim_payload["entry_price"],
+                            stop_loss=sim_payload["stop_loss"],
+                            take_profit=sim_payload["take_profit"],
+                            kelly_f=sim_payload.get("kelly_f"),
+                            effective_kelly=sim_payload.get("effective_kelly"),
+                        ))
                 except RuntimeError:
                     # No running event loop — skip capture.
                     pass
