@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -311,6 +312,74 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
 
     # Best-effort insert. Failures are logged but don't propagate.
     await _insert_row("nt_signal_sim", sim_payload)
+
+
+NT_RENKO_BRICKS_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "direction", "brick_size", "open_price", "close_price",
+    "high", "low", "label", "brick_index", "ts",
+})
+
+
+async def log_renko_bricks(
+    symbol: str,
+    bricks: list[dict[str, Any]],
+    brick_size: float | None = None,
+    session_date: str | None = None,
+) -> None:
+    """Persist one brick per row to ``nt_renko_bricks`` (best-effort).
+
+    Matches the real table schema: brick_id serial PK, unique
+    (symbol, brick_index, session_date). Uses ``Prefer:
+    resolution=merge-duplicates`` on that unique key so a re-sweep of the
+    same symbol+brick_index replaces the prior brick instead of duplicating.
+    ``session_date`` defaults to CURRENT_DATE (DB default) when omitted.
+
+    Never raises: failures are logged and swallowed.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    rows = []
+    for b in bricks:
+        row = {
+            "symbol": symbol,
+            "direction": b.get("direction"),
+            "brick_size": float(b.get("brick_size", brick_size or 0)),
+            "open_price": float(b.get("open_price", 0)),
+            "close_price": float(b.get("close_price", 0)),
+            "high": float(b.get("high", b.get("close_price", 0))),
+            "low": float(b.get("low", b.get("open_price", 0))),
+            "brick_index": b.get("index"),
+            "ts": datetime.fromtimestamp(
+                float(b.get("timestamp", 0)), tz=timezone.utc
+            ).isoformat(),
+        }
+        if session_date:
+            row["session_date"] = session_date
+        rows.append(row)
+
+    if not rows:
+        logger.debug("log_renko_bricks: no bricks for %s — skipping", symbol)
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                _url("nt_renko_bricks"),
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "log_renko_bricks: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("log_renko_bricks: insert failed: %s", exc)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:

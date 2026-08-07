@@ -45,6 +45,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     log_regime_entry,
     log_sweep_result,
     log_signal_sim,
+    log_renko_bricks,
     log_error,
     fetch_calibration_bias,
 )
@@ -2034,6 +2035,26 @@ class SweepOrchestrator(HeavySweepMixin):
                 if qualified:
                     from regime_platform.sweep_orchestrator.paper_book import open_position
                     asyncio.create_task(open_position(sim_payload))
+                # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
+                # Rebuild the brick series from the sweep's price window and
+                # persist one row per brick for the admin plugin's chart.
+                # Best-effort: log_renko_bricks swallows failures; a missing
+                # event loop or zero bricks just skips. Uses the same
+                # brick_size the sweep already loaded for this symbol.
+                try:
+                    from renko.brick_engine import RenkoBrickEngine
+                    engine = RenkoBrickEngine(brick_size=brick_size)
+                    bricks = engine.build_from_prices(prices)
+                    if bricks:
+                        asyncio.create_task(log_renko_bricks(
+                            symbol=symbol,
+                            bricks=[b.to_dict() for b in bricks],
+                            brick_size=brick_size,
+                        ))
+                except Exception as exc:
+                    logger.debug(
+                        "%s: renko brick capture skipped: %s", symbol, exc,
+                    )
             except RuntimeError:
                 # No running event loop (e.g. a test invoking
                 # _process_symbol synchronously) — skip the capture.

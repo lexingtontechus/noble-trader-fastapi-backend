@@ -796,7 +796,7 @@ if FASTAPI_AVAILABLE:
             from regime_platform.core.settings import settings
             if settings.SUPABASE_URL and settings.SUPABASE_KEY:
                 import httpx
-                url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot?select=symbol&limit=1"
+                url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot?select=symbol&limit=1"
                 headers = {
                     "apikey": settings.SUPABASE_KEY,
                     "Authorization": f"Bearer {settings.SUPABASE_KEY}",
@@ -1766,7 +1766,7 @@ if FASTAPI_AVAILABLE:
             if settings.SUPABASE_URL and settings.SUPABASE_KEY:
                 import httpx
                 url = (
-                    f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+                    f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
                     f"?symbol=eq.{symbol}&select=updated_at,stats&order=updated_at.desc&limit=1"
                 )
                 headers = {
@@ -2428,7 +2428,7 @@ async def _save_snapshot(
 
         import httpx
 
-        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
@@ -2533,7 +2533,7 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
 
         import httpx
 
-        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
@@ -2682,7 +2682,7 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         cutoff_iso = cutoff.isoformat()
 
-        url = f"{settings.SUPABASE_URL}/rest/v1/ta_renko_snapshot"
+        url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
