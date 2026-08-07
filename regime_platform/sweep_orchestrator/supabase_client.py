@@ -351,8 +351,10 @@ async def log_renko_bricks(
     n = len(bricks)
     for i, b in enumerate(bricks):
         ts_epoch = float(b.get("timestamp") or 0)
-        if ts_epoch <= 0 and sweep_ts is not None:
-            # Synthesise hourly spacing backward from the sweep time.
+        if sweep_ts is not None:
+            # The sweep passes only close prices, so build_from_prices
+            # auto-increments timestamps from 0 (→ 1970). Synthesise hourly
+            # spacing backward from the sweep time instead.
             ts_epoch = sweep_ts - (n - 1 - i) * 3600.0
         row = {
             "symbol": symbol,
