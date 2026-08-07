@@ -2050,6 +2050,7 @@ class SweepOrchestrator(HeavySweepMixin):
                             symbol=symbol,
                             bricks=[b.to_dict() for b in bricks],
                             brick_size=brick_size,
+                            sweep_ts=time.time(),
                         ))
                 except Exception as exc:
                     logger.debug(

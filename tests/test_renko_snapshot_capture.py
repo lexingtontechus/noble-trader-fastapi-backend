@@ -69,3 +69,60 @@ def test_brick_engine_builds_series_matching_row_shape():
     d = bricks[0].to_dict()
     for key in ("index", "direction", "open_price", "close_price", "high", "low", "timestamp", "brick_size"):
         assert key in d
+
+
+@pytest.mark.asyncio
+async def test_log_renko_bricks_uses_on_conflict(monkeypatch):
+    """The POST URL must carry on_conflict so re-sweeps UPDATE, not grow.
+
+    Regression guard: the table's PK is serial brick_id, so without
+    ?on_conflict=symbol,brick_index,session_date PostgREST resolves
+    merge-duplicates on brick_id → always INSERT → 409 on re-sweep and
+    unbounded growth. Verified live 2026-08-07 (12k dup rows before fix).
+    """
+    import httpx
+    from regime_platform.sweep_orchestrator.supabase_client import log_renko_bricks
+
+    captured = {}
+
+    class FakeResp:
+        is_success = True
+        status_code = 201
+        text = ""
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_URL",
+        "https://test.supabase.co",
+    )
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "test-key",
+    )
+
+    await log_renko_bricks(
+        "XAUUSD",
+        [{"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0}],
+        brick_size=1.0,
+        session_date="2026-08-07",
+    )
+    assert "on_conflict=symbol,brick_index,session_date" in captured.get("url", "")
+    assert captured["json"][0]["brick_index"] == 0
+    assert captured["json"][0]["session_date"] == "2026-08-07"
+    assert captured["headers"]["Prefer"] == "resolution=merge-duplicates"

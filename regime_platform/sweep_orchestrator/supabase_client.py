@@ -325,14 +325,22 @@ async def log_renko_bricks(
     bricks: list[dict[str, Any]],
     brick_size: float | None = None,
     session_date: str | None = None,
+    sweep_ts: float | None = None,
 ) -> None:
     """Persist one brick per row to ``nt_renko_bricks`` (best-effort).
 
     Matches the real table schema: brick_id serial PK, unique
     (symbol, brick_index, session_date). Uses ``Prefer:
-    resolution=merge-duplicates`` on that unique key so a re-sweep of the
-    same symbol+brick_index replaces the prior brick instead of duplicating.
+    resolution=merge-duplicates`` + ``on_conflict=symbol,brick_index,
+    session_date`` so a re-sweep of the same symbol+brick_index replaces
+    the prior brick instead of duplicating rows (the table's PK is the
+    serial brick_id, so without the on_conflict hint PostgREST resolves on
+    brick_id → always INSERTs → unbounded growth).
+
     ``session_date`` defaults to CURRENT_DATE (DB default) when omitted.
+    When ``sweep_ts`` is provided, brick timestamps are synthesised as
+    hourly epochs backward from it (the sweep passes only close prices, no
+    per-brick timestamps; this keeps the chart's time axis sane).
 
     Never raises: failures are logged and swallowed.
     """
@@ -340,7 +348,12 @@ async def log_renko_bricks(
         return
 
     rows = []
-    for b in bricks:
+    n = len(bricks)
+    for i, b in enumerate(bricks):
+        ts_epoch = float(b.get("timestamp") or 0)
+        if ts_epoch <= 0 and sweep_ts is not None:
+            # Synthesise hourly spacing backward from the sweep time.
+            ts_epoch = sweep_ts - (n - 1 - i) * 3600.0
         row = {
             "symbol": symbol,
             "direction": b.get("direction"),
@@ -350,9 +363,7 @@ async def log_renko_bricks(
             "high": float(b.get("high", b.get("close_price", 0))),
             "low": float(b.get("low", b.get("open_price", 0))),
             "brick_index": b.get("index"),
-            "ts": datetime.fromtimestamp(
-                float(b.get("timestamp", 0)), tz=timezone.utc
-            ).isoformat(),
+            "ts": datetime.fromtimestamp(ts_epoch, tz=timezone.utc).isoformat(),
         }
         if session_date:
             row["session_date"] = session_date
@@ -365,7 +376,7 @@ async def log_renko_bricks(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                _url("nt_renko_bricks"),
+                f"{_url('nt_renko_bricks')}?on_conflict=symbol,brick_index,session_date",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",
