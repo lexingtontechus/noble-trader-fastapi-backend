@@ -215,13 +215,18 @@ async def _fetch_qualified_without_position(limit: int = 200) -> list[dict[str, 
 
 
 async def _fetch_open_positions() -> list[dict[str, Any]]:
-    """Open nt_paper_positions rows (for close pass)."""
+    """Open nt_paper_positions rows (for close pass).
+
+    NOTE: ``size_units`` is required by the close pass — the realized PnL
+    formula is ``pnl_bricks × brick_size × size_units``; without it every
+    close would book $0 (2026-08-08 fix).
+    """
     try:
         from regime_platform.core.settings import settings
         import httpx
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
-            "?select=position_id,signal_id,status"
+            "?select=position_id,signal_id,status,size_units"
             "&status=eq.open&limit=1000"
         )
         headers = {
@@ -238,8 +243,16 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
         return []
 
 
-async def _fetch_resolved_signals(limit: int = 500) -> list[dict[str, Any]]:
-    """Resolved nt_signal_sim rows (outcome set) for the close pass."""
+async def _fetch_resolved_signals(limit: int = 2000) -> list[dict[str, Any]]:
+    """Resolved nt_signal_sim rows (outcome set) for the close pass.
+
+    Ordered ``ts.desc`` (NEWEST first) and with a generous limit — the OLD
+    implementation was ``order=ts.asc&limit=200`` which only ever examined
+    the 200 OLDEST resolved signals; everything resolved later (including
+    the rows whose paper positions were waiting to close) was never fetched
+    → ``closed=0`` on every reconcile run (2026-08-08 fix, confirmed in the
+    orchestrator log: daily "reconcile done — opened=.. closed=0").
+    """
     try:
         from regime_platform.core.settings import settings
         import httpx
@@ -247,7 +260,7 @@ async def _fetch_resolved_signals(limit: int = 500) -> list[dict[str, Any]]:
             f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
             "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
             "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
-            "&outcome=in.(tp_hit,sl_hit,expired)&order=ts.asc"
+            "&outcome=in.(tp_hit,sl_hit,expired)&order=ts.desc"
             f"&limit={int(limit)}"
         )
         headers = {
@@ -389,11 +402,17 @@ def _signal_epoch_ts(sig: dict[str, Any]) -> float:
     return time.time()
 
 
-async def reconcile(limit: int = 200) -> dict[str, Any]:
+async def reconcile(limit: int = 200, close_limit: int = 2000) -> dict[str, Any]:
     """Idempotent open+close pass over the paper book.
 
     1. Open: qualified signals (outcome IS NULL) without a position.
     2. Close: resolved signals (outcome set) whose position is still open.
+
+    ``limit`` bounds the OPEN pass (qualified signals to open) while
+    ``close_limit`` bounds the CLOSE pass (resolved signals to examine).
+    They were previously the same value — the close pass inherited the
+    open-pass 200 and only ever saw the 200 oldest resolved signals
+    (2026-08-08 fix).
     """
     summary: dict[str, Any] = {"opened": 0, "closed": 0, "errors": 0}
 
@@ -418,7 +437,7 @@ async def reconcile(limit: int = 200) -> dict[str, Any]:
 
     # ── Close pass ───────────────────────────────────────────────────
     try:
-        resolved = await _fetch_resolved_signals(limit)
+        resolved = await _fetch_resolved_signals(close_limit)
         open_positions = await _fetch_open_positions()
         pos_by_signal: dict[str, dict[str, Any]] = {}
         for p in open_positions:

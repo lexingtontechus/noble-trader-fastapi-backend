@@ -639,3 +639,48 @@ class TestMonteCarlo:
             RenkoMonteCarloRequest(prices=_make_prices(100), n_simulations=50)
         with pytest.raises(Exception):
             RenkoMonteCarloRequest(prices=_make_prices(100), n_simulations=20000)
+
+
+# ─── RenkoBrickEngine seed-direction regression (2026-08-08) ────────────────
+# A price window that OPENS by moving DOWN produced ZERO bricks because the
+# uninitialised (direction is None) state only attempted UP bricks. XAGUSD
+# sweeps never persisted bricks because its window was down-first. The fix:
+# when direction is None, try UP then DOWN before breaking.
+class TestRenkoBrickEngineSeedDirection:
+    def test_down_first_series_emits_down_bricks(self):
+        """A monotonically DECREASING series must emit down bricks (was 0)."""
+        from renko.brick_engine import RenkoBrickEngine
+        prices = [57.0 - i * 0.1 for i in range(31)]  # 57 → 54
+        engine = RenkoBrickEngine(brick_size=0.5)
+        bricks = engine.build_from_prices(prices)
+        assert len(bricks) == 6, f"down-first bs=0.5 expected 6 bricks, got {len(bricks)}"
+        assert all(b.direction.value == "down" for b in bricks)
+
+    def test_down_first_series_brick_size_1(self):
+        """Same series at brick_size=1.0 → 3 down bricks (was 0)."""
+        from renko.brick_engine import RenkoBrickEngine
+        prices = [57.0 - i * 0.1 for i in range(31)]
+        engine = RenkoBrickEngine(brick_size=1.0)
+        bricks = engine.build_from_prices(prices)
+        assert len(bricks) == 3, f"down-first bs=1.0 expected 3 bricks, got {len(bricks)}"
+
+    def test_up_first_still_works(self):
+        """UP-first series must keep emitting up bricks (no regression)."""
+        from renko.brick_engine import RenkoBrickEngine
+        prices = [57.0 + i * 0.1 for i in range(31)]  # 57 → 60
+        engine = RenkoBrickEngine(brick_size=0.5)
+        bricks = engine.build_from_prices(prices)
+        assert len(bricks) == 6
+        assert all(b.direction.value == "up" for b in bricks)
+
+    def test_random_walk_emits_some_bricks(self):
+        """A noisy window (XAGUSD-like) must emit at least one brick (was 0)."""
+        import random
+        from renko.brick_engine import RenkoBrickEngine
+        random.seed(1)
+        prices = [57.0]
+        for _ in range(300):
+            prices.append(prices[-1] + random.uniform(-0.15, 0.15))
+        engine = RenkoBrickEngine(brick_size=0.5)
+        bricks = engine.build_from_prices(prices)
+        assert len(bricks) > 0, "noisy window emitted zero bricks after seed fix"

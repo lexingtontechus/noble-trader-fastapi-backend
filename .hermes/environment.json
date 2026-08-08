@@ -1,0 +1,18 @@
+{
+  "source": "saved",
+  "recipe": {
+    "name": "FastAPI app",
+    "kind": "fastapi",
+    "bootstrap": [],
+    "build": [],
+    "test": [
+      "set PYTHONPATH=%CD%\\src&& .venv\\Scripts\\python.exe -m pytest tests/ -q -p no:cacheprovider"
+    ],
+    "start": "set PYTHONPATH=%CD%\\src&& .venv\\Scripts\\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000",
+    "port": 8000,
+    "readinessPath": "/",
+    "evidence": [
+      "Saved manifest: repo .venv (Python 3.11) + PYTHONPATH=src; detected recipe's bare pytest/uvicorn resolve to broken global Python 3.12 (numpy._core._multiarray_umath missing); hermes verify spawns via cmd.exe so commands use cmd-native set PYTHONPATH=%CD%\\src&& and .venv\\Scripts\\python.exe"
+    ]
+  }
+}

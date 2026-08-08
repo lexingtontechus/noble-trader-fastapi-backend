@@ -181,7 +181,21 @@ class RenkoBrickEngine:
         while iterations < max_bricks_per_tick:
             iterations += 1
 
-            if st.direction is None or st.direction == BrickDirection.UP:
+            if st.direction is None:
+                # Uninitialised direction: try UP first, then DOWN. A series
+                # that opens by moving DOWN must still emit down bricks —
+                # previously only UP was attempted while direction was None,
+                # so a down-first window produced ZERO bricks (XAGUSD 0-brick
+                # bug, 2026-08-08).
+                brick = self._try_up_bricks(price, ts)
+                if brick is None:
+                    brick = self._try_down_bricks(price, ts)
+                if brick is None:
+                    break
+                new_bricks.append(brick)
+                self._emit(brick)
+
+            elif st.direction == BrickDirection.UP:
                 brick = self._try_up_bricks(price, ts)
                 if brick is None:
                     # Check for reversal
