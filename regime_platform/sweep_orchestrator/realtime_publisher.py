@@ -19,8 +19,14 @@ TRANSPORT (verified 2026-08-06):
   installed ``websockets`` package (>=12; currently 15.x): connect to
   ``/realtime/v1/websocket?apikey=<service-role-key>&vsn=1.0.0``, join the
   phoenix channel topic, send a ``broadcast`` event, close. No new
-  dependencies. The service-role key (same env config as supabase_client.py)
-  authorizes the join on both public and private Realtime channels.
+  dependencies. The service-role key authorizes the join.
+
+  NOTE (2026-08-08, verified live): the join deliberately does NOT set
+  ``private: true``. A private join flips the channel into authorization mode
+  for ALL members, which blocks anon-key clients (the Talaria plugin) from
+  receiving broadcasts (join ok, zero delivery). A public join keeps the
+  channel public; the service key still authorizes it, and anon clients
+  receive.
 
 DESIGN RULES (mirror ``log_signal_sim`` in supabase_client.py):
   • NEVER raises. Failures are counted + logged, never propagated, never
@@ -227,7 +233,6 @@ async def _join_channel(ws: Any, topic: str) -> None:
             "config": {
                 "broadcast": {"ack": False, "self": False},
                 "presence": {"key": ""},
-                "private": True,
             },
         },
         "ref": _next_ref(),
