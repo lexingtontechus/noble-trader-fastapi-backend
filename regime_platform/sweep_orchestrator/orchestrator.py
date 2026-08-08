@@ -27,6 +27,7 @@ import numpy as np
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine
@@ -1675,7 +1676,8 @@ class SweepOrchestrator(HeavySweepMixin):
                 "brick_size": brick_size,
             })
             try:
-                await self._redis.publish("signal.debug.noble_trader", debug_payload)
+                if settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED:
+                    await self._redis.publish("signal.debug.noble_trader", debug_payload)
             except Exception:
                 pass  # don't let debug publish break the sweep
 
@@ -1898,7 +1900,14 @@ class SweepOrchestrator(HeavySweepMixin):
             # Only qualified signals are pushed. Non-qualified sweeps don't
             # produce a Redis message — the downstream consumer only sees
             # actionable signals.
-            pipe = self._redis.pipeline(transaction=False)
+            # Create the pipeline ONLY when Redis publishing is enabled
+            # (NOBLE_TRADER_REDIS_PUBLISH_ENABLED). When disabled, the
+            # sweep never touches Redis — the proxy/agent feed is off.
+            pipe = (
+                self._redis.pipeline(transaction=False)
+                if settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
+                else None
+            )
 
             # DEPRECATED — kept for reference. Downstream now reads from stream.
             # pipe.hset(config_key, mapping=safe_config_dict)
@@ -1966,27 +1975,38 @@ class SweepOrchestrator(HeavySweepMixin):
                         self._last_signal_hash[dedup_key] = content_hash
 
             if qualified:
-                # ── Publish qualified signals via BOTH pub/sub AND Streams ──
-                pipe.publish("signal.raw.noble_trader", agent_payload)
-                pipe.xadd(
-                    "signal.raw.noble_trader",
-                    {"payload": agent_payload},
-                    maxlen=10000,
-                    approximate=True,
+                if pipe is not None:
+                    # ── Publish qualified signals via BOTH pub/sub AND Streams ──
+                    pipe.publish("signal.raw.noble_trader", agent_payload)
+                    pipe.xadd(
+                        "signal.raw.noble_trader",
+                        {"payload": agent_payload},
+                        maxlen=10000,
+                        approximate=True,
+                    )
+                    # ── Record cooldown timestamp ──────────────────────────
+                    # Mark this (symbol, direction) as published so subsequent
+                    # sweeps within the cooldown window are suppressed.
+                    self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
+                    logger.info(
+                        f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} signal "
+                        f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
+                    )
+                else:
+                    # Redis publish DISABLED (NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false):
+                    # keep the signal-generation cooldown so downstream capture/broadcast
+                    # cadence stays identical, but skip ALL Redis traffic (proxy feed off).
+                    self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
+                    logger.info(
+                        f"[sweep:orch] {symbol}: Redis publish DISABLED — qualified "
+                        f"{trade_signal['signal']} signal (cooldown started, no Redis write)"
+                    )
+            if pipe is not None:
+                await pipe.execute()
+                logger.debug(
+                    f"[sweep:orch] {symbol}: Redis push OK "
+                    f"(qualified={qualified})"
                 )
-                # ── Record cooldown timestamp ──────────────────────────
-                # Mark this (symbol, direction) as published so subsequent
-                # sweeps within the cooldown window are suppressed.
-                self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
-                logger.info(
-                    f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} signal "
-                    f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
-                )
-            await pipe.execute()
-            logger.debug(
-                f"[sweep:orch] {symbol}: Redis push OK "
-                f"(qualified={qualified})"
-            )
         except Exception as redis_exc:
             # The previous implementation let this exception propagate,
             # which aborted the rest of the sweep (Supabase log, return

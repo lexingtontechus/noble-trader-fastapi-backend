@@ -46,6 +46,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from regime_platform.core.settings import settings
+
 # Note: write_brick_params + fetch_calibration_bias + log_sweep_result +
 # fetch_candles_for_symbols are imported lazily inside their callers to
 # avoid circular-import issues when hmmlearn (a heavy dep pulled in by
@@ -898,20 +900,26 @@ class HeavySweepMixin:
         })
 
         try:
-            pipe = self._redis.pipeline(transaction=False)
-            pipe.publish("signal.raw.noble_trader", agent_payload)
-            pipe.xadd(
-                "signal.raw.noble_trader",
-                {"payload": agent_payload},
-                maxlen=10000,
-                approximate=True,
-            )
-            await pipe.execute()
-            logger.info(
-                "[sweep:heavy] %s: PUBLISHED %s signal (sharpe=%.4f, brick=%.4f, sl=%d, tp=%d)",
-                symbol, trade_signal["signal"], best.sharpe,
-                best.brick_size, best.sl_bricks, best.tp_bricks,
-            )
+            if not settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED:
+                logger.info(
+                    "[sweep:heavy] %s: Redis publish DISABLED — qualified %s signal, skipping Redis write",
+                    symbol, trade_signal["signal"],
+                )
+            else:
+                pipe = self._redis.pipeline(transaction=False)
+                pipe.publish("signal.raw.noble_trader", agent_payload)
+                pipe.xadd(
+                    "signal.raw.noble_trader",
+                    {"payload": agent_payload},
+                    maxlen=10000,
+                    approximate=True,
+                )
+                await pipe.execute()
+                logger.info(
+                    "[sweep:heavy] %s: PUBLISHED %s signal (sharpe=%.4f, brick=%.4f, sl=%d, tp=%d)",
+                    symbol, trade_signal["signal"], best.sharpe,
+                    best.brick_size, best.sl_bricks, best.tp_bricks,
+                )
         except Exception as exc:
             logger.error(
                 "[sweep:heavy] %s: Redis push failed — %s", symbol, exc,

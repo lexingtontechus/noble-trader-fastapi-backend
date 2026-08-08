@@ -208,6 +208,15 @@ class Settings(BaseSettings):
     # events (realtime:paper). Set to "0" to disable publishing entirely.
     NOBLE_REALTIME_BROADCAST: str = "1"
 
+    # NOBLE_TRADER_REDIS_PUBLISH_ENABLED (default True):
+    #   When False, the sweep skips ALL Redis writes for qualified signals
+    #   (PUBLISH + XADD signal.raw.noble_trader, plus the signal.debug
+    #   channel) — i.e. the proxy/agent feed is off. The sweep itself,
+    #   Supabase persistence, signal-sim capture, and the Supabase Realtime
+    #   broadcast all continue unaffected. Use when retiring the proxy /
+    #   Redis delivery layer (Talaria replaces the agent).
+    NOBLE_TRADER_REDIS_PUBLISH_ENABLED: bool = True
+
     # ── MCP ─────────────────────────────────────────────────────────────────
     MCP_AUTH_ENABLED: bool = True
     MCP_ISSUER: str = ""
