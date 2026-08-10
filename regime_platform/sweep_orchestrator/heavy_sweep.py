@@ -1061,3 +1061,36 @@ class HeavySweepMixin:
             logger.error(
                 "[sweep:heavy] %s: Redis push failed — %s", symbol, exc,
             )
+
+        # ── Direct Discord delivery (Option 2 — decoupled) ─────────────
+        # Same decoupling as the light sweep: when the Redis feed is off
+        # (proxy retirement) the qualified heavy signal is sent DIRECTLY
+        # to the Discord notifier, gated by
+        # NOBLE_TRADER_DISCORD_SIGNALS_ENABLED. Skipped when Redis
+        # delivery is active (aggregator already handles Discord).
+        try:
+            from regime_platform.sweep_orchestrator.discord_delivery import (
+                maybe_send_discord_signal,
+            )
+
+            redis_delivery_active = bool(
+                settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
+                and self._redis is not None
+            )
+            payload_obj = (
+                json.loads(agent_payload)
+                if isinstance(agent_payload, str)
+                else agent_payload
+            )
+            asyncio.create_task(
+                maybe_send_discord_signal(
+                    payload_obj,
+                    source="sweep-heavy",
+                    redis_delivery_active=redis_delivery_active,
+                )
+            )
+        except Exception as discord_exc:
+            logger.warning(
+                "[sweep:heavy] %s: direct Discord dispatch failed — %s: %s",
+                symbol, type(discord_exc).__name__, discord_exc,
+            )

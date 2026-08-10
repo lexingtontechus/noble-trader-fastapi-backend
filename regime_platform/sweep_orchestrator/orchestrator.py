@@ -2104,6 +2104,47 @@ class SweepOrchestrator(HeavySweepMixin):
                 f"consumers may see stale data until next sweep."
             )
 
+        # ── 10b. Direct Discord delivery (Option 2 — decoupled) ────────
+        # Discord alerts previously depended on Redis
+        # (signal.raw.noble_trader → in-process SignalAggregator). With
+        # NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false (proxy retirement) the
+        # sweep writes nothing to Redis, the aggregator receives nothing,
+        # and Discord goes silent. This direct call keeps Discord flowing
+        # independent of the Redis gate, gated by its own toggle
+        # (NOBLE_TRADER_DISCORD_SIGNALS_ENABLED). Skipped when the Redis
+        # feed is active (the aggregator already delivers Discord — a
+        # direct send would duplicate the alert).
+        # Placed here — AFTER the Redis publish block — so `qualified` is
+        # FINAL (cooldown suppression AND content-dedup suppression have
+        # both already flipped it to False where applicable).
+        if qualified and settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED:
+            try:
+                from regime_platform.sweep_orchestrator.discord_delivery import (
+                    maybe_send_discord_signal,
+                )
+
+                redis_delivery_active = bool(
+                    settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
+                    and getattr(self, "_redis", None) is not None
+                )
+                payload_obj = (
+                    json.loads(agent_payload)
+                    if isinstance(agent_payload, str)
+                    else agent_payload
+                )
+                asyncio.create_task(
+                    maybe_send_discord_signal(
+                        payload_obj,
+                        source=source,
+                        redis_delivery_active=redis_delivery_active,
+                    )
+                )
+            except Exception as discord_exc:
+                logger.warning(
+                    f"[sweep:orch] {symbol}: direct Discord dispatch failed — "
+                    f"{type(discord_exc).__name__}: {discord_exc}"
+                )
+
         # ── 11a. Signal-sim capture (nt_signal_sim) ─────────────────
         # Fire-and-forget persistence of EVERY generated non-neutral
         # signal (qualified or not) for the EOD signal simulator. Placed

@@ -227,3 +227,62 @@ The fix adds a **conditional routing check** that:
 3. Keeps regime updates routing to `send_status()` as before
 
 This ensures Discord #trade-signals now receives **complete trade signals** with all necessary information (entry, SL, TP, Kelly, confidence), while maintaining the existing behavior for regime updates.
+
+
+## 2026-08-10 — Option 2: Direct Discord delivery (decoupled from Redis)
+
+### Incident
+Qualified sweep signals stopped reaching Discord when the proxy/Redis feed was
+retired (`NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false`). Root cause: the ONLY
+Discord path for sweep signals was
+
+```
+SweepOrchestrator ──(NOBLE_TRADER_REDIS_PUBLISH_ENABLED)──▶ Redis PUBLISH signal.raw.noble_trader
+        ▶ SignalAggregator (subscribed to that channel, runs in main app)
+        ▶ discord_notifier.send_signal() → webhook
+```
+
+With the Redis feed off, the orchestrator writes NOTHING to Redis
+(`orchestrator.py:1993` — pipeline is None), the aggregator receives nothing,
+and Discord goes silent even though the webhooks are healthy. Verified in the
+studio orchestrator log: 244× `Redis publish DISABLED — qualified <dir> signal`
+and 0× `PUBLISHED` since 2026-08-09 20:01, all 14 symbols qualified.
+
+### Fix (Option 2 — decouple, keep the proxy retired)
+Sweep signals now go DIRECTLY to the Discord notifier from both sweep paths,
+gated by their own toggle:
+
+- `NOBLE_TRADER_DISCORD_SIGNALS_ENABLED` (default `True`) — new settings flag.
+- `regime_platform/sweep_orchestrator/discord_delivery.py` (NEW) —
+  `maybe_send_discord_signal(payload, *, source, redis_delivery_active)` maps
+  the heartbeat payload to `discord_notifier.send_signal(...)` exactly like the
+  aggregator's HEARTBEAT buy/sell branch (pattern=`regime_trade`, direction
+  upper-cased, full-precision entry/stop/tp, plan routing).
+- `orchestrator._process_symbol` — after the Redis publish block (where
+  `qualified` is FINAL, post cooldown + content-dedup), qualified buy/sell
+  signals dispatch a fire-and-forget direct Discord send via
+  `asyncio.create_task` when the toggle is on and Redis delivery is inactive.
+- `heavy_sweep._push_heavy_signal` — same dispatch (`source="sweep-heavy"`).
+
+### Duplicate-avoidance (critical)
+When `NOBLE_TRADER_REDIS_PUBLISH_ENABLED=true` the in-process SignalAggregator
+ALREADY delivers Discord via the original Redis path. The direct send is
+therefore SKIPPED whenever `redis_delivery_active` is true — otherwise every
+qualified signal would produce TWO Discord embeds. The direct path is the
+replacement for the Redis→aggregator path, active only when the Redis feed is
+off (proxy retirement).
+
+### Behavior matrix
+| Redis feed | Discord toggle | Result |
+|---|---|---|
+| off (proxy retired) | on (default) | Direct Discord send ✅ |
+| on | on (default) | Aggregator path (no duplicate) |
+| off | off | No Discord |
+| on | off | No Discord (aggregator still feeds Redis consumers) |
+
+### Verification
+- Tests: `tests/test_discord_direct_delivery.py` (8) + existing
+  `tests/test_redis_publish_toggle.py` (3) — 11 passed.
+- Studio log signature after deploy: `[discord:direct] <SYM> <BUY|SELL> signal
+  alert sent (sweep-light|sweep-heavy)` with `Redis publish DISABLED` still
+  present but no longer the end of the line.

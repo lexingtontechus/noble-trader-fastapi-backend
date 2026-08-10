@@ -217,6 +217,20 @@ class Settings(BaseSettings):
     #   Redis delivery layer (Talaria replaces the agent).
     NOBLE_TRADER_REDIS_PUBLISH_ENABLED: bool = True
 
+    # NOBLE_TRADER_DISCORD_SIGNALS_ENABLED (default True):
+    #   When True, qualified buy/sell signals are sent DIRECTLY to the
+    #   Discord notifier from BOTH sweep paths (light _process_symbol +
+    #   heavy _push_heavy_signal), INDEPENDENT of the Redis publish gate.
+    #   This decouples Discord delivery from the proxy/Redis feed: the
+    #   operator can retire the proxy (NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false)
+    #   while Discord signal alerts keep flowing (the old path — Redis
+    #   signal.raw.noble_trader → in-process SignalAggregator → Discord —
+    #   dies with the Redis feed). When the Redis feed IS enabled, the
+    #   direct send is skipped to avoid duplicate alerts (the aggregator
+    #   already delivers Discord). Set "0" to disable direct Discord
+    #   delivery entirely. (2026-08-10 — incident fix, Option 2)
+    NOBLE_TRADER_DISCORD_SIGNALS_ENABLED: bool = True
+
     # EOD_CALIBRATION_ENFORCE (default True):
     #   When True, the sweep ENFORCES the EOD calibration-bias correction at
     #   qualification time: symbols whose |bias| > 0.10 (OVERCONFIDENT /

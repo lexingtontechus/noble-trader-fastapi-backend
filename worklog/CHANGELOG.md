@@ -1,3 +1,47 @@
+## [7.7.1] - 2026-08-10
+
+### Fixed — Discord signal delivery decoupled from Redis publish gate (Option 2)
+
+Incident: qualified sweep signals stopped reaching Discord when
+NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false (proxy retirement). The ONLY Discord
+path for sweep signals was Redis signal.raw.noble_trader -> in-process
+SignalAggregator -> Discord. With the Redis feed off the orchestrator writes
+nothing to Redis, the aggregator receives nothing, and Discord goes silent
+even though the webhooks are healthy.
+
+Fix: sweep signals now go DIRECTLY to the Discord notifier from both sweep
+paths, independent of the Redis gate, gated by a new toggle.
+
+#### regime_platform/core/settings.py - MODIFIED
+- Added NOBLE_TRADER_DISCORD_SIGNALS_ENABLED: bool = True - decoupled Discord
+  toggle (default on, preserves current behavior). When Redis feed is ON the
+  direct send is skipped (aggregator already delivers Discord - no duplicates).
+
+#### regime_platform/sweep_orchestrator/discord_delivery.py - NEW FILE
+- maybe_send_discord_signal(payload, *, source, redis_delivery_active) - direct
+  Discord delivery mirroring SignalAggregator._route_to_discord HEARTBEAT
+  buy/sell mapping (pattern="regime_trade", direction upper-cased, full-price
+  entry/sl/tp, plan routing). Gated by NOBLE_TRADER_DISCORD_SIGNALS_ENABLED;
+  skips when redis_delivery_active (avoids duplicate alerts). Never raises -
+  all errors logged; a Discord hiccup cannot break the sweep.
+
+#### regime_platform/sweep_orchestrator/orchestrator.py - MODIFIED
+- _process_symbol: after the Redis publish block (where `qualified` is FINAL,
+  post cooldown + content-dedup), qualified buy/sell signals dispatch a
+  fire-and-forget direct Discord send via asyncio.create_task when
+  NOBLE_TRADER_DISCORD_SIGNALS_ENABLED and Redis delivery is inactive.
+
+#### regime_platform/sweep_orchestrator/heavy_sweep.py - MODIFIED
+- _push_heavy_signal: same direct Discord dispatch (source="sweep-heavy") after
+  the Redis block, with the same gating.
+
+#### tests/test_discord_direct_delivery.py - NEW FILE
+- 8 tests: settings default, helper sends with aggregator-identical kwargs,
+  disabled toggle skips, redis-active skips (no duplicate), neutral skips,
+  never-raises on webhook failure, heavy path dispatches when Redis off,
+  heavy path does NOT duplicate when Redis on. Existing
+  test_redis_publish_toggle.py regression intact.
+
 ## [7.7.0] - 2026-07-24
 
 ### Changed — Multivariate Gaussian HMM for `p_markov` + TA persistence
