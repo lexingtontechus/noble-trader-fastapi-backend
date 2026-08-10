@@ -193,6 +193,10 @@ NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
     # All nullable; populated from FeatureBuffer.latest() via the
     # regime_platform.services.hmm.latest_ta helper.
     "ta_adx", "ta_ao", "ta_bb_power", "ta_macd", "ta_rsi",
+    # Failure trace (2026-08-09): nullable error reason so a failed or
+    # no-combo heavy sweep still leaves a row (observability, not silent
+    # absence). Written only when the per-symbol sweep did not complete.
+    "error",
 })
 
 NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({

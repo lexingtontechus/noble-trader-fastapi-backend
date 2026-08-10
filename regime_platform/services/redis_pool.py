@@ -73,7 +73,12 @@ class RedisConnectionManager:
             self._pool = aioredis.from_url(
                 url,
                 decode_responses=True,
-                max_connections=10,
+                # 2026-08-09: raised 10 → 16 after heavy-sweep concurrency
+                # exhausted the pool (MaxConnectionsError). The heavy sweep
+                # is now capped at HEAVY_SWEEP_MAX_CONCURRENCY=4 concurrent
+                # symbols, and the light sweep runs at the same minute, so
+                # 16 gives headroom for both + all other subsystems.
+                max_connections=16,
                 socket_timeout=5,
                 socket_connect_timeout=5,
                 socket_keepalive=True,

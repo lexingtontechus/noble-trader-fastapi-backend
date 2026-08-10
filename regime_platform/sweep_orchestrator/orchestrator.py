@@ -1032,6 +1032,56 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] correction failed: %s", exc)
+            correction_summary = {}
+
+        # ── Part III: emergency heavy sweeps (2026-08-10) ───────────────
+        # The EOD correction pass RECOMMENDS `emergency_heavy_sweep` for
+        # over/underconfident symbols — this is the missing consumer that
+        # actually runs them. Re-optimising brick params on fresh data is
+        # the only mechanism that can genuinely move the bias back toward 0
+        # (better params → better predictions → calibration re-converges).
+        # Best-effort: each symbol is fetched + swept in isolation; a
+        # failure is logged, never raised out of the tick.
+        emergency_syms = sorted({
+            a.get("symbol")
+            for a in (correction_summary.get("actions") or [])
+            if a.get("action") == "emergency_heavy_sweep" and a.get("symbol")
+        })
+        if emergency_syms:
+            logger.info(
+                "[eod:lookback] emergency heavy sweeps requested: %s",
+                emergency_syms,
+            )
+            try:
+                from regime_platform.sweep_orchestrator.supabase_client import (
+                    fetch_active_symbols,
+                )
+                all_symbols = await fetch_active_symbols()
+                sym_map = {s.get("symbol"): s for s in all_symbols}
+                for sym_name in emergency_syms:
+                    sym = sym_map.get(sym_name)
+                    if not sym:
+                        logger.warning(
+                            "[eod:lookback] emergency sweep: %s not in active symbols — skipped",
+                            sym_name,
+                        )
+                        continue
+                    try:
+                        result = await self.run_heavy_sweep_for_symbol(sym)
+                        logger.info(
+                            "[eod:lookback] emergency heavy sweep %s: %s",
+                            sym_name,
+                            result.skip_reason or result.error or "ok",
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "[eod:lookback] emergency heavy sweep %s failed: %s",
+                            sym_name, exc,
+                        )
+            except Exception as exc:
+                logger.error(
+                    "[eod:lookback] emergency heavy sweep batch failed: %s", exc,
+                )
 
     async def _sweep_group(
         self, cron_expr: str, symbols: list[dict[str, Any]]
@@ -1509,6 +1559,37 @@ class SweepOrchestrator(HeavySweepMixin):
             # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
             effective_kelly = kelly_f * ev_result.ev_scale
 
+        # ── 5b. EOD calibration enforcement (live consumer) ────────────
+        # The EOD self-correction pass (daily 00:30) writes nt_eod_actions
+        # recommendations (bayesian_penalty / kelly_reduction /
+        # emergency_heavy_sweep) when a symbol is over/underconfident.
+        # THIS is the missing consumer side: before the qualification gates
+        # we apply the correction live — shrink p_win toward 0.5 (Bayesian)
+        # and halve Kelly — so the gates + sizing see the corrected values.
+        # Only fetched when the signal is qualifiable (non-neutral) to avoid
+        # a Supabase round-trip for every neutral tick. (2026-08-10)
+        calib_adj = None
+        if signal_is_qualifiable and settings.EOD_CALIBRATION_ENFORCE:
+            from regime_platform.sweep_orchestrator.calibration_enforcement import (
+                apply_calibration_adjustment,
+            )
+            calib_adj = await apply_calibration_adjustment(
+                symbol,
+                p_win=ev_result.p_win,
+                kelly_f=effective_kelly,
+            )
+            if calib_adj and calib_adj.get("applied"):
+                # The agent must see the CORRECTED p_win so its synthesizer
+                # doesn't re-inflate overconfidence from a stale raw value.
+                ev_result.p_win = calib_adj["p_win"]
+                effective_kelly = calib_adj["kelly_f"]
+                logger.info(
+                    "[sweep:orch] %s: calibration ENFORCED (%s, bias=%s) — "
+                    "p_win→%.4f, kelly→%.6f",
+                    symbol, calib_adj.get("status"), calib_adj.get("bias"),
+                    ev_result.p_win, effective_kelly,
+                )
+
         # ── p_win soft-gate (v5): modulator, not hard gate ────────
         # Hard floor: p_win < 0.50 = negative EV = NEVER publish.
         # Soft band: 0.50 ≤ p_win < MIN_P_WIN = publish with kelly shrink.
@@ -1565,6 +1646,10 @@ class SweepOrchestrator(HeavySweepMixin):
             "rr": round(effective_ev_result.rr, 4),
             "p_win": round(ev_result.p_win, 4),
             "p_win_kelly_shrink": round(p_win_kelly_shrink, 4),
+            # ── EOD calibration enforcement stamp (2026-08-10) ─────────
+            "calibration_enforced": bool(calib_adj and calib_adj.get("applied")),
+            "calibration_status": (calib_adj or {}).get("status"),
+            "calibration_bias": round(calib_adj["bias"], 4) if calib_adj and calib_adj.get("bias") is not None else None,
             "ev_reason": effective_ev_result.reason,
             "timesfm_gate_mode": TIMESFM_GATE_MODE,
         }

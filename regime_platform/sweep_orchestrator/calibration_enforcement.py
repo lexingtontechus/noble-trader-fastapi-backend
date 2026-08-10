@@ -1,0 +1,244 @@
+"""
+Calibration Enforcement — live consumer of the EOD self-correction loop
+═══════════════════════════════════════════════════════════════════════
+
+The EOD correction pass (``eod_correction.run_eod_correction``, daily 00:30
+UTC) is an AUDIT + RECOMMENDATION pass: for every symbol whose calibration
+bias exceeds the threshold it writes ``nt_eod_actions`` rows:
+
+  • |bias| >  0.10  → OVERCONFIDENT   (predicted win rate > realized)
+  • |bias| < -0.10  → UNDERCONFIDENT  (predicted win rate < realized)
+
+…with three recommendation actions each:
+  ``bayesian_penalty``      shrink p_win toward 0.5 before qualification
+  ``kelly_reduction``       reduce Kelly sizing by 50 %
+  ``emergency_heavy_sweep`` re-run the heavy sweep with fresh params
+
+This module is the missing CONSUMER side. Before every qualification
+decision the sweep asks ``apply_calibration_adjustment``, which reads the
+LATEST ``nt_eod_actions`` row for the symbol and returns the live correction
+to apply:
+
+  - p_win'  = (p_win * n + 0.5 * 10) / (n + 10)   (Bayesian shrink → 0.5)
+  - kelly'  = kelly * 0.5                          (when a penalty is active)
+
+Enforcement is controlled by ``settings.EOD_CALIBRATION_ENFORCE``
+(env ``EOD_CALIBRATION_ENFORCE``, default ``1`` = enforce). When disabled
+the module returns no-op (recommendations are still logged by the EOD pass;
+they just aren't applied live).
+
+NOTE: this module deliberately does NOT re-derive bias from calibration
+records — it reads the EOD's own recommendation rows, so the audit trail
+(nt_eod_actions) and the enforcement are guaranteed to agree. If the EOD
+pass has never run for a symbol (no rows), the module returns no-op.
+
+Design rules (mirror eod_correction.py):
+  • Best-effort only — every failure is caught and logged, never raised
+    into the sweep tick.
+  • Supabase reads use the existing httpx helpers in supabase_client.py.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from regime_platform.core.settings import settings
+from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+log = logging.getLogger("regime.sweep.calibration_enforcement")
+
+# Bias thresholds (MUST mirror eod_correction.OVERCONFIDENT_BIAS /
+# UNDERCONFIDENT_BIAS — the enforcement reads the EOD's classification, but
+# these are kept for self-documentation + the no-actions fallback).
+OVERCONFIDENT_BIAS = 0.10
+UNDERCONFIDENT_BIAS = -0.10
+
+# Bayesian prior strength — MUST mirror eod_correction.BAYES_PRIOR_COUNT.
+BAYES_PRIOR_COUNT = 10
+BAYES_PRIOR_PWIN = 0.5
+
+# Kelly reduction factor — MUST mirror eod_correction.KELLY_REDUCTION.
+KELLY_REDUCTION = 0.5
+
+# How old an EOD action may be before it stops being enforced. The EOD pass
+# runs daily, so a 26 h window tolerates one missed tick without enforcing a
+# stale penalty forever.
+ACTION_FRESH_WINDOW_HOURS = 26
+
+# Penalty actions that activate enforcement (see eod_correction module doc).
+PENALTY_ACTIONS = ("bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep")
+
+# Recommended actions that should NOT downgrade sizing (audit-only).
+AUDIT_ONLY_ACTIONS = ("parameter_decay_check",)
+
+
+def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
+    """Shrink ``p_win`` toward 0.5 with a Bayesian prior.
+
+    p_win' = (p_win * n + 0.5 * 10) / (n + 10)
+
+    With few calibration records the prior dominates (shrink hard); with
+    many records the observed p_win dominates (shrink less).
+    """
+    n = max(int(n_records or 0), 0)
+    if n == 0:
+        # No records — no evidence to shrink on; keep the raw p_win.
+        return float(p_win)
+    return (float(p_win) * n + BAYES_PRIOR_PWIN * BAYES_PRIOR_COUNT) / (
+        n + BAYES_PRIOR_COUNT
+    )
+
+
+async def fetch_latest_eod_action(symbol: str) -> Optional[dict[str, Any]]:
+    """Fetch the most recent ``nt_eod_actions`` row for ``symbol``.
+
+    Returns the row dict (or ``None`` on failure / no rows). The EOD pass
+    writes one row per action (3 for a penalty symbol), so the latest row
+    is the freshest recommendation.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        log.debug("Supabase not configured — no EOD action for %s", symbol)
+        return None
+    url = _url("nt_eod_actions")
+    params = {
+        "select": "action,bias,ts,detail",
+        "symbol": f"eq.{symbol}",
+        "order": "ts.desc",
+        "limit": "1",
+    }
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.warning("fetch_latest_eod_action %s failed: %s", symbol, exc)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data[0]
+
+
+def _action_is_fresh(action: Optional[dict[str, Any]]) -> bool:
+    """An action is enforceable if it exists and is within the fresh window."""
+    if not action:
+        return False
+    from datetime import datetime, timezone
+
+    ts_raw = action.get("ts")
+    if not ts_raw:
+        return True  # no ts — assume fresh rather than enforcing nothing
+    try:
+        if isinstance(ts_raw, str):
+            # ISO 8601 with optional Z suffix.
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        else:
+            ts = ts_raw
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+        return age_h <= ACTION_FRESH_WINDOW_HOURS
+    except (ValueError, TypeError):
+        return True  # unparseable — assume fresh
+
+
+async def apply_calibration_adjustment(
+    symbol: str,
+    *,
+    p_win: float,
+    kelly_f: float,
+    venue: Optional[str] = None,
+) -> dict[str, Any]:
+    """Compute the calibration correction for one symbol.
+
+    Reads the latest ``nt_eod_actions`` row. When a penalty is active (and
+    fresh), returns adjusted ``p_win`` (Bayesian shrink toward 0.5) and
+    ``kelly_f`` (× 0.5), plus the status/bias for stamping. Otherwise
+    returns the inputs unchanged.
+
+    Returns:
+        {
+          "applied": bool,          # True when a penalty was enforced
+          "status": str | None,     # OVERCONFIDENT / UNDERCONFIDENT / None
+          "bias": float | None,
+          "p_win": float,           # possibly adjusted
+          "kelly_f": float,         # possibly adjusted
+          "reason": str,
+        }
+
+    ``venue`` is accepted for API symmetry with fetch_calibration_bias but
+    the EOD actions table is keyed by symbol only (no venue column).
+    """
+    noop = {
+        "applied": False,
+        "status": None,
+        "bias": None,
+        "p_win": float(p_win),
+        "kelly_f": float(kelly_f),
+        "reason": "enforcement_disabled",
+    }
+    if not settings.EOD_CALIBRATION_ENFORCE:
+        return noop
+
+    try:
+        action = await fetch_latest_eod_action(symbol)
+    except Exception as exc:
+        log.warning("calibration adjustment %s failed: %s", symbol, exc)
+        return {**noop, "reason": f"fetch_error:{type(exc).__name__}"}
+
+    if not action:
+        return {**noop, "reason": "no_eod_action"}
+
+    action_name = action.get("action")
+    if action_name not in PENALTY_ACTIONS:
+        return {
+            **noop,
+            "status": None,
+            "bias": _num(action.get("bias")),
+            "reason": f"audit_only:{action_name}",
+        }
+
+    if not _action_is_fresh(action):
+        return {
+            **noop,
+            "status": None,
+            "bias": _num(action.get("bias")),
+            "reason": "action_stale",
+        }
+
+    # Penalty active → apply Bayesian shrink + Kelly reduction.
+    # The EOD row's detail carries the n used to compute the penalty.
+    detail = action.get("detail") if isinstance(action.get("detail"), dict) else {}
+    n_records = _num(detail.get("n")) or _num(action.get("count")) or 0
+
+    adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+    adjusted_kelly = float(kelly_f) * KELLY_REDUCTION
+    bias = _num(action.get("bias"))
+    status = "OVERCONFIDENT" if (bias is not None and bias > OVERCONFIDENT_BIAS) else (
+        "UNDERCONFIDENT" if (bias is not None and bias < UNDERCONFIDENT_BIAS) else "PENALTY"
+    )
+    log.info(
+        "[calibration:enforce] %s: %s bias=%s n=%s → p_win %.4f→%.4f, kelly %.6f→%.6f",
+        symbol, status, bias, n_records, p_win, adjusted_p_win, kelly_f, adjusted_kelly,
+    )
+    return {
+        "applied": True,
+        "status": status,
+        "bias": bias,
+        "p_win": adjusted_p_win,
+        "kelly_f": adjusted_kelly,
+        "reason": f"penalty:{action_name}",
+    }
+
+
+def _num(v: Any) -> Optional[float]:
+    """Best-effort numeric coercion (None-safe)."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None

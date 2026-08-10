@@ -217,6 +217,17 @@ class Settings(BaseSettings):
     #   Redis delivery layer (Talaria replaces the agent).
     NOBLE_TRADER_REDIS_PUBLISH_ENABLED: bool = True
 
+    # EOD_CALIBRATION_ENFORCE (default True):
+    #   When True, the sweep ENFORCES the EOD calibration-bias correction at
+    #   qualification time: symbols whose |bias| > 0.10 (OVERCONFIDENT /
+    #   UNDERCONFIDENT, per the EOD classification) have their blended p_win
+    #   shrunk toward 0.5 (Bayesian penalty) and their effective Kelly
+    #   halved before the qualification gates run. This is the consumer side
+    #   of the EOD self-correction loop (the EOD pass writes nt_eod_actions
+    #   recommendations; the sweep applies them live). Set "0" to disable
+    #   enforcement (recommendations still logged).
+    EOD_CALIBRATION_ENFORCE: bool = True
+
     # ── MCP ─────────────────────────────────────────────────────────────────
     MCP_AUTH_ENABLED: bool = True
     MCP_ISSUER: str = ""

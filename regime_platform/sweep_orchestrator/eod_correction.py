@@ -208,6 +208,7 @@ async def run_eod_correction() -> dict[str, Any]:
             adj_p_win = bayesian_adjusted_p_win(cal.get("predicted_p_win", 0.5), n_records)
             detail["adjusted_p_win"] = adj_p_win
             detail["kelly_factor"] = KELLY_REDUCTION
+            detail["n"] = n_records  # consumed by calibration_enforcement live
 
             for action in ("emergency_heavy_sweep", "bayesian_penalty", "kelly_reduction"):
                 await _write_eod_action(symbol, action, bias, detail)

@@ -30,6 +30,14 @@ Per-symbol heavy sweep does:
 T4 w/GPU runs 14 symbols in <30 s total — no stagger needed, no shadow
 mode, no transition period. All Supabase Edge Functions are already OFF.
 
+NOTE (2026-08-09): concurrency is CAPPED at ``HEAVY_SWEEP_MAX_CONCURRENCY``
+symbols at a time. The naive "fire all 14 via asyncio.gather" design
+exhausted the shared Redis pool (max_connections=10) on the first real
+weekend run — every symbol opens a ``timesfm:cached`` read simultaneously,
+and the last 4 (the metals) died with ``MaxConnectionsError``. The cap
+also keeps the CPU-bound grid-search thread pool sane (each symbol spawns
+3 to_thread tasks; 14 × 3 = 42 threads otherwise).
+
 This module is a mix-in: ``SweepOrchestrator`` inherits from
 ``HeavySweepMixin`` so the heavy-sweep methods have access to ``self._redis``,
 ``self._ev_engine``, ``self._sizer``, ``self._scheduler``, etc.
@@ -67,6 +75,14 @@ MIN_TRADES = 10
 
 # TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
 TIMESFM_CONFIDENT_THRESHOLD = 0.10
+
+# Heavy-sweep concurrency cap. Firing all 14 symbols at once (2026-08-09)
+# exhausted the shared Redis pool (max_connections=10) — every symbol opens
+# a `timesfm:cached` read at the same instant → MaxConnectionsError on the
+# last 4 symbols. Cap concurrent per-symbol sweeps so the pool and the
+# CPU-bound grid-search threads stay under their limits; the grid searches
+# dominate wall time anyway.
+HEAVY_SWEEP_MAX_CONCURRENCY = 4
 
 # When calibration is CALIBRATED, skip the next heavy sweep for 12 h
 SWEEP_SKIP_CALIBRATED_HOURS = 12
@@ -269,11 +285,20 @@ class HeavySweepMixin:
 
         # Concurrent per-symbol heavy sweeps. Each runs its CPU-bound
         # grid search via asyncio.to_thread, so they don't block each
-        # other or the event loop.
-        tasks = [
-            self.run_heavy_sweep_for_symbol(sym, valid_prices[sym["symbol"]])
-            for sym in symbols_with_prices
-        ]
+        # other or the event loop. Concurrency is CAPPED: the shared
+        # Redis pool has max_connections=10 and every symbol opens a
+        # `timesfm:cached` read at start — firing all 14 at once
+        # exhausted the pool (MaxConnectionsError on the metals,
+        # 2026-08-09). The cap also bounds the to_thread fan-out.
+        semaphore = asyncio.Semaphore(HEAVY_SWEEP_MAX_CONCURRENCY)
+
+        async def _run_capped(sym: dict[str, Any]):
+            async with semaphore:
+                return await self.run_heavy_sweep_for_symbol(
+                    sym, valid_prices[sym["symbol"]],
+                )
+
+        tasks = [_run_capped(sym) for sym in symbols_with_prices]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Summary log
@@ -338,7 +363,19 @@ class HeavySweepMixin:
             # Skip the heavy sweep entirely if TimesFM is already confident
             # (|p_timesfm - 0.5| > 0.1). This negates the need for daily
             # heavy sweeps — TimesFM handles non-stationarity 24/7.
-            cached_p_str = await self._redis.get(f"timesfm:cached:{symbol}")
+            # The `timesfm:cached` key is ADVISORY: a Redis failure (pool
+            # exhausted, connection refused, Redis disabled) must degrade to
+            # cache-miss and proceed — it must never fail the sweep
+            # (2026-08-09: MaxConnectionsError killed the 4 metals).
+            cached_p_str = None
+            if self._redis is not None:
+                try:
+                    cached_p_str = await self._redis.get(f"timesfm:cached:{symbol}")
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: timesfm cache read failed (%s) — proceeding without cache",
+                        symbol, type(exc).__name__,
+                    )
             if cached_p_str:
                 try:
                     cached_p = float(cached_p_str)
@@ -421,6 +458,11 @@ class HeavySweepMixin:
                 logger.warning(
                     "[sweep:heavy] %s: %s", symbol, result.error,
                 )
+                # Trace row so the failure is visible in nt_sweep_result
+                # (previously silent — 2026-08-09 showed only successes).
+                await self._log_heavy_failure_trace(
+                    symbol, sym.get("asset_class", ""), result,
+                )
                 return result
             result.best_combo = best
             logger.info(
@@ -452,11 +494,18 @@ class HeavySweepMixin:
             )
             result.persisted_yaml = True
 
-            # Cache p_timesfm so the next heavy sweep can skip if confident
-            if p_timesfm is not None:
-                await self._redis.set(
-                    f"timesfm:cached:{symbol}", p_timesfm, ex=86400,
-                )
+            # Cache p_timesfm so the next heavy sweep can skip if confident.
+            # Best-effort — a Redis failure here must not fail the sweep.
+            if p_timesfm is not None and self._redis is not None:
+                try:
+                    await self._redis.set(
+                        f"timesfm:cached:{symbol}", p_timesfm, ex=86400,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: timesfm cache write failed (%s) — ignoring",
+                        symbol, type(exc).__name__,
+                    )
 
             # ── 8. EV compute with HMM markov (replaces discrete chain) ─
             direction = "short" if "bear" in result.regime_label.lower() else "long"
@@ -642,6 +691,14 @@ class HeavySweepMixin:
             result.error = f"{type(exc).__name__}: {exc}"
             result.duration_ms = int((time.time() - start_ts) * 1000)
             logger.exception("[sweep:heavy] %s: FAILED", symbol)
+            # Trace row so the failure is visible in nt_sweep_result
+            # (previously silent — 2026-08-09 showed only successes).
+            try:
+                await self._log_heavy_failure_trace(
+                    symbol, sym.get("asset_class", ""), result,
+                )
+            except Exception:
+                pass  # trace is best-effort; never mask the original error
             return result
 
     # ── CPU-bound helpers (run in asyncio.to_thread) ─────────────────
@@ -763,6 +820,53 @@ class HeavySweepMixin:
 
     # ── YAML persistence ─────────────────────────────────────────────
 
+    async def _log_heavy_failure_trace(
+        self,
+        symbol: str,
+        asset_class: str,
+        result: "HeavySweepResult",
+    ) -> None:
+        """Best-effort trace row for a failed / no-combo heavy sweep.
+
+        The heavy sweep previously wrote NO row when a symbol failed or had
+        no combo pass the filters — the sweep summary counted them as
+        ``failed`` in logs but the DB showed only the successful symbols
+        (2026-08-09: 6 rows for 14 symbols). This leaves a nullable-``error``
+        row so failed sweeps are visible in nt_sweep_result. Never raises.
+        """
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                log_sweep_result,
+            )
+            await log_sweep_result({
+                "symbol": symbol,
+                "asset_class": asset_class,
+                "source": "sweep-heavy",
+                "qualified": False,
+                "regime": result.regime_label,
+                "regime_conf": round(result.regime_conf, 4) if result.regime_conf else None,
+                "kelly_f": round(result.kelly_f, 6) if result.kelly_f else None,
+                "n_combos_tested": result.n_combos_tested,
+                "sweep_window": "90d",
+                "sweep_duration_ms": result.duration_ms,
+                "error": (result.error or "")[:500],
+                # nt_sweep_result has NOT NULL columns on these (verified
+                # 2026-08-09: 23502 on brick_size/sl_bricks/tp_bricks/sharpe/
+                # win_rate/n_trades) — send 0 sentinels so the trace row
+                # inserts even though the sweep never produced a combo.
+                "brick_size": 0.0,
+                "sl_bricks": 0,
+                "tp_bricks": 0,
+                "sharpe": 0.0,
+                "win_rate": 0.0,
+                "n_trades": 0,
+            })
+        except Exception as exc:
+            logger.debug(
+                "[sweep:heavy] %s: failure trace row skipped (%s)",
+                symbol, exc,
+            )
+
     async def _persist_brick_params_to_yaml(
         self,
         symbol: str,
@@ -857,6 +961,30 @@ class HeavySweepMixin:
         venue_name = _derive_venue(sym)
         effective_kelly = kelly_f * ev_result.ev_scale
 
+        # ── EOD calibration enforcement (2026-08-10) ────────────────────
+        # Heavy-sweep signals get the same live calibration correction as
+        # light sweeps: read the latest nt_eod_actions recommendation and
+        # shrink p_win toward 0.5 + halve Kelly when over/underconfident.
+        calib_adj = None
+        if settings.EOD_CALIBRATION_ENFORCE:
+            from regime_platform.sweep_orchestrator.calibration_enforcement import (
+                apply_calibration_adjustment,
+            )
+            try:
+                calib_adj = await apply_calibration_adjustment(
+                    symbol,
+                    p_win=ev_result.p_win,
+                    kelly_f=effective_kelly,
+                )
+                if calib_adj and calib_adj.get("applied"):
+                    ev_result.p_win = calib_adj["p_win"]
+                    effective_kelly = calib_adj["kelly_f"]
+            except Exception as exc:
+                logger.warning(
+                    "[sweep:heavy] %s: calibration enforcement failed (%s) — proceeding raw",
+                    symbol, type(exc).__name__,
+                )
+
         agent_payload = json.dumps({
             "type": "heartbeat",
             "symbol": symbol,
@@ -894,6 +1022,7 @@ class HeavySweepMixin:
             "timesfm_available": p_timesfm is not None,
             "calibration_bias": round(cal["bias"], 4) if cal else None,
             "calibration_status": cal["status"] if cal else None,
+            "calibration_enforced": bool(calib_adj and calib_adj.get("applied")),
             "sharpe": round(best.sharpe, 4),
             "n_combos_tested": True,  # marker — agent can show "optimised" badge
             "qualified": True,
@@ -903,6 +1032,14 @@ class HeavySweepMixin:
             if not settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED:
                 logger.info(
                     "[sweep:heavy] %s: Redis publish DISABLED — qualified %s signal, skipping Redis write",
+                    symbol, trade_signal["signal"],
+                )
+            elif self._redis is None:
+                # Redis not configured at all (proxy-retirement direction).
+                # The signal is still persisted to Supabase + realtime, so
+                # this is not a data loss — just no Redis stream write.
+                logger.info(
+                    "[sweep:heavy] %s: Redis not configured — skipping Redis write for qualified %s signal",
                     symbol, trade_signal["signal"],
                 )
             else:
