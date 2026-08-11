@@ -14,7 +14,104 @@ from regime_platform.sweep_orchestrator.eod_resolver import (
     resolve_signal_outcome,
     compute_pnl,
     EXPIRY_BARS,
+    CALIBRATION_RECORD_COLUMNS,
+    _write_calibration_record,
 )
+
+
+class TestCalibrationRecordPayload:
+    """Regression (2026-08-10): nt_calibration_records inserts were failing
+    with HTTP 400 / PostgreSQL 23502 (NOT NULL violation) because the payload
+    omitted `id` (TEXT PRIMARY KEY, no DB default) and `aggression` (NOT NULL
+    CHECK enum). Every EOD calibration insert failed → nt_calibration_records
+    stayed empty → fetch_calibration_bias returned None → EOD correction
+    wrote 0 actions → nt_eod_actions stayed empty → the recalibration loop
+    had no data to act on."""
+
+    def test_write_calibration_payload_has_id_and_aggression(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        captured = {}
+
+        async def fake_insert(table, payload):
+            captured["table"] = table
+            captured["payload"] = payload
+            return True
+
+        sig = {
+            "symbol": "BTCUSD",
+            "venue": "Coinbase",
+            "p_win": 0.62,
+            "aggression": "aggressive",
+            "entry_price": 60000.0,
+            "ts": "2026-08-09T00:00:00Z",
+        }
+        resolved = {"outcome": "tp_hit", "exit_price": 61000.0, "hold_bars": 5}
+        pnl = {"pnl_dollars": 100.0}
+
+        async def run():
+            with patch(
+                "regime_platform.sweep_orchestrator.eod_resolver._insert_row",
+                new=AsyncMock(side_effect=fake_insert),
+            ):
+                await _write_calibration_record(sig, resolved, pnl)
+
+        asyncio.run(run())
+
+        p = captured["payload"]
+        assert captured["table"] == "nt_calibration_records"
+        # id must be a non-empty string (TEXT PK NOT NULL — the 23502 fix)
+        assert isinstance(p.get("id"), str) and len(p["id"]) > 0
+        # aggression must be one of the CHECK enum values (NOT NULL fix)
+        assert p.get("aggression") in ("passive", "mid", "aggressive")
+        assert p.get("aggression") == "aggressive"
+        # outcome mapped to win/loss
+        assert p.get("outcome") == "win"
+        assert p.get("symbol") == "BTCUSD"
+
+    def test_write_calibration_payload_defaults_aggression_to_mid(self):
+        """An invalid/absent aggression on the signal falls back to 'mid'
+        so the NOT NULL CHECK constraint never rejects the row."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        captured = {}
+
+        async def fake_insert(table, payload):
+            captured["payload"] = payload
+            return True
+
+        sig = {
+            "symbol": "EURUSD",
+            "venue": "OANDA",
+            "p_win": 0.55,
+            # no aggression field
+            "entry_price": 1.1000,
+            "ts": "2026-08-09T00:00:00Z",
+        }
+        resolved = {"outcome": "sl_hit", "exit_price": 1.0950, "hold_bars": 3}
+        pnl = {"pnl_dollars": -50.0}
+
+        async def run():
+            with patch(
+                "regime_platform.sweep_orchestrator.eod_resolver._insert_row",
+                new=AsyncMock(side_effect=fake_insert),
+            ):
+                await _write_calibration_record(sig, resolved, pnl)
+
+        asyncio.run(run())
+
+        p = captured["payload"]
+        assert p.get("aggression") == "mid"
+        assert p.get("outcome") == "loss"
+        assert isinstance(p.get("id"), str) and len(p["id"]) > 0
+
+    def test_calibration_columns_include_id_and_aggression(self):
+        """The whitelist must pass id/aggression through (they were filtered
+        out before, which is what made the payload incomplete)."""
+        assert "id" in CALIBRATION_RECORD_COLUMNS
+        assert "aggression" in CALIBRATION_RECORD_COLUMNS
 
 
 class TestResolveSignalOutcome:

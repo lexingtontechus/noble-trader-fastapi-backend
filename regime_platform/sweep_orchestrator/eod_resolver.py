@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
@@ -85,7 +86,7 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
 # Columns of nt_calibration_records we write (mirrors renko/trade_journal.py
 # + migration 031 venue column).
 CALIBRATION_RECORD_COLUMNS: frozenset[str] = frozenset({
-    "symbol", "venue", "predicted_p_win", "outcome",
+    "id", "symbol", "venue", "predicted_p_win", "outcome", "aggression",
     "entry_price", "exit_price", "entered_at", "closed_at",
     "actual_pnl", "error_source",
 })
@@ -285,11 +286,19 @@ async def _write_calibration_record(
     symbol = sig.get("symbol")
     outcome = "win" if resolved["outcome"] == "tp_hit" else "loss"
     entered_at = shift_ts(sig.get("ts"), 0) or datetime.now(timezone.utc).isoformat()
+    # id is TEXT PRIMARY KEY NOT NULL — generate one here (the migration 100
+    # table has no DB default). aggression is NOT NULL CHECK in
+    # ('passive','mid','aggressive') — take it from the signal, default 'mid'.
+    aggression = str(sig.get("aggression") or "mid").lower()
+    if aggression not in ("passive", "mid", "aggressive"):
+        aggression = "mid"
     payload = _filter_payload({
+        "id": str(uuid.uuid4()),
         "symbol": symbol,
         "venue": sig.get("venue"),
         "predicted_p_win": _as_float(sig.get("p_win")),
         "outcome": outcome,
+        "aggression": aggression,
         "entry_price": _as_float(sig.get("entry_price")),
         "exit_price": resolved.get("exit_price"),
         "entered_at": entered_at,
