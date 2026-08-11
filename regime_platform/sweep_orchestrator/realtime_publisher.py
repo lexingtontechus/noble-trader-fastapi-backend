@@ -5,8 +5,24 @@ Supabase Realtime broadcast publisher (fire-and-forget, best-effort)
 Talaria dashboard integration. Publishes live qualified signals and paper
 portfolio events over Supabase Realtime *broadcast* channels:
 
-    ``realtime:signals``  →  event ``"signal"``  (qualified light/heavy signals)
-    ``realtime:paper``    →  event ``"paper"``   (paper position opened/closed)
+    ``realtime:signals.signal_scout``    →  event ``"signal"``  (Scout plan)
+    ``realtime:signals.precision_pro``   →  event ``"signal"``  (Pro plan)
+    ``realtime:portfolio``               →  event ``"paper"``   (paper-portfolio validation; Pro)
+
+Plan-scoped signal topics (2026-08-11): each qualified signal is published
+to the topic(s) matching the symbol's ``nt_symbol.plan_ids`` membership
+(``UUID[]``, migration 032). A symbol in both plans → both topics. Fail-open
+mirrors StreamSplitter: when no plan UUIDs are configured via env
+(``NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID`` / ``NOBLE_TRADER_PLAN_PRECISION_PRO_ID``)
+or the symbol's plan_ids cannot be matched, the signal is published to BOTH
+topics so no subscriber misses it — over-delivery is benign, under-delivery
+is not. Enforcement stays at subscribe: the Talaria plugin joins only its
+server-validated plan's topic.
+
+``realtime:portfolio`` (renamed 2026-08-11 from ``realtime:paper``): carries
+the SIMULATED validation book (position opened/closed, realized PnL, equity
+tick) — NOT a demo trading account. ``paper_portfolio`` / ``portfolio`` keeps
+the topic distinct from any future live-brokerage feed.
 
 TRANSPORT (verified 2026-08-06):
   supabase-py is NOT installed in this repo — ``supabase.__version__`` raises
@@ -26,7 +42,9 @@ TRANSPORT (verified 2026-08-06):
   for ALL members, which blocks anon-key clients (the Talaria plugin) from
   receiving broadcasts (join ok, zero delivery). A public join keeps the
   channel public; the service key still authorizes it, and anon clients
-  receive.
+  receive. Broadcast channels are DYNAMIC in Supabase — nothing needs to be
+  declared in the Realtime dashboard (no triggers/policies/publications);
+  that dashboard page intentionally stays empty for this broadcast-only setup.
 
 DESIGN RULES (mirror ``log_signal_sim`` in supabase_client.py):
   • NEVER raises. Failures are counted + logged, never propagated, never
@@ -35,7 +53,7 @@ DESIGN RULES (mirror ``log_signal_sim`` in supabase_client.py):
     running event loop the broadcast is skipped (debug log), exactly like
     the RuntimeError guard in the orchestrator's capture block. All IO runs
     inside the task, so the sweep loop is never blocked.
-  • Published UNCONDITIONALLY on both channels — subscription / enforcement
+  • Published UNCONDITIONALLY on the plan topics — subscription / enforcement
     is the dashboard's job (it subscribes with its own key), not ours.
   • Env toggle: ``NOBLE_REALTIME_BROADCAST`` (default ``"1"``) — set to
     ``"0"`` to disable, read via the same pydantic settings as the Supabase
@@ -59,8 +77,9 @@ from regime_platform.core.settings import settings
 logger = logging.getLogger("regime.sweep.realtime")
 
 # ─── Broadcast channels (phoenix topics) ─────────────────────────────
-SIGNALS_TOPIC = "realtime:signals"
-PAPER_TOPIC = "realtime:paper"
+SIGNAL_TOPIC_SCOUT = "realtime:signals.signal_scout"
+SIGNAL_TOPIC_PRO = "realtime:signals.precision_pro"
+PAPER_TOPIC = "realtime:portfolio"
 SIGNALS_EVENT = "signal"
 PAPER_EVENT = "paper"
 
@@ -135,15 +154,41 @@ def build_signal_payload(
     }
 
 
-def broadcast_signal(payload: dict[str, Any]) -> None:
-    """Fire-and-forget best-effort publish to ``realtime:signals`` / ``signal``.
+def _plan_signal_topics(plan_ids: list[str] | None) -> list[str]:
+    """Map a symbol's plan UUIDs to the realtime signal topics it belongs to.
 
-    Never raises. Without a running event loop the broadcast is skipped
-    (debug log), mirroring the orchestrator's capture-path guard.
+    Resolution uses the same env overrides as StreamSplitter
+    (``NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID`` / ``NOBLE_TRADER_PLAN_PRECISION_PRO_ID``).
+    Fail-open mirrors StreamSplitter: when no plan UUIDs are configured or the
+    symbol's plan_ids cannot be matched, the signal is published to BOTH
+    topics so no subscriber misses it — over-delivery is benign,
+    under-delivery is not.
+    """
+    if not plan_ids:
+        return [SIGNAL_TOPIC_SCOUT, SIGNAL_TOPIC_PRO]
+    plan_set = {str(p).strip().lower() for p in plan_ids if p}
+    wanted: set[str] = set()
+    scout_id = (settings.NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID or "").strip().lower()
+    pro_id = (settings.NOBLE_TRADER_PLAN_PRECISION_PRO_ID or "").strip().lower()
+    if scout_id and scout_id in plan_set:
+        wanted.add(SIGNAL_TOPIC_SCOUT)
+    if pro_id and pro_id in plan_set:
+        wanted.add(SIGNAL_TOPIC_PRO)
+    return sorted(wanted) if wanted else [SIGNAL_TOPIC_SCOUT, SIGNAL_TOPIC_PRO]
+
+
+def broadcast_signal(payload: dict[str, Any], plan_ids: list[str] | None = None) -> None:
+    """Fire-and-forget best-effort publish to the plan-scoped signal topics.
+
+    Each qualified signal is published to the topic(s) matching the symbol's
+    ``nt_symbol.plan_ids`` (see ``_plan_signal_topics`` for the fail-open
+    rule). Never raises. Without a running event loop the broadcast is
+    skipped (debug log), mirroring the orchestrator's capture-path guard.
     """
     if not _broadcast_enabled():
         return
-    _fire_and_forget(SIGNALS_TOPIC, SIGNALS_EVENT, payload)
+    for topic in _plan_signal_topics(plan_ids):
+        _fire_and_forget(topic, SIGNALS_EVENT, payload)
 
 
 def broadcast_paper(payload: dict[str, Any]) -> None:

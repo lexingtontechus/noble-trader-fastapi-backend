@@ -1,3 +1,39 @@
+## [7.7.2] - 2026-08-11
+
+### Changed — Plan-scoped Realtime broadcast channels + `realtime:portfolio` rename
+
+Qualified signal broadcasts are now **plan-scoped** instead of one shared
+`realtime:signals` channel, and the paper-validation channel was renamed so it
+stops reading as a demo-trading feed.
+
+#### regime_platform/sweep_orchestrator/realtime_publisher.py - MODIFIED
+- Topics: `realtime:signals` → `realtime:signals.signal_scout` +
+  `realtime:signals.precision_pro` (per plan); `realtime:paper` →
+  `realtime:portfolio` (carries the SIMULATED validation book, not a demo
+  account).
+- `broadcast_signal(payload, plan_ids=None)` — publishes to the topic(s)
+  matching the symbol's `nt_symbol.plan_ids` membership. Resolution uses the
+  same env overrides as StreamSplitter
+  (`NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID` / `NOBLE_TRADER_PLAN_PRECISION_PRO_ID`).
+  **Fail-open** mirrors StreamSplitter: no configured UUIDs or unmatched
+  plan_ids → publish to BOTH topics so no subscriber misses a signal
+  (over-delivery benign, under-delivery not).
+- All joins stay PUBLIC (anon Talaria clients must receive) — enforcement
+  stays at subscribe (the plugin joins only its server-validated plan's
+  topic). Broadcast channels are dynamic in Supabase — nothing to declare in
+  the Realtime dashboard.
+
+#### regime_platform/sweep_orchestrator/orchestrator.py - MODIFIED
+- `_process_symbol` broadcast call passes `plan_ids=sym.get("plan_ids") or []`.
+
+#### regime_platform/sweep_orchestrator/heavy_sweep.py - MODIFIED
+- `_push_heavy_signal` broadcast call passes `plan_ids=sym.get("plan_ids") or []`.
+
+#### tests/test_realtime_publisher.py - MODIFIED
+- Updated to the new topics; added `TestPlanSignalTopics` (scout-only,
+  pro-only, both, unrecognized → fail-open both, case/whitespace-insensitive,
+  no-configured-UUIDs → fail-open). 23 tests; suite 348 passed / 23 skipped.
+
 ## [7.7.1] - 2026-08-10
 
 ### Fixed — Discord signal delivery decoupled from Redis publish gate (Option 2)

@@ -2200,7 +2200,7 @@ class SweepOrchestrator(HeavySweepMixin):
                         take_profit=sim_payload["take_profit"],
                         kelly_f=sim_payload.get("kelly_f"),
                         effective_kelly=sim_payload.get("effective_kelly"),
-                    ))
+                    ), plan_ids=sym.get("plan_ids") or [])
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and
                 # persist one row per brick for the admin plugin's chart.

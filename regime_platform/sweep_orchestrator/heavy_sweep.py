@@ -670,7 +670,7 @@ class HeavySweepMixin:
                             take_profit=sim_payload["take_profit"],
                             kelly_f=sim_payload.get("kelly_f"),
                             effective_kelly=sim_payload.get("effective_kelly"),
-                        ))
+                        ), plan_ids=sym.get("plan_ids") or [])
                 except RuntimeError:
                     # No running event loop — skip capture.
                     pass
