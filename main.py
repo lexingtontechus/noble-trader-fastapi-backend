@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║     Dynamic Regime Risk Management Platform - FastAPI Service  v7.7.0       ║
+║     Dynamic Regime Risk Management Platform - FastAPI Service  v7.7.2       ║
 ║                                                                              ║
 ║  Stack:  FastAPI · hmmlearn · scipy · numpy · pandas · pydantic v2          ║
 ║                                                                              ║
@@ -138,7 +138,7 @@ log = logging.getLogger("regime.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting up v7.7.0 ...")
+    log.info("Starting up v7.7.2 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
     if persistence.enabled:
@@ -419,7 +419,7 @@ def create_app() -> FastAPI:
         - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
         - Snapshot management (save/restore pipeline state)
         """,
-        version="7.7.0",
+        version="7.7.2",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -590,7 +590,7 @@ def create_app() -> FastAPI:
         
         return {
             "status": "ok",
-            "version": "7.7.0",
+            "version": "7.7.2",
             "mode": "paper" if settings.ALPACA_API_KEY else "live",
             "renko_pipelines": renko_status,
         }
