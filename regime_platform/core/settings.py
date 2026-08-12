@@ -242,6 +242,40 @@ class Settings(BaseSettings):
     #   enforcement (recommendations still logged).
     EOD_CALIBRATION_ENFORCE: bool = True
 
+    # EOD_RESOLVE_LIMIT (default 1000, 2026-08-12):
+    #   Nightly cap for how many pending nt_signal_sim rows the EOD resolver
+    #   forward-resolves at the 00:30 UTC lookback. Was hardcoded 200 — the
+    #   live capture rate is ~3,200 signals/day, so 200/night let the pending
+    #   backlog grow by ~3,000/day (17,992 rows / 16,792 pending observed
+    #   2026-08-12). Raise for faster drain; the one-time backlog drain is
+    #   scripts/drain_signal_backlog.py.
+    EOD_RESOLVE_LIMIT: int = 1000
+
+    # EOD_RETENTION_RESOLVED_DAYS (default 30, 2026-08-12):
+    #   Retention pass (eod_retention.run_eod_retention, wired into the
+    #   nightly _run_eod_lookback Part IV) DELETEs resolved nt_signal_sim
+    #   rows (outcome IS NOT NULL) older than this many days. Keeps the
+    #   signal ledger bounded; calibration records live separately in
+    #   nt_calibration_records so no bias data is lost.
+    EOD_RETENTION_RESOLVED_DAYS: int = 30
+
+    # EOD_RETENTION_STALE_DAYS (default 7, 2026-08-12):
+    #   Retention pass marks unresolved nt_signal_sim rows (outcome IS NULL)
+    #   older than this many days as 'expired' via PATCH — they have sat past
+    #   the 48-bar expiry window with no touch and are neither wins nor
+    #   losses, so no calibration record is written (same convention as the
+    #   resolver's close-walk expiry). Frees the pending index and keeps the
+    #   resolver from re-picking stale rows forever.
+    EOD_RETENTION_STALE_DAYS: int = 7
+
+    # NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY (default False, 2026-08-12):
+    #   When True, only QUALIFIED non-neutral signals are persisted to
+    #   nt_signal_sim (both sweep paths). The ledger's purpose is measuring
+    #   prediction-vs-outcome bias, so capturing every non-neutral signal
+    #   (qualified or not) is the default; enabling this trims ~93% of the
+    #   noise rows but changes what the sim measures — opt-in by design.
+    NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY: bool = False
+
     # ── MCP ─────────────────────────────────────────────────────────────────
     MCP_AUTH_ENABLED: bool = True
     MCP_ISSUER: str = ""

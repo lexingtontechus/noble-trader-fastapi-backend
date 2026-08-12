@@ -1002,7 +1002,9 @@ class SweepOrchestrator(HeavySweepMixin):
         from regime_platform.sweep_orchestrator.paper_book import reconcile
 
         try:
-            resolver_summary = await resolve_pending_signals()
+            resolver_summary = await resolve_pending_signals(
+                limit=settings.EOD_RESOLVE_LIMIT
+            )
             logger.info(
                 "[eod:lookback] resolver done: %s",
                 {k: v for k, v in resolver_summary.items() if k != "errors"},
@@ -1082,6 +1084,26 @@ class SweepOrchestrator(HeavySweepMixin):
                 logger.error(
                     "[eod:lookback] emergency heavy sweep batch failed: %s", exc,
                 )
+
+        # ── Part IV: retention / prune (2026-08-12) ───────────────────────
+        # Keep nt_signal_sim bounded:
+        #   1. DELETE resolved rows older than EOD_RETENTION_RESOLVED_DAYS.
+        #   2. Mark unresolved rows older than EOD_RETENTION_STALE_DAYS as
+        #      'expired' (they have sat past the 48-bar window with no touch;
+        #      neither win nor loss → no calibration record, same convention
+        #      as the resolver). This frees the pending partial index and
+        #      stops the resolver re-picking stale rows forever.
+        # Best-effort: failures are logged and counted, never raised.
+        try:
+            from regime_platform.sweep_orchestrator.eod_retention import (
+                run_eod_retention,
+            )
+            retention_summary = await run_eod_retention()
+            logger.info(
+                "[eod:lookback] retention done: %s", retention_summary,
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] retention failed: %s", exc)
 
     async def _sweep_group(
         self, cron_expr: str, symbols: list[dict[str, Any]]
@@ -2153,6 +2175,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # already flipped it to False where applicable).
         # Must NEVER break the sweep: log_signal_sim swallows insert
         # failures, and a missing event loop only skips the capture.
+        # NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY (default False): when
+        # True, only QUALIFIED signals are persisted (trims ~93% noise;
+        # opt-in — changes what the sim measures).
         if trade_signal["signal"] not in ("neutral", "unknown"):
             try:
                 sim_payload = _build_signal_sim_payload(
@@ -2175,7 +2200,13 @@ class SweepOrchestrator(HeavySweepMixin):
                     kelly_f=kelly_f,
                     effective_kelly=effective_kelly,
                 )
-                asyncio.create_task(log_signal_sim(sim_payload))
+                if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
+                    logger.debug(
+                        "[sweep:orch] %s: signal-sim capture skipped (qualified-only mode)",
+                        symbol,
+                    )
+                else:
+                    asyncio.create_task(log_signal_sim(sim_payload))
                 # Part II paper portfolio: open a kelly-sized paper position
                 # for QUALIFIED signals (fire-and-forget; never breaks sweep).
                 if qualified:

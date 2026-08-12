@@ -617,7 +617,8 @@ class HeavySweepMixin:
             # ── 10a. Signal-sim capture (nt_signal_sim) ───────────────
             # Mirror the light-sweep capture so heavy-sweep signals are
             # also scored by the EOD resolver. Fire-and-forget; must never
-            # break the sweep.
+            # break the sweep. NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY
+            # (default False) trims to qualified-only — opt-in.
             if trade_signal["signal"] not in ("neutral", "unknown"):
                 try:
                     from regime_platform.sweep_orchestrator.supabase_client import (
@@ -646,7 +647,13 @@ class HeavySweepMixin:
                         kelly_f=result.kelly_f,
                         effective_kelly=result.kelly_f * ev_result.ev_scale,
                     )
-                    asyncio.create_task(log_signal_sim(sim_payload))
+                    if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
+                        logger.debug(
+                            "[sweep-heavy] %s: signal-sim capture skipped (qualified-only mode)",
+                            symbol,
+                        )
+                    else:
+                        asyncio.create_task(log_signal_sim(sim_payload))
                     # Part II paper portfolio: open a kelly-sized paper
                     # position for QUALIFIED heavy signals (fire-and-forget).
                     if qualified:

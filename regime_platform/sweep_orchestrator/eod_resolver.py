@@ -94,6 +94,62 @@ CALIBRATION_RECORD_COLUMNS: frozenset[str] = frozenset({
 
 # ─── Pure resolution logic (network-free, unit-tested) ────────────
 
+def _parse_utc_dt(value: Any) -> datetime | None:
+    """Parse ISO-8601 (with/without tz, Z suffix) or epoch into aware UTC."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def anchor_post_entry_closes(
+    closes: Sequence[float],
+    signal_ts: Any,
+    fetch_ts: Any,
+    bar_hours: float = 1.0,
+) -> list[float] | None:
+    """Slice ``closes`` to the post-entry window for one signal.
+
+    The fetched array is ASCENDING (oldest → newest; the 2026-08-11 TDVA
+    order fix guarantees this). The signal was captured ``signal_ts``;
+    the fetch ran at ``fetch_ts``. Assuming 1h bars ending at ``fetch_ts``,
+    the entry bar is ``round((fetch_ts - signal_ts)/bar_hours)`` bars from
+    the newest close. Returns ``closes[entry_idx:]`` (the entry bar and
+    every bar after it — the only bars the close-walk may legitimately
+    inspect), or ``None`` when the entry predates the fetched window
+    (cannot resolve against bars that predate the signal).
+
+    Clamps negative offsets (future-dated signal / clock skew) to 0 —
+    the signal is treated as captured at the newest bar.
+    """
+    if not closes:
+        return None
+    sig_dt = _parse_utc_dt(signal_ts)
+    fetch_dt = _parse_utc_dt(fetch_ts)
+    if sig_dt is None or fetch_dt is None:
+        return None
+    offset_hours = (fetch_dt - sig_dt).total_seconds() / 3600.0
+    offset = int(round(offset_hours / max(bar_hours, 1e-9)))
+    if offset < 0:
+        offset = 0
+    # The entry bar sits `offset` bars behind the newest close. clamp to the
+    # newest index (offset 0 → entry at the latest bar).
+    entry_idx = min(len(closes) - offset, len(closes) - 1)
+    if entry_idx < 0:
+        # Entry is older than the oldest fetched bar — nothing valid to walk.
+        return None
+    return list(closes[entry_idx:])
+
 def resolve_signal_outcome(
     entry_price: float,
     stop_loss: float,
@@ -232,8 +288,15 @@ def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[st
     return {k: v for k, v in payload.items() if k in allowed}
 
 
-async def _fetch_pending(limit: int) -> list[dict[str, Any]]:
-    """Rows of nt_signal_sim where outcome IS NULL, oldest first."""
+async def _fetch_pending(limit: int, min_ts: str | None = None) -> list[dict[str, Any]]:
+    """Rows of nt_signal_sim where outcome IS NULL, oldest first.
+
+    ``min_ts`` (ISO UTC string) bounds the fetch to signals whose entry
+    falls inside the candle window the resolver will fetch — older signals
+    cannot be resolved against bars that predate them (window-anchoring
+    fix 2026-08-12), so they stay pending and are handled by retention
+    (expired after EOD_RETENTION_STALE_DAYS).
+    """
     url = _url("nt_signal_sim")
     params = {
         "select": "*",
@@ -241,6 +304,8 @@ async def _fetch_pending(limit: int) -> list[dict[str, Any]]:
         "order": "ts.asc",
         "limit": str(int(limit)),
     }
+    if min_ts:
+        params["ts"] = f"gte.{min_ts}"
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(url, headers=_headers(), params=params)
         resp.raise_for_status()
@@ -365,23 +430,39 @@ async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
 
     Best-effort end-to-end:
 
-      1. Query ``nt_signal_sim`` WHERE ``outcome IS NULL`` ORDER BY ts ASC.
+      1. Query ``nt_signal_sim`` WHERE ``outcome IS NULL`` ORDER BY ts ASC,
+         bounded to signals whose entry falls inside the candle window
+         (``ts >= now() - LIGHT_BARS hours`` — window-anchoring fix
+         2026-08-12; older signals stay pending and are handled by
+         retention, which expires them after EOD_RETENTION_STALE_DAYS).
       2. Group by symbol and fetch post-entry 1h closes per symbol
          (``fetch_candles_for_symbols``, `LIGHT_BARS` bars).
-      3. Close-walk TP/SL per signal (48-bar expiry).
-      4. PATCH outcome/exit_*/hold_bars/mfe/mae/pnl_*/resolved_at back.
-      5. Insert nt_calibration_records for tp_hit (win) / sl_hit (loss).
+      3. Per signal, slice the fetched closes to the POST-ENTRY window via
+         ``anchor_post_entry_closes`` (the fetched array is ascending, so
+         ``closes[-(offset):]`` starts at the entry bar). Signals whose
+         entry predates the window are skipped (``windowed_out``) — never
+         resolved against pre-entry bars.
+      4. Close-walk TP/SL per signal (48-bar expiry).
+      5. PATCH outcome/exit_*/hold_bars/mfe/mae/pnl_*/resolved_at back.
+      6. Insert nt_calibration_records for tp_hit (win) / sl_hit (loss).
 
-    Returns ``{resolved, by_outcome, errors}``. Never raises — every
-    failure path is caught and counted in ``errors``.
+    Returns ``{resolved, by_outcome, windowed_out, errors}``. Never raises —
+    every failure path is caught and counted in ``errors``.
     """
-    summary: dict[str, Any] = {"resolved": 0, "by_outcome": {}, "errors": 0}
+    summary: dict[str, Any] = {
+        "resolved": 0, "by_outcome": {}, "windowed_out": 0, "errors": 0,
+    }
     if not settings.SUPABASE_URL:
         logger.warning("eod_resolver: Supabase not configured — nothing to resolve")
         return summary
 
+    fetch_ts = datetime.now(timezone.utc)
+    # Only resolve signals whose entry falls inside the candle window the
+    # resolver is about to fetch. Anything older cannot be scored against
+    # post-entry bars (the close-walk would inspect pre-entry action).
+    min_ts = (fetch_ts - timedelta(hours=LIGHT_BARS)).isoformat()
     try:
-        rows = await _fetch_pending(limit)
+        rows = await _fetch_pending(limit, min_ts=min_ts)
     except Exception as exc:
         logger.error("eod_resolver: pending query failed: %s", exc)
         summary["errors"] += 1
@@ -436,7 +517,15 @@ async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
 
         for sig in sigs:
             try:
-                outcome = await _resolve_one(sig, closes)
+                # Window anchoring: only walk bars AFTER the signal's entry.
+                # Without this, a backlogged signal (entry days ago) would be
+                # scored against the FIRST bars of the fetched window, which
+                # predate the entry (2026-08-12 root-cause fix).
+                post = anchor_post_entry_closes(closes, sig.get("ts"), fetch_ts)
+                if post is None:
+                    summary["windowed_out"] += 1
+                    continue
+                outcome = await _resolve_one(sig, post)
                 if outcome is None:
                     summary["errors"] += 1
                 else:
@@ -451,8 +540,9 @@ async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
 
     summary["by_outcome"] = dict(outcomes)
     logger.info(
-        "eod_resolver: resolved %d pending (%s), errors=%d",
-        summary["resolved"], summary["by_outcome"], summary["errors"],
+        "eod_resolver: resolved %d pending (%s), windowed_out=%d, errors=%d",
+        summary["resolved"], summary["by_outcome"],
+        summary["windowed_out"], summary["errors"],
     )
     return summary
 
