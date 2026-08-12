@@ -57,15 +57,18 @@ from regime_platform.core.settings import settings
 log = logging.getLogger("regime.auth")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-
-JWT_SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "")
-JWT_ALGORITHM   = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_MINS = int(os.getenv("JWT_EXPIRE_MINS", "60"))
-API_KEYS        = set(filter(None, os.getenv("API_KEYS", "").split(",")))
-AUTH_ENABLED    = os.getenv("AUTH_ENABLED", "true").lower() == "true"
+# M7: consume pydantic `settings` as the single source of truth. Previously
+# bare os.getenv snapshots here could silently diverge from settings.py's
+# .env-file reads (only main.py's load_dotenv bridged them). Fall back to the
+# env directly ONLY when settings is empty (unit tests set env vars directly).
+JWT_SECRET_KEY  = settings.JWT_SECRET_KEY or os.getenv("JWT_SECRET_KEY", "")
+JWT_ALGORITHM   = settings.JWT_ALGORITHM or os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINS = int(settings.JWT_EXPIRE_MINS or os.getenv("JWT_EXPIRE_MINS", "60"))
+API_KEYS        = settings.api_keys_set or set(filter(None, os.getenv("API_KEYS", "").split(",")))
+AUTH_ENABLED    = bool(settings.AUTH_ENABLED) if os.getenv("AUTH_ENABLED") is None else os.getenv("AUTH_ENABLED", "true").lower() == "true"
 
 # Import enhanced authentication configuration
-from .auth_config import get_auth_mode, is_jwt_enabled, validate_auth_config, AuthMode
+from .auth_config import get_auth_mode, is_jwt_enabled, validate_auth_config, AuthMode, is_dev_auth_allowed
 
 # Validate authentication configuration on import
 _auth_warnings = validate_auth_config()
@@ -340,11 +343,14 @@ async def get_current_user(
     
     # Handle disabled mode (development only)
     if auth_mode == AuthMode.DISABLED:
-        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
-        if _DEPLOY_ENV in ("production", "staging"):
+        if not is_dev_auth_allowed():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AUTH_MODE=disabled is not allowed in production/staging.",
+                detail=(
+                    "AUTH_MODE=disabled is only allowed when DEPLOY_ENV is "
+                    "explicitly 'development' or 'test'. Refusing to mint "
+                    "credentials in an unset/non-dev environment."
+                ),
             )
         log.warning("AUTH_MODE=disabled: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
@@ -483,11 +489,14 @@ async def get_authed_user(
     
     # Handle disabled mode (development only)
     if auth_mode == AuthMode.DISABLED:
-        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
-        if _DEPLOY_ENV in ("production", "staging"):
+        if not is_dev_auth_allowed():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AUTH_MODE=disabled is not allowed in production/staging.",
+                detail=(
+                    "AUTH_MODE=disabled is only allowed when DEPLOY_ENV is "
+                    "explicitly 'development' or 'test'. Refusing to mint "
+                    "credentials in an unset/non-dev environment."
+                ),
             )
         log.warning("AUTH_MODE=disabled: returning dev admin user (development only)")
         return TokenData(sub="dev", role="admin")
@@ -605,10 +614,9 @@ async def ws_auth(
     auth_mode = get_auth_mode()
     
     if auth_mode == AuthMode.DISABLED:
-        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
-        if _DEPLOY_ENV in ("production", "staging"):
-            await websocket.close(code=4001, reason="Auth disabled in production")
-            raise HTTPException(status_code=401, detail="Auth disabled in production")
+        if not is_dev_auth_allowed():
+            await websocket.close(code=4001, reason="Auth disabled without explicit dev env")
+            raise HTTPException(status_code=401, detail="Auth disabled without explicit dev env")
         log.warning("AUTH_MODE=disabled: WS dev mode (development only)")
         return TokenData(sub="dev", role="admin")
     

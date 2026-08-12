@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     #   scripts/drain_signal_backlog.py.
     EOD_RESOLVE_LIMIT: int = 1000
 
+    # EOD_RESOLVE_MAX_TOTAL (default 4000, 2026-08-12):
+    #   Cap on TOTAL rows the EOD resolver may attempt per nightly run
+    #   (H4 backlog fix). The resolver now batch-loops until the in-window
+    #   pending backlog is drained or this cap is hit. 4000 ≈ clears a day
+    #   of capture in one run while bounding runtime/API cost.
+    EOD_RESOLVE_MAX_TOTAL: int = 4000
+
     # EOD_RETENTION_RESOLVED_DAYS (default 30, 2026-08-12):
     #   Retention pass (eod_retention.run_eod_retention, wired into the
     #   nightly _run_eod_lookback Part IV) DELETEs resolved nt_signal_sim

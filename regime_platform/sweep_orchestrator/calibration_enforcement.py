@@ -40,6 +40,7 @@ Design rules (mirror eod_correction.py):
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -211,7 +212,19 @@ async def apply_calibration_adjustment(
 
     # Penalty active → apply Bayesian shrink + Kelly reduction.
     # The EOD row's detail carries the n used to compute the penalty.
-    detail = action.get("detail") if isinstance(action.get("detail"), dict) else {}
+    # Accept dict (current writer) OR legacy double-encoded JSON string
+    # (pre-H2 rows) so enforcement works on both.
+    _raw_detail = action.get("detail")
+    detail = {}
+    if isinstance(_raw_detail, dict):
+        detail = _raw_detail
+    elif isinstance(_raw_detail, str):
+        try:
+            _parsed = json.loads(_raw_detail)
+            if isinstance(_parsed, dict):
+                detail = _parsed
+        except Exception:
+            detail = {}
     n_records = _num(detail.get("n")) or _num(action.get("count")) or 0
 
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)

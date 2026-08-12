@@ -79,23 +79,23 @@ class TestAnchorPostEntryCloses:
     CLOSES = [100.0 + i * 0.01 for i in range(200)]
 
     def test_entry_at_mid_window_slices_from_entry(self):
-        # entry 100h before fetch → entry_idx = 200 - 100 = 100
+        # entry 100h before fetch → entry_idx = len-1-offset = 200-1-100 = 99
         ts = "2026-08-07T20:30:00+00:00"
         post = anchor_post_entry_closes(self.CLOSES, ts, self.FETCH)
         assert post is not None
-        assert post[0] == pytest.approx(self.CLOSES[100])
-        assert len(post) == 100  # post-entry bars only (entry bar excluded)
+        assert post[0] == pytest.approx(self.CLOSES[99])
+        assert len(post) == 101  # entry bar + 100 post-entry bars
 
     def test_entry_at_newest_returns_tail(self):
-        # entry 1h before fetch → entry_idx = 199 (the newest bar)
+        # entry 1h before fetch → entry_idx = 200-1-1 = 198
         ts = "2026-08-11T23:30:00+00:00"
         post = anchor_post_entry_closes(self.CLOSES, ts, self.FETCH)
         assert post is not None
-        assert len(post) == 1
-        assert post[0] == pytest.approx(self.CLOSES[199])
+        assert len(post) == 2
+        assert post[0] == pytest.approx(self.CLOSES[198])
 
     def test_entry_older_than_window_returns_none(self):
-        # entry 300h before fetch → entry_idx negative → cannot resolve
+        # entry 300h before fetch → offset >= len(closes) → cannot resolve
         ts = "2026-07-30T12:30:00+00:00"
         assert anchor_post_entry_closes(self.CLOSES, ts, self.FETCH) is None
 
@@ -106,11 +106,11 @@ class TestAnchorPostEntryCloses:
         assert anchor_post_entry_closes(self.CLOSES, "not-a-date", self.FETCH) is None
 
     def test_fractional_offset_rounds_to_nearest_bar(self):
-        # 100.6h → rounds to 101 → entry_idx = 200 - 101 = 99
+        # 100.6h → rounds to 101 → entry_idx = 200-1-101 = 98
         ts = "2026-08-07T19:54:00+00:00"
         post = anchor_post_entry_closes(self.CLOSES, ts, self.FETCH)
         assert post is not None
-        assert post[0] == pytest.approx(self.CLOSES[99])
+        assert post[0] == pytest.approx(self.CLOSES[98])
 
     def test_future_dated_signal_clamps_to_newest(self):
         ts = "2026-08-12T01:00:00+00:00"  # 30 min after fetch (clock skew)

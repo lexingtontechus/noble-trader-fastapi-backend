@@ -542,6 +542,12 @@ def create_app() -> FastAPI:
     # Add input validation middleware (before other middleware)
     app.add_middleware(InputValidationMiddleware)
 
+    # Kill-switch gate middleware (M5): blocks /renko/tick* when a halt is
+    # active. Previously imported but never registered — the advertised
+    # admin risk control did nothing. On-demand Redis read (no background
+    # pub/sub), fail-open on errors.
+    app.add_middleware(KillSwitchGateMiddleware)
+
     # ── TimesFM forecast proxy ──────────────────────────────────
     # The proxy.py routes /forecast → TimesFM on port 8002, but
     # Lightning AI's public URL may map to this port (8001) instead
@@ -551,8 +557,16 @@ def create_app() -> FastAPI:
     import asyncio as _asyncio
 
     @app.post("/forecast", include_in_schema=False)
-    async def forecast_proxy(request: Request):
-        """Pass-through to the TimesFM inference server on port 8002."""
+    async def forecast_proxy(
+        request: Request,
+        _user: TokenData = Depends(get_authed_user),
+    ):
+        """Pass-through to the TimesFM inference server on port 8002.
+
+        Authenticated (get_authed_user): the sweep orchestrator calls this
+        with X-API-Key (TIMESFM_API_KEYS). Blocking anonymous callers closes
+        the open-proxy (C2): no unauthenticated GPU burn / internal probing.
+        """
         log.info(f"TimesFM proxy: forwarding POST /forecast to port 8002")
         timesfm_url = "http://127.0.0.1:8002/forecast"
         body = await request.body()

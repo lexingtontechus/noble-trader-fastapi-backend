@@ -94,12 +94,12 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_venue_time ON nt_account_snapshots(venue
 
 ALTER TABLE nt_venues ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Service role full access" ON nt_venues
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 ALTER TABLE nt_calibration_records ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Service role full access" ON nt_calibration_records
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 ALTER TABLE nt_account_snapshots ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Service role full access" ON nt_account_snapshots
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);

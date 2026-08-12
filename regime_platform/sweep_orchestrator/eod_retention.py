@@ -84,6 +84,10 @@ async def _count_rows(client: httpx.AsyncClient, url: str, params: dict[str, Any
 async def _delete_resolved_older_than(client: httpx.AsyncClient, cutoff_iso: str) -> int:
     """DELETE resolved nt_signal_sim rows with resolved_at < cutoff.
 
+    Skips rows whose signal_id still has an OPEN nt_paper_positions row —
+    deleting the resolved signal would orphan the position (its close pass
+    matches on signal_id) and leave it unclosable (M4).
+
     Returns the number of rows deleted (best-effort; the pre-count is the
     upper bound — a live table may resolve more rows mid-pass, which is
     fine: they are caught by the next nightly run).
@@ -94,6 +98,26 @@ async def _delete_resolved_older_than(client: httpx.AsyncClient, cutoff_iso: str
         "resolved_at": f"lt.{cutoff_iso}",
         "outcome": "not.is.null",
     }
+    # Protect signal_ids referenced by open paper positions.
+    protected: set[str] = set()
+    try:
+        from regime_platform.core.settings import settings
+        pos_url = f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
+        pos_params = {"select": "signal_id", "status": "eq.open", "limit": "1000"}
+        resp = await client.get(pos_url, headers=_headers(), params=pos_params)
+        if resp.is_success:
+            for row in resp.json() or []:
+                sid = row.get("signal_id")
+                if sid:
+                    protected.add(str(sid))
+    except Exception as exc:
+        logger.warning("[eod:retention] open-position protection query failed: %s", exc)
+    if protected:
+        params["signal_id"] = f"not.in.({','.join(sorted(protected))})"
+        logger.info(
+            "[eod:retention] protecting %d signal_id(s) referenced by open positions",
+            len(protected),
+        )
     total = await _count_rows(client, url, params)
     if total <= 0:
         return 0

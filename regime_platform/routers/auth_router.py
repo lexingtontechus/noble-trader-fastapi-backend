@@ -49,6 +49,7 @@ from ..auth.jwt_auth import (
     get_current_user,
     make_login_response,
 )
+from ..auth.auth_config import is_dev_auth_allowed
 from ..core.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -104,11 +105,14 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     """
     if not AUTH_ENABLED:
         # Dev mode - issue a token without credential check (development only)
-        _DEPLOY_ENV = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
-        if _DEPLOY_ENV in ("production", "staging"):
+        if not is_dev_auth_allowed():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AUTH_ENABLED=false is not allowed in production/staging.",
+                detail=(
+                    "AUTH_ENABLED=false is only allowed when DEPLOY_ENV is "
+                    "explicitly 'development' or 'test'. Refusing to mint "
+                    "credentials in an unset/non-dev environment."
+                ),
             )
         return TokenResponse(**make_login_response(sub=form.username, role="admin"))
 
@@ -284,12 +288,17 @@ async def clerk_config():
     Useful for client-side configuration and debugging.
     """
     publishable_key = CLERK_PUBLISHABLE_KEY if CLERK_AUTH_ENABLED else None
+    # M8: report the CONFIGURED JWKS URL (settings.CLERK_JWKS_URL) instead of
+    # the hardcoded project subdomain — the hardcoded value both leaked the
+    # Clerk project and ignored the operator's explicit override.
+    from ..core.settings import settings as _settings
+    jwks_url = _settings.CLERK_JWKS_URL or "https://large-shark-21.clerk.accounts.dev/.well-known/jwks.json"
 
     return {
         "clerk_auth_enabled": CLERK_AUTH_ENABLED,
         "publishable_key": publishable_key[:10] + "..." if publishable_key else None,
         "jwt_algorithm": "RS256",
-        "jwks_endpoint": "https://large-shark-21.clerk.accounts.dev/.well-known/jwks.json",
+        "jwks_endpoint": jwks_url,
     }
 
 

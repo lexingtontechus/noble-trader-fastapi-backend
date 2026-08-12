@@ -127,12 +127,12 @@ ALTER TABLE nt_signal_sim ENABLE ROW LEVEL SECURITY;
 -- combined migration (104) is idempotent.
 DROP POLICY IF EXISTS "Service role full access" ON nt_signal_sim;
 CREATE POLICY "Service role full access" ON nt_signal_sim
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 ALTER TABLE nt_eod_actions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Service role full access" ON nt_eod_actions;
 CREATE POLICY "Service role full access" ON nt_eod_actions
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Migration 103: EOD metrics views (signal-lookback feature)
 --

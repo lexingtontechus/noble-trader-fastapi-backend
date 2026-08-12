@@ -130,7 +130,33 @@ class KillSwitchService:
                 logger.error(f"KillSwitch: Redis pool connection failed: {e}")
         return self._redis
 
-    # ── Hot-path check (uses in-memory cache, sub-millisecond) ────────────
+    # ── On-demand Redis read (M5 reactivation) ─────────────────────────
+    # The v7.4 deactivation killed the BACKGROUND pub/sub refresh (crash
+    # loop on Render). The safe reactivation per the module docstring is
+    # option #2: read Redis ON DEMAND on every check — no background
+    # tasks, no persistent pub/sub connection. Cache is still consulted
+    # first (sub-millisecond hot path); when it is empty we fall through
+    # to Redis. Fail-open on Redis errors: the kill switch is a safety
+    # net, not a primary control.
+
+    async def _redis_get_record(self, key: str) -> Optional[HaltRecord]:
+        """Read one halt key from Redis and return a HaltRecord (or None)."""
+        client = await self._get_client()
+        if not client:
+            return None
+        try:
+            raw = await client.get(key)
+        except Exception as exc:
+            logger.warning("KillSwitch: on-demand Redis read failed for %s: %s", key, exc)
+            return None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+            return HaltRecord.model_validate(data)
+        except Exception as exc:
+            logger.warning("KillSwitch: invalid halt record at %s: %s", key, exc)
+            return None
 
     async def is_halted(
         self,
@@ -139,10 +165,10 @@ class KillSwitchService:
         org_id: Optional[str] = None,
     ) -> bool:
         """
-        Check if trading is halted. O(1) from in-memory cache.
-
-        With background refresh disabled, cache is always empty,
-        so this always returns False (trading allowed).
+        Check if trading is halted. O(1) from in-memory cache, falling
+        through to an on-demand Redis read when the cache is empty (so a
+        halt activated in ANOTHER process is honored without background
+        refresh).
 
         Checks in order: global > user > symbol.
         If ANY tier is halted, returns True.
@@ -151,17 +177,29 @@ class KillSwitchService:
         global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
         if self._cache.get(global_key) is not None:
             return True
+        global_record = await self._redis_get_record(global_key)
+        if global_record is not None:
+            self._cache[global_key] = global_record
+            return True
 
         # User halt
         if user_id:
             user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
             if self._cache.get(user_key) is not None:
                 return True
+            user_record = await self._redis_get_record(user_key)
+            if user_record is not None:
+                self._cache[user_key] = user_record
+                return True
 
         # Symbol halt
         if symbol:
             sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
             if self._cache.get(sym_key) is not None:
+                return True
+            sym_record = await self._redis_get_record(sym_key)
+            if sym_record is not None:
+                self._cache[sym_key] = sym_record
                 return True
 
         return False
@@ -172,23 +210,30 @@ class KillSwitchService:
         symbol: Optional[str] = None,
         org_id: Optional[str] = None,
     ) -> Optional[HaltRecord]:
-        """Get the most specific active halt record (for error messages)."""
+        """Get the most specific active halt record (for error messages).
+
+        Mirrors ``is_halted``: cache first, then on-demand Redis (so a
+        cross-process halt is surfaced in the 403 response).
+        """
         # Check in priority order: global > user > symbol
         global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
-        global_halt = self._cache.get(global_key)
+        global_halt = self._cache.get(global_key) or await self._redis_get_record(global_key)
         if global_halt:
+            self._cache[global_key] = global_halt
             return global_halt
 
         if user_id:
             user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
-            user_halt = self._cache.get(user_key)
+            user_halt = self._cache.get(user_key) or await self._redis_get_record(user_key)
             if user_halt:
+                self._cache[user_key] = user_halt
                 return user_halt
 
         if symbol:
             sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
-            sym_halt = self._cache.get(sym_key)
+            sym_halt = self._cache.get(sym_key) or await self._redis_get_record(sym_key)
             if sym_halt:
+                self._cache[sym_key] = sym_halt
                 return sym_halt
 
         return None

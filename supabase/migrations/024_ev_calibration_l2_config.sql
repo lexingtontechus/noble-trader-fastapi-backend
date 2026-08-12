@@ -9,9 +9,26 @@
 -- ─── 1. Rename column in nt_calibration_records ──────────────
 -- p_imbalance was renamed to p_ext_signal to reflect that this
 -- slot accepts any external directional vote, not just L2.
-
-ALTER TABLE nt_calibration_records
-  RENAME COLUMN p_imbalance TO p_ext_signal;
+--
+-- NOTE (2026-08-12, audit H6): nt_calibration_records is CREATED in
+-- migration 100, which runs AFTER this file on a fresh 001→NNN apply.
+-- The bare RENAME COLUMN therefore failed on fresh installs (024 ran
+-- before the table existed). Guard with information_schema checks so
+-- this migration is a no-op when the column/table is absent (fresh
+-- apply: 100 creates p_imbalance; 024 has already passed harmlessly)
+-- and still performs the rename when the column exists (live DB).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'nt_calibration_records'
+      AND column_name = 'p_imbalance'
+  ) THEN
+    ALTER TABLE nt_calibration_records
+      RENAME COLUMN p_imbalance TO p_ext_signal;
+  END IF;
+END $$;
 
 COMMENT ON COLUMN nt_calibration_records.p_ext_signal
   IS 'External directional signal vote at entry (from L2 order book, sentiment, etc.)';

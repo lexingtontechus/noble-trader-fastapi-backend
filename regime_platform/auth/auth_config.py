@@ -40,6 +40,18 @@ def is_auth_enabled() -> bool:
     mode = get_auth_mode()
     return mode != AuthMode.DISABLED
 
+def is_dev_auth_allowed() -> bool:
+    """Whether dev-mode auth (AUTH_MODE=disabled / AUTH_ENABLED=false) may run.
+
+    FAIL-CLOSED: dev auth is only permitted when DEPLOY_ENV is EXPLICITLY set
+    to ``development`` or ``test``. An unset/empty DEPLOY_ENV (or any other
+    value, including typos) is treated as NOT dev and denies the admin-mint
+    paths. This closes the previous fail-open default where an unset
+    DEPLOY_ENV fell through to ``development`` and minted ``role=admin``.
+    """
+    deploy_env = os.getenv("DEPLOY_ENV") or os.getenv("NODE_ENV") or ""
+    return deploy_env.strip().lower() in ("development", "test")
+
 def is_jwt_enabled() -> bool:
     """Check if JWT authentication is enabled."""
     mode = get_auth_mode()

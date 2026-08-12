@@ -168,7 +168,9 @@ def generate_brick_sizes(atr: float, price: float) -> list[float]:
         base_brick_pct = 0.25    # forex
     base = (price * base_brick_pct) / 100.0
     multipliers = [0.75, 1.0, 1.5, 2.0, 3.0]
-    bricks = [round(base * m, 4) for m in multipliers]
+    # L1: round to 6dp, not 4dp — 4dp truncates sub-pip granularity for
+    # FX/metals (EURUSD-class bricks), silently narrowing the tested grid.
+    bricks = [round(base * m, 6) for m in multipliers]
     # Deduplicate (forex can produce identical bricks after rounding)
     seen: set[float] = set()
     out: list[float] = []
@@ -337,7 +339,6 @@ class HeavySweepMixin:
             _compute_trade_signal,
             _derive_venue,
             _fetch_timesfm_cached,
-            _price_decimals,
             MARKOV_HOLD_STEPS,
             MIN_P_WIN,
         )
@@ -544,7 +545,6 @@ class HeavySweepMixin:
                 result.regime_label, current_price,
                 best.brick_size, best.sl_bricks, best.tp_bricks,
             )
-            decimals = _price_decimals(symbol)
             qualified = self._evaluate_heavy_qualification(
                 ev_result, trade_signal, result.regime_conf, result.kelly_f,
                 p_timesfm,
@@ -558,7 +558,6 @@ class HeavySweepMixin:
                     regime_label=result.regime_label,
                     regime_conf=result.regime_conf,
                     trade_signal=trade_signal,
-                    decimals=decimals,
                     best=best,
                     kelly_f=result.kelly_f,
                     ev_result=ev_result,
@@ -779,13 +778,11 @@ class HeavySweepMixin:
             RegimeHMM, "from_runtime_config_sync"
         ) else None
         if model is None:
-            # from_runtime_config is async — fall back to plain construct
-            # for the sync thread context. The orchestrator's light sweep
-            # uses the async variant; heavy sweep uses a sync construct here.
-            import asyncio
-            model = asyncio.get_event_loop().run_until_complete(
-                RegimeHMM.from_runtime_config()
-            ) if False else RegimeHMM()
+            # L3: plain construct only. The async from_runtime_config()
+            # variant cannot be awaited here — _regime_sync runs inside
+            # asyncio.to_thread (no running loop in this thread) and the
+            # old `if False else RegimeHMM()` dead branch hid that fact.
+            model = RegimeHMM()
         model.fit(np_prices)
         return model.predict(np_prices)
 
@@ -948,7 +945,6 @@ class HeavySweepMixin:
         regime_label: str,
         regime_conf: float,
         trade_signal: dict[str, Any],
-        decimals: int,
         best: ComboResult,
         kelly_f: float,
         ev_result,

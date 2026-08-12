@@ -87,7 +87,6 @@ def _push_args():
             "stop_loss": 3990.0,
             "take_profit": 4020.0,
         },
-        decimals=2,
         best=_minimal_best(),
         kelly_f=0.1,
         ev_result=_minimal_ev_result(),

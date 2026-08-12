@@ -96,7 +96,11 @@ async def _write_eod_action(symbol: str, action: str, bias: Optional[float], det
             "ts": datetime.now(timezone.utc).isoformat(),
             "action": action,
             "bias": bias,
-            "detail": json.dumps(detail, default=str),
+            # JSONB column: send the dict (httpx serializes). The previous
+            # json.dumps() double-encoded the object into a JSON *string*,
+            # breaking calibration_enforcement's isinstance(detail, dict)
+            # guard (H2).
+            "detail": detail,
         }
         await _insert_row("nt_eod_actions", row)
     except Exception as exc:
@@ -204,9 +208,15 @@ async def run_eod_correction() -> dict[str, Any]:
                 continue
 
             # Overconfident / underconfident → correction actions
-            n_records = int(cal.get("count") or cal.get("n") or 0)
-            adj_p_win = bayesian_adjusted_p_win(cal.get("predicted_p_win", 0.5), n_records)
+            # fetch_calibration_bias returns {bias,status,n,win_rate,avg_pred}
+            # — avg_pred IS the observed mean predicted p_win (the blend
+            # input). The old `cal.get("predicted_p_win")` key never existed,
+            # so the Bayesian shrink was a constant 0.5 (H1).
+            n_records = int(cal.get("n") or 0)
+            obs_p_win = float(cal.get("avg_pred") or 0.5)
+            adj_p_win = bayesian_adjusted_p_win(obs_p_win, n_records)
             detail["adjusted_p_win"] = adj_p_win
+            detail["avg_pred"] = obs_p_win
             detail["kelly_factor"] = KELLY_REDUCTION
             detail["n"] = n_records  # consumed by calibration_enforcement live
 

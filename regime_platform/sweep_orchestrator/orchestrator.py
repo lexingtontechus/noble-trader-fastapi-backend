@@ -130,7 +130,7 @@ MIN_RR = float(os.getenv("MIN_RR", "2.0"))
 #   "off": no TimesFM gate at all. Rely entirely on the blended EV.
 #       If TimesFM is uncertain, the blend naturally reduces p_win, which
 #       reduces EV, which the EV gate handles.
-TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "hard").lower()
+TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
 # When True, publish ALL signals (even rejected ones) to Redis channel
 # "signal.debug.noble_trader" for diagnostic visibility. Set to "1" to
 # enable. Default: disabled (only qualified signals go to production
@@ -889,6 +889,26 @@ class SweepOrchestrator(HeavySweepMixin):
             desired.add(job_id)
 
             if job_id in existing:
+                # Refresh args when the symbol set changed (H3): the old
+                # `if job_id in existing: continue` froze the ORIGINAL
+                # sym_list, so symbols added to nt_symbol were never swept
+                # until the cron expr changed.
+                try:
+                    job = self._scheduler.get_job(job_id)
+                    old_syms = job.args[1] if job and len(job.args) > 1 else None
+                    new_syms = [s["symbol"] for s in sym_list]
+                    if old_syms != new_syms:
+                        self._scheduler.modify_job(
+                            job_id,
+                            args=[cron_expr, sym_list],
+                            name=f"Light sweep [{cron_expr}] {len(sym_list)} symbols",
+                        )
+                        logger.info(
+                            "Refreshed %s symbols (%d → %d): %s",
+                            job_id, len(old_syms or []), len(new_syms), new_syms,
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to refresh %s args: %s", job_id, exc)
                 continue
 
             self._scheduler.add_job(
@@ -949,6 +969,24 @@ class SweepOrchestrator(HeavySweepMixin):
             desired.add(job_id)
 
             if job_id in existing:
+                # Refresh args when the symbol set changed (H3) — same
+                # frozen-sym_list defect as the light sweep jobs.
+                try:
+                    job = self._scheduler.get_job(job_id)
+                    old_syms = job.args[1] if job and len(job.args) > 1 else None
+                    new_syms = [s["symbol"] for s in sym_list]
+                    if old_syms != new_syms:
+                        self._scheduler.modify_job(
+                            job_id,
+                            args=[cron_expr, sym_list],
+                            name=f"Heavy sweep [{cron_expr}] {len(sym_list)} symbols",
+                        )
+                        logger.info(
+                            "Refreshed %s symbols (%d → %d): %s",
+                            job_id, len(old_syms or []), len(new_syms), new_syms,
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to refresh %s args: %s", job_id, exc)
                 continue
 
             self._scheduler.add_job(
@@ -1003,7 +1041,8 @@ class SweepOrchestrator(HeavySweepMixin):
 
         try:
             resolver_summary = await resolve_pending_signals(
-                limit=settings.EOD_RESOLVE_LIMIT
+                limit=settings.EOD_RESOLVE_LIMIT,
+                max_total=settings.EOD_RESOLVE_MAX_TOTAL,
             )
             logger.info(
                 "[eod:lookback] resolver done: %s",
@@ -1294,9 +1333,6 @@ class SweepOrchestrator(HeavySweepMixin):
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
                 await log_error(symbol, "sweep-light", str(exc)[:1000])
-            except Exception as exc:
-                logger.error("%s: sweep failed: %s", symbol, exc)
-                await log_error(symbol, "sweep-light", str(exc)[:1000])
             finally:
                 await self._redis.delete(lock_key)
 
@@ -1495,8 +1531,8 @@ class SweepOrchestrator(HeavySweepMixin):
         # ── TimesFM gate mode ────────────────────────────────────────
         # TIMESFM_GATE_MODE controls how TimesFM confidence affects
         # qualification:
-        #   "hard" (default): reject if confidence < MIN_TIMESFM_CONFIDENCE
-        #   "soft": don't reject, but recompute EV with reduced TimesFM weight
+        #   "hard": reject if confidence < MIN_TIMESFM_CONFIDENCE
+        #   "soft" (default): don't reject, but recompute EV with reduced TimesFM weight
         #   "off": no TimesFM gate at all (rely on blended EV)
         #
         # The soft mode preserves the blended EV philosophy: one uncertain
@@ -1644,7 +1680,10 @@ class SweepOrchestrator(HeavySweepMixin):
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
             "regime_conf_ok": regime_conf >= MIN_REGIME_CONF,
-            "kelly_min_ok": kelly_f >= MIN_KELLY,
+            # Gate on the FINAL effective kelly (post calibration-enforcement
+            # shrink), not the raw kelly: a raw-kelly gate could qualify a
+            # symbol that publishes below MIN_KELLY after the ×0.5 penalty.
+            "kelly_min_ok": effective_kelly >= MIN_KELLY,
             "timesfm_available": p_timesfm is not None,
             "timesfm_confidence_ok": timesfm_confidence_ok,
             "ev_allowed": effective_ev_result.allowed,
@@ -1677,7 +1716,18 @@ class SweepOrchestrator(HeavySweepMixin):
         }
 
         # A signal is qualified only if ALL gates pass.
-        qualified = all(gate_results.values())
+        # NOTE (M1): `timesfm_available` is informational EXCEPT in "hard"
+        # mode. When TimesFM is down (p_timesfm is None) in soft/off modes,
+        # the blended EV simply runs on the remaining sources — an outage
+        # must not zero out every qualified signal. In hard mode the gate
+        # still requires TimesFM (binary veto), matching the documented
+        # "hard" contract.
+        if TIMESFM_GATE_MODE == "hard":
+            qualified = all(gate_results.values())
+        else:
+            qualified = all(
+                v for k, v in gate_results.items() if k != "timesfm_available"
+            )
 
         # ── Cooldown check (suppress signal spam) ────────────────────
         # Even if all gates pass, suppress the signal if the same

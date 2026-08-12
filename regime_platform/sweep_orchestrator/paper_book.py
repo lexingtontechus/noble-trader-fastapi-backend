@@ -52,6 +52,12 @@ logger = logging.getLogger("regime.sweep.paper_book")
 BASE_NOTIONAL = float(os.environ.get("NOBLE_PAPER_BASE_NOTIONAL", "1000"))
 MAX_FRACTION = 0.20  # hard cap: max 20% of base notional per position
 
+# Max age for an open paper position (M4). A position whose signal never
+# resolves (or whose resolved row was deleted) would otherwise sit open
+# forever. After PAPER_OPEN_MAX_AGE_DAYS the close pass force-expires it
+# with $0 PnL (the signal outcome convention for a timeout).
+PAPER_OPEN_MAX_AGE_DAYS = float(os.environ.get("NOBLE_PAPER_OPEN_MAX_AGE_DAYS", "30"))
+
 PAPER_POSITION_COLUMNS: frozenset[str] = frozenset({
     "position_id", "signal_id", "symbol", "venue", "direction",
     "entry_price", "stop_loss", "take_profit",
@@ -188,8 +194,14 @@ async def _lookup_signal_id(symbol: Any, ts: Any) -> Any:
     return None
 
 
-async def _fetch_qualified_without_position(limit: int = 200) -> list[dict[str, Any]]:
-    """Qualified nt_signal_sim rows that have no paper position yet."""
+async def _fetch_qualified_without_position(limit: int = 2000) -> list[dict[str, Any]]:
+    """Qualified nt_signal_sim rows that have no paper position yet.
+
+    L6: default raised 200 → 2000 — the open pass was capped at 200 rows
+    per reconcile run while the capture rate is ~3,200 signals/day, so the
+    book could starve (old qualified signals never opened). ``order=ts.asc``
+    keeps the pass FIFO (open oldest first).
+    """
     try:
         from regime_platform.core.settings import settings
         import httpx
@@ -226,8 +238,8 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
         import httpx
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
-            "?select=position_id,signal_id,status,size_units"
-            "&status=eq.open&limit=1000"
+            "?select=position_id,signal_id,status,size_units,open_ts"
+            "&status=eq.open&order=open_ts.asc&limit=2000"
         )
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -402,7 +414,7 @@ def _signal_epoch_ts(sig: dict[str, Any]) -> float:
     return time.time()
 
 
-async def reconcile(limit: int = 200, close_limit: int = 2000) -> dict[str, Any]:
+async def reconcile(limit: int = 2000, close_limit: int = 2000) -> dict[str, Any]:
     """Idempotent open+close pass over the paper book.
 
     1. Open: qualified signals (outcome IS NULL) without a position.
@@ -412,9 +424,10 @@ async def reconcile(limit: int = 200, close_limit: int = 2000) -> dict[str, Any]
     ``close_limit`` bounds the CLOSE pass (resolved signals to examine).
     They were previously the same value — the close pass inherited the
     open-pass 200 and only ever saw the 200 oldest resolved signals
-    (2026-08-08 fix).
+    (2026-08-08 fix). L6: open default raised to 2000 so the open pass
+    keeps pace with the ~3,200 signals/day capture rate.
     """
-    summary: dict[str, Any] = {"opened": 0, "closed": 0, "errors": 0}
+    summary: dict[str, Any] = {"opened": 0, "closed": 0, "errors": 0, "age_expired": 0}
 
     # ── Open pass ────────────────────────────────────────────────────
     try:
@@ -460,9 +473,51 @@ async def reconcile(limit: int = 200, close_limit: int = 2000) -> dict[str, Any]
         summary["errors"] += 1
         logger.warning("paper_book: close pass failed: %s", exc)
 
+    # ── Age-expire pass (M4) ──────────────────────────────────────
+    # Force-expire open positions that have sat past
+    # PAPER_OPEN_MAX_AGE_DAYS. Their signal may never resolve (or its row
+    # was deleted by retention), so the position would otherwise sit open
+    # forever and skew the book.
+    try:
+        open_positions = await _fetch_open_positions()
+        now_ts = datetime.now(timezone.utc)
+        for p in open_positions:
+            raw_open = p.get("open_ts")
+            if not raw_open:
+                continue
+            try:
+                open_dt = datetime.fromisoformat(str(raw_open).replace("Z", "+00:00"))
+                if open_dt.tzinfo is None:
+                    open_dt = open_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            age_days = (now_ts - open_dt).total_seconds() / 86400.0
+            if age_days < PAPER_OPEN_MAX_AGE_DAYS:
+                continue
+            ok = await _patch_position(p.get("position_id"), {
+                "status": "expired",
+                "close_ts": now_ts.isoformat(),
+                "exit_price": None,
+                "realized_pnl": 0.0,
+                "pnl_bricks": 0,
+                "r_multiple": 0.0,
+                "resolved_at": now_ts.isoformat(),
+            })
+            if ok:
+                summary["age_expired"] += 1
+                logger.info(
+                    "paper_book: AGE-EXPIRE %s %s (open %.1fd > %.0fd cap)",
+                    p.get("symbol"), p.get("position_id"), age_days,
+                    PAPER_OPEN_MAX_AGE_DAYS,
+                )
+    except Exception as exc:
+        summary["errors"] += 1
+        logger.warning("paper_book: age-expire pass failed: %s", exc)
+
     logger.info(
-        "paper_book: reconcile done — opened=%d closed=%d errors=%d",
-        summary["opened"], summary["closed"], summary["errors"],
+        "paper_book: reconcile done — opened=%d closed=%d age_expired=%d errors=%d",
+        summary["opened"], summary["closed"], summary["age_expired"],
+        summary["errors"],
     )
     return summary
 

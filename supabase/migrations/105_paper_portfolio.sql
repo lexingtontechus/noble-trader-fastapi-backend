@@ -76,7 +76,7 @@ COMMENT ON TABLE nt_paper_positions IS
 ALTER TABLE nt_paper_positions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Service role full access" ON nt_paper_positions;
 CREATE POLICY "Service role full access" ON nt_paper_positions
-  FOR ALL USING (true) WITH CHECK (true);
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 -- ─── 4. Portfolio views ────────────────────────────────────────────────────
 

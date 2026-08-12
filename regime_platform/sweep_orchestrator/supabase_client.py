@@ -65,18 +65,19 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
         "active": "eq.true",
         "order": "asset_class.asc,symbol.asc",
     }
-    print(f"[sb] Querying {url} with params={params}", flush=True)
+    # L4: debug-level logging (was print() — stdout noise every 5-min
+    # symbol-refresh tick; print bypasses log levels and pollutes logs).
+    logger.debug("Querying %s with params=%s", url, params)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=_headers(), params=params)
             resp.raise_for_status()
             rows: list[dict[str, Any]] = resp.json()
             logger.info("Fetched %d active symbols from nt_symbol", len(rows))
-            print(f"[sb] Got {len(rows)} symbols: {[r.get('symbol') for r in rows]}", flush=True)
+            logger.debug("Symbols: %s", [r.get("symbol") for r in rows])
             return rows
     except Exception as exc:
         logger.error("Failed to fetch active symbols: %s", exc)
-        print(f"[sb] FAILED: {exc}", flush=True)
         return []
 
 
@@ -247,17 +248,17 @@ async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
             )
             if not resp.is_success:
                 logger.error(
-                    "log_sweep_result: %s insert HTTP %d — %s",
+                    "%s insert HTTP %d — %s",
                     table, resp.status_code, resp.text[:300],
                 )
                 return False
             logger.info(
-                "log_sweep_result: %s insert OK for %s",
+                "%s insert OK for %s",
                 table, payload.get("symbol", "unknown"),
             )
             return True
     except Exception as exc:
-        logger.error("log_sweep_result: %s insert failed: %s", table, exc)
+        logger.error("%s insert failed: %s", table, exc)
         return False
 
 

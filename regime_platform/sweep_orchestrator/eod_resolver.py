@@ -142,12 +142,16 @@ def anchor_post_entry_closes(
     offset = int(round(offset_hours / max(bar_hours, 1e-9)))
     if offset < 0:
         offset = 0
-    # The entry bar sits `offset` bars behind the newest close. clamp to the
-    # newest index (offset 0 → entry at the latest bar).
-    entry_idx = min(len(closes) - offset, len(closes) - 1)
-    if entry_idx < 0:
-        # Entry is older than the oldest fetched bar — nothing valid to walk.
+    # The entry bar sits `offset` bars behind the newest close. With a
+    # zero-based ascending array, the entry index is len-1-offset (H-fix:
+    # the old len-offset was one bar LATE — the close-walk started at the
+    # bar AFTER the entry instead of at the entry itself). If the entry is
+    # OLDER than the oldest fetched bar (offset >= len), nothing valid to
+    # walk. Clamp to 0 only for future-dated/clock-skew (offset 0 → entry
+    # at the latest bar).
+    if offset >= len(closes):
         return None
+    entry_idx = max(len(closes) - 1 - offset, 0)
     return list(closes[entry_idx:])
 
 def resolve_signal_outcome(
@@ -425,16 +429,21 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
 
 # ─── Orchestrator entry point ─────────────────────────────────────
 
-async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
-    """Forward-resolve up to ``limit`` pending nt_signal_sim rows.
+async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[str, Any]:
+    """Forward-resolve pending nt_signal_sim rows in batches.
 
-    Best-effort end-to-end:
+    Batches the fetch+resolve loop until the in-window pending backlog is
+    drained (or ``max_total`` rows have been attempted). Previously a single
+    fetch of ``limit`` rows per daily run — with ~3,200 signals captured/day
+    vs a 1,000/day resolve limit the backlog grew monotonically (H4).
 
+    Per batch:
       1. Query ``nt_signal_sim`` WHERE ``outcome IS NULL`` ORDER BY ts ASC,
-         bounded to signals whose entry falls inside the candle window
-         (``ts >= now() - LIGHT_BARS hours`` — window-anchoring fix
-         2026-08-12; older signals stay pending and are handled by
-         retention, which expires them after EOD_RETENTION_STALE_DAYS).
+         bounded to signals whose entry falls inside the candle window the
+         resolver is about to fetch (``ts >= now() - LIGHT_BARS hours`` —
+         window-anchoring fix 2026-08-12; older signals stay pending and are
+         handled by retention, which expires them after
+         EOD_RETENTION_STALE_DAYS).
       2. Group by symbol and fetch post-entry 1h closes per symbol
          (``fetch_candles_for_symbols``, `LIGHT_BARS` bars).
       3. Per signal, slice the fetched closes to the POST-ENTRY window via
@@ -446,11 +455,12 @@ async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
       5. PATCH outcome/exit_*/hold_bars/mfe/mae/pnl_*/resolved_at back.
       6. Insert nt_calibration_records for tp_hit (win) / sl_hit (loss).
 
-    Returns ``{resolved, by_outcome, windowed_out, errors}``. Never raises —
-    every failure path is caught and counted in ``errors``.
+    Returns ``{resolved, by_outcome, windowed_out, errors, batches}``.
+    Never raises — every failure path is caught and counted in ``errors``.
     """
     summary: dict[str, Any] = {
         "resolved": 0, "by_outcome": {}, "windowed_out": 0, "errors": 0,
+        "batches": 0,
     }
     if not settings.SUPABASE_URL:
         logger.warning("eod_resolver: Supabase not configured — nothing to resolve")
@@ -461,87 +471,101 @@ async def resolve_pending_signals(limit: int = 200) -> dict[str, Any]:
     # resolver is about to fetch. Anything older cannot be scored against
     # post-entry bars (the close-walk would inspect pre-entry action).
     min_ts = (fetch_ts - timedelta(hours=LIGHT_BARS)).isoformat()
-    try:
-        rows = await _fetch_pending(limit, min_ts=min_ts)
-    except Exception as exc:
-        logger.error("eod_resolver: pending query failed: %s", exc)
-        summary["errors"] += 1
-        return summary
-    if not rows:
-        logger.info("eod_resolver: no pending signals (limit=%d)", limit)
-        return summary
+    attempted_total = 0
 
-    # Map symbol -> tradingview_symbol (active symbols first; fall back to
-    # whatever the row itself carries).
-    from regime_platform.sweep_orchestrator.supabase_client import (
-        fetch_active_symbols,
-    )
-    tv_map: dict[str, Any] = {}
-    for sym in await fetch_active_symbols():
-        tv_map.setdefault(sym.get("symbol"), sym.get("tradingview_symbol"))
-    for row in rows:
-        tv_map.setdefault(row.get("symbol"), row.get("tradingview_symbol"))
-
-    by_symbol: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        by_symbol.setdefault(row.get("symbol"), []).append(row)
-
-    outcomes: Counter[str] = Counter()
-    for symbol, sigs in by_symbol.items():
-        tv = tv_map.get(symbol)
-        if not tv:
-            logger.warning(
-                "eod_resolver: no tradingview_symbol for %s — %d pending unresolved",
-                symbol, len(sigs),
-            )
-            summary["errors"] += len(sigs)
-            continue
+    while True:
+        if max_total > 0 and attempted_total >= max_total:
+            logger.info("eod_resolver: reached max_total=%d — stopping", max_total)
+            break
         try:
-            batch = await fetch_candles_for_symbols(
-                [{"symbol": symbol, "tradingview_symbol": tv}],
-                n_bars=LIGHT_BARS,
-                interval=INTERVAL,
-            )
+            rows = await _fetch_pending(limit, min_ts=min_ts)
         except Exception as exc:
-            logger.error("eod_resolver: candle fetch failed for %s: %s", symbol, exc)
-            summary["errors"] += len(sigs)
-            continue
-        closes = batch.get(symbol, [])
-        if not closes:
-            logger.warning(
-                "eod_resolver: no candles returned for %s — %d pending unresolved",
-                symbol, len(sigs),
-            )
-            summary["errors"] += len(sigs)
-            continue
+            logger.error("eod_resolver: pending query failed: %s", exc)
+            summary["errors"] += 1
+            break
+        if not rows:
+            logger.info("eod_resolver: no more pending signals (limit=%d)", limit)
+            break
+        attempted_total += len(rows)
+        summary["batches"] += 1
 
-        for sig in sigs:
-            try:
-                # Window anchoring: only walk bars AFTER the signal's entry.
-                # Without this, a backlogged signal (entry days ago) would be
-                # scored against the FIRST bars of the fetched window, which
-                # predate the entry (2026-08-12 root-cause fix).
-                post = anchor_post_entry_closes(closes, sig.get("ts"), fetch_ts)
-                if post is None:
-                    summary["windowed_out"] += 1
-                    continue
-                outcome = await _resolve_one(sig, post)
-                if outcome is None:
-                    summary["errors"] += 1
-                else:
-                    summary["resolved"] += 1
-                    outcomes[outcome] += 1
-            except Exception as exc:
-                logger.error(
-                    "eod_resolver: signal %s failed: %s",
-                    sig.get("signal_id"), exc,
+        # Map symbol -> tradingview_symbol (active symbols first; fall back to
+        # whatever the row itself carries).
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            fetch_active_symbols,
+        )
+        tv_map: dict[str, Any] = {}
+        for sym in await fetch_active_symbols():
+            tv_map.setdefault(sym.get("symbol"), sym.get("tradingview_symbol"))
+        for row in rows:
+            tv_map.setdefault(row.get("symbol"), row.get("tradingview_symbol"))
+
+        by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_symbol.setdefault(row.get("symbol"), []).append(row)
+
+        outcomes: Counter[str] = Counter()
+        for symbol, sigs in by_symbol.items():
+            tv = tv_map.get(symbol)
+            if not tv:
+                logger.warning(
+                    "eod_resolver: no tradingview_symbol for %s — %d pending unresolved",
+                    symbol, len(sigs),
                 )
-                summary["errors"] += 1
+                summary["errors"] += len(sigs)
+                continue
+            try:
+                batch = await fetch_candles_for_symbols(
+                    [{"symbol": symbol, "tradingview_symbol": tv}],
+                    n_bars=LIGHT_BARS,
+                    interval=INTERVAL,
+                )
+            except Exception as exc:
+                logger.error("eod_resolver: candle fetch failed for %s: %s", symbol, exc)
+                summary["errors"] += len(sigs)
+                continue
+            closes = batch.get(symbol, [])
+            if not closes:
+                logger.warning(
+                    "eod_resolver: no candles returned for %s — %d pending unresolved",
+                    symbol, len(sigs),
+                )
+                summary["errors"] += len(sigs)
+                continue
 
-    summary["by_outcome"] = dict(outcomes)
+            for sig in sigs:
+                try:
+                    # Window anchoring: only walk bars AFTER the signal's entry.
+                    # Without this, a backlogged signal (entry days ago) would be
+                    # scored against the FIRST bars of the fetched window, which
+                    # predate the entry (2026-08-12 root-cause fix).
+                    post = anchor_post_entry_closes(closes, sig.get("ts"), fetch_ts)
+                    if post is None:
+                        summary["windowed_out"] += 1
+                        continue
+                    outcome = await _resolve_one(sig, post)
+                    if outcome is None:
+                        summary["errors"] += 1
+                    else:
+                        summary["resolved"] += 1
+                        outcomes[outcome] += 1
+                except Exception as exc:
+                    logger.error(
+                        "eod_resolver: signal %s failed: %s",
+                        sig.get("signal_id"), exc,
+                    )
+                    summary["errors"] += 1
+
+        # Fold this batch's outcome counters into the summary.
+        batch_outcomes = dict(outcomes)
+        for k, v in batch_outcomes.items():
+            summary["by_outcome"][k] = summary["by_outcome"].get(k, 0) + v
+
+    summary["by_outcome"] = dict(summary.get("by_outcome") or {})
     logger.info(
-        "eod_resolver: resolved %d pending (%s), windowed_out=%d, errors=%d",
-        summary["resolved"], summary["by_outcome"],
+        "eod_resolver: resolved %d pending in %d batch(es) (%s), "
+        "windowed_out=%d, errors=%d",
+        summary["resolved"], summary["batches"], summary["by_outcome"],
         summary["windowed_out"], summary["errors"],
     )
     return summary

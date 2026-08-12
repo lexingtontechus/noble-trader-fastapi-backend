@@ -65,7 +65,9 @@ def _has_cuda() -> bool:
     try:
         import torch
         return torch.cuda.is_available()
-    except ImportError:
+    except (ImportError, OSError):
+        # OSError: torch_python.dll failed to load (missing VC++ runtime on
+        # the host). Degrade to no-CUDA rather than crashing the lifespan.
         return False
 
 
@@ -74,7 +76,8 @@ def _has_mps() -> bool:
     try:
         import torch
         return torch.backends.mps.is_available()
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError, OSError):
+        # OSError: torch_python.dll failed to load (missing VC++ runtime).
         return False
 
 

@@ -14,7 +14,7 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ## Version
 
-**v7.7.0** — Multivariate Gaussian HMM for `p_markov` (5 states, 9 features) · TA indicator persistence (migration 036) · Concurrent TVDA fetch via `asyncio.gather` for 20 symbols · TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling + Public Weight API) · P5 Execution-Deprecation Contract · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
+**v7.7.2** — Multivariate Gaussian HMM for `p_markov` (5 states, 9 features) · TA indicator persistence (migration 036) · Concurrent TVDA fetch via `asyncio.gather` for 20 symbols · TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling + Public Weight API) · P5 Execution-Deprecation Contract · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
 
 > **v7.7.0 changelog:** The discrete 3-state `MarkovChain` is replaced as the live `p_markov` source by a 5-state Gaussian HMM (`regime_platform/services/hmm/`). The HMM emits the same 3×3 transition matrix contract (`{UP, DOWN, FLAT}`, rows sum to 1.0) and the same `current_state` string that the EV engine v4 expects — drop-in replacement. The HMM is trained live on a 9-feature observation vector per symbol (log_return + 3 microstructure + 5 TA), bootstrapped from `/api/price/batch` on first sweep and enriched every tick via concurrent `asyncio.gather` calls to TVDA `/api/quote` (microstructure) + `/api/ta` (TA). The 5 TA values are persisted per sweep tick in both `nt_sweep_result` and `nt_regime_log` (migration 036) for post-hoc calibration analytics. No new env vars, no gates, no shadow mode, no cold-start handling. See `TALARIA-MULTIVARIATE-HMM-PROPOSAL.md` (v4) for the full design.
 
@@ -201,7 +201,7 @@ StreamSplitter also republishes signal.raw.noble_trader →
    signals:signal_scout  and  signals:precision_pro   (by nt_symbol.plan_ids)
 ```
 
-- **Version:** `v7.7.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
+- **Version:** `v7.7.2` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
 - **CORS:** live middleware (`main.py`) reads **`CORS_ALLOWED_ORIGINS`** (default
   `http://localhost:3000`). The legacy `CORS_ORIGINS` var was removed — do not use it.
 - **License validation:** the proxy validates subscriber `X-License-Key` via the
