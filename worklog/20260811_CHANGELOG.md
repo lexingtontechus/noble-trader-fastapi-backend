@@ -1,3 +1,83 @@
+## [9.2.0] - 2026-08-11
+
+### Fixed — TDVA candle history order: prices were time-reversed (newest-first) in every sweep consumer
+
+**Incident:** USDJPY signal showed Entry $162.8705 while the TradingView chart
+(and the live TDVA quote) showed ~159. The price LEVEL was wrong — not a decimal
+precision issue. Root cause traced with a live `/api/price/batch` call:
+
+```
+POST /api/price/batch  {"symbol":"OANDA:USDJPY","timeframe":"60","range":200}
+
+history[0]  time=1786496400  close=159.34875   ← NEWEST (real current price)
+history[1]  time=1786492800  close=159.2955    ← older
+...
+history[-1] time=1785434400  close=158.9595    ← OLDEST (~12.3 days back)
+```
+
+The TDVA API returns `history` in **descending time order (newest FIRST)** — the
+docs (GET and POST `/api/price/batch`) show timestamps decreasing down the array.
+`fetch_tradingview_batch()` copied the bars **in order without reversing**, while
+its own docstring claimed `"ascending ts"`. Every downstream consumer assumes
+ascending (`prices[-1]` = newest), so the whole engine was computing on a
+**time-reversed** series:
+
+- `current_price = float(prices[-1])` → the OLDEST close (~8-12 days stale) became
+  the entry → SL/TP levels all wrong (162.87 instead of ~159)
+- `total_return = np_prices[-1]/np_prices[0]` → inverted
+- `returns = np.diff(np.log(np_prices))` → time-reversed log returns → HMM
+  fit/predict saw the series backwards (volatility still detected → plausible but
+  wrong LEVEL; trend/direction signal corrupted)
+- TimesFM `last_price = price_samples[-1]` → stale input
+- HMM quote fetcher `prev_closes[-1]` → stale log_return feature
+- EOD resolver close-walk → TP/SL outcome resolution walked BACKWARD
+
+**Fix (single point, root level):** `fetch_tradingview_batch()` now reverses each
+symbol's price list before returning, so the documented ascending contract is
+actually honored. All consumers (light sweep, heavy sweep, HMM, TimesFM, EOD
+resolver) are fixed by this one change.
+
+#### regime_platform/sweep_orchestrator/price_fetcher.py - MODIFIED
+- `fetch_tradingview_batch()`: after parsing each item's `history` bars into a
+  close-price list, the list is reversed to ascending order (oldest → newest)
+  before being stored in `results[internal_sym]`. The docstring contract
+  (`"ascending ts"`) is now true.
+- Both bar shapes are covered (dict bars `{time, close}` and list bars
+  `[time, o, h, l, c, v]`) because the reverse happens on the final `prices`
+  list, after shape-specific parsing.
+
+#### regime_platform/sweep_orchestrator/orchestrator.py - UNCHANGED
+- No changes needed: `current_price = float(np_prices[-1])` (L1419),
+  `total_return` (L1387), `returns` (L1345), TimesFM `price_samples[-1]`
+  (L253), HMM `prev_closes[-1]` (L1170) all remain correct once the fetcher
+  returns ascending data.
+
+#### regime_platform/sweep_orchestrator/heavy_sweep.py - UNCHANGED
+- Same — `current_price = float(prices[-1])` (L420) is correct with ascending
+  input.
+
+#### regime_platform/sweep_orchestrator/eod_resolver.py - UNCHANGED
+- `resolve_signal_outcome()` close-walk is forward-in-time; correct with
+  ascending closes.
+
+#### tests - ADDED
+- `tests/test_price_fetcher_order.py` — verifies `fetch_tradingview_batch`
+  reverses descending TDVA history into ascending close lists for both dict-bar
+  and list-bar response shapes, keeps result keys, and preserves intra-list
+  values.
+
+### Verified
+- Live TDVA call before fix: USDJPY `history[0]=159.35`, `history[-1]=158.96`
+  (descending, 200 bars). After fix via `scripts/verify_tdva_order.py`:
+  `prices[0]=158.9595` (oldest), `prices[-1]=159.3430` (newest = live price,
+  matches the TradingView chart ~159). The stale 162.87 entry level is gone.
+- `tests/test_price_fetcher_order.py` — 4 new tests (dict bars, list bars,
+  single bar, multi-symbol) PASS.
+- Regression: `test_heavy_sweep_resilience.py`, `test_price_full_value.py`,
+  `test_eod_resolver.py` — 37 total PASS in the combined run.
+
+---
+
 ## [7.7.2] - 2026-08-11
 
 ### Changed — Plan-scoped Realtime broadcast channels + `realtime:portfolio` rename

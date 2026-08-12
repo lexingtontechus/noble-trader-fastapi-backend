@@ -208,6 +208,17 @@ async def fetch_tradingview_batch(
                 if isinstance(current, dict) and current.get("close") is not None:
                     prices = [float(current["close"])]
 
+            # ── ORDER NORMALISATION (2026-08-11) ──────────────────────────
+            # TDVA /api/price/batch returns `history` in DESCENDING time
+            # order (newest FIRST — timestamps decrease down the array).
+            # Every downstream consumer (orchestrator, heavy sweep, HMM,
+            # TimesFM, EOD resolver) assumes ASCENDING (oldest → newest)
+            # so that prices[-1] is the current/latest close. Without this
+            # reverse, current_price = prices[-1] was the ~8-12 day old
+            # close → wrong entry/SL/TP levels (see worklog [9.2.0]).
+            # Reverse here ONCE so all consumers stay correct.
+            prices.reverse()
+
             if prices:
                 results[internal_sym] = prices
                 logger.info(
