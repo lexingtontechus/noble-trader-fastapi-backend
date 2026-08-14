@@ -89,6 +89,9 @@ CALIBRATION_RECORD_COLUMNS: frozenset[str] = frozenset({
     "id", "symbol", "venue", "predicted_p_win", "outcome", "aggression",
     "entry_price", "exit_price", "entered_at", "closed_at",
     "actual_pnl", "error_source",
+    # 2026-08-13: pre-enforcement p_win (carried from the sim capture, nullable)
+    # + Brier score (predicted-vs-outcome MSE). Both columns exist in the table.
+    "predicted_p_win_raw", "calibration_brier",
 })
 
 
@@ -361,11 +364,22 @@ async def _write_calibration_record(
     aggression = str(sig.get("aggression") or "mid").lower()
     if aggression not in ("passive", "mid", "aggressive"):
         aggression = "mid"
+    # Brier score = (predicted_prob - outcome)^2; outcome ∈ {1, 0}. Uses the
+    # RAW (pre-enforcement) p_win when the capture flag carried it, else the
+    # stored (possibly enforced) p_win. Measures probability calibration per
+    # record so the bias loop can track model accuracy independent of the
+    # enforcement shrink (2026-08-13).
+    pred_for_brier = _as_float(sig.get("predicted_p_win_raw"))
+    if pred_for_brier is None:
+        pred_for_brier = _as_float(sig.get("p_win")) or 0.5
+    brier = round((1.0 - pred_for_brier) ** 2 if outcome == "win" else pred_for_brier ** 2, 6)
     payload = _filter_payload({
         "id": str(uuid.uuid4()),
         "symbol": symbol,
         "venue": sig.get("venue"),
         "predicted_p_win": _as_float(sig.get("p_win")),
+        "predicted_p_win_raw": _as_float(sig.get("predicted_p_win_raw")),
+        "calibration_brier": brier,
         "outcome": outcome,
         "aggression": aggression,
         "entry_price": _as_float(sig.get("entry_price")),

@@ -14,7 +14,9 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ## Version
 
-**v7.7.2** — Multivariate Gaussian HMM for `p_markov` (5 states, 9 features) · TA indicator persistence (migration 036) · Concurrent TVDA fetch via `asyncio.gather` for 20 symbols · TimesFM Self-Hosted · Three-Layer Gateway Proxy · EV Engine v4 (Log-Odds Pooling + Public Weight API) · P5 Execution-Deprecation Contract · L2 Order Book Pipeline (Alpaca + Hyperliquid) · Calibration Tracker · MCP Server · Renko HFT Pipeline
+**v7.8.0** — Intraday EOD recalibration (4h correction passes + drift monitor) · Rolling 7-day bias window · Backlog drain (pending → 0) · Contaminated calibration purge · `predicted_p_win_raw`/Brier calibration audit (opt-in) · EOD resolve cap 12,000/night · Retention protect-list chunking · Multivariate Gaussian HMM for `p_markov` · EV Engine v4 · P5 Execution-Deprecation Contract · MCP Server · Renko HFT Pipeline
+
+> **v7.8.0 changelog (2026-08-13):** EOD recalibration is no longer a once-daily 00:30 UTC job. (1) **Intraday correction passes** run every 4h (04:30/08:30/12:30/16:30/20:30 UTC, `EOD_CORRECTION_INTRADAY_ENABLED`) recomputing per-symbol bias + `nt_eod_actions`; emergency heavy sweeps fire only for newly-flagged symbols subject to a 12h cooldown. (2) **Rolling bias window** — `fetch_calibration_bias` computes bias over the last 7 days (`EOD_BIAS_WINDOW_DAYS`) with a 20-record minimum instead of all-time, so a regime shift moves the bias in hours. (3) **Drift monitor** on the 5-min light sweep (`drift_monitor.py`, `EOD_DRIFT_MONITOR_ENABLED`) writes an immediate `bayesian_penalty` when a 48h rolling bias exceeds `EOD_DRIFT_THRESHOLD` (0.15) with ≥20 records and no fresh action — a fast path between scheduled passes. (4) Action freshness window 26 → 8h (`EOD_ACTION_FRESH_HOURS`). (5) **Backlog drain** — `scripts/drain_signal_backlog.py` (resilient retry guard) cleared `nt_signal_sim` pending to 0; `EOD_RESOLVE_MAX_TOTAL` raised 4,000 → 12,000 so the nightly run outpaces capture. (6) **Retention fix** — the resolved-delete protect list is chunked (keyset pagination + `in.(≤100)` deletes), ending the nightly HTTP 400. (7) **Purge** — contaminated `nt_calibration_records` (`entered_at < 2026-08-11T14:00Z`, stale-price artifact) deleted; table rebuilt from clean records. (8) **`predicted_p_win_raw`/`calibration_brier`** — pre-enforcement p_win captured when `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW` is enabled (migration: `supabase/migrations/20260813_add_predicted_p_win_raw.sql`) so calibration can separate model miscalibration from enforcement compensation; Brier score written per record. Full day detail: `worklog/20260813_CHANGELOG.md`.
 
 > **v7.7.0 changelog:** The discrete 3-state `MarkovChain` is replaced as the live `p_markov` source by a 5-state Gaussian HMM (`regime_platform/services/hmm/`). The HMM emits the same 3×3 transition matrix contract (`{UP, DOWN, FLAT}`, rows sum to 1.0) and the same `current_state` string that the EV engine v4 expects — drop-in replacement. The HMM is trained live on a 9-feature observation vector per symbol (log_return + 3 microstructure + 5 TA), bootstrapped from `/api/price/batch` on first sweep and enriched every tick via concurrent `asyncio.gather` calls to TVDA `/api/quote` (microstructure) + `/api/ta` (TA). The 5 TA values are persisted per sweep tick in both `nt_sweep_result` and `nt_regime_log` (migration 036) for post-hoc calibration analytics. No new env vars, no gates, no shadow mode, no cold-start handling. See `TALARIA-MULTIVARIATE-HMM-PROPOSAL.md` (v4) for the full design.
 
@@ -339,6 +341,13 @@ Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elaps
 | `POST` | `/calibration/log` | Log a calibration record (predicted P_win vs actual outcome) | Write |
 | `GET` | `/calibration/bias/{symbol}` | Get calibration bias per symbol | Any |
 | `GET` | `/calibration/status` | Get daily CALIBRATED / OVERCONFIDENT / UNDERCONFIDENT status | Any |
+
+**EOD recalibration (v7.8.0):** the self-correction loop runs a full
+resolve+correct+retention pass nightly at 00:30 UTC, plus **correction-only passes
+every 4h** (04:30/08:30/12:30/16:30/20:30 UTC) and a **drift monitor** on each 5-min
+light sweep. Bias is computed over a **rolling 7-day window** (min 20 records).
+Penalty actions (`bayesian_penalty` / `kelly_reduction` / `emergency_heavy_sweep`)
+are enforced live for 8h (freshness window). See `worklog/20260813_CHANGELOG.md`.
 
 ### Venue Management (v3)
 
@@ -888,6 +897,8 @@ P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
 |---|---|---|---|---|
 | `calibration_bias` | float | `-0.02` | Orchestrator (LightningAI) | avg(predictedPWin) − actual_win_rate (negative = underconfident) |
 | `calibration_status` | string | `CALIBRATED` | Orchestrator (LightningAI) | `CALIBRATED`, `OVERCONFIDENT`, `UNDERCONFIDENT`, or `INSUFFICIENT_DATA` |
+| `predicted_p_win_raw` | float | `0.91` | Sweep capture (opt-in) | Pre-enforcement p_win (`NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW`) — separates model miscalibration from enforcement shrink |
+| `calibration_brier` | float | `0.01` | EOD resolver | Brier score per record: (1−p)² on win / p² on loss (raw p_win when available) |
 
 **Status thresholds:**
 | Condition | Label |
@@ -895,7 +906,7 @@ P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
 | \|bias\| < 0.05 | `CALIBRATED` — predictions match outcomes |
 | bias ≥ +0.05 | `OVERCONFIDENT` — too optimistic |
 | bias ≤ −0.05 | `UNDERCONFIDENT` — too pessimistic |
-| < 20 records | `INSUFFICIENT_DATA` |
+| < 20 records (rolling 7-day window) | `INSUFFICIENT_DATA` |
 
 ### Sweep Fatigue Fields (v3)
 

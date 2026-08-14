@@ -579,6 +579,7 @@ def _build_signal_sim_payload(
     qualified: bool,
     kelly_f: float | None = None,
     effective_kelly: float | None = None,
+    predicted_p_win_raw: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -593,8 +594,13 @@ def _build_signal_sim_payload(
     ``kelly_f`` / ``effective_kelly`` (kelly × EV scale) are the sizing
     inputs for the Part II paper portfolio (migration 105 adds the
     columns); nullable so legacy callers are unaffected.
+
+    ``predicted_p_win_raw`` (2026-08-13) is the PRE-enforcement p_win and
+    is included in the payload only when
+    ``settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW`` is enabled (the DB
+    column must exist first — see supabase/migrations/20260813_add_predicted_p_win_raw.sql).
     """
-    return {
+    payload = {
         "symbol": symbol,
         "venue": venue,
         "ts": ts,
@@ -614,6 +620,12 @@ def _build_signal_sim_payload(
         "kelly_f": round(float(kelly_f), 6) if kelly_f is not None else None,
         "effective_kelly": round(float(effective_kelly), 6) if effective_kelly is not None else None,
     }
+    if (
+        settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW
+        and predicted_p_win_raw is not None
+    ):
+        payload["predicted_p_win_raw"] = round(float(predicted_p_win_raw), 4)
+    return payload
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────
@@ -659,6 +671,13 @@ class SweepOrchestrator(HeavySweepMixin):
         # shifts_24h; the proxy forwards the payload verbatim, so the
         # backend must supply them.)
         self._shift_counts: dict[str, list[float]] = {}
+
+        # ── Emergency heavy-sweep cooldown (intraday correction, 2026-08-13) ──
+        # Last time an emergency heavy sweep re-optimised each symbol (epoch
+        # seconds). The 4h intraday correction passes skip symbols swept within
+        # EOD_HEAVY_SWEEP_COOLDOWN_HOURS to bound backtest cost; the nightly
+        # 00:30 pass is NOT subject to the cooldown.
+        self._heavy_sweep_last: dict[str, float] = {}
 
         # Shared engine instances
         self._sizer = PositionSizer()
@@ -764,6 +783,29 @@ class SweepOrchestrator(HeavySweepMixin):
             misfire_grace_time=3600,
             coalesce=True,
         )
+
+        # Intraday correction-only passes (2026-08-13 plan, B = every 4h):
+        # recompute bias + rewrite nt_eod_actions at 04:30/08:30/12:30/16:30/20:30
+        # UTC so a mid-day regime shift moves the bias in hours, not 24h. No
+        # resolver/retention (the nightly owns those); emergency heavy sweeps
+        # run only for newly-flagged symbols subject to the cooldown.
+        if settings.EOD_CORRECTION_INTRADAY_ENABLED:
+            interval = max(1, int(getattr(settings, "EOD_CORRECTION_INTERVAL_HOURS", 4) or 4))
+            for k in range(1, 24 // interval):
+                hour = (0 + k * interval) % 24
+                self._scheduler.add_job(
+                    self._run_eod_correction_only,
+                    trigger=CronTrigger(minute="30", hour=str(hour)),
+                    id=f"eod-correction-intraday-{hour:02d}",
+                    name=f"EOD intraday correction ({hour:02d}:30 UTC)",
+                    misfire_grace_time=3600,
+                    coalesce=True,
+                )
+            logger.info(
+                "Intraday EOD correction scheduled every %dh at hours: %s",
+                interval,
+                [(k * interval) % 24 for k in range(1, 24 // interval)],
+            )
 
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
@@ -1093,36 +1135,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 "[eod:lookback] emergency heavy sweeps requested: %s",
                 emergency_syms,
             )
-            try:
-                from regime_platform.sweep_orchestrator.supabase_client import (
-                    fetch_active_symbols,
-                )
-                all_symbols = await fetch_active_symbols()
-                sym_map = {s.get("symbol"): s for s in all_symbols}
-                for sym_name in emergency_syms:
-                    sym = sym_map.get(sym_name)
-                    if not sym:
-                        logger.warning(
-                            "[eod:lookback] emergency sweep: %s not in active symbols — skipped",
-                            sym_name,
-                        )
-                        continue
-                    try:
-                        result = await self.run_heavy_sweep_for_symbol(sym)
-                        logger.info(
-                            "[eod:lookback] emergency heavy sweep %s: %s",
-                            sym_name,
-                            result.skip_reason or result.error or "ok",
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "[eod:lookback] emergency heavy sweep %s failed: %s",
-                            sym_name, exc,
-                        )
-            except Exception as exc:
-                logger.error(
-                    "[eod:lookback] emergency heavy sweep batch failed: %s", exc,
-                )
+            await self._execute_emergency_heavy_sweeps(emergency_syms)
 
         # ── Part IV: retention / prune (2026-08-12) ───────────────────────
         # Keep nt_signal_sim bounded:
@@ -1143,6 +1156,104 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] retention failed: %s", exc)
+
+    async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
+        """Run emergency heavy sweeps for the given symbols (best-effort).
+
+        Shared by the nightly lookback (no cooldown) and the intraday
+        correction passes (cooldown applied by the caller via
+        ``_heavy_sweep_last``). Each symbol is fetched + swept in isolation;
+        failures are logged, never raised out of the tick.
+        """
+        if not emergency_syms:
+            return
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                fetch_active_symbols,
+            )
+            all_symbols = await fetch_active_symbols()
+            sym_map = {s.get("symbol"): s for s in all_symbols}
+            for sym_name in emergency_syms:
+                sym = sym_map.get(sym_name)
+                if not sym:
+                    logger.warning(
+                        "[eod:lookback] emergency sweep: %s not in active symbols — skipped",
+                        sym_name,
+                    )
+                    continue
+                try:
+                    result = await self.run_heavy_sweep_for_symbol(sym)
+                    self._heavy_sweep_last[sym_name] = time.time()
+                    logger.info(
+                        "[eod:lookback] emergency heavy sweep %s: %s",
+                        sym_name,
+                        result.skip_reason or result.error or "ok",
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[eod:lookback] emergency heavy sweep %s failed: %s",
+                        sym_name, exc,
+                    )
+        except Exception as exc:
+            logger.error(
+                "[eod:lookback] emergency heavy sweep batch failed: %s", exc,
+            )
+
+    async def _run_eod_correction_only(self) -> None:
+        """Intraday calibration correction pass (2026-08-13 plan, B = every 4h).
+
+        Scheduled at 04:30/08:30/12:30/16:30/20:30 UTC (job ids
+        ``eod-correction-intraday-*``). Recomputes per-symbol calibration
+        bias over the rolling window and rewrites ``nt_eod_actions`` so a
+        mid-day regime shift moves the bias in hours, not 24h. Emergency
+        heavy sweeps run only for NEWLY-flagged symbols, subject to
+        ``EOD_HEAVY_SWEEP_COOLDOWN_HOURS`` (the nightly pass is exempt).
+
+        Does NOT run the resolver or retention — the nightly 00:30 lookback
+        owns those. Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.sweep_orchestrator.eod_correction import (
+            run_eod_correction,
+        )
+
+        try:
+            correction_summary = await run_eod_correction()
+            logger.info(
+                "[eod:correction-intraday] done: %d symbols checked, %d actions, %d errors",
+                correction_summary.get("checked", 0),
+                len(correction_summary.get("actions", [])),
+                correction_summary.get("errors", 0),
+            )
+        except Exception as exc:
+            logger.error("[eod:correction-intraday] correction failed: %s", exc)
+            return
+
+        emergency_syms = sorted({
+            a.get("symbol")
+            for a in (correction_summary.get("actions") or [])
+            if a.get("action") == "emergency_heavy_sweep" and a.get("symbol")
+        })
+        if not emergency_syms:
+            return
+
+        cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12) or 12)
+        now = time.time()
+        to_sweep = [
+            s for s in emergency_syms
+            if now - self._heavy_sweep_last.get(s, 0.0) >= cooldown_h * 3600.0
+        ]
+        skipped = [s for s in emergency_syms if s not in to_sweep]
+        if skipped:
+            logger.info(
+                "[eod:correction-intraday] heavy-sweep cooldown skips: %s",
+                skipped,
+            )
+        if to_sweep:
+            logger.info(
+                "[eod:correction-intraday] emergency heavy sweeps requested: %s",
+                to_sweep,
+            )
+            await self._execute_emergency_heavy_sweeps(to_sweep)
 
     async def _sweep_group(
         self, cron_expr: str, symbols: list[dict[str, Any]]
@@ -1626,6 +1737,12 @@ class SweepOrchestrator(HeavySweepMixin):
         # and halve Kelly — so the gates + sizing see the corrected values.
         # Only fetched when the signal is qualifiable (non-neutral) to avoid
         # a Supabase round-trip for every neutral tick. (2026-08-10)
+        # Stash the PRE-enforcement p_win for the raw-calibration audit
+        # (NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW). The enforcement below may
+        # shrink ev_result.p_win; the raw value travels to nt_signal_sim →
+        # nt_calibration_records so the bias loop can separate model
+        # miscalibration from enforcement compensation (2026-08-13).
+        p_win_raw = ev_result.p_win
         calib_adj = None
         if signal_is_qualifiable and settings.EOD_CALIBRATION_ENFORCE:
             from regime_platform.sweep_orchestrator.calibration_enforcement import (
@@ -1646,6 +1763,24 @@ class SweepOrchestrator(HeavySweepMixin):
                     "p_win→%.4f, kelly→%.6f",
                     symbol, calib_adj.get("status"), calib_adj.get("bias"),
                     ev_result.p_win, effective_kelly,
+                )
+
+        # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────
+        # Fast intraday bias-drift detection BETWEEN the scheduled passes:
+        # when a symbol's short-window realized win rate lags its predicted
+        # p_win by more than EOD_DRIFT_THRESHOLD, an immediate
+        # bayesian_penalty action is written to nt_eod_actions so the NEXT
+        # sweep enforces it (no waiting for the 4h/24h cadence). Only checked
+        # for qualifiable signals to avoid a Supabase round-trip on every
+        # neutral tick; self-guarded (min sample + fresh-action skip) so it
+        # never churns actions every 5 minutes.
+        if signal_is_qualifiable and settings.EOD_DRIFT_MONITOR_ENABLED:
+            from regime_platform.sweep_orchestrator.drift_monitor import check_drift
+            drift_row = await check_drift(symbol)
+            if drift_row:
+                logger.info(
+                    "[sweep:orch] %s: drift monitor action %s (bias=%s)",
+                    symbol, drift_row.get("action"), drift_row.get("bias"),
                 )
 
         # ── p_win soft-gate (v5): modulator, not hard gate ────────
@@ -2249,6 +2384,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     qualified=qualified,
                     kelly_f=kelly_f,
                     effective_kelly=effective_kelly,
+                    predicted_p_win_raw=p_win_raw,
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

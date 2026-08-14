@@ -113,6 +113,73 @@ class TestCalibrationRecordPayload:
         assert "id" in CALIBRATION_RECORD_COLUMNS
         assert "aggression" in CALIBRATION_RECORD_COLUMNS
 
+    def _write_payload(self, sig, resolved, pnl):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        captured = {}
+
+        async def fake_insert(table, payload):
+            captured["payload"] = payload
+            return True
+
+        async def run():
+            with patch(
+                "regime_platform.sweep_orchestrator.eod_resolver._insert_row",
+                new=AsyncMock(side_effect=fake_insert),
+            ):
+                await _write_calibration_record(sig, resolved, pnl)
+
+        asyncio.run(run())
+        return captured["payload"]
+
+    def test_calibration_payload_carries_raw_p_win(self):
+        """predicted_p_win_raw (pre-enforcement) passes through the payload
+        when the sim capture provided it (2026-08-13)."""
+        sig = {
+            "symbol": "EURUSD", "venue": "OANDA",
+            "p_win": 0.62,          # enforced/shrunk value stored
+            "predicted_p_win_raw": 0.91,  # raw pre-shrink value
+            "entry_price": 1.1000, "ts": "2026-08-12T00:00:00Z",
+        }
+        p = self._write_payload(
+            sig, {"outcome": "tp_hit", "exit_price": 1.1100, "hold_bars": 2},
+            {"pnl_dollars": 80.0},
+        )
+        assert p.get("predicted_p_win") == 0.62
+        assert p.get("predicted_p_win_raw") == 0.91
+
+    def test_calibration_payload_brier_win_uses_raw(self):
+        """Brier = (1 - raw)^2 on a win when the raw p_win is present."""
+        sig = {
+            "symbol": "EURUSD", "venue": "OANDA",
+            "p_win": 0.60, "predicted_p_win_raw": 0.90,
+            "entry_price": 1.1000, "ts": "2026-08-12T00:00:00Z",
+        }
+        p = self._write_payload(
+            sig, {"outcome": "tp_hit", "exit_price": 1.1100, "hold_bars": 2},
+            {"pnl_dollars": 80.0},
+        )
+        assert p.get("calibration_brier") == pytest.approx(0.01)  # (1-0.90)^2
+
+    def test_calibration_payload_brier_loss_falls_back_to_p_win(self):
+        """Without raw, Brier uses the stored (possibly enforced) p_win."""
+        sig = {
+            "symbol": "USDCAD", "venue": "OANDA",
+            "p_win": 0.80,  # no predicted_p_win_raw
+            "entry_price": 1.4000, "ts": "2026-08-12T00:00:00Z",
+        }
+        p = self._write_payload(
+            sig, {"outcome": "sl_hit", "exit_price": 1.3950, "hold_bars": 3},
+            {"pnl_dollars": -40.0},
+        )
+        assert p.get("calibration_brier") == pytest.approx(0.64)  # 0.80^2
+        assert p.get("predicted_p_win_raw") is None
+
+    def test_calibration_columns_include_raw_and_brier(self):
+        assert "predicted_p_win_raw" in CALIBRATION_RECORD_COLUMNS
+        assert "calibration_brier" in CALIBRATION_RECORD_COLUMNS
+
 
 class TestResolveSignalOutcome:
     def test_buy_tp_hit_before_sl(self):

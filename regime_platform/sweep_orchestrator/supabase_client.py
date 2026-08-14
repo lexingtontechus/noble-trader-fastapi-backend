@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -207,6 +207,11 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "entry_price", "stop_loss", "take_profit",
     "brick_size", "sl_bricks", "tp_bricks",
     "p_win", "ev", "regime", "regime_conf",
+    # predicted_p_win_raw (2026-08-13): pre-enforcement p_win, persisted only
+    # when NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW is enabled (column added by
+    # supabase/migrations/20260813_add_predicted_p_win_raw.sql). Absent from
+    # the payload when disabled, so the default path is byte-identical.
+    "predicted_p_win_raw",
     "source", "qualified",
     # Part II paper-portfolio sizing inputs (migration 105). Nullable;
     # filled at capture when kelly is available.
@@ -425,18 +430,30 @@ async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
 async def fetch_calibration_bias(
     symbol: str,
     venue: str | None = None,
+    *,
+    window_days: int | None = None,
+    min_records: int | None = None,
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
 
     Returns ``{bias: float, status: str, n: int, win_rate: float,
-    avg_pred: float}`` or ``None`` on failure (or when fewer than 20
-    records exist — ``n`` is too small for the bias to be meaningful).
-    If ``venue`` is provided, filters by both symbol AND venue (exchange).
-    This ensures calibration is tracked per exchange, not mixed across
-    exchanges for the same symbol.
+    avg_pred: float}`` or ``None`` on failure (or when fewer than
+    ``min_records`` records exist in the window — ``n`` is too small for
+    the bias to be meaningful). If ``venue`` is provided, filters by both
+    symbol AND venue (exchange).
+
+    ROLLING WINDOW (2026-08-13, intraday cadence plan): the bias is computed
+    over records with ``entered_at`` within the last ``window_days`` days
+    (default ``settings.EOD_BIAS_WINDOW_DAYS`` = 7) instead of all-time, so a
+    regime shift moves the bias in hours, not days. Pass ``window_days=0``
+    for the legacy all-time behaviour. ``min_records`` defaults to
+    ``settings.EOD_BIAS_MIN_RECORDS`` (20).
     """
     if not settings.SUPABASE_URL:
         return None
+
+    win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
+    min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
 
     url = _url("nt_calibration_records")
     params = {
@@ -445,6 +462,9 @@ async def fetch_calibration_bias(
     }
     if venue:
         params["venue"] = f"eq.{venue}"
+    if win_days and win_days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=win_days)).isoformat()
+        params["entered_at"] = f"gte.{cutoff}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, headers=_headers(), params=params)
@@ -454,7 +474,7 @@ async def fetch_calibration_bias(
         logger.warning("fetch_calibration_bias %s failed: %s", symbol, exc)
         return None
 
-    if not isinstance(data, list) or len(data) < 20:
+    if not isinstance(data, list) or len(data) < min_n:
         return None
 
     n = len(data)

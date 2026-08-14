@@ -44,6 +44,7 @@ class FakeClient:
         self.calls = []  # (method, url, params, json)
         self.head_responses = []
         self.write_responses = []
+        self.get_responses = []
 
     async def __aenter__(self):
         return self
@@ -53,6 +54,11 @@ class FakeClient:
 
     def _record(self, method, url, params=None, json=None):
         self.calls.append({"method": method, "url": url, "params": params, "json": json})
+
+    async def get(self, url, headers=None, params=None):
+        self._record("GET", url, params=params)
+        resp = self.get_responses.pop(0) if self.get_responses else FakeResponse(json_data=[])
+        return resp
 
     async def head(self, url, headers=None, params=None):
         self._record("HEAD", url, params=params)
@@ -184,14 +190,14 @@ class TestRunEodRetention:
         assert summary["errors"] == 0
 
         methods = [c["method"] for c in client.calls]
-        assert methods == ["HEAD", "DELETE", "HEAD", "PATCH"]
+        assert methods == ["GET", "HEAD", "DELETE", "HEAD", "PATCH"]  # pos-protect, resolved count, delete, stale count, expire
 
-        delete_call = client.calls[1]
+        delete_call = next(c for c in client.calls if c["method"] == "DELETE")
         assert delete_call["method"] == "DELETE"
         assert delete_call["params"]["outcome"] == "not.is.null"
         assert "resolved_at" in delete_call["params"]
 
-        patch_call = client.calls[3]
+        patch_call = next(c for c in client.calls if c["method"] == "PATCH")
         assert patch_call["method"] == "PATCH"
         assert patch_call["params"]["outcome"] == "is.null"
         assert "ts" in patch_call["params"]
@@ -210,7 +216,7 @@ class TestRunEodRetention:
             EOD_RETENTION_STALE_DAYS=7,
         )))
         assert summary == {"deleted_resolved": 0, "expired_stale": 0, "errors": 0}
-        assert [c["method"] for c in client.calls] == ["HEAD", "HEAD"]
+        assert [c["method"] for c in client.calls] == ["GET", "HEAD", "HEAD"]  # pos-protect, resolved count, stale count
 
     def test_never_raises_on_http_errors(self):
         client = FakeClient()
@@ -227,3 +233,51 @@ class TestRunEodRetention:
         assert summary["errors"] == 2
         assert summary["deleted_resolved"] == 0
         assert summary["expired_stale"] == 0
+
+    def test_protected_delete_uses_chunked_pagination(self):
+        """Open positions trigger the keyset+chunk path — protected ids never deleted.
+
+        Regression for the nightly HTTP 400 caused by a single
+        ``not.in.(1000 UUIDs)`` URL exceeding the Supabase gateway limit
+        (2026-08-13).
+        """
+        client = FakeClient()
+        client.get_responses = [
+            FakeResponse(json_data=[  # nt_paper_positions (open)
+                {"signal_id": "PROTECT-A"},
+                {"signal_id": "PROTECT-B"},
+            ]),
+            FakeResponse(json_data=[  # keyset page of resolved rows
+                {"signal_id": "id-0001"},
+                {"signal_id": "PROTECT-A"},  # must be skipped
+                {"signal_id": "id-0002"},
+            ]),
+        ]
+        client.head_responses = [
+            FakeResponse(headers={"content-range": "0-0/0"}),  # no stale pending
+        ]
+        client.write_responses = [
+            FakeResponse(headers={"content-range": "0-0/2"}),  # chunked DELETE result
+        ]
+        summary = asyncio.run(self._run(client, patch(
+            "regime_platform.sweep_orchestrator.eod_retention.settings",
+            SUPABASE_URL="https://x.supabase.co",
+            EOD_RETENTION_RESOLVED_DAYS=30,
+            EOD_RETENTION_STALE_DAYS=7,
+        )))
+        assert summary["deleted_resolved"] == 2
+        assert summary["expired_stale"] == 0
+        assert summary["errors"] == 0
+
+        methods = [c["method"] for c in client.calls]
+        assert methods == ["GET", "GET", "DELETE", "HEAD"]  # pos, page, chunked delete, stale count
+
+        delete_call = next(c for c in client.calls if c["method"] == "DELETE")
+        assert "signal_id" in delete_call["params"]
+        assert delete_call["params"]["signal_id"].startswith("in.(")
+        # Protected ids must NOT appear in the delete filter.
+        assert "PROTECT-A" not in delete_call["params"]["signal_id"]
+        assert "PROTECT-B" not in delete_call["params"]["signal_id"]
+        # And the non-protected ids are deleted.
+        assert "id-0001" in delete_call["params"]["signal_id"]
+        assert "id-0002" in delete_call["params"]["signal_id"]

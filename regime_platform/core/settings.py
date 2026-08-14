@@ -251,12 +251,16 @@ class Settings(BaseSettings):
     #   scripts/drain_signal_backlog.py.
     EOD_RESOLVE_LIMIT: int = 1000
 
-    # EOD_RESOLVE_MAX_TOTAL (default 4000, 2026-08-12):
+    # EOD_RESOLVE_MAX_TOTAL (default 12000, 2026-08-13):
     #   Cap on TOTAL rows the EOD resolver may attempt per nightly run
-    #   (H4 backlog fix). The resolver now batch-loops until the in-window
-    #   pending backlog is drained or this cap is hit. 4000 ≈ clears a day
-    #   of capture in one run while bounding runtime/API cost.
-    EOD_RESOLVE_MAX_TOTAL: int = 4000
+    #   (H4 backlog fix). The resolver batch-loops until the in-window
+    #   pending backlog is drained or this cap is hit. Raised from 4000
+    #   on 2026-08-13 after the backlog audit: capture ≈ 3,200–4,000/day
+    #   and a 4,000 cap made the nightly run a treadmill (pending stuck
+    #   at ~18k, oldest pending aging toward the 7-day retention expiry).
+    #   12000 ≈ 3 days of capture per run → the ledger drains ~8k/night
+    #   and the backlog clears without manual intervention.
+    EOD_RESOLVE_MAX_TOTAL: int = 12000
 
     # EOD_RETENTION_RESOLVED_DAYS (default 30, 2026-08-12):
     #   Retention pass (eod_retention.run_eod_retention, wired into the
@@ -274,6 +278,54 @@ class Settings(BaseSettings):
     #   resolver's close-walk expiry). Frees the pending index and keeps the
     #   resolver from re-picking stale rows forever.
     EOD_RETENTION_STALE_DAYS: int = 7
+
+    # ── Intraday recalibration cadence (2026-08-13 plan, user-approved) ─────
+    # Bias is recomputed + nt_eod_actions rewritten every EOD_CORRECTION_INTERVAL_HOURS
+    # (4h) via correction-only passes at 04:30/08:30/12:30/16:30/20:30 UTC in
+    # addition to the nightly 00:30 full lookback. A 24h-only cadence left
+    # un-flagged symbols trading on stale p_win for up to a day after a regime
+    # shift. Master toggle: EOD_CORRECTION_INTRADAY_ENABLED.
+
+    EOD_CORRECTION_INTRADAY_ENABLED: bool = True
+    EOD_CORRECTION_INTERVAL_HOURS: int = 4
+
+    # How old an EOD action may be before enforcement stops applying it.
+    # Shrunk 26 → 8h to match the 4h correction cadence (actions are refreshed
+    # every 4h, so an 8h window always has a fresh penalty while stale ones age
+    # out fast). Mirrored by calibration_enforcement.ACTION_FRESH_WINDOW_HOURS
+    # via a fallback constant (a test asserts they stay in sync).
+    EOD_ACTION_FRESH_HOURS: int = 8
+
+    # Rolling bias window (C): fetch_calibration_bias computes bias over records
+    # with entered_at within the last EOD_BIAS_WINDOW_DAYS days (min
+    # EOD_BIAS_MIN_RECORDS) instead of all-time, so a regime shift moves the
+    # bias in hours, not days.
+    EOD_BIAS_WINDOW_DAYS: int = 7
+    EOD_BIAS_MIN_RECORDS: int = 20
+
+    # Drift monitor (D): on each light sweep, per symbol, a rolling
+    # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
+    # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at
+    # least EOD_DRIFT_MIN_SAMPLE records AND no fresh action exists, an
+    # immediate penalty action is written (bypasses the 4h cadence).
+    EOD_DRIFT_MONITOR_ENABLED: bool = True
+    EOD_DRIFT_WINDOW_HOURS: int = 48
+    EOD_DRIFT_MIN_SAMPLE: int = 20
+    EOD_DRIFT_THRESHOLD: float = 0.15
+
+    # Emergency heavy-sweep cooldown for the intraday correction passes:
+    # a symbol gets at most one re-optimization per this window (bounds
+    # backtest cost; the nightly pass is unaffected).
+    EOD_HEAVY_SWEEP_COOLDOWN_HOURS: int = 12
+
+    # predicted_p_win_raw capture (2026-08-13 plan, SCHEDULED): when True, the
+    # PRE-enforcement p_win is persisted into nt_signal_sim (new column, see
+    # supabase/migrations/20260813_add_predicted_p_win_raw.sql) and carried into
+    # nt_calibration_records so the calibration loop can separate model
+    # miscalibration from enforcement compensation. DEFAULT OFF — the DB column
+    # must exist BEFORE enabling (PostgREST would otherwise reject the insert
+    # with PGRST204 and signals would stop being captured).
+    NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW: bool = False
 
     # NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY (default False, 2026-08-12):
     #   When True, only QUALIFIED non-neutral signals are persisted to

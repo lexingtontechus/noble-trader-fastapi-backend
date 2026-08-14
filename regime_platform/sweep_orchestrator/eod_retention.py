@@ -81,27 +81,18 @@ async def _count_rows(client: httpx.AsyncClient, url: str, params: dict[str, Any
     return _parse_content_range_total(resp.headers.get("content-range"))
 
 
-async def _delete_resolved_older_than(client: httpx.AsyncClient, cutoff_iso: str) -> int:
-    """DELETE resolved nt_signal_sim rows with resolved_at < cutoff.
+# URL-safety constants for the resolved-delete pass (2026-08-13).
+# A single ``not.in.(1000 UUIDs)`` protect-list URL (~38KB) exceeds the
+# Supabase gateway URL limit and 400s every nightly run. The protected path
+# uses small keyset pages + ``in.(...)`` delete chunks instead.
+_DELETE_PAGE = 1000   # resolved rows fetched per keyset page
+_DELETE_CHUNK = 100   # signal_ids per DELETE in.(...) call
 
-    Skips rows whose signal_id still has an OPEN nt_paper_positions row —
-    deleting the resolved signal would orphan the position (its close pass
-    matches on signal_id) and leave it unclosable (M4).
 
-    Returns the number of rows deleted (best-effort; the pre-count is the
-    upper bound — a live table may resolve more rows mid-pass, which is
-    fine: they are caught by the next nightly run).
-    """
-    url = _url("nt_signal_sim")
-    params = {
-        "select": "signal_id",
-        "resolved_at": f"lt.{cutoff_iso}",
-        "outcome": "not.is.null",
-    }
-    # Protect signal_ids referenced by open paper positions.
+async def _fetch_protected_signal_ids(client: httpx.AsyncClient) -> set[str]:
+    """signal_ids referenced by OPEN nt_paper_positions (never delete these)."""
     protected: set[str] = set()
     try:
-        from regime_platform.core.settings import settings
         pos_url = f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
         pos_params = {"select": "signal_id", "status": "eq.open", "limit": "1000"}
         resp = await client.get(pos_url, headers=_headers(), params=pos_params)
@@ -112,33 +103,118 @@ async def _delete_resolved_older_than(client: httpx.AsyncClient, cutoff_iso: str
                     protected.add(str(sid))
     except Exception as exc:
         logger.warning("[eod:retention] open-position protection query failed: %s", exc)
-    if protected:
-        params["signal_id"] = f"not.in.({','.join(sorted(protected))})"
-        logger.info(
-            "[eod:retention] protecting %d signal_id(s) referenced by open positions",
-            len(protected),
-        )
-    total = await _count_rows(client, url, params)
-    if total <= 0:
-        return 0
-    try:
-        resp = await client.delete(
-            url,
-            headers={**_headers(), "Prefer": "count=exact"},
-            params=params,
-        )
+    return protected
+
+
+async def _delete_resolved_older_than(client: httpx.AsyncClient, cutoff_iso: str) -> int:
+    """DELETE resolved nt_signal_sim rows with resolved_at < cutoff.
+
+    Skips rows whose signal_id still has an OPEN nt_paper_positions row —
+    deleting the resolved signal would orphan the position (its close pass
+    matches on signal_id) and leave it unclosable (M4).
+
+    Two paths:
+      * No open positions → single HEAD count + one DELETE (small URL).
+      * Open positions exist → the protect list can reach 1000 UUIDs and a
+        single ``not.in.(...)`` URL 400s (observed nightly 2026-08-13). The
+        protected path keyset-paginates the resolved rows (stable under
+        concurrent deletes), filters protected ids client-side, and deletes
+        in small ``in.(...)`` chunks.
+
+    Returns the number of rows deleted (best-effort; the pre-count is the
+    upper bound — a live table may resolve more rows mid-pass, which is
+    fine: they are caught by the next nightly run).
+    """
+    url = _url("nt_signal_sim")
+    protected = await _fetch_protected_signal_ids(client)
+
+    if not protected:
+        params = {
+            "select": "signal_id",
+            "resolved_at": f"lt.{cutoff_iso}",
+            "outcome": "not.is.null",
+        }
+        total = await _count_rows(client, url, params)
+        if total <= 0:
+            return 0
+        try:
+            resp = await client.delete(
+                url,
+                headers={**_headers(), "Prefer": "count=exact"},
+                params=params,
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "[eod:retention] DELETE resolved HTTP %d — %s",
+                    resp.status_code, resp.text[:200],
+                )
+                return 0
+            deleted = _parse_content_range_total(resp.headers.get("content-range"))
+            logger.info("[eod:retention] deleted %d resolved rows older than %s", deleted, cutoff_iso)
+            return deleted if deleted > 0 else total
+        except Exception as exc:
+            logger.warning("[eod:retention] DELETE resolved failed: %s", exc)
+            return 0
+
+    # Protected path: keyset pagination + chunked deletes.
+    logger.info(
+        "[eod:retention] protecting %d signal_id(s) referenced by open positions",
+        len(protected),
+    )
+    deleted_total = 0
+    last_id: str | None = None
+    while True:
+        params: dict[str, Any] = {
+            "select": "signal_id",
+            "resolved_at": f"lt.{cutoff_iso}",
+            "outcome": "not.is.null",
+            "order": "signal_id.asc",
+            "limit": str(_DELETE_PAGE),
+        }
+        if last_id is not None:
+            params["signal_id"] = f"gt.{last_id}"
+        try:
+            resp = await client.get(url, headers=_headers(), params=params)
+        except Exception as exc:
+            logger.warning("[eod:retention] delete-page GET failed: %s", exc)
+            return deleted_total
         if not resp.is_success:
             logger.warning(
-                "[eod:retention] DELETE resolved HTTP %d — %s",
+                "[eod:retention] delete-page GET HTTP %d — %s",
                 resp.status_code, resp.text[:200],
             )
-            return 0
-        deleted = _parse_content_range_total(resp.headers.get("content-range"))
-        logger.info("[eod:retention] deleted %d resolved rows older than %s", deleted, cutoff_iso)
-        return deleted if deleted > 0 else total
-    except Exception as exc:
-        logger.warning("[eod:retention] DELETE resolved failed: %s", exc)
-        return 0
+            return deleted_total
+        rows = resp.json() or []
+        if not rows:
+            break
+        last_id = str(rows[-1].get("signal_id"))
+        to_delete = [
+            str(r.get("signal_id")) for r in rows
+            if r.get("signal_id") and str(r.get("signal_id")) not in protected
+        ]
+        for i in range(0, len(to_delete), _DELETE_CHUNK):
+            chunk = to_delete[i:i + _DELETE_CHUNK]
+            try:
+                dresp = await client.delete(
+                    url,
+                    headers={**_headers(), "Prefer": "count=exact"},
+                    params={"select": "signal_id", "signal_id": f"in.({','.join(chunk)})"},
+                )
+            except Exception as exc:
+                logger.warning("[eod:retention] DELETE chunk failed: %s", exc)
+                continue
+            if not dresp.is_success:
+                logger.warning(
+                    "[eod:retention] DELETE chunk HTTP %d — %s",
+                    dresp.status_code, dresp.text[:200],
+                )
+                continue
+            n = _parse_content_range_total(dresp.headers.get("content-range"))
+            deleted_total += n if n > 0 else len(chunk)
+        if len(rows) < _DELETE_PAGE:
+            break
+    logger.info("[eod:retention] deleted %d resolved rows older than %s", deleted_total, cutoff_iso)
+    return deleted_total
 
 
 async def _expire_stale_pending(client: httpx.AsyncClient, cutoff_iso: str) -> int:

@@ -115,3 +115,128 @@ class TestCaptureQualifiedOnly:
         monkeypatch.setattr(settings, "NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY", False)
         assert _guard_should_capture(qualified=True) is True
         assert _guard_should_capture(qualified=False) is True
+
+
+# ─── Intraday correction pass (2026-08-13 plan, B = every 4h) ─────────────
+
+
+class TestSignalSimPayloadRawPWin:
+    """_build_signal_sim_payload gating for predicted_p_win_raw (2026-08-13)."""
+
+    def _payload(self, raw=None):
+        from regime_platform.sweep_orchestrator.orchestrator import _build_signal_sim_payload
+
+        return _build_signal_sim_payload(
+            symbol="EURUSD", venue="OANDA", ts="2026-08-13T12:00:00Z",
+            signal="buy", entry_price=1.1000, stop_loss=1.0950, take_profit=1.1100,
+            brick_size=0.001, sl_bricks=5, tp_bricks=10,
+            p_win=0.62, ev=0.01, regime="trend_up", regime_conf=0.8,
+            source="light", qualified=True,
+            predicted_p_win_raw=raw,
+        )
+
+    def test_flag_off_omits_raw(self, monkeypatch):
+        monkeypatch.setattr(settings, "NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW", False)
+        p = self._payload(raw=0.91)
+        assert "predicted_p_win_raw" not in p
+        assert p["p_win"] == 0.62
+
+    def test_flag_on_includes_raw(self, monkeypatch):
+        monkeypatch.setattr(settings, "NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW", True)
+        p = self._payload(raw=0.91)
+        assert p["predicted_p_win_raw"] == 0.91
+
+    def test_flag_on_but_raw_none_omits(self, monkeypatch):
+        monkeypatch.setattr(settings, "NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW", True)
+        p = self._payload(raw=None)
+        assert "predicted_p_win_raw" not in p
+
+
+class TestEodCorrectionIntraday:
+    def _orch(self):
+        orch = _make_orchestrator()
+        orch._heavy_sweep_last = {}
+        return orch
+
+    def _patch_sweep_sources(self):
+        return (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=AsyncMock(return_value=[{"symbol": "EURUSD"}, {"symbol": "BTCUSD"}]),
+            ),
+        )
+
+    def test_runs_correction_and_sweeps_newly_flagged(self):
+        orch = self._orch()
+        actions = [
+            {"symbol": "EURUSD", "action": "emergency_heavy_sweep"},
+            {"symbol": "BTCUSD", "action": "bayesian_penalty"},  # not a sweep
+        ]
+
+        async def run():
+            with (
+                patch(
+                    "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                    new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                self._patch_sweep_sources()[0],
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        assert orch.run_heavy_sweep_for_symbol.await_count == 1  # only EURUSD swept
+        assert "EURUSD" in orch._heavy_sweep_last
+
+    def test_no_actions_means_no_sweeps(self):
+        orch = self._orch()
+
+        async def run():
+            with patch(
+                "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                new=AsyncMock(return_value={"checked": 14, "actions": [], "errors": 0}),
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        orch.run_heavy_sweep_for_symbol.assert_not_awaited()
+
+    def test_cooldown_skips_recently_swept_symbol(self):
+        import time as _time
+
+        orch = self._orch()
+        orch._heavy_sweep_last = {"EURUSD": _time.time()}  # swept just now
+        actions = [{"symbol": "EURUSD", "action": "emergency_heavy_sweep"}]
+
+        async def run():
+            with (
+                patch(
+                    "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                    new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                self._patch_sweep_sources()[0],
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        orch.run_heavy_sweep_for_symbol.assert_not_awaited()
+
+    def test_cooldown_expired_sweeps_again(self):
+        import time as _time
+
+        orch = self._orch()
+        cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12))
+        orch._heavy_sweep_last = {"EURUSD": _time.time() - cooldown_h * 3600.0 - 1}
+        actions = [{"symbol": "EURUSD", "action": "emergency_heavy_sweep"}]
+
+        async def run():
+            with (
+                patch(
+                    "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                    new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                self._patch_sweep_sources()[0],
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        assert orch.run_heavy_sweep_for_symbol.await_count == 1

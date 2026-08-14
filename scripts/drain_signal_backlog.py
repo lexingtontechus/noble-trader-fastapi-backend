@@ -76,6 +76,7 @@ async def main() -> int:
         return 0
 
     total_resolved = 0
+    zero_progress = 0
     for pass_no in range(1, args.max_passes + 1):
         summary = await resolve_pending_signals(limit=args.limit)
         resolved = summary.get("resolved", 0)
@@ -92,9 +93,23 @@ async def main() -> int:
             print(f"[drain] backlog cleared — {total_resolved} resolved over {pass_no} pass(es)", flush=True)
             return 0
         # Guard against hot loops when the resolver can't make progress.
-        if resolved == 0 and summary.get("errors", 0) > 0:
-            print("[drain] no progress (errors) — stopping", flush=True)
-            return 1
+        # Transient API errors are retried (a single failed pass must not
+        # abort a multi-hour drain); only 3 consecutive zero-progress passes
+        # stop the run (2026-08-13 resilience fix).
+        if resolved == 0:
+            zero_progress += 1
+            print(
+                f"[drain] pass {pass_no}: zero progress "
+                f"(errors={summary.get('errors')}, windowed_out={summary.get('windowed_out')}) "
+                f"— {zero_progress}/3 consecutive, retrying in 10s",
+                flush=True,
+            )
+            if zero_progress >= 3:
+                print("[drain] no progress (errors) — stopping", flush=True)
+                return 1
+            await asyncio.sleep(10)
+        else:
+            zero_progress = 0
 
     remaining = await _count_pending()
     print(

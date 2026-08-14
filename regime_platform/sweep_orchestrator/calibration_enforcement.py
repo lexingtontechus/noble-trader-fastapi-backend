@@ -62,10 +62,13 @@ BAYES_PRIOR_PWIN = 0.5
 # Kelly reduction factor — MUST mirror eod_correction.KELLY_REDUCTION.
 KELLY_REDUCTION = 0.5
 
-# How old an EOD action may be before it stops being enforced. The EOD pass
-# runs daily, so a 26 h window tolerates one missed tick without enforcing a
-# stale penalty forever.
-ACTION_FRESH_WINDOW_HOURS = 26
+# How old an EOD action may be before it stops being enforced. The EOD
+# correction now runs every 4h (EOD_CORRECTION_INTERVAL_HOURS), so the
+# freshness window is 8h (2026-08-13) — a stale penalty ages out in a single
+# intraday tick instead of lingering 26h. `settings.EOD_ACTION_FRESH_HOURS`
+# is authoritative when set; this constant is the fallback (a test asserts
+# the two stay in sync).
+ACTION_FRESH_WINDOW_HOURS = 8
 
 # Penalty actions that activate enforcement (see eod_correction module doc).
 PENALTY_ACTIONS = ("bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep")
@@ -141,7 +144,10 @@ def _action_is_fresh(action: Optional[dict[str, Any]]) -> bool:
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
-        return age_h <= ACTION_FRESH_WINDOW_HOURS
+        fresh_hours = getattr(settings, "EOD_ACTION_FRESH_HOURS", None)
+        if not isinstance(fresh_hours, (int, float)) or fresh_hours <= 0:
+            fresh_hours = ACTION_FRESH_WINDOW_HOURS
+        return age_h <= float(fresh_hours)
     except (ValueError, TypeError):
         return True  # unparseable — assume fresh
 
