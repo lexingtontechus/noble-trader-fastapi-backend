@@ -209,7 +209,7 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "p_win", "ev", "regime", "regime_conf",
     # predicted_p_win_raw (2026-08-13): pre-enforcement p_win, persisted only
     # when NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW is enabled (column added by
-    # supabase/migrations/20260813_add_predicted_p_win_raw.sql). Absent from
+    # supabase/migrations/114_add_predicted_p_win_raw.sql). Absent from
     # the payload when disabled, so the default path is byte-identical.
     "predicted_p_win_raw",
     "source", "qualified",

@@ -598,7 +598,7 @@ def _build_signal_sim_payload(
     ``predicted_p_win_raw`` (2026-08-13) is the PRE-enforcement p_win and
     is included in the payload only when
     ``settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW`` is enabled (the DB
-    column must exist first — see supabase/migrations/20260813_add_predicted_p_win_raw.sql).
+    column must exist first — see supabase/migrations/114_add_predicted_p_win_raw.sql).
     """
     payload = {
         "symbol": symbol,

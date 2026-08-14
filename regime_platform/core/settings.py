@@ -320,7 +320,7 @@ class Settings(BaseSettings):
 
     # predicted_p_win_raw capture (2026-08-13 plan, SCHEDULED): when True, the
     # PRE-enforcement p_win is persisted into nt_signal_sim (new column, see
-    # supabase/migrations/20260813_add_predicted_p_win_raw.sql) and carried into
+    # supabase/migrations/114_add_predicted_p_win_raw.sql) and carried into
     # nt_calibration_records so the calibration loop can separate model
     # miscalibration from enforcement compensation. DEFAULT OFF — the DB column
     # must exist BEFORE enabling (PostgREST would otherwise reject the insert

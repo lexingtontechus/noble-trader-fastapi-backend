@@ -407,6 +407,30 @@ table). Awaiting user approval to execute:
   computes `calibration_brier` = (1−p)² on win / p² on loss, using raw when present else the
   stored (enforced) p_win (4 tests).
 - **Migration (apply in Supabase SQL editor before enabling the flag):**
-  `supabase/migrations/20260813_add_predicted_p_win_raw.sql`
+  `supabase/migrations/114_add_predicted_p_win_raw.sql`
   → `ALTER TABLE public.nt_signal_sim ADD COLUMN IF NOT EXISTS predicted_p_win_raw double precision;`
 - nt_calibration_records.predicted_p_win_raw / calibration_brier columns already exist — no DDL there.
+
+---
+
+## POST-PUSH (2026-08-13/14) — migration rename + LightningAI deploy verification
+
+### Migration file renamed to match sequence
+`supabase/migrations/20260813_add_predicted_p_win_raw.sql` →
+`supabase/migrations/114_add_predicted_p_win_raw.sql` (last existing = 113;
+convention is 3-digit `NNN_snake_name.sql`). References updated in README,
+settings.py, supabase_client.py, orchestrator.py, worklog. **Not yet pushed**
+(awaiting push approval).
+
+### LightningAI studio restarted + verified (v7.8.0 LIVE)
+- `lightning studio stop/start --name noble-trader-unified` (2026-08-13 ~22:40 UTC).
+- New boot **2026-08-14 00:39:45 UTC** — verified in orchestrator.log:
+  - `Intraday EOD correction scheduled every 4h at hours: [4, 8, 12, 16, 20]` ✓
+  - 5 new jobs registered: `EOD intraday correction (04:30/08:30/12:30/16:30/20:30 UTC)` ✓
+  - Light sweep 14 symbols (incl. AAPL/US30USD/US500), heavy sweep Sun 20:00 ✓
+  - **0 ERROR/Traceback lines after boot**; sweep completions normal ✓
+- Note: the 00:30 UTC nightly on 08-14 fired before this boot (00:39) and was
+  skipped; first intraday correction pass will be 04:30 UTC. Deployed runtime
+  now has the 12,000 resolve cap, 4h passes, drift monitor, retention fix, and
+  raw-p_win capture code (capture flag still OFF until the 114 migration is
+  applied in the Supabase SQL editor).
