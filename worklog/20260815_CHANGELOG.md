@@ -178,9 +178,42 @@ The `+` → `Z` encoding worked (no `+` in URL anymore), but the timestamp **mic
 
 **Fix (commit `2fd36a3`)**: `.replace(microsecond=0)` → clean timestamp `2026-08-01T04:14:15Z`.
 
-**Next step**: Restart Studio to pick up the microsecond fix, then re-run:
+**Next step**: Restart Studio to pick up the pagination fix, then re-run:
 ```bash
 PYTHONPATH="" lightning studio stop --name noble-trader-unified
 PYTHONPATH="" lightning studio start --name noble-trader-unified
 PYTHONPATH=src .venv/bin/python -m regime_platform.sweep_orchestrator.paper_retroclose --dry-run
+```
+
+### Post-Deploy Fix 3 (2026-08-15, commits `a4836d0` + `8e41c5c` + `fd9cb18`)
+
+After the microsecond fix was pushed and retried on Studio, still `400 Bad Request` — three more bugs found and fixed in sequence:
+
+1. **`or=(resolved_at.gte.timestamp, resolved_at.is.null)`** syntax returns 400 — PostgREST doesn't support mixing `gte.{timestamp}` and `is.null` in `or=()` on the same column (2026-08-15).
+2. **`limit=10000`** was ignored — PostgREST's server-side `max-rows` config caps at 1000 regardless of the `limit` parameter.
+3. **`nulls.last`** in `order=resolved_at.desc.nulls.last` returned 400 — PostgREST doesn't support this modifier in URL syntax.
+
+**Fixes**:
+- Split the single `or=()` query into **two separate queries** (resolved_at window + resolved_at IS NULL), results merged in Python.
+- Replaced `limit=10000` with proper **offset-based pagination**: `limit=1000&offset=N` loop until empty page.
+- Removed `.nulls.last` from all `order=` parameters.
+
+**Final Studio verification (dry-run)**:
+```
+GET nt_paper_positions?...&limit=1000&offset=0    → HTTP/1.1 200 OK
+GET nt_paper_positions?...&limit=1000&offset=1000  → HTTP/1.1 200 OK (pagination working)
+GET nt_signal_sim?...&limit=1000&offset=0          → HTTP/1.1 200 OK
+GET nt_signal_sim?...&limit=1000&offset=1000       → HTTP/1.1 200 OK
+GET nt_signal_sim?...&limit=1000&offset=2000       → HTTP/1.1 200 OK (more pages, then stops)
+scanned_open=1000+, resolved_match>0, closed=0 (dry-run)
+```
+
+**Studio apply verification**:
+```
+PATCH nt_paper_positions?position_id=eq.{UUID} → HTTP/1.1 204 No Content (✓ each)
+CLOSE EURUSD tp_hit pnl=0.2110
+CLOSE BTCUSD sl_hit pnl=-0.0019
+CLOSE GBPUSD tp_hit pnl=0.1804
+CLOSE USDCHF tp_hit pnl=1.4658
+(5+ positions successfully closed)
 ```
