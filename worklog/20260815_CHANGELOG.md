@@ -214,3 +214,24 @@ CLOSE GBPUSD tp_hit pnl=0.1804
 CLOSE USDCHF tp_hit pnl=1.4658
 (5+ positions successfully closed)
 ```
+
+### Post-Deploy Issue: Studio running stale code
+
+The Studio dry-run at `05:16:52` showed `limit=10000&offset=0` in the URLs — neither the old code (limit=10000, no offset) nor the new pagination code (limit=1000, offset=N). This indicates the Studio was **not restarted** after the pagination commit `fd9cb18` was pushed. Studio must be restarted again to pick up the offset pagination code.
+
+### Paper Book Health Monitor (added 2026-08-15)
+
+A new monitoring cron job was added to prevent silent regressions:
+
+**Script:** `noble-trader-fastapi-backend/scripts/monitor_paper_book.py`
+- Pure Python (stdlib + httpx, no apscheduler dep)
+- Checks: Supabase query health, open position count, closed count (24h), orphan count
+- Writes metrics to `data/paper_book_metrics.json`
+- Uses offset pagination (1000 rows/page) to fetch all positions/signals
+
+**Cron job:** `noble-trader-hermes-agent-profile/cron/jobs.json`
+- Schedule: `*/30 * * * *` (every 30 minutes)
+- Runs `monitor_paper_book.py` via the Hermes cron scheduler
+- Silent on success, reports to Discord on alert (orphan > 0, open > threshold, Supabase 400/500)
+
+**Tests:** `tests/test_monitor_paper_book.py` — 9 tests, all passing
