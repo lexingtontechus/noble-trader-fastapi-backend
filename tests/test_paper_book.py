@@ -142,11 +142,11 @@ class TestClosePassFetch:
         assert "resolved_at=gte." in url1, url1
         assert "outcome=in.(tp_hit,sl_hit,expired)" in url1
         assert "order=resolved_at.desc" in url1, url1
-        assert "limit=10000" in url1, "first query must use limit=10000 to bypass PostgREST 1000-row page cap"
+        assert "taken" not in url1, "non-existent 'taken' column in select"
+        # Must use offset= pagination to bypass PostgREST 1000-row cap
+        assert "offset=" in url1, url1
         # Must NOT use the old ts.desc&limit pattern
         assert "order=ts.desc" not in url1, url1
-        # Must NOT use limit= (the old broken pattern)
-        assert not any(f"limit={i}" in url1 for i in [2000, 200, 5000]), url1
         # Second query: IS NULL fallback
         url2 = captured_urls[1]
         assert "resolved_at=is.null" in url2, url2
@@ -174,6 +174,7 @@ class TestClosePassFetch:
         result = asyncio.run(pb._fetch_open_positions())
         assert result == []
         assert "select=position_id,signal_id,status,size_units" in captured["url"], captured["url"]
+        assert "offset=" in captured["url"], "must paginate to bypass PostgREST 1000-row cap"
 
     def test_reconcile_close_pass_uses_signal_id_batch_lookup(self, monkeypatch):
         """reconcile() close pass must iterate open positions and batch-lookup

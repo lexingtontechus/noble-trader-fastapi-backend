@@ -200,27 +200,44 @@ async def _fetch_qualified_without_position(limit: int = 2000) -> list[dict[str,
     L6: default raised 200 → 2000 — the open pass was capped at 200 rows
     per reconcile run while the capture rate is ~3,200 signals/day, so the
     book could starve (old qualified signals never opened). ``order=ts.asc``
-    keeps the pass FIFO (open oldest first).
+    keeps the pass FIFO (open oldest first). Paginates at 1000 rows to
+    bypass PostgREST's server-side max-rows cap.
     """
+    page_size = 1000
+    max_pages = (limit // page_size) + 1
     try:
         from regime_platform.core.settings import settings
         import httpx
-        url = (
-            f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
-            "?select=signal_id,symbol,venue,signal,entry_price,stop_loss,"
-            "take_profit,kelly_f,effective_kelly,ts,source,qualified"
-            "&qualified=eq.true&outcome=is.null&order=ts.asc"
-            f"&limit={int(limit)}"
-        )
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            rows = resp.json()
-            return rows if isinstance(rows, list) else []
+        select_cols = (
+            "signal_id,symbol,venue,signal,entry_price,stop_loss,"
+            "take_profit,kelly_f,effective_kelly,ts,source,qualified"
+        )
+        all_rows: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for page_no in range(max_pages):
+                offset = page_no * page_size
+                remaining = limit - offset
+                page_limit = min(page_size, remaining)
+                if page_limit <= 0:
+                    break
+                url = (
+                    f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                    f"?select={select_cols}"
+                    "&qualified=eq.true&outcome=is.null&order=ts.asc"
+                    f"&limit={page_limit}&offset={offset}"
+                )
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                page = resp.json()
+                page = page if isinstance(page, list) else []
+                all_rows.extend(page)
+                if len(page) < page_limit:
+                    break
+        return all_rows
     except Exception as exc:
         logger.warning("paper_book: fetch qualified failed: %s", exc)
         return []
@@ -232,25 +249,37 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
     NOTE: ``size_units`` is required by the close pass — the realized PnL
     formula is ``pnl_bricks × brick_size × size_units``; without it every
     close would book $0 (2026-08-08 fix).
+
+    Paginates with offset=1000 to bypass PostgREST's 1000-row page cap.
     """
     try:
         from regime_platform.core.settings import settings
         import httpx
-        url = (
-            f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
-            "?select=position_id,signal_id,status,size_units,open_ts"
-            "&status=eq.open&order=open_ts.asc"
-            "&limit=10000"
-        )
+        PAGE_SIZE = 1000
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            rows = resp.json()
-            return rows if isinstance(rows, list) else []
+        base_select = "?select=position_id,signal_id,status,size_units,open_ts"
+        all_rows: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            offset = 0
+            while True:
+                url = (
+                    f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
+                    f"{base_select}"
+                    f"&status=eq.open&order=open_ts.asc"
+                    f"&limit={PAGE_SIZE}&offset={offset}"
+                )
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                page = resp.json()
+                page = page if isinstance(page, list) else []
+                all_rows.extend(page)
+                if len(page) < PAGE_SIZE:
+                    break
+                offset += PAGE_SIZE
+        return all_rows
     except Exception as exc:
         logger.warning("paper_book: fetch open positions failed: %s", exc)
         return []
@@ -291,44 +320,58 @@ async def _fetch_resolved_signals(
             "signal_id,symbol,outcome,exit_price,hold_bars,"
             "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
         )
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        PAGE_SIZE = 1000  # PostgREST server-side max-rows cap
+        all_rows: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=60.0) as client:
             # Step 1: signals with resolved_at set (Python EOD resolver)
-            url1 = (
-                f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
-                f"?select={select_cols}"
-                "&outcome=in.(tp_hit,sl_hit,expired)"
-                f"&resolved_at=gte.{cutoff_encoded}"
-                "&order=resolved_at.desc"
-                "&limit=10000"
-            )
-            resp1 = await client.get(url1, headers=headers)
-            resp1.raise_for_status()
-            rows1 = resp1.json() if resp1.is_success else []
+            rows1: list[dict[str, Any]] = []
+            offset = 0
+            while True:
+                url1 = (
+                    f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                    f"?select={select_cols}"
+                    "&outcome=in.(tp_hit,sl_hit,expired)"
+                    f"&resolved_at=gte.{cutoff_encoded}"
+                    "&order=resolved_at.desc"
+                    f"&limit={PAGE_SIZE}&offset={offset}"
+                )
+                resp1 = await client.get(url1, headers=headers)
+                resp1.raise_for_status()
+                page = resp1.json() if resp1.is_success else []
+                page = page if isinstance(page, list) else []
+                rows1.extend(page)
+                if len(page) < PAGE_SIZE:
+                    break
+                offset += PAGE_SIZE
 
             # Step 2: signals with resolved_at IS NULL but outcome set (old edge function resolver)
-            url2 = (
-                f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
-                f"?select={select_cols}"
-                "&outcome=in.(tp_hit,sl_hit,expired)"
-                "&resolved_at=is.null"
-                "&order=ts.desc"
-                "&limit=10000"
-            )
-            resp2 = await client.get(url2, headers=headers)
-            resp2.raise_for_status()
-            rows2 = resp2.json() if resp2.is_success else []
+            rows2: list[dict[str, Any]] = []
+            offset = 0
+            while True:
+                url2 = (
+                    f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                    f"?select={select_cols}"
+                    "&outcome=in.(tp_hit,sl_hit,expired)"
+                    "&resolved_at=is.null"
+                    "&order=ts.desc"
+                    f"&limit={PAGE_SIZE}&offset={offset}"
+                )
+                resp2 = await client.get(url2, headers=headers)
+                resp2.raise_for_status()
+                page = resp2.json() if resp2.is_success else []
+                page = page if isinstance(page, list) else []
+                rows2.extend(page)
+                if len(page) < PAGE_SIZE:
+                    break
+                offset += PAGE_SIZE
 
-            rows = (rows1 if isinstance(rows1, list) else []) + (
-                rows2 if isinstance(rows2, list) else []
-            )
+            all_rows = rows1 + rows2
             logger.info(
                 "paper_book: _fetch_resolved_signals fetched %d resolved signals "
                 "(window: %d, resolved_at IS NULL: %d)",
-                len(rows),
-                len(rows1) if isinstance(rows1, list) else 0,
-                len(rows2) if isinstance(rows2, list) else 0,
+                len(all_rows), len(rows1), len(rows2),
             )
-            return rows
+            return all_rows
     except Exception as exc:
         logger.warning("paper_book: fetch resolved failed: %s", exc)
         return []
