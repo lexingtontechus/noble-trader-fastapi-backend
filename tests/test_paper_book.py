@@ -136,6 +136,7 @@ class TestClosePassFetch:
         assert "resolved_at=gte." in captured["url"], captured["url"]
         assert "outcome=in.(tp_hit,sl_hit,expired)" in captured["url"]
         assert "order=resolved_at.desc" in captured["url"], captured["url"]
+        assert "taken" not in captured["url"], "non-existent 'taken' column in select"
         # Must NOT use the old ts.desc&limit pattern
         assert "order=ts.desc" not in captured["url"], captured["url"]
         assert "limit=" not in captured["url"], captured["url"]

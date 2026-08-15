@@ -239,7 +239,7 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
             "?select=position_id,signal_id,status,size_units,open_ts"
-            "&status=eq.open&order=open_ts.asc&limit=2000"
+            "&status=eq.open&order=open_ts.asc"
         )
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -281,11 +281,14 @@ async def _fetch_resolved_signals(
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=resolved_window_days)
         ).isoformat()
+        # URL-encode the cutoff: replace +00:00 with Z to avoid the + being
+        # interpreted as a space in the query string (PostgREST 400 Bad Request).
+        cutoff_encoded = cutoff.replace("+00:00", "Z")
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
             "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
-            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at,taken"
-            f"&outcome=in.(tp_hit,sl_hit,expired)&resolved_at=gte.{cutoff}"
+            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
+            f"&outcome=in.(tp_hit,sl_hit,expired)&resolved_at=gte.{cutoff_encoded}"
             "&order=resolved_at.desc"
         )
         headers = {
