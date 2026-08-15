@@ -110,20 +110,36 @@ never reaches 9-day-old signals.
 ### Build Complete — Verification Evidence (2026-08-15)
 
 **Files modified:**
+- `regime_platform/sweep_orchestrator/__init__.py` — lazy import `__getattr__` for `SweepOrchestrator` so standalone tools don't need `apscheduler` installed
 - `regime_platform/sweep_orchestrator/paper_book.py` — `_fetch_resolved_signals()` rewritten, close pass rewritten, `PAPER_OPEN_MAX_AGE_DAYS` 30→7
 - `regime_platform/sweep_orchestrator/paper_retroclose.py` — updated to use new `_fetch_resolved_signals(resolved_window_days=14)` signature
 - `tests/test_paper_book.py` — 2 tests updated, all 13 tests pass
+- `docs/scopes/M4_OPEN_POSITION_ORPHAN_FIX.md` — scope doc (new file, tracked)
+- `worklog/20260815_CHANGELOG.md` — this changelog (new file, tracked)
 
 **Test results:**
 ```
-tests/test_paper_book.py: 13 passed in 39.73s
+tests/test_paper_book.py: 13 passed
+tests/test_eod_lookback_wiring.py: 12 passed
+tests/test_realtime_publisher.py: 23 passed
 Full suite: 401 passed, 23 skipped in 118.87s
 paper_book.py: syntax OK
 paper_retroclose.py: syntax OK
+__init__.py: lazy import verified — paper_retroclose imports without apscheduler
 ```
 
 **Manual steps required:**
-1. Run `paper_retroclose.py --dry-run` then `--apply` to close the 912-position backlog
-2. Restart LightningAI studio (boot line + logs) to deploy the new code
-3. Monitor next EOD lookback run for `closed=912` (should drop from `closed=0`)
+1. Run `paper_retroclose.py` to close the 912-position backlog (run from repo root `~/noble-trader/`):
+   ```bash
+   PYTHONPATH=src .venv/bin/python -m regime_platform.sweep_orchestrator.paper_retroclose --dry-run
+   PYTHONPATH=src .venv/bin/python -m regime_platform.sweep_orchestrator.paper_retroclose --apply
+   ```
+   Note: `.venv/bin/python` (Linux path), NOT `.venv/Scripts/python.exe` (Windows path).
+2. Restart LightningAI studio to deploy the code:
+   ```bash
+   PYTHONPATH="" lightning studio stop --name noble-trader-unified
+   PYTHONPATH="" lightning studio start --name noble-trader-unified
+   ```
+3. Monitor next EOD lookback run (00:30 UTC) for `closed=912` (should drop from `closed=0`)
 4. Verify `v_talaria_portfolio_stats` shows ~1000 trades (up from 93)
+5. Verify `nt_paper_positions` open count drops 912 → near 0
