@@ -135,11 +135,27 @@ __init__.py: lazy import verified — paper_retroclose imports without apschedul
    PYTHONPATH=src .venv/bin/python -m regime_platform.sweep_orchestrator.paper_retroclose --apply
    ```
    Note: `.venv/bin/python` (Linux path), NOT `.venv/Scripts/python.exe` (Windows path).
+
 2. Restart LightningAI studio to deploy the code:
    ```bash
    PYTHONPATH="" lightning studio stop --name noble-trader-unified
    PYTHONPATH="" lightning studio start --name noble-trader-unified
    ```
+
 3. Monitor next EOD lookback run (00:30 UTC) for `closed=912` (should drop from `closed=0`)
 4. Verify `v_talaria_portfolio_stats` shows ~1000 trades (up from 93)
 5. Verify `nt_paper_positions` open count drops 912 → near 0
+
+---
+
+### Post-Deploy Fix (2026-08-15, commit `9cdfc27`)
+
+After the initial build was deployed and the retroclose was run on Studio, a `400 Bad Request` was returned on the `nt_signal_sim` query. Two additional bugs were found and fixed:
+
+1. **URL encoding**: The `resolved_at=gte.{cutoff}` filter used an ISO timestamp containing `+00:00`. The `+` character was decoded as a space in the URL query string, producing a malformed filter value. **Fix**: Replace `+00:00` with `Z` (ISO 8601 UTC indicator) before placing in the URL.
+
+2. **Non-existent column**: The select list included `taken` — a column that does not exist in the `nt_signal_sim` schema (migration 102). PostgREST returns 400 for queries referencing unknown columns. **Fix**: Removed `taken` from the select list.
+
+3. **Position fetch cap**: `_fetch_open_positions()` had `limit=2000` but PostgREST's default page size is 1000, so only 1000 rows were returned. **Fix**: Removed the `limit` parameter entirely — PostgREST returns all matching rows across pages.
+
+**Committed and pushed.** Commit `9cdfc27` pushed to `main` — `git push origin main` completed 2026-08-15.
