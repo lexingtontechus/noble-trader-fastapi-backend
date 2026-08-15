@@ -135,6 +135,14 @@ class TestClosePassFetch:
         assert result == []
         assert "resolved_at.gte." in captured["url"], captured["url"]
         assert "or=(resolved_at.gte." in captured["url"], "must include resolved_at IS NULL fallback for old-style resolved signals"
+        # Microseconds in timestamp contain '.' which conflicts with PostgREST
+        # column.operator.value dot-delimiter syntax — must be stripped.
+        # The timestamp value is between 'gte.' and the closing ')' of the or clause.
+        import re
+        ts_match = re.search(r'resolved_at\.gte\.([^,)&]+)', captured["url"])
+        assert ts_match is not None, "could not extract timestamp from URL"
+        ts_value = ts_match.group(1)
+        assert "." not in ts_value, f"timestamp {ts_value} must not contain microsecond dots"
         assert "outcome=in.(tp_hit,sl_hit,expired)" in captured["url"]
         assert "order=resolved_at.desc" in captured["url"], captured["url"]
         assert "taken" not in captured["url"], "non-existent 'taken' column in select"

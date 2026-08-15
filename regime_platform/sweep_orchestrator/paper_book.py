@@ -280,9 +280,11 @@ async def _fetch_resolved_signals(
         import httpx
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=resolved_window_days)
-        ).isoformat()
+        ).replace(microsecond=0).isoformat()
         # URL-encode the cutoff: replace +00:00 with Z to avoid the + being
         # interpreted as a space in the query string (PostgREST 400 Bad Request).
+        # Also strip microseconds — the '.' in microsecond fractions conflicts
+        # with PostgREST's column.operator.value dot-delimiter syntax.
         cutoff_encoded = cutoff.replace("+00:00", "Z")
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
