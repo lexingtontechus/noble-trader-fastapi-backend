@@ -27,7 +27,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +64,7 @@ async def _fetch_count(url: str, headers: dict[str, str]) -> tuple[int, int]:
     hdrs["Prefer"] = "count=exact"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, headers=hdrs)
-        count_str = resp.headers.get("X-Total-Count", "0")
+        count_str = resp.headers.get("X-Total-Count", "0") or "0"
         count = int(count_str) if count_str.isdigit() else 0
         return resp.status_code, count
 
@@ -231,13 +231,15 @@ async def check_paper_book_health(
 
 def format_alert(metrics: dict[str, Any]) -> str:
     """Format metrics into a Discord alert block (or stdout summary)."""
+    icon = "\u2705" if metrics["supabase_ok"] else "\u274c"
+    status = "healthy" if metrics["supabase_ok"] else "FAILED"
     lines = [
-        f"**Paper Book Health Check** — {metrics['timestamp']}",
+        f"**Paper Book Health Check** \u2014 {metrics['timestamp']}",
         "",
-        f"✅ Supabase: {'healthy' if metrics['supabase_ok'] else 'FAILED'}",
-        f"📊 Open positions: {metrics['open_positions']}",
-        f"📈 Closed (24h): {metrics['closed_24h']}",
-        f"⚠️  Orphan count: {metrics['orphan_count']}",
+        f"{icon} Supabase: {status}",
+        f"\U0001f4ca Open positions: {metrics['open_positions']}",
+        f"\U0001f4c8 Closed (24h): {metrics['closed_24h']}",
+        f"\u26a0\ufe0f  Orphan count: {metrics['orphan_count']}",
         f"   (open signal_ids: {metrics.get('open_signal_ids', 'N/A')}",
         f"   resolved signal_ids: {metrics.get('resolved_signal_ids', 'N/A')})",
     ]
@@ -248,13 +250,19 @@ def format_alert(metrics: dict[str, Any]) -> str:
             lines.append(f"- {alert}")
     else:
         lines.append("")
-        lines.append("✅ All metrics within thresholds.")
+        lines.append("\u2705 All metrics within thresholds.")
     return "\n".join(lines)
+
+
+async def _send_discord(webhook: str, message: str) -> None:
+    import httpx
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.post(webhook, json={"content": message})
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Monitor paper book health — counts open/closed positions, detects orphans."
+        description="Monitor paper book health \u2014 counts open/closed positions, detects orphans."
     )
     parser.add_argument(
         "--open-threshold",
@@ -287,19 +295,12 @@ async def main() -> int:
         webhook = os.environ.get("MONITOR_DISCORD_WEBHOOK", "[REDACTED]")
         if webhook and webhook != "[REDACTED]":
             try:
-                import httpx
-                asyncio.run(_send_discord(webhook, report))
+                await _send_discord(webhook, report)
             except Exception as exc:
                 logger.warning("Discord webhook send failed: %s", exc)
         if not args.check:
             return 1
     return 0
-
-
-async def _send_discord(webhook: str, message: str) -> None:
-    import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.post(webhook, json={"content": message})
 
 
 if __name__ == "__main__":
