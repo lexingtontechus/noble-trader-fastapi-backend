@@ -288,8 +288,9 @@ async def _fetch_resolved_signals(
             f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
             "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
             "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
-            f"&outcome=in.(tp_hit,sl_hit,expired)&resolved_at=gte.{cutoff_encoded}"
-            "&order=resolved_at.desc"
+            "&outcome=in.(tp_hit,sl_hit,expired)"
+            f"&or=(resolved_at.gte.{cutoff_encoded},resolved_at.is.null)"
+            "&order=resolved_at.desc.nulls.last"
         )
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -299,6 +300,12 @@ async def _fetch_resolved_signals(
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             rows = resp.json()
+            logger.info(
+                "paper_book: _fetch_resolved_signals fetched %d resolved signals "
+                "(resolved_at >= %s OR NULL, outcome in tp/sl/expired)",
+                len(rows) if isinstance(rows, list) else 0,
+                cutoff_encoded,
+            )
             return rows if isinstance(rows, list) else []
     except Exception as exc:
         logger.warning("paper_book: fetch resolved failed: %s", exc)

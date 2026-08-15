@@ -133,7 +133,8 @@ class TestClosePassFetch:
         import asyncio
         result = asyncio.run(pb._fetch_resolved_signals(resolved_window_days=14))
         assert result == []
-        assert "resolved_at=gte." in captured["url"], captured["url"]
+        assert "resolved_at.gte." in captured["url"], captured["url"]
+        assert "or=(resolved_at.gte." in captured["url"], "must include resolved_at IS NULL fallback for old-style resolved signals"
         assert "outcome=in.(tp_hit,sl_hit,expired)" in captured["url"]
         assert "order=resolved_at.desc" in captured["url"], captured["url"]
         assert "taken" not in captured["url"], "non-existent 'taken' column in select"

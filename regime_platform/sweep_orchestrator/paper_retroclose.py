@@ -51,6 +51,18 @@ async def retro_close(dry_run: bool = True) -> dict[str, Any]:
 
     summary["scanned_open"] = len(open_positions)
     resolved_by_sid = {r.get("signal_id"): r for r in resolved if r.get("signal_id")}
+    logger.info(
+        "retroclose: fetched %d resolved signals with signal_ids",
+        len(resolved_by_sid),
+    )
+    # Debug: show overlap
+    open_sids = {p.get("signal_id") for p in open_positions if p.get("signal_id")}
+    overlap = open_sids & set(resolved_by_sid.keys())
+    logger.info(
+        "retroclose: %d open positions with signal_id, %d resolved signals, "
+        "%d overlapping signal_ids",
+        len(open_sids), len(resolved_by_sid), len(overlap),
+    )
 
     for pos in open_positions:
         sid = pos.get("signal_id")
