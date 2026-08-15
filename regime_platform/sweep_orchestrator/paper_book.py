@@ -275,40 +275,77 @@ async def _fetch_resolved_signals(
     7-day retention expiry, so it always finds every resolvable signal
     before retention prunes it.
     """
+async def _fetch_resolved_signals(
+    resolved_window_days: float = 14,
+) -> list[dict[str, Any]]:
+    """Resolved nt_signal_sim rows (outcome set) for the close pass.
+
+    Replaces the old ``order=ts.desc&limit=2000`` approach which only saw
+    the newest 2000 resolved-by-generation-time rows — at ~3,200 signals/day
+    that was only ~12–15 hours of history, so positions opened >1 day ago
+    with resolved signals were never matched → ``closed=0`` (the M4 orphan
+    bug, 2026-08-15).
+
+    Two-step fetch: first try the ``resolved_at`` window (signals resolved
+    by the Python EOD resolver, migration 102+), then separately fetch
+    signals where ``resolved_at IS NULL`` but outcome is set (signals
+    resolved by the old edge-function path, pre-migration 102). The results
+    are merged.
+
+    This avoids PostgREST's ``or=()`` syntax which returns 400 when mixing
+    ``gte.{timestamp}`` and ``is.null`` on the same column (observed 2026-08-15).
+    """
     try:
         from regime_platform.core.settings import settings
         import httpx
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=resolved_window_days)
         ).replace(microsecond=0).isoformat()
-        # URL-encode the cutoff: replace +00:00 with Z to avoid the + being
-        # interpreted as a space in the query string (PostgREST 400 Bad Request).
-        # Also strip microseconds — the '.' in microsecond fractions conflicts
-        # with PostgREST's column.operator.value dot-delimiter syntax.
         cutoff_encoded = cutoff.replace("+00:00", "Z")
-        url = (
-            f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
-            "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
-            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
-            "&outcome=in.(tp_hit,sl_hit,expired)"
-            f"&or=(resolved_at.gte.{cutoff_encoded},resolved_at.is.null)"
-            "&order=resolved_at.desc.nulls.last"
-        )
         headers = {
             "apikey": settings.SUPABASE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_KEY}",
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            rows = resp.json()
+        select_cols = (
+            "signal_id,symbol,outcome,exit_price,hold_bars,"
+            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # Step 1: signals with resolved_at set (Python EOD resolver)
+            url1 = (
+                f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                f"?select={select_cols}"
+                "&outcome=in.(tp_hit,sl_hit,expired)"
+                f"&resolved_at=gte.{cutoff_encoded}"
+                "&order=resolved_at.desc.nulls.last"
+            )
+            resp1 = await client.get(url1, headers=headers)
+            resp1.raise_for_status()
+            rows1 = resp1.json() if resp1.is_success else []
+
+            # Step 2: signals with resolved_at IS NULL but outcome set (old edge function resolver)
+            url2 = (
+                f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                f"?select={select_cols}"
+                "&outcome=in.(tp_hit,sl_hit,expired)"
+                "&resolved_at=is.null"
+                "&order=ts.desc"
+            )
+            resp2 = await client.get(url2, headers=headers)
+            resp2.raise_for_status()
+            rows2 = resp2.json() if resp2.is_success else []
+
+            rows = (rows1 if isinstance(rows1, list) else []) + (
+                rows2 if isinstance(rows2, list) else []
+            )
             logger.info(
                 "paper_book: _fetch_resolved_signals fetched %d resolved signals "
-                "(resolved_at >= %s OR NULL, outcome in tp/sl/expired)",
-                len(rows) if isinstance(rows, list) else 0,
-                cutoff_encoded,
+                "(window: %d, resolved_at IS NULL: %d)",
+                len(rows),
+                len(rows1) if isinstance(rows1, list) else 0,
+                len(rows2) if isinstance(rows2, list) else 0,
             )
-            return rows if isinstance(rows, list) else []
+            return rows
     except Exception as exc:
         logger.warning("paper_book: fetch resolved failed: %s", exc)
         return []

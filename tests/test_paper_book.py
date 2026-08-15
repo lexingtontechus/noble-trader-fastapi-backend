@@ -111,44 +111,45 @@ class TestClosePassFetch:
     def test_resolved_signals_uses_resolved_at_window(self, monkeypatch):
         """Close pass must fetch resolved signals filtered on resolved_at=gte.{cutoff}
         — NOT order=ts.desc&limit=2000 which only saw the newest 2000 rows
-        and missed 9-day-old resolved signals (M4 orphan bug)."""
+        and missed 9-day-old resolved signals (M4 orphan bug).
+
+        Uses two separate queries (resolved_at window + resolved_at IS NULL)
+        to avoid PostgREST or=() syntax bugs with mixed operators."""
         import httpx
         import regime_platform.sweep_orchestrator.paper_book as pb
         self._fake_settings(monkeypatch)
 
-        captured = {}
+        captured_urls = []
         class FakeResp:
             def raise_for_status(self): pass
             def json(self): return []
+            @property
+            def is_success(self): return True
         class FakeClient:
             def __init__(self, *a, **k): pass
             async def __aenter__(self): return self
             async def __aexit__(self, *a): return False
             async def get(self, url, headers=None, params=None):
-                captured["url"] = url
-                captured["params"] = str(params) if params else ""
+                captured_urls.append(url)
                 return FakeResp()
 
         monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
         import asyncio
         result = asyncio.run(pb._fetch_resolved_signals(resolved_window_days=14))
         assert result == []
-        assert "resolved_at.gte." in captured["url"], captured["url"]
-        assert "or=(resolved_at.gte." in captured["url"], "must include resolved_at IS NULL fallback for old-style resolved signals"
-        # Microseconds in timestamp contain '.' which conflicts with PostgREST
-        # column.operator.value dot-delimiter syntax — must be stripped.
-        # The timestamp value is between 'gte.' and the closing ')' of the or clause.
-        import re
-        ts_match = re.search(r'resolved_at\.gte\.([^,)&]+)', captured["url"])
-        assert ts_match is not None, "could not extract timestamp from URL"
-        ts_value = ts_match.group(1)
-        assert "." not in ts_value, f"timestamp {ts_value} must not contain microsecond dots"
-        assert "outcome=in.(tp_hit,sl_hit,expired)" in captured["url"]
-        assert "order=resolved_at.desc" in captured["url"], captured["url"]
-        assert "taken" not in captured["url"], "non-existent 'taken' column in select"
+        assert len(captured_urls) >= 2, f"expected 2 queries (resolved_at window + IS NULL), got {len(captured_urls)}"
+        url1 = captured_urls[0]
+        assert "resolved_at=gte." in url1, url1
+        assert "outcome=in.(tp_hit,sl_hit,expired)" in url1
+        assert "order=resolved_at.desc" in url1, url1
+        assert "taken" not in url1, "non-existent 'taken' column in select"
         # Must NOT use the old ts.desc&limit pattern
-        assert "order=ts.desc" not in captured["url"], captured["url"]
-        assert "limit=" not in captured["url"], captured["url"]
+        assert "order=ts.desc" not in url1, url1
+        # Must NOT use limit= (the old broken pattern)
+        assert not any(f"limit={i}" in url1 for i in [2000, 200, 5000]), url1
+        # Second query: IS NULL fallback
+        url2 = captured_urls[1]
+        assert "resolved_at=is.null" in url2, url2
 
     def test_open_positions_selects_size_units(self, monkeypatch):
         """Close pass needs size_units from the position row or PnL = $0."""
