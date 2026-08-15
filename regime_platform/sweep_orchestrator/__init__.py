@@ -15,8 +15,22 @@ Key differences from the old Deno edge functions:
   • Stale-symbol tracking built into the orchestrator loop — no separate
     retry-stale-symbols cron job needed
   • Native Redis protocol via redis-py instead of Upstash REST API
+
+Lazy import: ``SweepOrchestrator`` is only imported on first access, so
+standalone tools in this package (e.g. ``paper_retroclose``) don't need
+apscheduler installed to run.
 """
 
-from .orchestrator import SweepOrchestrator
-
 __all__ = ["SweepOrchestrator"]
+
+
+def __getattr__(name: str):
+    """Lazy-import ``SweepOrchestrator`` so importing submodules (e.g.
+    ``paper_retroclose``) doesn't pull in apscheduler unless actually needed."""
+    if name == "SweepOrchestrator":
+        from .orchestrator import SweepOrchestrator as _cls
+        import sys
+        # Cache it on the module so subsequent imports skip __getattr__
+        sys.modules[__name__].__dict__[name] = _cls
+        return _cls
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

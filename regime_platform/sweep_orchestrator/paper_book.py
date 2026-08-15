@@ -43,7 +43,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("regime.sweep.paper_book")
@@ -56,7 +56,7 @@ MAX_FRACTION = 0.20  # hard cap: max 20% of base notional per position
 # resolves (or whose resolved row was deleted) would otherwise sit open
 # forever. After PAPER_OPEN_MAX_AGE_DAYS the close pass force-expires it
 # with $0 PnL (the signal outcome convention for a timeout).
-PAPER_OPEN_MAX_AGE_DAYS = float(os.environ.get("NOBLE_PAPER_OPEN_MAX_AGE_DAYS", "30"))
+PAPER_OPEN_MAX_AGE_DAYS = float(os.environ.get("NOBLE_PAPER_OPEN_MAX_AGE_DAYS", "7"))
 
 PAPER_POSITION_COLUMNS: frozenset[str] = frozenset({
     "position_id", "signal_id", "symbol", "venue", "direction",
@@ -255,25 +255,38 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
         return []
 
 
-async def _fetch_resolved_signals(limit: int = 2000) -> list[dict[str, Any]]:
+async def _fetch_resolved_signals(
+    resolved_window_days: float = 14,
+) -> list[dict[str, Any]]:
     """Resolved nt_signal_sim rows (outcome set) for the close pass.
 
-    Ordered ``ts.desc`` (NEWEST first) and with a generous limit — the OLD
-    implementation was ``order=ts.asc&limit=200`` which only ever examined
-    the 200 OLDEST resolved signals; everything resolved later (including
-    the rows whose paper positions were waiting to close) was never fetched
-    → ``closed=0`` on every reconcile run (2026-08-08 fix, confirmed in the
-    orchestrator log: daily "reconcile done — opened=.. closed=0").
+    Fetches ALL signals resolved within the last ``resolved_window_days``
+    days, ordered by ``resolved_at.desc``. This replaces the old
+    ``order=ts.desc&limit=2000`` approach which only saw the newest 2000
+    resolved-by-generation-time rows — at ~3,200 signals/day that was only
+    ~12–15 hours of history, so positions opened >1 day ago with resolved
+    signals were never matched → ``closed=0`` (the M4 orphan bug, 2026-08-15).
+
+    Filtering on ``resolved_at`` (the timestamp the EOD resolver writes when
+    it sets the outcome) guarantees every signal that *could* close an open
+    position is in scope, regardless of when it was originally generated.
+
+    The default 14-day window covers two full EOD lookback cycles and the
+    7-day retention expiry, so it always finds every resolvable signal
+    before retention prunes it.
     """
     try:
         from regime_platform.core.settings import settings
         import httpx
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=resolved_window_days)
+        ).isoformat()
         url = (
             f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
             "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
-            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
-            "&outcome=in.(tp_hit,sl_hit,expired)&order=ts.desc"
-            f"&limit={int(limit)}"
+            "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at,taken"
+            f"&outcome=in.(tp_hit,sl_hit,expired)&resolved_at=gte.{cutoff}"
+            "&order=resolved_at.desc"
         )
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -414,14 +427,25 @@ def _signal_epoch_ts(sig: dict[str, Any]) -> float:
     return time.time()
 
 
-async def reconcile(limit: int = 2000, close_limit: int = 2000) -> dict[str, Any]:
+async def reconcile(
+    limit: int = 2000,
+    close_limit: int = 2000,
+    resolved_window_days: float = 14,
+) -> dict[str, Any]:
     """Idempotent open+close pass over the paper book.
 
-    1. Open: qualified signals (outcome IS NULL) without a position.
-    2. Close: resolved signals (outcome set) whose position is still open.
+    1. **Open pass**: qualified signals (outcome IS NULL) without a position.
+    2. **Close pass**: iterates OPEN positions and batch-looks-up their signals
+       by ``signal_id`` to find resolved ones (outcome set) — correct regardless
+       of signal age (fixes the M4 orphan bug where the old
+       ``ts.desc&limit=2000`` window missed 9-day-old resolved signals).
 
     ``limit`` bounds the OPEN pass (qualified signals to open) while
-    ``close_limit`` bounds the CLOSE pass (resolved signals to examine).
+    ``close_limit`` is **deprecated** (kept for backward compat with the
+    orchestrator call at line 1098: ``reconcile()`` — it is no longer used by
+    the close pass, which instead uses ``resolved_window_days`` to filter the
+    batch signal lookup).
+
     They were previously the same value — the close pass inherited the
     open-pass 200 and only ever saw the 200 oldest resolved signals
     (2026-08-08 fix). L6: open default raised to 2000 so the open pass
@@ -449,17 +473,53 @@ async def reconcile(limit: int = 2000, close_limit: int = 2000) -> dict[str, Any
         logger.warning("paper_book: open pass failed: %s", exc)
 
     # ── Close pass ───────────────────────────────────────────────────
+    # Iterate OPEN positions and batch-lookup their signals by signal_id.
+    # This is correct regardless of how old the signal is — the old approach
+    # (iterating newest-2000 resolved signals ordered ts.desc) missed positions
+    # whose signals were older than the fetch window (M4 orphan bug, 2026-08-15).
     try:
-        resolved = await _fetch_resolved_signals(close_limit)
         open_positions = await _fetch_open_positions()
-        pos_by_signal: dict[str, dict[str, Any]] = {}
-        for p in open_positions:
-            pos_by_signal[p.get("signal_id")] = p
-        for sig in resolved:
-            sid = sig.get("signal_id")
-            pos = pos_by_signal.get(sid)
-            if not pos:
-                continue  # no open position for this signal
+        open_signal_ids = [
+            p.get("signal_id") for p in open_positions
+            if p.get("signal_id")
+        ]
+        sig_by_id: dict[str, dict[str, Any]] = {}
+        if open_signal_ids:
+            # PostgREST in. filter: chunk at 500 UUIDs per request to stay
+            # well under the URL-length and gateway limits (observed 400
+            # on ~1000-UUID not.in payloads in eod_retention 2026-08-13).
+            from regime_platform.core.settings import settings
+            import httpx
+            sig_url = (
+                f"{settings.SUPABASE_URL}/rest/v1/nt_signal_sim"
+                "?select=signal_id,symbol,outcome,exit_price,hold_bars,"
+                "pnl_bricks,pnl_dollars,brick_size,sl_bricks,resolved_at"
+                "&outcome=in.(tp_hit,sl_hit,expired)"
+            )
+            headers = {
+                "apikey": settings.SUPABASE_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                for i in range(0, len(open_signal_ids), 500):
+                    chunk = open_signal_ids[i : i + 500]
+                    in_filter = ",".join(str(sid) for sid in chunk)
+                    params = {"signal_id": f"in.({in_filter})"}
+                    resp = await client.get(sig_url, headers=headers, params=params)
+                    resp.raise_for_status()
+                    rows = resp.json()
+                    if isinstance(rows, list):
+                        for r in rows:
+                            sid = r.get("signal_id")
+                            if sid:
+                                sig_by_id[str(sid)] = r
+                    # Continue to next chunk (no break) — up to 912 open positions
+                    # means 2 chunks of 500 each.
+        for pos in open_positions:
+            sid = pos.get("signal_id")
+            sig = sig_by_id.get(sid)
+            if not sig:
+                continue  # signal not resolved yet, or not found — leave open
             try:
                 if await close_position(
                     sig, pos.get("position_id"),

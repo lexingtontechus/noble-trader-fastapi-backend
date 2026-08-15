@@ -29,11 +29,21 @@ from regime_platform.sweep_orchestrator.paper_book import (  # noqa: E402
 
 
 async def retro_close(dry_run: bool = True) -> dict[str, Any]:
-    """Close open positions whose signal is resolved. Dry-run by default."""
-    summary: dict[str, Any] = {"scanned_open": 0, "resolved_match": 0, "closed": 0, "skipped_no_size": 0, "errors": 0}
+    """Close open positions whose signal is resolved. Dry-run by default.
+
+    Uses the new ``resolved_window_days`` parameter (14 days) instead of the
+    old ``limit`` parameter — the fix for the M4 orphan bug (2026-08-15).
+    """
+    summary: dict[str, Any] = {
+        "scanned_open": 0, "resolved_match": 0, "closed": 0,
+        "skipped_no_size": 0, "errors": 0,
+    }
     try:
         open_positions = await _fetch_open_positions()
-        resolved = await _fetch_resolved_signals(limit=5000)
+        # Fetch resolved signals by resolved_at window (14 days) instead of
+        # the old limit=5000 + ts.desc ordering — ensures all resolved
+        # signals for the 912-position backlog are found regardless of age.
+        resolved = await _fetch_resolved_signals(resolved_window_days=14)
     except Exception as exc:
         logger.error("retroclose: fetch failed: %s", exc)
         summary["errors"] += 1
