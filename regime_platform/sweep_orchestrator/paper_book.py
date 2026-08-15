@@ -240,6 +240,7 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
             f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
             "?select=position_id,signal_id,status,size_units,open_ts"
             "&status=eq.open&order=open_ts.asc"
+            "&limit=10000"
         )
         headers = {
             "apikey": settings.SUPABASE_KEY,
@@ -298,6 +299,7 @@ async def _fetch_resolved_signals(
                 "&outcome=in.(tp_hit,sl_hit,expired)"
                 f"&resolved_at=gte.{cutoff_encoded}"
                 "&order=resolved_at.desc"
+                "&limit=10000"
             )
             resp1 = await client.get(url1, headers=headers)
             resp1.raise_for_status()
@@ -310,6 +312,7 @@ async def _fetch_resolved_signals(
                 "&outcome=in.(tp_hit,sl_hit,expired)"
                 "&resolved_at=is.null"
                 "&order=ts.desc"
+                "&limit=10000"
             )
             resp2 = await client.get(url2, headers=headers)
             resp2.raise_for_status()

@@ -142,7 +142,7 @@ class TestClosePassFetch:
         assert "resolved_at=gte." in url1, url1
         assert "outcome=in.(tp_hit,sl_hit,expired)" in url1
         assert "order=resolved_at.desc" in url1, url1
-        assert "nulls.last" not in url1, "PostgREST nulls.last causes 400; removed 2026-08-15"
+        assert "limit=10000" in url1, "first query must use limit=10000 to bypass PostgREST 1000-row page cap"
         # Must NOT use the old ts.desc&limit pattern
         assert "order=ts.desc" not in url1, url1
         # Must NOT use limit= (the old broken pattern)
