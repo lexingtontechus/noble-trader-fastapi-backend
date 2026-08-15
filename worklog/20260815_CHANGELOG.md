@@ -117,12 +117,12 @@ never reaches 9-day-old signals.
 - `docs/scopes/M4_OPEN_POSITION_ORPHAN_FIX.md` — scope doc (new file, tracked)
 - `worklog/20260815_CHANGELOG.md` — this changelog (new file, tracked)
 
-**Test results:**
+**Test results (final verification):**
 ```
 tests/test_paper_book.py: 13 passed
 tests/test_eod_lookback_wiring.py: 12 passed
 tests/test_realtime_publisher.py: 23 passed
-Full suite: 401 passed, 23 skipped in 118.87s
+Full suite: 401 passed, 23 skipped
 paper_book.py: syntax OK
 paper_retroclose.py: syntax OK
 __init__.py: lazy import verified — paper_retroclose imports without apscheduler
@@ -158,4 +158,29 @@ After the initial build was deployed and the retroclose was run on Studio, a `40
 
 3. **Position fetch cap**: `_fetch_open_positions()` had `limit=2000` but PostgREST's default page size is 1000, so only 1000 rows were returned. **Fix**: Removed the `limit` parameter entirely — PostgREST returns all matching rows across pages.
 
-**Committed and pushed.** Commit `9cdfc27` pushed to `main` — `git push origin main` completed 2026-08-15.
+**Committed and pushed.** Commits `9cdfc27` and `2fd36a3` pushed to `main`.
+
+### Post-Deploy Fix 2 (2026-08-15, commit `2fd36a3`)
+
+After the first post-deploy fix (commit `9cdfc27`) was pushed and re-run on Studio, a **second 400 Bad Request** was returned. Root cause:
+
+- **Timestamp microseconds**: The ISO timestamp `2026-08-01T04:13:26.962161Z` contained `.` characters in the microsecond fraction. PostgREST's URL filter syntax uses `.` as the delimiter between `column.operator.value` — so the `.` in `962161` was parsed as a new operator separator, producing a malformed filter → 400.
+
+**Fix**: `.replace(microsecond=0)` on the cutoff datetime before `.isoformat()`, producing a clean `2026-08-01T04:14:15Z` with no dots.
+
+**Verification (Studio dry-run after first post-deploy fix — commit `9cdfc27`):**
+```
+GET nt_paper_positions?...&status=eq.open → HTTP/1.1 200 OK
+GET nt_signal_sim?...&resolved_at=gte.2026-08-01T04:13:26.962161Z → HTTP/1.1 400 Bad Request
+scanned_open=1000, resolved_match=0, closed=0
+```
+The `+` → `Z` encoding worked (no `+` in URL anymore), but the timestamp **microseconds** (`962161`) contained a `.` which conflicted with PostgREST's dot-delimiter filter syntax → still 400.
+
+**Fix (commit `2fd36a3`)**: `.replace(microsecond=0)` → clean timestamp `2026-08-01T04:14:15Z`.
+
+**Next step**: Restart Studio to pick up the microsecond fix, then re-run:
+```bash
+PYTHONPATH="" lightning studio stop --name noble-trader-unified
+PYTHONPATH="" lightning studio start --name noble-trader-unified
+PYTHONPATH=src .venv/bin/python -m regime_platform.sweep_orchestrator.paper_retroclose --dry-run
+```
