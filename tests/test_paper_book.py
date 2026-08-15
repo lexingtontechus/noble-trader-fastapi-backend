@@ -142,7 +142,7 @@ class TestClosePassFetch:
         assert "resolved_at=gte." in url1, url1
         assert "outcome=in.(tp_hit,sl_hit,expired)" in url1
         assert "order=resolved_at.desc" in url1, url1
-        assert "taken" not in url1, "non-existent 'taken' column in select"
+        assert "nulls.last" not in url1, "PostgREST nulls.last causes 400; removed 2026-08-15"
         # Must NOT use the old ts.desc&limit pattern
         assert "order=ts.desc" not in url1, url1
         # Must NOT use limit= (the old broken pattern)

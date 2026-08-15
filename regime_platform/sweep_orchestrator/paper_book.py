@@ -260,26 +260,6 @@ async def _fetch_resolved_signals(
 ) -> list[dict[str, Any]]:
     """Resolved nt_signal_sim rows (outcome set) for the close pass.
 
-    Fetches ALL signals resolved within the last ``resolved_window_days``
-    days, ordered by ``resolved_at.desc``. This replaces the old
-    ``order=ts.desc&limit=2000`` approach which only saw the newest 2000
-    resolved-by-generation-time rows — at ~3,200 signals/day that was only
-    ~12–15 hours of history, so positions opened >1 day ago with resolved
-    signals were never matched → ``closed=0`` (the M4 orphan bug, 2026-08-15).
-
-    Filtering on ``resolved_at`` (the timestamp the EOD resolver writes when
-    it sets the outcome) guarantees every signal that *could* close an open
-    position is in scope, regardless of when it was originally generated.
-
-    The default 14-day window covers two full EOD lookback cycles and the
-    7-day retention expiry, so it always finds every resolvable signal
-    before retention prunes it.
-    """
-async def _fetch_resolved_signals(
-    resolved_window_days: float = 14,
-) -> list[dict[str, Any]]:
-    """Resolved nt_signal_sim rows (outcome set) for the close pass.
-
     Replaces the old ``order=ts.desc&limit=2000`` approach which only saw
     the newest 2000 resolved-by-generation-time rows — at ~3,200 signals/day
     that was only ~12–15 hours of history, so positions opened >1 day ago
@@ -317,7 +297,7 @@ async def _fetch_resolved_signals(
                 f"?select={select_cols}"
                 "&outcome=in.(tp_hit,sl_hit,expired)"
                 f"&resolved_at=gte.{cutoff_encoded}"
-                "&order=resolved_at.desc.nulls.last"
+                "&order=resolved_at.desc"
             )
             resp1 = await client.get(url1, headers=headers)
             resp1.raise_for_status()
