@@ -1,0 +1,74 @@
+# Agent Instructions — noble-trader-fastapi-backend
+
+> **Repo:** `noble-trader-fastapi-backend` · **Role:** Sweep orchestrator / signal producer · **Host:** LightningAI Studio (`noble-trader-unified`)
+
+## Version
+**v7.8.0** (as of 2026-08-14). Version anchors across `pyproject.toml`, `main.py`, and **both** `openapi.yaml` copies must be updated together on any bump, along with `tests/test_version_consistency.py` (asserts exact version).
+
+## Quick Start
+```bash
+# Dev / testing: ALWAYS unset PYTHONPATH to avoid shadowing the project venv
+PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cacheprovider
+```
+
+## Architecture at a Glance
+- **3-layer stack** (Launched via `start.sh`): `main.py` (port 8001 — HMM/Renko/auth), `server.py` (port 8002 — TimesFM), `proxy.py` (port 8000 — gateway).
+- **Sweep Orchestrator** (`regime_platform/sweep_orchestrator/`) — the live signal generator. Light sweep every 5 min × 14 symbols; heavy sweep Sunday 20:00 UTC.
+- **EV Engine v5** — 4-source P_win blend: `p_pattern 0.30 / p_regime 0.25 / p_markov_hold_n 0.20 / p_timesfm 0.25`. Public weight API: `set_weights()` / `temp_weights()` / `restore_default_weights()`.
+- **HMM** — 4-state dual GaussianHMM (volatility × trend) replaced by 5-state multivariate Gaussian HMM (2026-08-13, v7.7.0) for `p_markov`.
+- **7-gate qualification chain** in `_process_symbol`: signal_qualifiable, regime_conf_ok, kelly_min_ok, timesfm_available, timesfm_confidence_ok, ev_allowed, p_win_ok.
+
+## Signal Pipeline
+```
+TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → TimesFM forecast → EV Engine v5 → 7 gates → QUALIFIED
+   ──► XADD signal.raw.noble_trader ──► Redis StreamSplitter (per-plan: signal_scout / precision_pro)
+        ──► noble-trader-proxy (group "proxy") ──► re-publish → signal.proxy.noble_trader ──► noble-trader-agent (group "noble-1")
+```
+
+## EOD Recalibration Loop (v7.8.0)
+- **Nightly 00:30 UTC**: resolver (12,000 cap) + correction + retention.
+- **4h correction passes**: 04:30/08:30/12:30/16:30/20:30 UTC — recomputes bias + `nt_eod_actions`; emergency heavy sweeps fire only for newly-flagged symbols (12h cooldown).
+- **Drift monitor** on every light sweep — writes immediate `bayesian_penalty` when 48h rolling bias > 0.15 (≥20 records, no fresh action).
+- **Rolling bias window** — last 7 days, min 20 records.
+
+## Worklog / Changelog
+| File | Scope |
+|---|---|
+| `worklog/20260811_CHANGELOG.md` | TDVA price ordering fix (`prices.reverse()`) |
+| `worklog/20260812_CHANGELOG.md` | Resolver window anchoring, throughput, retention, capture trim |
+| `worklog/20260813_CHANGELOG.md` | Full EOD recalibration build (4h passes + drift monitor + purge + `predicted_p_win_raw`) |
+| `worklog/20260815_CHANGELOG.md` | M4 open-position orphan fix (close pass rewrites, retroclose, monitoring) |
+| `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
+| `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
+| `docs/marketing-overview.md` | Marketing copy reference |
+
+## Testing & Verification
+```bash
+# Full suite (always use this exact invocation — plain pytest can hang on heavy backtest files)
+PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cacheprovider
+
+# Hermes verify (Windows-safe — start phase hangs on Windows due to proc.stdout.read() blocking)
+hermes verify --json --skip-start   # test phase OK: true; runtime boot proven via curl
+```
+
+## Key Conventions
+- **PYTHONPATH**: Must be set to `$PWD/src` for local runs; `PYTHONPATH=""` for deployed runtime.
+- **Render.com**: Builds from `requirements.txt` (NOT `pyproject.toml`). The 2026-08-06 crash (`fastapi-mcp 0.4.0` + unpinned `mcp 2.0.0`) is fixed — `requirements.txt` now pins `mcp>=1.12.0,<2.0.0`.
+- **Migration numbering**: `supabase/migrations/` uses `NNN_snake_name.sql` convention (001–036, 100–114).
+- **Supabase functions deprecated**: Debug the active `regime_platform` Python engine; do NOT modify `supabase/functions/` (TypeScript edge functions — "leave as is").
+
+## Known Pitfalls
+1. **TDVA price ordering** (FIXED 2026-08-11): `/api/price/batch` returns `history` DESCENDING (newest first). `prices.reverse()` in `price_fetcher.py` fixes this. The stale-price window (Aug 6–11T14:00Z) contaminated calibration records — purged (14,248 deleted, 2,953 clean retained).
+2. **PostgREST URL limits**: Filter values with `+` must use `Z` not `+00:00`; timestamp microseconds (`.`) conflict with PostgREST's `.` delimiter — use `.replace(microsecond=0)`.
+3. **PostgREST server-side caps**: `limit=10000` is silently capped at 1000 — use offset-based pagination (`limit=1000&offset=N` loop).
+4. **Non-superuser cron**: `cron.schedule()` works (42501 on `cron.job` updates); `ALTER TYPE ADD VALUE` works; `app.functions_url` unset causes `net.http_post` 404s — recreate cron with hardcoded function URL.
+5. **pg_cron trap**: When `app.functions_url` setting is unset → `net.http_post` returns 404s. Verified fix: recreate cron with hardcoded function URL via `cron.schedule`.
+
+## Severity-Batch Auth
+Backend fixes are authorized in severity batches: `critical` → `high` → `m1,m4,…` (by id) → `lows`. Each batch must be independently verified (full pytest suite green + behavioral smoke) before reporting. The user then green-lights the next tier.
+
+## Related
+- **Talaria** → `noble-trader-talaria` (client plugin, tools, cron notifiers)
+- **Agent** → `noble-trader-hermes-agent-profile` (profile distribution; `NOBLE_STACK_ROOT` points here)
+- **Proxy** → `noble-trader-proxy` (retired via `NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false`)
+- **Portal** → `nobletradingapp` (Clerk + Helio checkout, claim tokens, Edge Functions)
