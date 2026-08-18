@@ -235,3 +235,73 @@ Once changes are built:
 4. Live smoke: deploy to LightningAI Studio, verify calibration enforcement logs
    show reduced bias magnitudes for overconfident symbols
 5. Monitor `noble-calib-health` cron (daily 02:10 UTC) for 3 nights
+
+---
+
+## 8. BUILD COMPLETE — Implementation (2026-08-17)
+
+### Files Modified
+1. **`regime_platform/sweep_orchestrator/heavy_sweep.py`** — MIN_RR, MAX_SHARPE, MIN_TRADES now env-configurable
+   - `MIN_RR = float(os.getenv("MIN_RR", "2.0"))` (was hardcoded `2.0`) — now shared env var
+   - `MAX_SHARPE = float(os.getenv("HEAVY_SWEEP_MAX_SHARPE", "10.0"))` (was hardcoded `10.0`)
+   - `MIN_TRADES = int(os.getenv("HEAVY_SWEEP_MIN_TRADES", "10"))` (was hardcoded `10`)
+
+2. **`regime_platform/sweep_orchestrator/orchestrator.py`** — TIMESFM_SIGMOID_K + clamp vars added
+   - `TIMESFM_SIGMOID_K = float(os.getenv("TIMESFM_SIGMOID_K", "20.0"))` (was hardcoded `_k = 20.0`)
+   - `TIMESFM_CLAMP_MIN = float(os.getenv("TIMESFM_CLAMP_MIN", "0.001"))` (was hardcoded `0.001`)
+   - `TIMESFM_CLAMP_MAX = float(os.getenv("TIMESFM_CLAMP_MAX", "0.999"))` (was hardcoded `0.999`)
+   - Updated "Qualification thresholds" startup log to include new vars
+
+3. **`.env.example`** — Documentation for all 5 new env vars + k-value table
+   - Full k-value comparison table (k=20 vs k=10 vs k=5)
+   - Studio deployment notes section (env vars must be Studio Secrets)
+
+3. **410 tests passed, 23 skipped, 0 failed**
+
+---
+
+## 9. Studio Deployment & Verification (2026-08-18)
+
+### Env Var Mapping — Studio Secrets vs .env.local
+
+On LightningAI Studio, env vars must be set as **Studio Secrets** — the `.env.local` file is NOT loaded by the runtime. Verified by startup log analysis:
+
+| Variable | .env.local Value | Studio Log Shows | Match? |
+|----------|-----------------|-----------------|--------|
+| `MIN_RR` | 1.5 | 2.0 | ❌ (not set in Studio Secrets) |
+| `DEBUG_SIGNALS` | 0 | True | ❌ (cached old value) |
+| `TIMESFM_SIGMOID_K` | (not set) | 20.0 | ❌ (default) |
+| `TIMESFM_CLAMP_MIN` | (not set) | 0.001 | ❌ (default) |
+| `TIMESFM_CLAMP_MAX` | (not set) | 0.999 | ❌ (default) |
+| `MIN_REGIME_CONF` | 0.60 | 0.6 | ✅ |
+| `MIN_KELLY` | 0.02 | 0.02 | ✅ |
+| `MIN_TIMESFM_CONFIDENCE` | 0.05 | 0.05 | ✅ |
+| `TIMESFM_GATE_MODE` | soft | soft | ✅ |
+| `MIN_EV` | 0.0 | 0.0 | ✅ |
+| `MIN_P_WIN` | 0.55 | 0.55 | ✅ |
+| `SIGNAL_COOLDOWN_MINUTES` | 60 | 60.0 | ✅ |
+
+### ✅ Verified Startup (2026-08-18 01:03:22 UTC — after env var fixes)
+
+```
+MIN_REGIME_CONF=0.6, MIN_KELLY=0.02, MIN_TIMESFM_CONFIDENCE=0.05,
+TIMESFM_GATE_MODE=soft, MIN_EV=0.0, MIN_RR=1.5, MIN_P_WIN=0.55,
+SIGNAL_COOLDOWN_MINUTES=60.0, DEBUG_SIGNALS=False,
+TIMESFM_SIGMOID_K=10.0, TIMESFM_CLAMP=[0.05, 0.95]
+```
+
+All values match. Services running: Redis OK, 14 symbols, scheduler started.
+
+### Impact on Recalibration
+
+**Before (Aug 17 — old defaults):**
+- `MIN_RR=2.0` → only 9/21 brick combos qualified → 3/9 emergency sweeps FAILED (EURUSD, GBPUSD, USDCAD with `no_combo_passed_filters`)
+- `TIMESFM_SIGMOID_K=20.0` → 1% forecast → p=0.73 → chronic overconfidence across ALL symbols
+- `TIMESFM_CLAMP=[0.001, 0.999]` → p_win hit 1.0 for metals (XAUAUD, XAUEUR, XAUUSD)
+- Calibration enforcement constantly firing (p_win 1.0→0.99, kelly 0.4→0.2)
+
+**After (Aug 18 — new settings):**
+- `MIN_RR=1.5` → all 21 brick combos qualify → emergency sweeps should succeed 9/9
+- `TIMESFM_SIGMOID_K=10.0` → 1% forecast → p=0.62 → ~15% less aggressive p_timesfm
+- `TIMESFM_CLAMP=[0.05, 0.95]` → p_win capped at 0.95 max (no more p=1.0 hits)
+- Expected: fewer OVERCONFIDENT enforcement events, less aggressive bias correction
