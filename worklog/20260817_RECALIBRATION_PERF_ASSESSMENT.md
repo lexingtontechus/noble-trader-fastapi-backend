@@ -305,3 +305,133 @@ All values match. Services running: Redis OK, 14 symbols, scheduler started.
 - `TIMESFM_SIGMOID_K=10.0` → 1% forecast → p=0.62 → ~15% less aggressive p_timesfm
 - `TIMESFM_CLAMP=[0.05, 0.95]` → p_win capped at 0.95 max (no more p=1.0 hits)
 - Expected: fewer OVERCONFIDENT enforcement events, less aggressive bias correction
+
+---
+
+## 10. Emergency Heavy Sweep Trigger Analysis (2026-08-18)
+
+### Trigger Mechanism
+
+Emergency heavy sweeps are triggered by the **EOD correction pass** (`eod_correction.py`) when `|bias| > 0.10`:
+
+```python
+# eod_correction.py:45-46
+OVERCONFIDENT_BIAS = 0.10
+UNDERCONFIDENT_BIAS = -0.10
+```
+
+**Flow:**
+1. **Light sweep** (every 5 min) → produces signals, stores `predicted_p_win_raw` in `nt_calibration_records`
+2. **EOD correction** (every 4h: 04:30/08:30/12:30/16:30/20:30 UTC) → checks calibration bias:
+   - Reads `bias` from `fetch_calibration_bias()` (queries `nt_calibration_records`)
+   - If `|bias| > 0.10` → writes `emergency_heavy_sweep` action to `nt_eod_actions` table
+   - Also writes `bayesian_penalty` (shrink p_win toward 0.5) and `kelly_reduction` (50% cut)
+3. **Daily EOD** (00:30 UTC) → consumes `emergency_heavy_sweep` actions from `nt_eod_actions` → runs `pick_best_combo()` with fresh data
+
+**Key gap**: The 4-hour intraday correction **writes** the `emergency_heavy_sweep` recommendations to `nt_eod_actions`, but only the **daily 00:30 UTC EOD pass** reads and executes them. This means:
+- Detection at 04:30 UTC → execution at 00:30 UTC next day = **20 hours of delay**
+- During this gap, the symbol operates with stale (overconfident) parameters
+- The bayesian penalty and kelly reduction take effect immediately (applied in light sweeps via live enforcement), but the **parameter re-optimization** is delayed
+
+### Verified in Logs (Aug 18 00:37:35 UTC)
+```
+[eod:correction] XAUUSD: OVERCONFIDENT bias=0.409 → emergency sweep + p_win'=0.9796 + Kelly×0.50
+[eod:lookback] emergency heavy sweeps requested: ['AUDUSD', 'BTCUSD', 'EURUSD', 'GBPUSD', 'USDCAD', 'USDCHF', 'XAGUSD', 'XAUAUD', 'XAUEUR', 'XAUUSD']
+XAUUSD: best combo brick=22.1394 sl=3 tp=10 sharpe=0.6376 trades=15 win_rate=0.8000
+XAUUSD: DONE in 15455ms (qualified=False, combos=30)
+```
+
+The sweep ran but `qualified=False` — the found combo (sharpe=0.6376) wasn't good enough to replace current params. With the new `MIN_RR=1.5`, the combo search space is wider, but the quality gate for parameter replacement is separate from the RR threshold.
+
+### Note on Terminology
+The term "emergency heavy sweeps" was initially misleading — this is NOT a separate ad-hoc process. It IS triggered by the EOD correction pass writing to `nt_eod_actions`, and consumed by the daily EOD pass. The trigger is: `|calibration_bias| > 0.10` with `n_records >= 20` (EOD_BIAS_MIN_RECORDS).
+
+---
+
+## 11. Retroactive XAUUSD Record Rectification (SCOPE ONLY — No Action Yet)
+
+### Current State
+The `p_win=1.0000` values seen in Aug 18 sweeps (01:00-01:11 UTC) are **NOT contaminated legacy records** — they are **fresh signals** computed with the old k=20 defaults. The purge at Aug 13 23:10 UTC already removed contaminated records (`entered_at < 2026-08-11T14:00Z`).
+
+The `predicted_p_win_raw` column (migration 114) was created and `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW=True`, so we can now distinguish:
+- **raw** p_win (before enforcement/clamping) — the "true" model output
+- **enforced** p_win (after overconfidence correction) — the adjusted value
+
+### Retroactive Fix Scope (NOT building)
+A backfill script could:
+1. Query `nt_calibration_records WHERE symbol='XAUUSD' AND predicted_p_win_raw IS NOT NULL AND entered_at >= '2026-08-11T14:00Z'`
+2. Recompute p_win with k=10.0 + clamp=[0.05, 0.95] applied to the raw forecast
+3. Store recomputed p_win in a new `p_win_corrected` column
+4. Re-run bias computation with corrected values
+5. This would give us the "true" bias under the new settings
+
+**However**: with the new env vars active from 01:03 UTC onward, fresh records will naturally use k=10 + clamp [0.05, 0.95]. The legacy records from 00:18–01:03 UTC (before restart) used k=20 + clamp [0.001, 0.999] — only ~45 minutes of data. Not worth backfilling.
+
+### Recommendation: 4-hour Emergency Sweep Consumer (SCOPE ONLY — No Action Yet)
+Add a cron job that runs every 4 hours (05:00/09:00/13:00/17:00/21:00 UTC) to:
+1. Query `nt_eod_actions WHERE action='emergency_heavy_sweep' AND processed_at IS NULL`
+2. Execute `pick_best_combo()` for each flagged symbol (immediately, not waiting for daily EOD)
+3. Write results to a new `nt_calibration_sweep_results` table
+4. Mark actions as `processed_at = now()`
+
+This would reduce the gap from 20 hours → 0 hours for bias-driven parameter re-optimization.
+
+---
+
+## 12. Impact Analysis — What Changes Going Forward
+
+### The 4-Hour Intraday Correction Already Runs Emergency Sweeps
+
+**Correction**: The "4-hour Emergency Sweep Consumer" recommendation in Section 11 was based on an incorrect understanding. The existing `_run_eod_correction_only()` (in orchestrator.py:1223) **ALREADY** executes emergency heavy sweeps:
+
+```python
+# orchestrator.py:1252-1260
+emergency_syms = sorted({
+    a.get("symbol")
+    for a in (correction_summary.get("actions") or [])
+    if a.get("action") == "emergency_heavy_sweep" and a.get("symbol")
+})
+if not emergency_syms:
+    return
+cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12) or 12)
+# Apply 12-hour cooldown — only sweep symbols that haven't been swept recently
+```
+
+The 4h intraday pass (`_run_eod_correction_only`):
+1. Runs `run_eod_correction()` → writes `emergency_heavy_sweep` to `nt_eod_actions`
+2. Consumes actions → executes `_execute_emergency_heavy_sweeps()` for symbols past the 12h cooldown
+3. Schedule: 04:30/08:30/12:30/16:30/20:30 UTC (5 runs per day)
+4. Cooldown: `EOD_HEAVY_SWEEP_COOLDOWN_HOURS=12` (default)
+
+The daily EOD pass (`_run_eod_lookback`) runs the same flow but is **exempt from the cooldown** — it always sweeps all flagged symbols.
+
+### What This Means With New Settings
+
+**Before (k=20, clamp=[0.001, 0.999]):**
+- P_timesfm easily hit 0.99+ → p_win hit 1.0 → bias spiked above 0.10
+- Emergency sweeps triggered, but `MIN_RR=2.0` blocked most combos → `qualified=False`
+- Result: sweeps ran but couldn't replace params → stale params → persistent overconfidence
+
+**After (k=10, clamp=[0.05, 0.95]):**
+- P_timesfm capped at 0.95 → p_win stays below 1.0 → **less frequent bias > 0.10 triggers**
+- When sweeps DO trigger, `MIN_RR=1.5` allows more combos → higher chance of `qualified=True`
+- New params written to YAML → bias re-converges faster in the next cycle
+
+### v_eod_calibration_bias View Impact
+
+The view `v_eod_calibration_bias` reads from `nt_signal_sim.p_win` — which is the **post-enforcement** value. It measures whether enforcement is effectively correcting overconfidence, not the raw model output. The `predicted_p_win_raw` column (added by migration 114) captures the pre-enforcement value, but the view doesn't use it. This is acceptable for the bias trigger — you want to know if the **deployed** p_win is still overconfident after enforcement, not the raw model output.
+
+### Timeline Going Forward
+
+| Time | Process | What Changes |
+|------|---------|--------------|
+| 00:30 UTC | Daily EOD | Resolver + correction (exempt from cooldown) |
+| 04:30 UTC | Intraday correction | Bias recompute + emergency sweeps (12h cooldown applies) |
+| 05:00 UTC | Light sweep | Signals with new k=10 params |
+| 08:30 UTC | Intraday correction | Same |
+| 12:30 UTC | Intraday correction | Same |
+| 16:30 UTC | Intraday correction | Same |
+| 20:30 UTC | Intraday correction | Same |
+
+The new env vars take full effect at the next light sweep cycle (every 5 min). Within 4 hours, the EOD correction will see reduced bias from the lower p_timesfm contribution. If bias drops below 0.10, the `emergency_heavy_sweep` trigger stops firing for that symbol — natural stabilization loop.
+
