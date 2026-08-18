@@ -166,6 +166,24 @@ SIGNAL_COOLDOWN_MINUTES = float(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
 # directional (p_win just barely above 0.5).
 MIN_P_WIN = float(os.getenv("MIN_P_WIN", "0.55"))
 
+# ── TimesFM forecast → probability mapping ─────────────────────────────────
+# The TimesFM point forecast (a price) is converted to p(up-move) via:
+#   p_timesfm = sigmoid(k * relative_price_change)
+# where k controls how aggressively price deltas map to confidence.
+# k=20 → 1% move ≈ p=0.73, 5% move ≈ p=0.99 (EXCESSIVELY aggressive)
+# k=10 → 1% move ≈ p=0.62, 5% move ≈ p=0.92 (more reasonable)
+# k=5  → 1% move ≈ p=0.55, 5% move ≈ 0.99 (conservative)
+# The high k=20 was found to systematically produce near-1.0 p_win values,
+# causing chronic OVERCONFIDENT bias across all symbols (verified 2026-08-13).
+TIMESFM_SIGMOID_K = float(os.getenv("TIMESFM_SIGMOID_K", "20.0"))
+
+# Clamp range for p_timesfm — prevents extreme certainty from a single
+# source dominating the logit-pooled blend. Defaults [0.001, 0.999] were
+# too permissive — a 5% forecast at k=20 produced p=0.993, effectively
+# bypassing downstream calibration. [0.05, 0.95] provides a sane ceiling.
+TIMESFM_CLAMP_MIN = float(os.getenv("TIMESFM_CLAMP_MIN", "0.001"))
+TIMESFM_CLAMP_MAX = float(os.getenv("TIMESFM_CLAMP_MAX", "0.999"))
+
 # ── TimesFM fetcher with 15-minute cache ────────────────────────────────
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
 # Using a simple in-memory cache (not Redis for this hot path)
@@ -360,8 +378,9 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
             return None
 
         # Map forecasted price → probability of up-move.
-        # sigmoid(20 * relative_change) gives a smooth [0,1] mapping where
-        # ±5% predicted move ≈ 0.92 / 0.08 (high confidence).
+        # sigmoid(k * relative_change) gives a smooth [0,1] mapping where
+        # k controls aggressiveness. Defaults k=20 → ±5% ≈ 0.92 / 0.08.
+        # See TIMESFM_SIGMOID_K, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX above.
         if last_price <= 0:
             logger.warning(
                 f"[sweep:orch] {symbol}: last_price<=0 ({last_price}) — "
@@ -370,16 +389,16 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
             return None
         rel_change = (forecast_value - last_price) / last_price
         # math.exp is faster than importing scipy; manual sigmoid is fine.
-        _k = 20.0
+        _k = TIMESFM_SIGMOID_K
         _z = _k * rel_change
         if _z >= 0:
             p_timesfm = 1.0 / (1.0 + math.exp(-_z))
         else:
             ez = math.exp(_z)
             p_timesfm = ez / (1.0 + ez)
-        # Clamp to [0.001, 0.999] so confidence is never exactly 0 or 1
-        # (avoids edge cases in downstream EV/Kelly math).
-        p_timesfm = max(0.001, min(0.999, p_timesfm))
+        # Clamp to [TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX] so confidence is
+        # never exactly 0 or 1 (avoids edge cases in downstream EV/Kelly math).
+        p_timesfm = max(TIMESFM_CLAMP_MIN, min(TIMESFM_CLAMP_MAX, p_timesfm))
         confidence = abs(p_timesfm - 0.5)
 
         _TIMESFM_CACHE[symbol] = (p_timesfm, now)
@@ -706,7 +725,9 @@ class SweepOrchestrator(HeavySweepMixin):
             f"MIN_EV={MIN_EV}, MIN_RR={MIN_RR}, "
             f"MIN_P_WIN={MIN_P_WIN}, "
             f"SIGNAL_COOLDOWN_MINUTES={SIGNAL_COOLDOWN_MINUTES}, "
-            f"DEBUG_SIGNALS={DEBUG_SIGNALS}"
+            f"DEBUG_SIGNALS={DEBUG_SIGNALS}, "
+            f"TIMESFM_SIGMOID_K={TIMESFM_SIGMOID_K}, "
+            f"TIMESFM_CLAMP=[{TIMESFM_CLAMP_MIN}, {TIMESFM_CLAMP_MAX}]"
         )
 
     # ── Public lifecycle ──────────────────────────────────────────

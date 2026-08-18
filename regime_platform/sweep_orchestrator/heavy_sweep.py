@@ -66,12 +66,22 @@ logger = logging.getLogger("regime.sweep.heavy")
 
 
 # ─── Grid search constants (ported from edge fn _shared/utils.ts) ────────
+import os as _os
 
 SWEEP_SL_RANGE = [3, 5, 7]
 SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12]
-MIN_RR = 2.0
-MAX_SHARPE = 10.0
-MIN_TRADES = 10
+
+# MIN_RR: shared with the orchestrator's qualification gate via the same
+# env var (default 2.0). When the user sets MIN_RR=1.5 for signal
+# qualification, the grid search MUST use the same threshold — otherwise
+# the heavy sweep pre-filter (line 737) skips combos the orchestrator
+# would accept, causing emergency sweeps to fail with
+# no_combo_passed_filters (verified 2026-08-13: EURUSD/GBPUSD/USDCAD
+# with MIN_RR=2.0 hardcoded vs orchestrator MIN_RR=1.5 env).
+# See orchestrator.py:105-111 for the canonical env-var definition.
+MIN_RR = float(_os.getenv("MIN_RR", "2.0"))
+MAX_SHARPE = float(_os.getenv("HEAVY_SWEEP_MAX_SHARPE", "10.0"))
+MIN_TRADES = int(_os.getenv("HEAVY_SWEEP_MIN_TRADES", "10"))
 
 # TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
 TIMESFM_CONFIDENT_THRESHOLD = 0.10

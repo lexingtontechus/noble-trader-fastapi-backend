@@ -347,7 +347,15 @@ resolve+correct+retention pass nightly at 00:30 UTC, plus **correction-only pass
 every 4h** (04:30/08:30/12:30/16:30/20:30 UTC) and a **drift monitor** on each 5-min
 light sweep. Bias is computed over a **rolling 7-day window** (min 20 records).
 Penalty actions (`bayesian_penalty` / `kelly_reduction` / `emergency_heavy_sweep`)
-are enforced live for 8h (freshness window). See `worklog/20260813_CHANGELOG.md`.
+are enforced live for 8h (freshness window). See `worklog/20260813_CHANGELOG.md`
+and `worklog/20260817_RECALIBRATION_PERF_ASSESSMENT.md`.
+
+**Calibration tuning (2026-08-17):** `MIN_RR` (Gate 6b) is **shared** between the
+orchestrator's signal qualification gate and the heavy sweep grid-search pre-filter —
+both read `MIN_RR` from the env var. `TIMESFM_SIGMOID_K`, `TIMESFM_CLAMP_MIN/MAX`,
+and `HEAVY_SWEEP_MIN_TRADES`/`HEAVY_SWEEP_MAX_SHARPE` are now env-configurable
+(see `.env.example`). Recommended production values: `TIMESFM_SIGMOID_K=10.0`,
+`TIMESFM_CLAMP_MIN=0.05`, `TIMESFM_CLAMP_MAX=0.95`.
 
 ### Venue Management (v3)
 

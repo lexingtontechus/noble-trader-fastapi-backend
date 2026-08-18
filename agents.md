@@ -36,11 +36,12 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 |---|---|
 | `worklog/20260811_CHANGELOG.md` | TDVA price ordering fix (`prices.reverse()`) |
 | `worklog/20260812_CHANGELOG.md` | Resolver window anchoring, throughput, retention, capture trim |
-| `worklog/20260813_CHANGELOG.md` | Full EOD recalibration build (4h passes + drift monitor + purge + `predicted_p_win_raw`) |
-| `worklog/20260815_CHANGELOG.md` | M4 open-position orphan fix (close pass rewrites, retroclose, monitoring) |
-| `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
-| `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
-| `docs/marketing-overview.md` | Marketing copy reference |
+|| `worklog/20260813_CHANGELOG.md` | Full EOD recalibration build (4h passes + drift monitor + purge + `predicted_p_win_raw`) |
+|| `worklog/20260815_CHANGELOG.md` | M4 open-position orphan fix (close pass rewrites, retroclose, monitoring) |
+|| `worklog/20260817_RECALIBRATION_PERF_ASSESSMENT.md` | Recalibration perf deep assessment + MIN_RR split fix + TimesFM sigmoid/k/clamp env vars |
+|| `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
+|| `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
+|| `docs/marketing-overview.md` | Marketing copy reference |
 
 ## Testing & Verification
 ```bash
@@ -52,17 +53,20 @@ hermes verify --json --skip-start   # test phase OK: true; runtime boot proven v
 ```
 
 ## Key Conventions
-- **PYTHONPATH**: Must be set to `$PWD/src` for local runs; `PYTHONPATH=""` for deployed runtime.
-- **Render.com**: Builds from `requirements.txt` (NOT `pyproject.toml`). The 2026-08-06 crash (`fastapi-mcp 0.4.0` + unpinned `mcp 2.0.0`) is fixed — `requirements.txt` now pins `mcp>=1.12.0,<2.0.0`.
-- **Migration numbering**: `supabase/migrations/` uses `NNN_snake_name.sql` convention (001–036, 100–114).
-- **Supabase functions deprecated**: Debug the active `regime_platform` Python engine; do NOT modify `supabase/functions/` (TypeScript edge functions — "leave as is").
+|- **PYTHONPATH**: Must be set to `$PWD/src` for local runs; `PYTHONPATH=""` for deployed runtime.
+|- **Render.com**: Builds from `requirements.txt` (NOT `pyproject.toml`). The 2026-08-06 crash (`fastapi-mcp 0.4.0` + unpinned `mcp 2.0.0`) is fixed — `requirements.txt` now pins `mcp>=1.12.0,<2.0.0`.
+|- **Migration numbering**: `supabase/migrations/` uses `NNN_snake_name.sql` convention (001–036, 100–114).
+|- **Supabase functions deprecated**: Debug the active `regime_platform` Python engine; do NOT modify `supabase/functions/` (TypeScript edge functions — "leave as is").
+|- **MIN_RR is shared**: `MIN_RR` (env, default 2.0) controls BOTH the orchestrator's Gate 6b qualification threshold AND the heavy sweep grid-search pre-filter in `heavy_sweep.py:737` + `pick_best_combo()`. Set once, applies everywhere.
+|- **TimesFM probability tuning**: `TIMESFM_SIGMOID_K` (default 20.0), `TIMESFM_CLAMP_MIN/MAX` (default 0.001/0.999) control how aggressively the TimesFM price forecast maps to p_timesfm. Recommended production: k=10.0, clamp=[0.05, 0.95].
 
 ## Known Pitfalls
 1. **TDVA price ordering** (FIXED 2026-08-11): `/api/price/batch` returns `history` DESCENDING (newest first). `prices.reverse()` in `price_fetcher.py` fixes this. The stale-price window (Aug 6–11T14:00Z) contaminated calibration records — purged (14,248 deleted, 2,953 clean retained).
-2. **PostgREST URL limits**: Filter values with `+` must use `Z` not `+00:00`; timestamp microseconds (`.`) conflict with PostgREST's `.` delimiter — use `.replace(microsecond=0)`.
-3. **PostgREST server-side caps**: `limit=10000` is silently capped at 1000 — use offset-based pagination (`limit=1000&offset=N` loop).
-4. **Non-superuser cron**: `cron.schedule()` works (42501 on `cron.job` updates); `ALTER TYPE ADD VALUE` works; `app.functions_url` unset causes `net.http_post` 404s — recreate cron with hardcoded function URL.
-5. **pg_cron trap**: When `app.functions_url` setting is unset → `net.http_post` returns 404s. Verified fix: recreate cron with hardcoded function URL via `cron.schedule`.
+2. **MIN_RR split** (FIXED 2026-08-17): `MIN_RR` was hardcoded at `2.0` in `heavy_sweep.py:72` while the orchestrator read `MIN_RR` from env (user sets 1.5). The heavy sweep grid-search pre-filter (`heavy_sweep.py:737`) and `pick_best_combo()` (`heavy_sweep.py:199`) used 2.0, causing emergency sweeps to fail with `no_combo_passed_filters` for 3/9 overconfident symbols. Fixed: both modules now read the same `MIN_RR` env var.
+3. **PostgREST URL limits**: Filter values with `+` must use `Z` not `+00:00`; timestamp microseconds (`.`) conflict with PostgREST's `.` delimiter — use `.replace(microsecond=0)`.
+4. **PostgREST server-side caps**: `limit=10000` is silently capped at 1000 — use offset-based pagination (`limit=1000&offset=N` loop).
+5. **Non-superuser cron**: `cron.schedule()` works (42501 on `cron.job` updates); `ALTER TYPE ADD VALUE` works; `app.functions_url` unset causes `net.http_post` 404s — recreate cron with hardcoded function URL.
+6. **pg_cron trap**: When `app.functions_url` setting is unset → `net.http_post` returns 404s. Verified fix: recreate cron with hardcoded function URL via `cron.schedule`.
 
 ## Severity-Batch Auth
 Backend fixes are authorized in severity batches: `critical` → `high` → `m1,m4,…` (by id) → `lows`. Each batch must be independently verified (full pytest suite green + behavioral smoke) before reporting. The user then green-lights the next tier.
