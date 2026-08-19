@@ -293,3 +293,16 @@ Last check showed all 14 symbols in `FIX_WORKING_*` states (no `FIX_NOT_WORKING`
 ### Distinction from EOD Signal-Lookback Monitor
 
 The existing Hermes cron job **`22bf467170ce`** ("EOD signal-lookback monitor", runs daily at 01:10 UTC) checks **post-resolution outcomes** — whether the resolver closed signals correctly. The new **`ev-engine-fix-monitor`** checks **pre-resolution p_win values** — whether the EV engine produces correct raw probabilities before calibration enforcement. These are complementary verification layers, not duplicates.
+
+---
+
+## 24-Hour Post-Deployment Evaluation (2026-08-19)
+
+### Stale Record Purge (2026-08-19 21:56 UTC)
+
+The EV fix was deployed at 2026-08-19T00:26:52Z (Studio restart). All `nt_calibration_records` with `entered_at < 2026-08-19T00:26:52Z` were computed with the broken logit pooling and contaminated the rolling 7-day bias window.
+
+**Purge executed** via `scripts/purge_stale_calibration.py --execute`:
+- **5,006 stale records deleted** (entered_at < 2026-08-19T00:26:52Z)
+- **0 post-fix records remain** (03:30 UTC resolution hasn't produced new calibration records yet)
+- Bias window is now 100% clean — next 00:30 UTC EOD resolution will populate with post-fix data only
