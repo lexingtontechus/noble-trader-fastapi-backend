@@ -256,3 +256,40 @@ The Renko brick pricing is completely independent of the EV engine fixes:
 - **EV gate (Gate 6)**: `ev = p_win × profit - (1-p_win) × stake` — **affected** (reduced)
 
 The fixes only change `p_win` and `ev` — not the geometric pricing of Renko bricks. A qualified signal will still enter, stop out, and take profit at the same prices; the difference is that fewer false signals will qualify, and those that do will have appropriately sized positions.
+
+---
+
+## Background Monitor
+
+### Scripts
+
+- **`scripts/monitor_ev_fix.py`** — Standalone polling monitor. Queries `nt_signal_sim` for all 14 symbols, classifies each by fix status:
+  - `FIX_WORKING_DEGENERATE` (raw_p_win ≤ 0.01) — Markov absorbing fix working
+  - `FIX_WORKING_MODERATE` (0.01 < raw ≤ 0.95) — Regime cap working
+  - `FIX_WORKING_NEGATIVE` (0.1 < raw ≤ 0.5) — Markov dragging p_win negative
+  - `FIX_NOT_WORKING` (raw > 0.98) — Regime cap bypassed; regression
+
+- **`scripts/monitor_ev_fix_wrapper.py`** — Cron wrapper that runs the monitor in `--once` mode, compares results to previous run, and only emits output if a regression is detected (no_agent cron: silent = healthy). Deployed to `~/hermes/profiles/ultron/scripts/`.
+
+### Hermes Cron Job
+
+| Field | Value |
+|-------|-------|
+| Job ID | `3dbc7c566323` |
+| Name | `ev-engine-fix-monitor` |
+| Script | `monitor_ev_fix_wrapper.py` |
+| Schedule | `*/5 * * * *` (every 5 minutes) |
+| Mode | `no_agent` (script-only) |
+| Delivery | `origin` (chat notification on regression) |
+| Workdir | Repo root |
+
+### Current Monitor Status (as of 03:17 UTC)
+
+Last check showed all 14 symbols in `FIX_WORKING_*` states (no `FIX_NOT_WORKING`):
+- **6 degenerate**: USDCHF, USDJPY, US500, AAPL (p_markov=0.0 absorbing)
+- **4 negative**: BTCUSD, US30USD, XAGUSD (p_win near 0.0)
+- **4 moderate**: AUDUSD, EURUSD, GBPUSD, USDCAD, XAUAUD, XAUEUR, XAUUSD (0.5-0.9 range)
+
+### Distinction from EOD Signal-Lookback Monitor
+
+The existing Hermes cron job **`22bf467170ce`** ("EOD signal-lookback monitor", runs daily at 01:10 UTC) checks **post-resolution outcomes** — whether the resolver closed signals correctly. The new **`ev-engine-fix-monitor`** checks **pre-resolution p_win values** — whether the EV engine produces correct raw probabilities before calibration enforcement. These are complementary verification layers, not duplicates.
