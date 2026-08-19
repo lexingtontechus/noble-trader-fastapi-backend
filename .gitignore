@@ -109,3 +109,5 @@ venv.bak/
 .DS_Store
 .pip_libs/
 data/
+monitor_ev_fix_results.json
+monitor_ev_fix_delivery.log
