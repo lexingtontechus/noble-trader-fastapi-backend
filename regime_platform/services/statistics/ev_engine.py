@@ -226,13 +226,24 @@ def _markov_hold_probability(
         return 0.5
 
     try:
-        # Validate row-stochastic (each row sums to ~1.0)
+        # Validate row-stochastic (each row sums to ~1.0).
+        # Degenerate rows (all zeros from 5→3 aggregation) indicate that
+        # no 5-state HMM component maps to this 3-state label. For the
+        # current_state's row, this means an absorbing state — P(reach
+        # target in N steps) = 0.0. For other rows, set uniform prior
+        # so T^N computation can proceed normally.
+        current_idx = _STATES.index(current_state.upper()) if current_state.upper() in _STATES else 0
         for i in range(3):
             row_sum = sum(M[i])
             if row_sum <= 0:
-                return 0.5
-            # Renormalise defensively
-            if abs(row_sum - 1.0) > 0.01:
+                if i == current_idx:
+                    # Absorbing state: cannot reach UP or DOWN from here
+                    return 0.0
+                else:
+                    # Other degenerate row — use uniform prior
+                    M[i] = [1.0 / 3.0] * 3
+            elif abs(row_sum - 1.0) > 0.01:
+                # Renormalise defensively
                 M[i] = [v / row_sum for v in M[i]]
 
         # Compute T^N
@@ -399,6 +410,13 @@ class EVEngine:
             self._full_weights[key] = v
 
     # ── P_regime from HMM posteriors ────────────────────────────────
+    # Cap p_regime to prevent logit(1.0)=34.5 from dominating the
+    # logit-pooled blend. When the HMM posterior collapses to a single
+    # state (conf=1.0), logit(1.0) overwhelms all other components
+    # regardless of their values. Capping at 0.97 reduces the logit
+    # contribution from 34.5 to 3.5, allowing other sources to countervail.
+    # See worklog/20260818_EV_ENGINE_DEEP_ANALYSIS.md for details.
+    _P_REGIME_CAP: float = 0.97
 
     @staticmethod
     def compute_p_regime(trend_probs: Dict[str, float], direction: str) -> float:
@@ -412,6 +430,10 @@ class EVEngine:
           2: bear, bull
           3: bear, neutral, bull
           4: strong_bear, bear, bull, strong_bull
+
+        The result is capped at ``_P_REGIME_CAP`` (0.97) to prevent the
+        logit-pooled blend from being dominated by a single overconfident
+        regime component. See the class docstring and worklog for rationale.
         """
         if not trend_probs:
             return 0.50
@@ -425,11 +447,18 @@ class EVEngine:
         p_neutral = sum(v for k, v in trend_probs.items() if k in neutral_keys)
 
         if direction == "long":
-            return p_bullish + 0.5 * p_neutral
+            p = p_bullish + 0.5 * p_neutral
         elif direction == "short":
-            return p_bearish + 0.5 * p_neutral
+            p = p_bearish + 0.5 * p_neutral
         else:
-            return 0.50
+            p = 0.50
+
+        # Cap to prevent logit(1.0)=34.5 from dominating the blend.
+        # When HMM posteriors collapse to a single state, p_regime hits
+        # 1.0 — even with a small weight, this overwhelms all other
+        # components in the logit-pool. Capping at 0.97 keeps the signal
+        # informative without allowing overconfidence to hijack the blend.
+        return min(EVEngine._P_REGIME_CAP, p)
 
     # ── P_pattern from agent DuckDB (optional) ──────────────────────
 

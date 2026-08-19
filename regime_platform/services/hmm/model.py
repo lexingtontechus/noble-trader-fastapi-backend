@@ -361,8 +361,14 @@ class _FittedModel:
 
 
 def _compute_log_returns(closes: np.ndarray) -> np.ndarray:
-    """ln(close[i] / close[i-1]) — returns array of len N-1."""
-    returns = np.diff(np.log(closes[closes > 0]))
+    """ln(close[i] / close[i-1]) — returns array of len N-1.
+
+    Previously filtered: closes[closes > 0] which silently shortened the
+    array and caused misalignment with TA indicators. Prices should never
+    be non-positive in FX/crypto markets; the filter is removed to ensure
+    array-length integrity.
+    """
+    returns = np.diff(np.log(closes))
     return returns
 
 
