@@ -16,6 +16,7 @@ Cron runs Python (.py extension) via Python interpreter — no bash wrapper need
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,16 +54,43 @@ def parse_fix_statuses(output: str) -> dict[str, str]:
     return statuses
 
 
+def _get_venv_python() -> str:
+    """Find the venv Python executable in a platform-aware way.
+    
+    Tries .venv/Scripts/python.exe (Windows), .venv/bin/python (Linux/macOS),
+    then falls back to bare 'python3' or 'python' on PATH.
+    """
+    # Windows venv
+    win_venv = os.path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
+    if os.path.isfile(win_venv):
+        return win_venv
+    # Unix venv
+    unix_venv = os.path.join(REPO_ROOT, ".venv", "bin", "python3")
+    if os.path.isfile(unix_venv):
+        return unix_venv
+    unix_venv2 = os.path.join(REPO_ROOT, ".venv", "bin", "python")
+    if os.path.isfile(unix_venv2):
+        return unix_venv2
+    # Fallback to system Python
+    for candidate in ("python3", "python"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return "python3"  # ultimate fallback
+
+
 def main() -> int:
     # Ensure PYTHONPATH is set for venv imports
     env = os.environ.copy()
     src_path = os.path.join(REPO_ROOT, "src")
     env["PYTHONPATH"] = src_path
 
+    python_exe = _get_venv_python()
+
     # Run the monitor in --once mode
     result = subprocess.run(
         [
-            os.path.join(REPO_ROOT, ".venv", "Scripts", "python.exe"),
+            python_exe,
             MONITOR_SCRIPT,
             "--once",
         ],
@@ -74,8 +102,12 @@ def main() -> int:
     )
 
     output = result.stdout
+    # If stdout is empty but stderr has content, surface it for debugging
     if not output:
-        print("MONITOR produced no output — skipping.", file=sys.stderr)
+        if result.stderr:
+            print(f"MONITOR stderr: {result.stderr}", file=sys.stderr)
+        print(f"MONITOR produced no output (exit code {result.returncode}, "
+              f"python: {python_exe}). Skipping.", file=sys.stderr)
         return 1
 
     # Parse the current statuses
