@@ -240,3 +240,61 @@ class TestEodCorrectionIntraday:
 
         asyncio.run(run())
         assert orch.run_heavy_sweep_for_symbol.await_count == 1
+
+    # ─── L3 fix: degeneracy_breaker action triggers heavy sweep ──────────
+
+    def test_degeneracy_breaker_action_triggers_sweep(self):
+        """Symbols with p_win=0 and no calibration records should get emergency sweeps
+        via the degeneracy_breaker action path."""
+        orch = self._orch()
+        actions = [
+            {"symbol": "AUDUSD", "action": "degeneracy_breaker", "bias": None},
+            {"symbol": "BTCUSD", "action": "bayesian_penalty"},  # not a sweep trigger
+        ]
+
+        async def run():
+            with (
+                patch(
+                    "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                    new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                patch(
+                    "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                    new=AsyncMock(return_value=[{"symbol": "AUDUSD"}, {"symbol": "BTCUSD"}]),
+                ),
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        # Only AUDUSD should be swept (degeneracy_breaker triggers it,
+        # bayesian_penalty does not)
+        assert orch.run_heavy_sweep_for_symbol.await_count == 1
+        # Verify the correct symbol was swept
+        call_args = orch.run_heavy_sweep_for_symbol.call_args
+        assert call_args[0][0].get("symbol") == "AUDUSD"
+
+    def test_emergency_and_degeneracy_actions_both_trigger_sweeps(self):
+        """Both emergency_heavy_sweep and degeneracy_breaker actions should
+        trigger heavy sweeps."""
+        orch = self._orch()
+        actions = [
+            {"symbol": "AUDUSD", "action": "degeneracy_breaker"},
+            {"symbol": "EURUSD", "action": "emergency_heavy_sweep"},
+            {"symbol": "BTCUSD", "action": "bayesian_penalty"},  # NOT a sweep trigger
+        ]
+
+        async def run():
+            with (
+                patch(
+                    "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
+                    new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                patch(
+                    "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                    new=AsyncMock(return_value=[{"symbol": "AUDUSD"}, {"symbol": "EURUSD"}, {"symbol": "BTCUSD"}]),
+                ),
+            ):
+                await orch._run_eod_correction_only()
+
+        asyncio.run(run())
+        assert orch.run_heavy_sweep_for_symbol.await_count == 2  # AUDUSD + EURUSD

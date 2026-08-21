@@ -1146,10 +1146,14 @@ class SweepOrchestrator(HeavySweepMixin):
         # (better params → better predictions → calibration re-converges).
         # Best-effort: each symbol is fetched + swept in isolation; a
         # failure is logged, never raised out of the tick.
+        # L3 fix (2026-08-21): Also trigger emergency heavy sweeps for
+        # degeneracy_breaker actions — symbols with p_win≈0 and no
+        # calibration records stuck in the HMM collapse deadlock.
         emergency_syms = sorted({
             a.get("symbol")
             for a in (correction_summary.get("actions") or [])
-            if a.get("action") == "emergency_heavy_sweep" and a.get("symbol")
+            if a.get("action") in ("emergency_heavy_sweep", "degeneracy_breaker")
+                and a.get("symbol")
         })
         if emergency_syms:
             logger.info(
@@ -1249,10 +1253,13 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.error("[eod:correction-intraday] correction failed: %s", exc)
             return
 
+        # L3 fix (2026-08-21): Also trigger emergency heavy sweeps for
+        # degeneracy_breaker actions (symbols with p_win≈0 and no calibration).
         emergency_syms = sorted({
             a.get("symbol")
             for a in (correction_summary.get("actions") or [])
-            if a.get("action") == "emergency_heavy_sweep" and a.get("symbol")
+            if a.get("action") in ("emergency_heavy_sweep", "degeneracy_breaker")
+                and a.get("symbol")
         })
         if not emergency_syms:
             return

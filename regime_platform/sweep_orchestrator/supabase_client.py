@@ -503,3 +503,35 @@ async def fetch_calibration_bias(
         "win_rate": round(win_rate, 4),
         "avg_pred": round(avg_pred, 4),
     }
+
+
+async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
+    """Fetch the most recent nt_sweep_result row for a symbol.
+
+    Used by the EOD correction loop to detect HMM degeneracy when no
+    calibration records exist (bias=None) — if p_win=<0.01, the symbol
+    is stuck in the degeneracy deadlock (p_win=0 → qualified=False →
+    no resolved outcomes → no calibration records → no EOD correction).
+
+    Returns the full row dict (including p_win, qualified, regime_conf, etc.)
+    or None if not found / query fails.
+    """
+    try:
+        url = _url("nt_sweep_result")
+        params = {
+            "select": "*",
+            "symbol": f"eq.{symbol}",
+            "order": "ts.desc",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_latest_sweep %s failed: %s", symbol, exc)
+        return None
+
+    if not isinstance(data, list) or len(data) == 0:
+        return None
+    return data[0]

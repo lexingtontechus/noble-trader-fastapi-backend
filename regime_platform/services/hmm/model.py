@@ -187,8 +187,14 @@ class HmmModel:
             # (feature index 0).
             state_means_lr = model.means_[:, 0]  # (N_STATES,)
             lr_std = float(np.std(mat[:, 0])) if mat.shape[0] > 1 else 1.0
-            if lr_std < 1e-8:
-                lr_std = 1e-8  # avoid div-by-zero in flat markets
+            # L2 fix (2026-08-21): Raise the floor from 1e-8 to 1e-4 (0.01%).
+            # With lr_std=1e-8, the threshold = 0.25 * 1e-8 = 2.5e-9 — all
+            # state means fall within ±2.5e-9 of zero, collapsing all 5 states
+            # to "FLAT". This creates an absorbing T3 matrix where FLAT→FLAT=1.0
+            # and FLAT→UP=0.0, making p_markov_hold_n = 0.0 and crushing p_win
+            # to ~0 for compressed-price symbols (AUDUSD, EURUSD, GBPUSD, US30USD).
+            if lr_std < 1e-4:
+                lr_std = 1e-4
             threshold = STATE_MAP_THRESHOLD_STDS * lr_std
 
             state_map = {}  # 5-state index → "UP" / "DOWN" / "FLAT"
@@ -200,9 +206,30 @@ class HmmModel:
                 else:
                     state_map[i] = "FLAT"
 
-            # Build the 3x3 aggregate transition matrix
-            T5 = model.transmat_  # (N_STATES, N_STATES)
-            T3 = _aggregate_transition(T5, state_map)
+            # L2 fix (2026-08-21): Anti-degeneracy guard — if all states mapped
+            # to the same label, the T3 matrix will be degenerate (one row has
+            # all 1.0, other rows all 0.0 → set to uniform by _aggregate_transition).
+            # The current_state will always be the collapsed label, so if it's
+            # "FLAT", T3["FLAT"] = {UP:0, DOWN:0, FLAT:1} → absorbing → p_markov=0.
+            # Replace with uniform T3 + mark as degenerate so the EV engine
+            # applies a neutral prior instead of a zero-probability trap.
+            unique_states = set(state_map.values())
+            if len(unique_states) <= 1:
+                collapsed = unique_states.pop() if unique_states else "FLAT"
+                logger.warning(
+                    "hmm.fit: %s — state collapse detected (all 5 states → '%s'), "
+                    "using uniform 3x3 transition matrix (p_markov floor)",
+                    symbol, collapsed,
+                )
+                T3 = {
+                    "UP": {"UP": 1/3, "DOWN": 1/3, "FLAT": 1/3},
+                    "DOWN": {"UP": 1/3, "DOWN": 1/3, "FLAT": 1/3},
+                    "FLAT": {"UP": 1/3, "DOWN": 1/3, "FLAT": 1/3},
+                }
+            else:
+                # Build the 3x3 aggregate transition matrix
+                T5 = model.transmat_  # (N_STATES, N_STATES)
+                T3 = _aggregate_transition(T5, state_map)
 
             fitted = _FittedModel(
                 model=model,

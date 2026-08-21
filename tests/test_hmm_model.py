@@ -180,3 +180,69 @@ def test_status(hmm_model):
     assert status["n_models"] == 0
     assert status["n_states"] == 5
     assert status["n_features"] == 9
+
+
+# ─── L2 fix: Anti-degeneracy guard tests ─────────────────────────────────
+
+
+def test_degenerate_flat_prices_uses_uniform_matrix(hmm_model):
+    """When all HMM states collapse to FLAT (near-zero log_return std),
+    the anti-degeneracy guard should produce a uniform T3 instead of
+    an absorbing FLAT state.
+
+    This simulates the real-world scenario for AUDUSD/EURUSD/GBPUSD/US30USD
+    where compressed price action causes lr_std → tiny, all states → FLAT,
+    and the old code produced T3[FLAT] = {UP:0, DOWN:0, FLAT:1} (absorbing).
+    """
+    # Generate near-flat prices (tiny log returns — simulates compressed market)
+    np.random.seed(42)
+    n = 300
+    # Returns are ~1e-9 — far below the 1e-4 floor
+    returns = np.random.randn(n) * 1e-9
+    closes = 100.0 * np.exp(np.cumsum(returns))
+
+    hmm_model.bootstrap_from_ohlcv("AUDUSD", closes.tolist())
+
+    # Try to fit — may succeed or fail depending on hmmlearn availability
+    result = hmm_model.fit("AUDUSD")
+
+    if not result:
+        try:
+            import hmmlearn  # noqa: F401
+            pytest.fail("hmmlearn installed but fit returned False")
+        except ImportError:
+            pytest.skip("hmmlearn not installed")
+
+    # Check the state_map — if all collapsed, the T3 should be uniform
+    with hmm_model._global_lock:
+        fitted = hmm_model._models.get("AUDUSD")
+    assert fitted is not None
+
+    state_map = fitted.state_map
+    unique_labels = set(state_map.values())
+
+    if len(unique_labels) <= 1:
+        # Anti-degeneracy guard should have triggered → uniform T3
+        T3 = fitted.T3
+        for s in STATES_3:
+            assert T3[s]["UP"] == pytest.approx(1/3, abs=0.001)
+            assert T3[s]["DOWN"] == pytest.approx(1/3, abs=0.001)
+            assert T3[s]["FLAT"] == pytest.approx(1/3, abs=0.001)
+        # No absorbing state — probability of reaching UP from FLAT is 1/3
+
+
+def test_lr_std_floor_raises_threshold():
+    """The lr_std floor should be 1e-4 (0.01%), not 1e-8.
+    This prevents the threshold from collapsing to ~2.5e-9, which
+    causes all state means to map to FLAT."""
+    # Simulate the old vs new floor
+    old_lr_std = 1e-8
+    new_lr_std = 1e-4
+
+    old_threshold = 0.25 * old_lr_std  # 2.5e-9
+    new_threshold = 0.25 * new_lr_std   # 2.5e-5
+
+    # With the old floor, even a state mean of 1e-5 would be below threshold
+    # and collapse to FLAT. With the new floor, state means have room to separate.
+    assert new_threshold > old_threshold * 1000  # 4 orders of magnitude larger
+

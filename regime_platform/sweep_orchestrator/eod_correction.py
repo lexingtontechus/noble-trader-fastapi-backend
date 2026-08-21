@@ -183,7 +183,56 @@ async def run_eod_correction() -> dict[str, Any]:
             bias = cal.get("bias") if cal else None
 
             if bias is None:
-                # Not enough calibration records yet — nothing to act on.
+                # L3 fix (2026-08-21): No calibration records — check for HMM
+                # degeneracy instead of silently skipping. When p_win is near 0
+                # despite a valid regime signal, the symbol is stuck in the
+                # degeneracy deadlock: p_win=0 → qualified=False → no resolved
+                # outcomes → no calibration records → no EOD correction.
+                # This path breaks the cycle by recommending an emergency
+                # heavy sweep even without calibration data.
+                try:
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        fetch_latest_sweep,
+                    )
+                    latest = await fetch_latest_sweep(symbol)
+                    if latest is not None:
+                        p_win_val = float(latest.get("p_win") or 1.0)
+                        if p_win_val < 0.01:  # degenerate threshold
+                            await _write_eod_action(
+                                symbol, "degeneracy_breaker", bias,
+                                {
+                                    "reason": "p_win near 0 in latest sweep",
+                                    "latest_p_win": p_win_val,
+                                    "markov_p_up": latest.get("markov_p_up"),
+                                    "markov_p_dn": latest.get("markov_p_dn"),
+                                    "regime": latest.get("regime"),
+                                    "qualified": latest.get("qualified"),
+                                },
+                            )
+                            summary["actions"].append({
+                                "symbol": symbol,
+                                "action": "degeneracy_breaker",
+                                "bias": bias,
+                            })
+                            logger.warning(
+                                "[eod:correction] %s: degeneracy detected "
+                                "(p_win=%.4f, markov_up=%s, markov_dn=%s) — "
+                                "emergency sweep requested",
+                                symbol, p_win_val,
+                                latest.get("markov_p_up"),
+                                latest.get("markov_p_dn"),
+                            )
+                        else:
+                            logger.debug(
+                                "[eod:correction] %s: no calibration records "
+                                "but p_win=%.4f (not degenerate) — skipped",
+                                symbol, p_win_val,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "[eod:correction] %s: degeneracy check failed (%s: %s)",
+                        symbol, type(exc).__name__, exc,
+                    )
                 continue
 
             status = _classify_bias(bias)

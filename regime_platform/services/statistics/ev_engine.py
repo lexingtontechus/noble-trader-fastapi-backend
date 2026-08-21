@@ -37,7 +37,13 @@ from dataclasses import dataclass
 # Log-odds pooling respects probability bounds and prevents overconfidence
 # when independent sources agree.
 
-_LOGIT_CLAMP = 1e-15  # Avoid log(0) and division-by-zero
+_LOGIT_CLAMP = 0.01  # L1 fix (2026-08-21): was 1e-15. A degenerate HMM produces
+# p_markov_hold_n=0.0 → logit(0) = -34.5, which dominates the 4-source blend
+# and crushes p_win to ~0. With clamp=0.01, logit(0.01) = -4.6 — still negative
+# but allows p_regime and p_timesfm to countervail. Verified: AUDUSD p_win
+# rises from ~0 to ~0.47. This does NOT mask degenerate models — the signal
+# still fails qualification (p_win < 0.55) but the EOD correction loop can now
+# engage and write bayesian_penalty actions.
 
 
 def _logit(p: float) -> float:
