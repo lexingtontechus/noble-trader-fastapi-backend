@@ -298,3 +298,29 @@ class TestEodCorrectionIntraday:
 
         asyncio.run(run())
         assert orch.run_heavy_sweep_for_symbol.await_count == 2  # AUDUSD + EURUSD
+
+
+class TestFetchLatestSweepColumn:
+    """Regression: fetch_latest_sweep must use 'sweep_timestamp' not 'ts'.
+
+    The nt_sweep_result table (originally sim_sweep_results) has a
+    'sweep_timestamp' column — NOT 'ts'. Using 'ts.desc' as the order param
+    causes a 400 Bad Request, silently defeating the L3 degeneracy_breaker
+    path for symbols with no calibration records.
+    """
+
+    def test_uses_sweep_timestamp_column(self):
+        """fetch_latest_sweep must order by 'sweep_timestamp', not 'ts'."""
+        import inspect
+
+        from regime_platform.sweep_orchestrator import supabase_client
+
+        source = inspect.getsource(supabase_client.fetch_latest_sweep)
+        assert "sweep_timestamp.desc" in source, (
+            "fetch_latest_sweep must use order='sweep_timestamp.desc' — "
+            "the nt_sweep_result table has no 'ts' column"
+        )
+        assert "ts.desc" not in source.replace("sweep_timestamp.desc", ""), (
+            "fetch_latest_sweep must NOT use 'ts.desc' — that column does not "
+            "exist on nt_sweep_result (the table uses sweep_timestamp)"
+        )

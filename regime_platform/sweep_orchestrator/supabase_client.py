@@ -521,7 +521,7 @@ async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
         params = {
             "select": "*",
             "symbol": f"eq.{symbol}",
-            "order": "ts.desc",
+            "order": "sweep_timestamp.desc",
             "limit": "1",
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
