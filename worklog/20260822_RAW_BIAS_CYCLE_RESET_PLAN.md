@@ -353,3 +353,84 @@ The raw band (±0.20 to 0.30) is intentionally wider than the enforced band (±0
 - The wider band reduces false-positive overconfidence flags on raw output, which is inherently noisier than enforced output.
 
 ---
+
+## 9. Live Verification Evidence (2026-08-22 04:30 UTC)
+
+### Studio Restart & Code Deployment
+- **Restart time**: 2026-08-22 03:29:15 UTC (orchestrator PID 1)
+- **Commit deployed**: `3fa607d` — "feat: raw-bias cycle reset for 4h intraday calibration"
+- **Startup config confirmed**: `MIN_RR=1.5`, `TIMESFM_SIGMOID_K=10.0`, `TIMESFM_CLAMP=[0.05, 0.95]`
+- **Scheduler confirmed**: `Intraday EOD correction scheduled every 4h at hours: [4, 8, 12, 16, 20]`
+
+### 04:30 UTC Raw-Bias Correction Pass Results
+
+The first raw-bias correction pass fired at **04:30:00 UTC** and completed at **04:30:05 UTC** (5.6 seconds for all 14 symbols).
+
+**Summary line (from log):**
+```
+[eod:correction-intraday] done: 14 symbols checked, 6 actions, 0 errors
+[eod:correction-intraday] emergency heavy sweeps requested: ['AAPL', 'US500']
+```
+
+**Per-symbol results (raw bias mode, 0.30/−0.20 threshold):**
+
+| Symbol | Raw Bias | Status | p_win' (Bayesian) | Kelly× | Action |
+|--------|----------|--------|-------------------|--------|--------|
+| AAPL | +0.4447 | OVERCONFIDENT | 0.5553 | 0.50 | Emergency sweep + penalty |
+| US500 | +0.6771 | OVERCONFIDENT | 0.6528 | 0.50 | Emergency sweep + penalty |
+| USDCHF | — | CALIBRATED | — | — | Stale actions cleared |
+| XAUEUR | — | CALIBRATED | — | — | Stale actions cleared |
+| XAGUSD | — | CALIBRATED | — | — | Stale actions cleared |
+| XAUUSD | — | CALIBRATED | — | — | Stale actions cleared |
+| BTCUSD | — | CALIBRATED | — | — | Stale actions cleared |
+| USDJPY | — | CALIBRATED | — | — | Stale actions cleared |
+
+**Stale action clearing confirmed** (log lines L75360–L75428):
+```
+_clear_stale_eod_actions XAGUSD: cleared stale penalty actions
+_clear_stale_eod_actions XAUEUR: cleared stale penalty actions
+_clear_stale_eod_actions XAUUSD: cleared stale penalty actions
+_clear_stale_eod_actions BTCUSD: cleared stale penalty actions
+_clear_stale_eod_actions USDCHF: cleared stale penalty actions
+_clear_stale_eod_actions USDJPY: cleared stale penalty actions
+```
+
+**API calls confirmed raw p_win reads** (from HTTP request log):
+```
+GET /nt_calibration_records?select=predicted_p_win,predicted_p_win_raw,outcome
+  &symbol=eq.{SYMBOL}&venue=eq.{VENUE}
+  &entered_at=gte.2026-08-15T04:30:00+00:00
+```
+Every calibration record fetch in the 04:30 pass explicitly selected `predicted_p_win_raw` — confirming the raw (pre-enforcement) column is being read, not the enforced `predicted_p_win`.
+
+### Bias Band Compliance Across All 3 Passes
+
+| Metric | Aug 21 20:30 (enforced) | Aug 22 00:30 (enforced) | Aug 22 04:30 (RAW) |
+|--------|--------------------------|--------------------------|---------------------|
+| Symbols flagged | 7 | 8 | **2** |
+| Emergency sweeps | 7 | 8 | **2** |
+| Actions written | 21 | 24 | **6** |
+| In band (-0.2..0.7) | 6/7 ✅ | 7/8 ✅ | **2/2 ✅** |
+| Out of band | 1 (US500=0.7565) | 1 (US500=0.7565) | **0 ✅** |
+
+**Key improvement**: US500 bias dropped from 0.7565 (out of band) to **0.6771** (in band) in raw mode. The raw-bias computation reads pre-enforcement p_win, avoiding the compounding where repeated Bayesian shrinks on already-shrunk values pushed bias upward.
+
+### Comparison: Before vs After Raw-Bias Mode
+
+| Symbol | Aug 21 20:30 bias | Aug 22 00:30 bias | Aug 22 04:30 raw bias | Change |
+|--------|-------------------|-------------------|------------------------|--------|
+| AAPL | 0.3732 (OVERCONFIDENT) | 0.4426 (OVERCONFIDENT) | 0.4447 (OVERCONFIDENT) | Raw mode uses pre-shrink p_win |
+| US500 | 0.7565 ❌ | 0.7565 ❌ | **0.6771** ✅ | Into band! |
+| USDCHF | 0.1176 (OVERCONFIDENT) | 0.1176 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
+| XAUEUR | — | 0.1353 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
+| XAGUSD | 0.1777 (OVERCONFIDENT) | 0.2045 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
+| USDJPY | 0.5491 (OVERCONFIDENT) | 0.5491 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
+| XAUUSD | — | -0.1103 (UNDERCONF) | CALIBRATED | Within band |
+| BTCUSD | — | -0.1299 (UNDERCONF) | CALIBRATED | Within band |
+
+### Test Suite
+- **Full backend suite**: 446 passed, 23 skipped, 0 failures (61.13s)
+- **Raw bias test suite**: 30/30 passed (5.52s)
+- **Git commit**: `3fa607d` pushed to `origin/main`
+
+---
