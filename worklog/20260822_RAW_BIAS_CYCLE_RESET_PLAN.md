@@ -434,3 +434,32 @@ Every calibration record fetch in the 04:30 pass explicitly selected `predicted_
 - **Git commit**: `3fa607d` pushed to `origin/main`
 
 ---
+
+## 10. Enforced Bias vs Raw Bias — Architecture
+
+### Two distinct passes, two distinct biases
+
+| | **Raw Bias (4h intraday correction)** | **Enforced Bias (5-min light sweeps + nightly 00:30)** |
+|---|---|---|
+| **What it reads** | `predicted_p_win_raw` from `nt_calibration_records` (pre-Bayesian-shrink model output) | The latest `nt_eod_actions` row's `status` field (pre-classified by whichever pass wrote it) |
+| **What it computes** | `bias = raw_p_win - win_rate`, then classifies (OVERCONFIDENT/UNDERCONFIDENT/CALIBRATED) | **Nothing** — just reads the stored status and applies the corresponding penalty (Bayesian shrink + Kelly×0.5) |
+| **What it writes** | `nt_eod_actions` rows (3 per penalty symbol: bayesian_penalty, kelly_reduction, emergency_heavy_sweep) + clears stale actions for CALIBRATED symbols | Adjusted `p_win` + `kelly_f` into the live sweep signal |
+| **Classification thresholds** | Overconfident: bias ≥ 0.30, Underconfident: bias ≤ -0.20, Calibrated: -0.20 < bias < 0.30 | N/A — reads pre-classified status from `nt_eod_actions` |
+| **Freshness window** | Writes new actions every 4h (04:30/08:30/12:30/16:30/20:30 UTC) | Enforces actions if < 8h old (2× 4h cycle); stale penalties age out |
+| **Purpose** | Detect true model drift using un-shrunk p_win; write correct recommendations | Apply the recommendations to live signals; maintain penalties between 4h passes |
+
+### Why two thresholds exist
+
+The raw-bias pass uses a **wider band (±0.20/0.30)** because `predicted_p_win_raw` values are naturally more extreme — they haven't been shrunk toward 0.5 by the Bayesian prior. A raw p_win of 0.90 with a win rate of 0.65 gives raw bias = 0.25, which is within the calibrated band — but the same symbol's enforced p_win (after Bayesian shrink) might be 0.65, giving enforced bias = 0.00.
+
+The nightly 00:30 pass and 5-min light sweeps use the **tighter 0.10 band** because they read the already-shrunk enforced p_win from `nt_eod_actions`. The `nt_eod_actions.bias` column stores whatever bias value the writer computed (raw or enforced), and the light sweep just reads it — it doesn't recompute.
+
+### Consequences of the dual-threshold design
+
+1. **No compounding**: The 4h raw pass reads true model output and writes correct penalties. The light sweep applies these without re-computing bias, so penalties aren't applied on top of already-shrunk values.
+
+2. **Stale action clearing**: Symbols that are CALIBRATED in raw mode (e.g., USDCHF with raw bias < 0.30) have their stale `nt_eod_actions` cleared at the 4h boundary. This prevents the nightly pass from re-flagging them based on old enforced p_win values.
+
+3. **The 0.7 upper bound was incorrect**: The worklog previously stated `-0.2 < bias < 0.7` as the raw-bias band. This was wrong — the actual configured thresholds (`EOD_BIAS_RAW_OVERCONFIDENT=0.30`, `EOD_BIAS_RAW_UNDERCONFIDENT=-0.20`) define the calibrated band as **-0.20 < bias < 0.30**. Values above 0.30 are OVERCONFIDENT, not in-band.
+
+---

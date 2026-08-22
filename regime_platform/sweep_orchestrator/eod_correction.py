@@ -48,14 +48,11 @@ UNDERCONFIDENT_BIAS = -0.10
 # Raw-bias mode thresholds (2026-08-22): the 4h intraday correction pass
 # evaluates model drift from ``predicted_p_win_raw`` (pre-enforcement), so the
 # band is wider — raw model output is naturally more extreme than the
-# enforcement-compensated value the nightly pass sees. The user's target
-# range is -0.2 < bias < 0.7; these are the classification boundaries within
-# that range:
+# enforcement-compensated value the nightly pass sees. Calibration band:
 #   - Overconfident: raw bias >= 0.30 (raw p_win systematically above true win rate)
 #   - Underconfident: raw bias <= -0.20 (raw p_win systematically below true win rate)
 #   - Calibrated: -0.20 < bias < 0.30
 # Configurable via EOD_BIAS_RAW_OVERCONFIDENT / EOD_BIAS_RAW_UNDERCONFIDENT.
-# Defaults here mirror the plan document; the caller may override via env.
 DEFAULT_RAW_OVERCONFIDENT = 0.30
 DEFAULT_RAW_UNDERCONFIDENT = -0.20
 
