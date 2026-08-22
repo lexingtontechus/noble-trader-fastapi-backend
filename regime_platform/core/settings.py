@@ -319,6 +319,17 @@ class Settings(BaseSettings):
     #   with raw bias <= -0.20 are flagged UNDERCONFIDENT.
     EOD_BIAS_RAW_UNDERCONFIDENT: float = -0.20
 
+    # EOD_BIAS_ENFORCED_THRESHOLD (default 0.10, 2026-08-22 audit fix #2):
+    #   Centralized value for the nightly/enforced-bias band (|bias| > this
+    #   -> OVERCONFIDENT/UNDERCONFIDENT). MUST mirror
+    #   eod_correction.OVERCONFIDENT_BIAS / eod_correction.UNDERCONFIDENT_BIAS
+    #   (a test asserts they stay in sync — see
+    #   worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §4 fix #2).
+    #   The public /calibration/bias and /calibration/status endpoints read
+    #   this setting directly so they can never silently drift from the
+    #   threshold the live enforcement loop actually acts on.
+    EOD_BIAS_ENFORCED_THRESHOLD: float = 0.10
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at

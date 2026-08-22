@@ -89,13 +89,35 @@ class CalibrationLogResponse(BaseModel):
 
 
 class CalibrationBiasResponse(BaseModel):
-    """Per-symbol calibration bias."""
+    """Per-symbol calibration bias.
+
+    2026-08-22 (audit fix #2): this now mirrors the SAME windowed query and
+    thresholds the live enforcement loop uses (``fetch_calibration_bias`` /
+    ``fetch_calibration_bias_raw`` in ``sweep_orchestrator/supabase_client.py``,
+    classified via ``eod_correction._classify_bias`` /
+    ``_classify_bias_raw``) instead of a separately-implemented all-time
+    query with its own hardcoded ±0.05 threshold. Both the enforced view
+    (``bias``/``status``, tight ±0.10 band, what's actually live) and the
+    raw view (``bias_raw``/``status_raw``, wide +0.30/−0.20 band, true model
+    drift) are returned side by side, labeled, instead of one ambiguous
+    number — see worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md.
+    """
     symbol: str
+    window_days: int = 7
+    # ── Enforced view (predicted_p_win — what's actually live) ──────────
     avg_predicted_p_win: float = 0.0
     actual_win_rate: float = 0.0
     bias: float = 0.0  # positive = overconfident
     n_records: int = 0
     status: Literal["CALIBRATED", "OVERCONFIDENT", "UNDERCONFIDENT", "INSUFFICIENT_DATA"] = "INSUFFICIENT_DATA"
+    # ── Raw view (predicted_p_win_raw — true model drift, pre-enforcement) ──
+    avg_predicted_p_win_raw: Optional[float] = None
+    bias_raw: Optional[float] = None
+    status_raw: Literal["CALIBRATED", "OVERCONFIDENT", "UNDERCONFIDENT", "INSUFFICIENT_DATA"] = "INSUFFICIENT_DATA"
+    # ── Thresholds actually applied (for callers that want to display them) ──
+    threshold_enforced: float = 0.10
+    threshold_raw_overconfident: float = 0.30
+    threshold_raw_underconfident: float = -0.20
 
 
 class CalibrationStatusResponse(BaseModel):
@@ -104,10 +126,55 @@ class CalibrationStatusResponse(BaseModel):
     total_symbols: int = 0
 
 
-# ─── Bias computation thresholds (configurable) ────────────────────────
+# ─── Bias computation ───────────────────────────────────────────────────
+# 2026-08-22 (audit fix #2): thresholds and windowing are no longer defined
+# here — they come from settings.EOD_BIAS_ENFORCED_THRESHOLD /
+# EOD_BIAS_RAW_OVERCONFIDENT / EOD_BIAS_RAW_UNDERCONFIDENT / EOD_BIAS_WINDOW_DAYS
+# / EOD_BIAS_MIN_RECORDS, and classification reuses
+# eod_correction._classify_bias / _classify_bias_raw — the exact functions
+# the live enforcement loop calls. This endpoint can no longer silently
+# diverge from what's actually being enforced.
 
-CALIBRATION_MIN_RECORDS = 20       # Minimum records before bias is meaningful
-CALIBRATION_OVER_THRESHOLD = 0.05  # |bias| >= this → OVERCONFIDENT / UNDERCONFIDENT
+
+def _build_bias_response(
+    symbol: str,
+    enforced: dict | None,
+    raw: dict | None,
+    window_days: int,
+) -> "CalibrationBiasResponse":
+    """Assemble a CalibrationBiasResponse from the enforced/raw fetch results.
+
+    Shared by ``get_calibration_bias`` and ``get_calibration_status`` so the
+    two endpoints can never compute this differently.
+    """
+    from regime_platform.sweep_orchestrator.eod_correction import (
+        _classify_bias,
+        _classify_bias_raw,
+    )
+
+    fields: dict = {
+        "symbol": symbol,
+        "window_days": window_days,
+        "threshold_enforced": settings.EOD_BIAS_ENFORCED_THRESHOLD,
+        "threshold_raw_overconfident": getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", 0.30),
+        "threshold_raw_underconfident": getattr(settings, "EOD_BIAS_RAW_UNDERCONFIDENT", -0.20),
+    }
+    if enforced is not None:
+        fields.update(
+            avg_predicted_p_win=enforced["avg_pred"],
+            actual_win_rate=enforced["win_rate"],
+            bias=enforced["bias"],
+            n_records=enforced["n"],
+            status=_classify_bias(enforced["bias"]),
+        )
+    if raw is not None:
+        fields.update(
+            avg_predicted_p_win_raw=raw.get("avg_pred_raw"),
+            bias_raw=raw["bias"],
+            status_raw=_classify_bias_raw(raw["bias"]),
+        )
+        fields.setdefault("n_records", raw["n"])
+    return CalibrationBiasResponse(**fields)
 
 
 # ─── Endpoints ─────────────────────────────────────────────────────────
@@ -210,71 +277,46 @@ async def log_calibration(
 async def get_calibration_bias(
     request: Request,
     symbol: str,
+    venue: Optional[str] = None,
+    window_days: Optional[int] = None,
     user: TokenData = Depends(get_authed_user),
 ):
     """
-    Compute calibration bias for a single symbol.
+    Compute calibration bias for a single symbol — using the SAME rolling
+    window and thresholds the live enforcement loop uses, so this endpoint
+    can never silently disagree with what's actually being enforced.
 
-    Bias = AVG(predicted_p_win) - actual_win_rate.
+    Returns both views:
+      - Enforced (``bias``/``status``): reads ``predicted_p_win`` (the
+        deployed, possibly-Bayesian-shrunk value), tight ±0.10 band.
+      - Raw (``bias_raw``/``status_raw``): reads ``predicted_p_win_raw``
+        (the pre-enforcement model output), wide +0.30/−0.20 band — this is
+        "is the model itself still miscalibrated," independent of
+        enforcement compensation.
 
-    A positive bias means the system is overconfident (predicts higher
-    win rates than it achieves). A negative bias means underconfident.
+    ``window_days`` defaults to ``settings.EOD_BIAS_WINDOW_DAYS`` (7 days,
+    the same window the enforcement loop uses). Pass ``0`` for legacy
+    all-time (unwindowed) behavior.
     """
     if not await _db_available():
         raise HTTPException(status_code=503, detail="Supabase not configured")
 
+    from regime_platform.sweep_orchestrator.supabase_client import (
+        fetch_calibration_bias,
+        fetch_calibration_bias_raw,
+    )
+
+    win_days = window_days if window_days is not None else settings.EOD_BIAS_WINDOW_DAYS
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Fetch all records for this symbol
-            resp = await client.get(
-                _supabase_url("nt_calibration_records"),
-                headers=_supabase_headers(),
-                params={
-                    "symbol": f"eq.{symbol}",
-                    "select": "predicted_p_win,outcome",
-                },
-            )
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Failed to fetch calibration records: HTTP {resp.status_code}",
-                )
-
-            rows = resp.json()
-            if not rows:
-                return CalibrationBiasResponse(
-                    symbol=symbol,
-                    status="INSUFFICIENT_DATA",
-                )
-
-            n = len(rows)
-            avg_pred = sum(r["predicted_p_win"] for r in rows) / n
-            wins = sum(1 for r in rows if r["outcome"] == "win")
-            win_rate = wins / n
-            bias = round(avg_pred - win_rate, 4)
-
-            if n < CALIBRATION_MIN_RECORDS:
-                status = "INSUFFICIENT_DATA"
-            elif abs(bias) < CALIBRATION_OVER_THRESHOLD:
-                status = "CALIBRATED"
-            elif bias >= CALIBRATION_OVER_THRESHOLD:
-                status = "OVERCONFIDENT"
-            else:
-                status = "UNDERCONFIDENT"
-
-            return CalibrationBiasResponse(
-                symbol=symbol,
-                avg_predicted_p_win=round(avg_pred, 4),
-                actual_win_rate=round(win_rate, 4),
-                bias=bias,
-                n_records=n,
-                status=status,
-            )
-
+        enforced = await fetch_calibration_bias(symbol, venue=venue, window_days=win_days)
+        raw = await fetch_calibration_bias_raw(symbol, venue=venue, window_days=win_days)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Supabase request timed out")
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Supabase request failed: {exc}")
+
+    return _build_bias_response(symbol, enforced, raw, win_days)
 
 
 @limiter.limit(RATE_LIMIT_DEFAULT)
@@ -285,86 +327,46 @@ async def get_calibration_bias(
 )
 async def get_calibration_status(
     request: Request,
+    window_days: Optional[int] = None,
     user: TokenData = Depends(get_authed_user),
 ):
     """
-    Get calibration status labels for all symbols that have records.
-
-    Each symbol is labelled as:
-      - CALIBRATED         — predictions match outcomes (|bias| < 5%)
-      - OVERCONFIDENT      — predictions too optimistic (bias >= +5%)
-      - UNDERCONFIDENT     — predictions too pessimistic (bias <= -5%)
-      - INSUFFICIENT_DATA  — fewer than 20 records
+    Calibration status for every active symbol — same windowed query and
+    thresholds as ``get_calibration_bias`` (see its docstring). Each
+    result carries both the enforced view (``status``) and the raw view
+    (``status_raw``):
+      - CALIBRATED         — within the calibrated band
+      - OVERCONFIDENT      — predictions too optimistic
+      - UNDERCONFIDENT     — predictions too pessimistic
+      - INSUFFICIENT_DATA  — fewer than ``settings.EOD_BIAS_MIN_RECORDS``
+        records in the window
     """
     if not await _db_available():
         raise HTTPException(status_code=503, detail="Supabase not configured")
 
+    from regime_platform.sweep_orchestrator.supabase_client import (
+        fetch_active_symbols,
+        fetch_calibration_bias,
+        fetch_calibration_bias_raw,
+    )
+
+    win_days = window_days if window_days is not None else settings.EOD_BIAS_WINDOW_DAYS
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                _supabase_url("nt_calibration_records"),
-                headers=_supabase_headers(),
-                params={
-                    "select": "symbol,predicted_p_win,outcome",
-                    "order": "entered_at.desc",
-                },
-            )
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Failed to fetch calibration records: HTTP {resp.status_code}",
-                )
+        symbols = await fetch_active_symbols()
+    except (httpx.TimeoutException, httpx.RequestError) as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch active symbols: {exc}")
 
-            rows = resp.json()
-            if not rows:
-                return CalibrationStatusResponse(results=[])
+    results: list[CalibrationBiasResponse] = []
+    for sym in symbols:
+        symbol = sym.get("symbol") if isinstance(sym, dict) else None
+        if not symbol:
+            continue
+        try:
+            enforced = await fetch_calibration_bias(symbol, window_days=win_days)
+            raw = await fetch_calibration_bias_raw(symbol, window_days=win_days)
+        except (httpx.TimeoutException, httpx.RequestError):
+            enforced = raw = None
+        results.append(_build_bias_response(symbol, enforced, raw, win_days))
 
-            # Group by symbol
-            from collections import OrderedDict
-
-            grouped: dict[str, dict] = OrderedDict()
-            for r in rows:
-                sym = r["symbol"]
-                if sym not in grouped:
-                    grouped[sym] = {"preds": [], "wins": 0, "total": 0}
-                grouped[sym]["preds"].append(r["predicted_p_win"])
-                grouped[sym]["total"] += 1
-                if r["outcome"] == "win":
-                    grouped[sym]["wins"] += 1
-
-            results = []
-            for sym, data in grouped.items():
-                n = data["total"]
-                avg_pred = sum(data["preds"]) / n
-                win_rate = data["wins"] / n
-                bias = round(avg_pred - win_rate, 4)
-
-                if n < CALIBRATION_MIN_RECORDS:
-                    status = "INSUFFICIENT_DATA"
-                elif abs(bias) < CALIBRATION_OVER_THRESHOLD:
-                    status = "CALIBRATED"
-                elif bias >= CALIBRATION_OVER_THRESHOLD:
-                    status = "OVERCONFIDENT"
-                else:
-                    status = "UNDERCONFIDENT"
-
-                results.append(
-                    CalibrationBiasResponse(
-                        symbol=sym,
-                        avg_predicted_p_win=round(avg_pred, 4),
-                        actual_win_rate=round(win_rate, 4),
-                        bias=bias,
-                        n_records=n,
-                        status=status,
-                    )
-                )
-
-            return CalibrationStatusResponse(
-                results=results,
-                total_symbols=len(results),
-            )
-
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Supabase request timed out")
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"Supabase request failed: {exc}")
+    return CalibrationStatusResponse(results=results, total_symbols=len(results))

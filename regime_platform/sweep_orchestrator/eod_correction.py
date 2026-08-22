@@ -41,7 +41,11 @@ from typing import Any, Optional
 
 logger = logging.getLogger("regime.sweep.eod_correction")
 
-# Bias thresholds (mirror the user's decision tree)
+# Bias thresholds (mirror the user's decision tree). MUST mirror
+# settings.EOD_BIAS_ENFORCED_THRESHOLD (a test asserts they stay in sync) —
+# the public /calibration/bias and /calibration/status endpoints
+# (routers/calibration.py) read the settings value directly so they can
+# never silently disagree with what this module enforces.
 OVERCONFIDENT_BIAS = 0.10
 UNDERCONFIDENT_BIAS = -0.10
 
