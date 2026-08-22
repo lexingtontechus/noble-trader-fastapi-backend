@@ -345,6 +345,19 @@ class Settings(BaseSettings):
     #   behaviour, useful for a quick rollback without a code change).
     MARKOV_EMA_ALPHA: float = 0.30
 
+    # KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU (default True, 2026-08-22 audit fix #3b):
+    #   The regime-based Kelly floor (orchestrator.py, "Kelly was 0 — applied
+    #   regime floor") exists so sampling noise on hourly returns doesn't zero
+    #   out sizing in a genuinely-edged regime. But it previously fired
+    #   whenever kelly_f==0.0 regardless of WHY — including when the measured
+    #   mean historical return (mu) was actually negative (confirmed live for
+    #   AAPL: mu=-0.00007129, i.e. a real negative edge, still got force-sized
+    #   to kelly_f=0.0397 purely from high regime confidence). When True, the
+    #   floor only fires if mu >= 0 — a negative measured edge is left at
+    #   kelly_f=0.0 (no size) instead of being overridden. Set False to
+    #   restore the original always-floor behaviour.
+    KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU: bool = True
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at

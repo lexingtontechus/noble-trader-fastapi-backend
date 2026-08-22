@@ -513,6 +513,38 @@ def _price_decimals(symbol: str) -> int:
 # ─── Venue derivation ───────────────────────────────────────────────
 
 
+def _apply_regime_kelly_floor(
+    kelly_f: float,
+    mu: float,
+    regime_label: str,
+    regime_conf: float,
+    require_nonneg_mu: bool = True,
+) -> tuple[float, bool, bool]:
+    """Pure logic for the regime-based Kelly floor (fix #3b, 2026-08-22 audit).
+
+    Hourly returns are noisy; mean historical return (``mu``) can be <= 0
+    even in a strong-confidence regime, driving raw Kelly to 0. This floor
+    exists so the sizer doesn't zero out sizing purely from sampling noise
+    in a genuinely-edged regime — but it must not force-size a symbol whose
+    MEASURED edge is actually negative just because regime confidence is
+    high (confirmed live for AAPL: mu=-0.00007129 still got floored to
+    kelly_f=0.0397, feeding a persistent overconfidence signal the
+    calibration loop could detect but never fix). When
+    ``require_nonneg_mu`` is True (default), the floor is withheld for
+    ``mu < 0``.
+
+    Returns:
+        (new_kelly_f, floor_applied, floor_withheld_negative_mu)
+    """
+    if kelly_f != 0.0 or regime_label in ("unknown", "market_closed", "neutral"):
+        return kelly_f, False, False
+    if require_nonneg_mu and mu < 0.0:
+        return kelly_f, False, True
+    # Scale the floor by regime confidence (0.5-0.99 -> 0.02-0.06)
+    floor = 0.04 * max(0.0, min(1.0, (regime_conf - 0.5) * 2.0))
+    return round(min(floor, 0.06), 6), True, False
+
+
 def _derive_venue(sym: dict[str, Any]) -> str:
     """Derive the execution venue / exchange from the symbol config.
 
@@ -1573,17 +1605,26 @@ class SweepOrchestrator(HeavySweepMixin):
             kelly_result.recommended_f,
         )
 
-        # ── 2b. Regime-based Kelly floor ──
-        # Hourly returns are noisy; mean can be ≤ 0 even in a strong bull
-        # regime, driving raw Kelly to 0. When the HMM is confidently
-        # directional, apply a floor so the sizer never returns 0.
-        if kelly_f == 0.0 and regime_label not in ("unknown", "market_closed", "neutral"):
-            # Scale the floor by regime confidence (0.5–0.99 → 0.02–0.06)
-            _floor = 0.04 * max(0.0, min(1.0, (regime_conf - 0.5) * 2.0))
-            kelly_f = round(min(_floor, 0.06), 6)
+        # ── 2b. Regime-based Kelly floor (fix #3b, 2026-08-22 audit) ──
+        # See _apply_regime_kelly_floor()'s docstring for the full rationale
+        # and worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2/§4 fix #3b.
+        _require_nonneg_mu = bool(
+            getattr(settings, "KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU", True)
+        )
+        kelly_f, _floor_applied, _floor_withheld = _apply_regime_kelly_floor(
+            kelly_f, _mu, regime_label, regime_conf, _require_nonneg_mu,
+        )
+        if _floor_withheld:
             logger.info(
-                "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, regime=%s)",
-                symbol, kelly_f, regime_conf, regime_label,
+                "%s: Kelly was 0, regime floor WITHHELD — measured mu=%.8f "
+                "is negative (regime=%s, conf=%.3f); a negative historical "
+                "edge is not force-sized just because regime confidence is high.",
+                symbol, _mu, regime_label, regime_conf,
+            )
+        elif _floor_applied:
+            logger.info(
+                "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, regime=%s, mu=%.8f)",
+                symbol, kelly_f, regime_conf, regime_label, _mu,
             )
 
         # ── 2b. Return statistics for Supabase ──
