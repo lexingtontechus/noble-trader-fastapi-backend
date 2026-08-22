@@ -512,4 +512,16 @@ Over 12 hours, the system processed **5 raw-bias correction passes** (every 4 ho
 - **All enforced bias values (light sweeps)**: within `-0.20 < bias < 0.70` ✅ (min observed: -0.189, max: 0.7565 before raw-bias pass at 04:30, then 0.6771 after)
 - **All raw bias values (4h passes)**: only AAPL (0.4447) and US500 (0.6771) exceed 0.30 threshold — all other 12 symbols are within `-0.20 < bias < 0.30` ✅
 
+### Stale action persistence on 5 symbols (AUDUSD, EURUSD, GBPUSD, USDCAD, XAUAUD)
+
+**Root cause**: The 4h raw-bias pass calls `fetch_calibration_bias_raw()` which returns `None` when a symbol has fewer than `EOD_BIAS_MIN_RECORDS` (default 20) calibration records. When `bias=None`, the symbol enters the degeneracy-check code path (L249-300 in `eod_correction.py`) instead of the bias-classification path. The `_clear_stale_eod_actions()` call at L315-316 is **only** reached when `status == "CALIBRATED"` after successful bias classification — it is never reached from the degeneracy path.
+
+These 5 symbols (AUDUSD, EURUSD, GBPUSD, USDCAD, XAUAUD) have low trading volume and may have <20 records, so their stale actions from Aug 18-19 are never cleared by the 4h pass. The stale actions persist and continue being enforced by light sweeps indefinitely.
+
+**Impact**: These symbols retain outdated penalty actions (`kelly_reduction`, `bayesian_penalty`) from Aug 18-19. The actions are never refreshed or cleared.
+
+**Proposed fixes** (awaiting authorization):
+1. Add `_clear_stale_eod_actions(symbol)` call to the degeneracy-check path (L249-300) for symbols that return `bias=None`
+2. Or: lower `EOD_BIAS_MIN_RECORDS` threshold for these low-volume symbols
+
 ---
