@@ -462,4 +462,6 @@ The nightly 00:30 pass and 5-min light sweeps use the **tighter 0.10 band** beca
 
 3. **The 0.7 upper bound was incorrect**: The worklog previously stated `-0.2 < bias < 0.7` as the raw-bias band. This was wrong — the actual configured thresholds (`EOD_BIAS_RAW_OVERCONFIDENT=0.30`, `EOD_BIAS_RAW_UNDERCONFIDENT=-0.20`) define the calibrated band as **-0.20 < bias < 0.30**. Values above 0.30 are OVERCONFIDENT, not in-band.
 
+4. **Drift monitor re-flags cleared symbols**: The drift monitor (runs every light sweep, 5-min) uses `fetch_calibration_bias` (enforced path) with threshold 0.15. When the 4h raw-bias pass clears stale actions for a CALIBRATED symbol (e.g., XAGUSD with raw bias < 0.30), the drift monitor sees no fresh penalty action, checks bias via the enforced path (which reads `predicted_p_win`, not `predicted_p_win_raw`), and if bias > 0.15 writes a new `bayesian_penalty`. Observed: XAGUSD cleared at 04:30:00 → drift monitor re-flagged at 04:31:16 (bias=0.4005 via enforced path). This is by design — the drift monitor catches intraday drift between 4h passes.
+
 ---
