@@ -668,6 +668,13 @@ class SweepOrchestrator(HeavySweepMixin):
         self._last_ok: dict[str, float] = {}
         # Last-known regime labels per symbol (for shift detection)
         self._last_regime: dict[str, str] = {}
+        # ── Markov EMA smoothing (2026-08-22 audit fix #3a) ────────────
+        # Per-symbol EMA of the raw T^N P_markov_hold_N estimate. See
+        # _smoothed_markov_hold_prob() below and
+        # worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2 Mechanism 1
+        # (AAPL/US500 current_state flipping tick-to-tick swung p_win
+        # between ~0.47 and ~0.85 even though the market wasn't moving).
+        self._markov_ema: dict[str, float] = {}
         # ── Signal cooldown tracking ──────────────────────────────────
         # Maps (symbol, direction) → timestamp of last PUBLISHED signal.
         # Used to suppress duplicate signals within the cooldown window.
@@ -1655,6 +1662,15 @@ class SweepOrchestrator(HeavySweepMixin):
         # live in the agent DuckDB. The EV engine renormalises around the
         # missing source. Pattern stats will be re-blended by the agent's
         # synthesizer when it re-evaluates the signal locally.
+        #
+        # Fix #3a (2026-08-22 audit): feed an EMA-smoothed P_markov_hold_N
+        # into the blend instead of the raw per-tick T^N estimate — see
+        # _smoothed_markov_hold_prob() for why (AAPL/US500 current_state
+        # flapping). Computed once per tick and reused by the soft-TimesFM-
+        # gate recompute below so both calls see the same smoothed value.
+        _smoothed_p_markov = self._smoothed_markov_hold_prob(
+            symbol, _markov_T, _markov_current_state, direction, MARKOV_HOLD_STEPS,
+        )
         ev_result = self._ev_engine.compute_ev(
             trend_probs=trend_probs,
             direction=direction,
@@ -1666,6 +1682,7 @@ class SweepOrchestrator(HeavySweepMixin):
             sl_bricks=sl_bricks,
             tp_bricks=tp_bricks,
             n_steps=MARKOV_HOLD_STEPS,
+            p_markov_override=_smoothed_p_markov,
         )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
@@ -1739,6 +1756,10 @@ class SweepOrchestrator(HeavySweepMixin):
                             sl_bricks=sl_bricks,
                             tp_bricks=tp_bricks,
                             n_steps=MARKOV_HOLD_STEPS,
+                            # Reuse the SAME smoothed value computed above —
+                            # not a fresh call — so both compute_ev() calls
+                            # in this tick agree on P_markov_hold_N (fix #3a).
+                            p_markov_override=_smoothed_p_markov,
                         )
                     # In soft mode, the TimesFM gate always "passes" —
                     # the penalty is applied via the reduced weight, not
@@ -2669,3 +2690,46 @@ class SweepOrchestrator(HeavySweepMixin):
         """
         from regime_platform.config.brick_params import load_brick_params
         return load_brick_params(symbol)
+
+    def _smoothed_markov_hold_prob(
+        self,
+        symbol: str,
+        transition_matrix: Optional[dict[str, dict[str, float]]],
+        current_state: Optional[str],
+        direction: str,
+        n_steps: int,
+    ) -> Optional[float]:
+        """EMA-smooth the raw T^N P_markov_hold_N estimate for ``symbol``
+        (audit fix #3a, 2026-08-22).
+
+        Root cause: in calm/low-volatility markets, the HMM's discretized
+        ``current_state`` (UP/DOWN/FLAT) can flip tick-to-tick at the
+        classification boundary, and each state's transition-matrix row is
+        near-deterministic — so the raw T^N hold probability swings between
+        near-0 and near-1 every 5 minutes even though nothing in the market
+        actually moved (confirmed live for AAPL: current_state flipped
+        UP->FLAT between two consecutive ticks with no price move; see
+        worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2 Mechanism 1).
+
+        Smoothing the OUTPUT probability (rather than adding hysteresis to
+        the state classification itself) dampens this regardless of whether
+        the underlying cause is current_state flipping or transition-matrix
+        re-estimation noise — it doesn't require knowing which one it is.
+
+        Returns ``None`` when the raw estimate itself is unavailable
+        (no transition matrix / current_state) — mirrors
+        ``EVEngine.compute_p_markov_hold_n``'s missing-source contract so
+        the blend still renormalises around it rather than treating a
+        stale smoothed value as fresh data.
+        """
+        raw = EVEngine.compute_p_markov_hold_n(
+            transition_matrix, current_state, direction, n_steps
+        )
+        if raw is None:
+            return None
+
+        alpha = max(0.0, min(1.0, float(getattr(settings, "MARKOV_EMA_ALPHA", 0.30))))
+        previous = self._markov_ema.get(symbol)
+        smoothed = raw if previous is None else (alpha * raw + (1.0 - alpha) * previous)
+        self._markov_ema[symbol] = smoothed
+        return smoothed

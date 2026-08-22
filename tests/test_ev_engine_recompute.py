@@ -70,6 +70,57 @@ def test_recompute_allowed_flips_when_shrunk_ev_goes_non_positive():
     assert low["allowed"] is False  # ev must be STRICTLY > min_ev
 
 
+def test_compute_ev_p_markov_override_bypasses_transition_matrix():
+    """p_markov_override (fix #3a) must be used AS the P_markov_hold_N
+    source directly, ignoring transition_matrix/current_state entirely,
+    while still participating in the normal renormalisation logic."""
+    engine = EVEngine()
+    trend_probs = {"bull": 0.6, "bear": 0.4}
+
+    # Without override: current_state=UP with a near-deterministic row
+    # would push p_markov close to 1.0.
+    matrix = {
+        "UP": {"UP": 0.93, "DOWN": 0.0, "FLAT": 0.07},
+        "DOWN": {"UP": 0.0, "DOWN": 0.93, "FLAT": 0.07},
+        "FLAT": {"UP": 0.33, "DOWN": 0.33, "FLAT": 0.34},
+    }
+    baseline = engine.compute_ev(
+        trend_probs=trend_probs, direction="long",
+        transition_matrix=matrix, current_state="UP",
+        tp_bricks=5, sl_bricks=3, brick_size=0.5, n_steps=1,
+    )
+    assert baseline.p_markov > 0.8  # near-deterministic UP row
+
+    overridden = engine.compute_ev(
+        trend_probs=trend_probs, direction="long",
+        transition_matrix=matrix, current_state="UP",
+        tp_bricks=5, sl_bricks=3, brick_size=0.5, n_steps=1,
+        p_markov_override=0.5,  # smoothed value, ignores the near-1.0 raw row
+    )
+    assert overridden.p_markov == 0.5
+    assert overridden.p_win < baseline.p_win  # blend shifted toward neutral
+
+
+def test_compute_ev_p_markov_override_none_is_unchanged_behaviour():
+    """p_markov_override=None (the default) must be byte-identical to the
+    pre-fix behaviour — no regression for existing callers."""
+    engine = EVEngine()
+    kwargs = dict(
+        trend_probs={"bull": 0.55, "bear": 0.45}, direction="long",
+        transition_matrix={
+            "UP": {"UP": 0.6, "DOWN": 0.2, "FLAT": 0.2},
+            "DOWN": {"UP": 0.2, "DOWN": 0.6, "FLAT": 0.2},
+            "FLAT": {"UP": 0.3, "DOWN": 0.3, "FLAT": 0.4},
+        },
+        current_state="FLAT",
+        tp_bricks=5, sl_bricks=3, brick_size=0.5, n_steps=2,
+    )
+    explicit_none = engine.compute_ev(p_markov_override=None, **kwargs)
+    default = engine.compute_ev(**kwargs)
+    assert explicit_none.p_win == default.p_win
+    assert explicit_none.p_markov == default.p_markov
+
+
 def test_recompute_ev_scale_and_aggression_use_shared_static_methods():
     """recompute_ev_fields must delegate to the same compute_aggression /
     compute_ev_scale used by compute_ev() itself, not a duplicated formula —

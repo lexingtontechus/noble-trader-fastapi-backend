@@ -553,6 +553,7 @@ class EVEngine:
         brick_size: float = 0.50,
         p_timesfm: Optional[float] = None,
         n_steps: Optional[int] = None,
+        p_markov_override: Optional[float] = None,
     ) -> EVFullResult:
         """Full EV computation with 4-source logit-pooled P_win (v5).
 
@@ -582,6 +583,20 @@ class EVEngine:
                        unavailable.
             n_steps: Optional override for T^N. Defaults to ``tp_bricks``
                      (1 brick per bar — brick velocity model).
+            p_markov_override: When provided, used AS the P_markov_hold_N
+                       source directly instead of deriving it from
+                       ``transition_matrix``/``current_state`` — bypasses
+                       ``compute_p_markov_hold_n()`` entirely. Callers use
+                       this to feed in an EMA-smoothed value (see
+                       ``worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md``
+                       §4 fix #3a — the raw per-tick T^N estimate can swing
+                       between near-0 and near-1 when ``current_state``
+                       flips at a classification boundary in calm markets;
+                       smoothing it per-symbol before the blend dampens
+                       that without needing to know why it flipped).
+                       Still participates in the normal availability/
+                       renormalisation logic — pass ``None`` (default) to
+                       fall back to the original behaviour unchanged.
         """
         # Step 1: Compute individual P_win sources
         p_regime = self.compute_p_regime(trend_probs or {}, direction)
@@ -589,9 +604,12 @@ class EVEngine:
 
         # N for T^N — default to tp_bricks (brick velocity: 1 brick = 1 bar)
         N = int(n_steps) if n_steps is not None else int(tp_bricks)
-        p_markov_hold_n = self.compute_p_markov_hold_n(
-            transition_matrix, current_state, direction, N
-        )
+        if p_markov_override is not None:
+            p_markov_hold_n = max(0.0, min(1.0, float(p_markov_override)))
+        else:
+            p_markov_hold_n = self.compute_p_markov_hold_n(
+                transition_matrix, current_state, direction, N
+            )
 
         p_timesfm_val = p_timesfm  # may be None
 

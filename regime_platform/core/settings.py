@@ -330,6 +330,21 @@ class Settings(BaseSettings):
     #   threshold the live enforcement loop actually acts on.
     EOD_BIAS_ENFORCED_THRESHOLD: float = 0.10
 
+    # MARKOV_EMA_ALPHA (default 0.30, 2026-08-22 audit fix #3a):
+    #   EMA smoothing factor for the per-symbol P_markov_hold_N estimate:
+    #   smoothed = alpha * raw + (1 - alpha) * previous_smoothed.
+    #   Root cause (AAPL/US500, worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md
+    #   §2 Mechanism 1): in calm/low-volatility markets, the HMM's discretized
+    #   current_state (UP/DOWN/FLAT) can flip tick-to-tick at the
+    #   classification boundary, and each state's transition-matrix row is
+    #   near-deterministic — so the raw T^N hold probability swings between
+    #   near-0 and near-1 every 5 minutes even though the market hasn't
+    #   moved. Lower alpha = more smoothing (slower to react to genuine
+    #   regime changes); higher alpha = closer to the old unsmoothed
+    #   behaviour. alpha=1.0 disables smoothing entirely (== previous
+    #   behaviour, useful for a quick rollback without a code change).
+    MARKOV_EMA_ALPHA: float = 0.30
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at
