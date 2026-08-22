@@ -1242,7 +1242,7 @@ class SweepOrchestrator(HeavySweepMixin):
         )
 
         try:
-            correction_summary = await run_eod_correction()
+            correction_summary = await run_eod_correction(raw_bias_mode=True)
             logger.info(
                 "[eod:correction-intraday] done: %d symbols checked, %d actions, %d errors",
                 correction_summary.get("checked", 0),

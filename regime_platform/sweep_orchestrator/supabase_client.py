@@ -505,6 +505,137 @@ async def fetch_calibration_bias(
     }
 
 
+async def fetch_calibration_bias_raw(
+    symbol: str,
+    venue: str | None = None,
+    *,
+    window_days: int | None = None,
+    min_records: int | None = None,
+) -> dict[str, float | str | int] | None:
+    """Query nt_calibration_records and return calibration bias computed from
+    ``predicted_p_win_raw`` (the PRE-enforcement p_win) rather than the
+    enforced ``predicted_p_win``.
+
+    This is the raw-model-bias variant used by the 4h intraday correction
+    pass (``run_eod_correction(raw_bias_mode=True)``). It separates model
+    miscalibration from enforcement compensation — the enforced p_win has
+    been shrunk toward 0.5 by the Bayesian penalty, so reading it directly
+    would measure the correction, not the model error.
+
+    Falls back to ``predicted_p_win`` when ``predicted_p_win_raw IS NULL``
+    (e.g. before migration 114 or when the capture flag was off), so the
+    behaviour is identical to ``fetch_calibration_bias`` on old data.
+
+    Returns the same shape as ``fetch_calibration_bias`` plus
+    ``avg_pred_raw`` (the average of the raw column) for observability:
+    ``{bias, status, n, win_rate, avg_pred, avg_pred_raw}``.
+
+    The bias thresholds here are wider (``EOD_BIAS_RAW_OVERCONFIDENT`` /
+    ``EOD_BIAS_RAW_UNDERCONFIDENT``) because raw model output is naturally
+    more extreme. Classification is done by the caller (``run_eod_correction``
+    in raw mode) using those settings.
+    """
+    if not settings.SUPABASE_URL:
+        return None
+
+    win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
+    min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
+
+    url = _url("nt_calibration_records")
+    params = {
+        "select": "predicted_p_win,predicted_p_win_raw,outcome",
+        "symbol": f"eq.{symbol}",
+    }
+    if venue:
+        params["venue"] = f"eq.{venue}"
+    if win_days and win_days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=win_days)).isoformat()
+        params["entered_at"] = f"gte.{cutoff}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_calibration_bias_raw %s failed: %s", symbol, exc)
+        return None
+
+    if not isinstance(data, list) or len(data) < min_n:
+        return None
+
+    n = len(data)
+    sum_pred_enforced = 0.0
+    sum_pred_raw = 0.0
+    wins = 0
+    for row in data:
+        enforced = row.get("predicted_p_win", 0.5) or 0.5
+        raw = row.get("predicted_p_win_raw")
+        if raw is None:
+            # Fallback: use enforced p_win when raw wasn't captured.
+            raw = enforced
+        sum_pred_enforced += float(enforced)
+        sum_pred_raw += float(raw)
+        if row.get("outcome") == "win":
+            wins += 1
+
+    avg_pred_enforced = sum_pred_enforced / n
+    avg_pred_raw = sum_pred_raw / n
+    win_rate = wins / n
+    # Bias is computed from the RAW (pre-enforcement) p_win so it reflects
+    # the model's true miscalibration, not the enforcement compensation.
+    bias = round(avg_pred_raw - win_rate, 4)
+
+    if abs(bias) < 0.05:
+        status = "CALIBRATED"
+    elif bias >= 0.05:
+        status = "OVERCONFIDENT"
+    else:
+        status = "UNDERCONFIDENT"
+
+    return {
+        "bias": bias,
+        "status": status,
+        "n": n,
+        "win_rate": round(win_rate, 4),
+        "avg_pred": round(avg_pred_enforced, 4),       # enforced average (for stamping)
+        "avg_pred_raw": round(avg_pred_raw, 4),        # raw average (for bias)
+    }
+
+
+async def _clear_stale_eod_actions(symbol: str) -> None:
+    """DELETE stale penalty actions for ``symbol`` from ``nt_eod_actions``.
+
+    Used at the start of each 4h intraday correction pass (raw-bias mode) to
+    reset the enforcement state before re-evaluating from raw p_win. Only
+    penalty actions are cleared; ``parameter_decay_check`` / ``degeneracy_breaker``
+    rows are preserved (they are audit-only, not enforcement).
+
+    Best-effort: failures are logged, never raised.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return
+    url = _url("nt_eod_actions")
+    params = {
+        "action": "in.(bayesian_penalty,kelly_reduction,emergency_heavy_sweep)",
+        "symbol": f"eq.{symbol}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.delete(url, headers=_headers(), params=params)
+            if not resp.is_success and resp.status_code != 204:
+                logger.warning(
+                    "_clear_stale_eod_actions %s: HTTP %d — %s",
+                    symbol, resp.status_code, resp.text[:200],
+                )
+            elif resp.status_code == 204:
+                logger.info(
+                    "_clear_stale_eod_actions %s: cleared stale penalty actions",
+                    symbol,
+                )
+    except Exception as exc:
+        logger.warning("_clear_stale_eod_actions %s failed: %s", symbol, exc)
+
+
 async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
     """Fetch the most recent nt_sweep_result row for a symbol.
 

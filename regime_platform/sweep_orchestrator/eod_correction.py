@@ -45,6 +45,20 @@ logger = logging.getLogger("regime.sweep.eod_correction")
 OVERCONFIDENT_BIAS = 0.10
 UNDERCONFIDENT_BIAS = -0.10
 
+# Raw-bias mode thresholds (2026-08-22): the 4h intraday correction pass
+# evaluates model drift from ``predicted_p_win_raw`` (pre-enforcement), so the
+# band is wider — raw model output is naturally more extreme than the
+# enforcement-compensated value the nightly pass sees. The user's target
+# range is -0.2 < bias < 0.7; these are the classification boundaries within
+# that range:
+#   - Overconfident: raw bias >= 0.30 (raw p_win systematically above true win rate)
+#   - Underconfident: raw bias <= -0.20 (raw p_win systematically below true win rate)
+#   - Calibrated: -0.20 < bias < 0.30
+# Configurable via EOD_BIAS_RAW_OVERCONFIDENT / EOD_BIAS_RAW_UNDERCONFIDENT.
+# Defaults here mirror the plan document; the caller may override via env.
+DEFAULT_RAW_OVERCONFIDENT = 0.30
+DEFAULT_RAW_UNDERCONFIDENT = -0.20
+
 # Bayesian prior strength (pseudo-count) — how many "neutral 0.5" observations
 # to blend in when no real records exist yet.
 BAYES_PRIOR_COUNT = 10
@@ -78,6 +92,40 @@ def _classify_bias(bias: float) -> str:
     if bias > OVERCONFIDENT_BIAS:
         return "OVERCONFIDENT"
     if bias < UNDERCONFIDENT_BIAS:
+        return "UNDERCONFIDENT"
+    return "CALIBRATED"
+
+
+def _classify_bias_raw(
+    bias: float,
+    overconfident_threshold: float | None = None,
+    underconfident_threshold: float | None = None,
+) -> str:
+    """Classify bias using the RAW-bias thresholds (wider band).
+
+    Mirrors ``_classify_bias`` but with configurable boundaries for the 4h
+    intraday correction pass, which reads ``predicted_p_win_raw`` (pre-enforcement).
+    Defaults come from ``DEFAULT_RAW_OVERCONFIDENT`` / ``DEFAULT_RAW_UNDERCONFIDENT``
+    but can be overridden via settings (EOD_BIAS_RAW_OVERCONFIDENT /
+    EOD_BIAS_RAW_UNDERCONFIDENT).
+    """
+    oc = overconfident_threshold
+    if oc is None:
+        try:
+            from regime_platform.core.settings import settings
+            oc = getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", DEFAULT_RAW_OVERCONFIDENT)
+        except Exception:
+            oc = DEFAULT_RAW_OVERCONFIDENT
+    uc = underconfident_threshold
+    if uc is None:
+        try:
+            from regime_platform.core.settings import settings
+            uc = getattr(settings, "EOD_BIAS_RAW_UNDERCONFIDENT", DEFAULT_RAW_UNDERCONFIDENT)
+        except Exception:
+            uc = DEFAULT_RAW_UNDERCONFIDENT
+    if bias >= oc:
+        return "OVERCONFIDENT"
+    if bias <= uc:
         return "UNDERCONFIDENT"
     return "CALIBRATED"
 
@@ -157,13 +205,25 @@ async def _fetch_recent_win_rates(symbol: str) -> dict[str, float]:
     }
 
 
-async def run_eod_correction() -> dict[str, Any]:
-    """Run the self-correction audit pass over all active symbols."""
-    summary: dict[str, Any] = {"checked": 0, "actions": [], "errors": 0}
+async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
+    """Run the self-correction audit pass over all active symbols.
+
+    When ``raw_bias_mode`` is True (4h intraday correction pass), bias is
+    computed from ``predicted_p_win_raw`` (pre-enforcement p_win) via
+    ``fetch_calibration_bias_raw``, and stale penalty actions for
+    CALIBRATED symbols are cleared before re-evaluation — the "cycle reset"
+    mechanism that prevents compounding enforcement penalties.
+
+    When False (nightly 00:30 pass), uses ``fetch_calibration_bias`` with
+    the standard 0.10 thresholds — unchanged behaviour.
+    """
+    summary: dict[str, Any] = {"checked": 0, "actions": [], "errors": 0, "raw_bias_mode": raw_bias_mode}
     try:
         from regime_platform.sweep_orchestrator.supabase_client import (
             fetch_active_symbols,
             fetch_calibration_bias,
+            fetch_calibration_bias_raw,
+            _clear_stale_eod_actions,
         )
         from regime_platform.sweep_orchestrator.orchestrator import _derive_venue
 
@@ -179,7 +239,14 @@ async def run_eod_correction() -> dict[str, Any]:
         summary["checked"] += 1
         try:
             venue = _derive_venue(sym)
-            cal = await fetch_calibration_bias(symbol, venue=venue)
+
+            if raw_bias_mode:
+                # ── 4h intraday correction pass — raw-bias mode ──
+                cal = await fetch_calibration_bias_raw(symbol, venue=venue)
+            else:
+                # ── Nightly pass — standard enforced-bias mode ──
+                cal = await fetch_calibration_bias(symbol, venue=venue)
+
             bias = cal.get("bias") if cal else None
 
             if bias is None:
@@ -235,8 +302,21 @@ async def run_eod_correction() -> dict[str, Any]:
                     )
                 continue
 
-            status = _classify_bias(bias)
+            # ── Classify using raw or enforced thresholds ──
+            if raw_bias_mode:
+                status = _classify_bias_raw(bias)
+            else:
+                status = _classify_bias(bias)
             detail: dict[str, Any] = {"bias": bias, "status": status}
+
+            # ── Cycle reset (Step 4): clear stale penalty actions when CALIBRATED ──
+            # At the 4h cycle boundary, stale bayesian_penalty / kelly_reduction
+            # / emergency_heavy_sweep actions from the *previous* cycle are stale
+            # — the reset re-evaluates from raw p_win and writes fresh actions only
+            # when the symbol is still outside the band. This prevents the Bayesian
+            # penalty from compounding on top of already-shrunk values.
+            if raw_bias_mode and status == "CALIBRATED":
+                await _clear_stale_eod_actions(symbol)
 
             if status == "CALIBRATED":
                 # Parameter-decay check: realized win rate declining?
@@ -257,12 +337,17 @@ async def run_eod_correction() -> dict[str, Any]:
                 continue
 
             # Overconfident / underconfident → correction actions
-            # fetch_calibration_bias returns {bias,status,n,win_rate,avg_pred}
-            # — avg_pred IS the observed mean predicted p_win (the blend
-            # input). The old `cal.get("predicted_p_win")` key never existed,
-            # so the Bayesian shrink was a constant 0.5 (H1).
+            # In raw_bias_mode, cal.avg_pred is the enforced average and cal.avg_pred_raw
+            #   is the pre-enforcement average — use raw for the Bayesian shrink so
+            #   the penalty is applied to the true model output, not on top of previous shrinks.
+            # In standard mode, cal.avg_pred IS the observed mean predicted p_win (the blend
+            #   input). The old `cal.get("predicted_p_win")` key never existed, so the Bayesian
+            #   shrink was a constant 0.5 (H1).
             n_records = int(cal.get("n") or 0)
-            obs_p_win = float(cal.get("avg_pred") or 0.5)
+            if raw_bias_mode:
+                obs_p_win = float(cal.get("avg_pred_raw") or cal.get("avg_pred") or 0.5)
+            else:
+                obs_p_win = float(cal.get("avg_pred") or 0.5)
             adj_p_win = bayesian_adjusted_p_win(obs_p_win, n_records)
             detail["adjusted_p_win"] = adj_p_win
             detail["avg_pred"] = obs_p_win
@@ -286,8 +371,13 @@ async def run_eod_correction() -> dict[str, Any]:
 
 
 async def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="EOD correction pass")
+    ap.add_argument("--raw", action="store_true",
+                    help="4h intraday mode: compute bias from predicted_p_win_raw")
+    args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", force=True)
-    result = await run_eod_correction()
+    result = await run_eod_correction(raw_bias_mode=args.raw)
     print(json.dumps(result, indent=2, default=str))
 
 

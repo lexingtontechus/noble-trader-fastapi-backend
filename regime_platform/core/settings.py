@@ -303,6 +303,22 @@ class Settings(BaseSettings):
     EOD_BIAS_WINDOW_DAYS: int = 7
     EOD_BIAS_MIN_RECORDS: int = 20
 
+    # EOD_BIAS_RAW_OVERCONFIDENT (default 0.30, 2026-08-22):
+    #   Threshold for the 4h intraday correction pass (raw-bias mode). The raw
+    #   p_win (predicted_p_win_raw, pre-enforcement) is naturally more extreme
+    #   than the enforced value — raw model output ranges 0.0–1.0 while enforced
+    #   values are shrunk toward 0.5 by the Bayesian penalty. This wider band
+    #   prevents over-triggering on normal model variance. The user's target
+    #   range is -0.2 < bias < 0.7; this is the overconfidence boundary within
+    #   that range (bias >= 0.30 → OVERCONFIDENT in raw mode).
+    EOD_BIAS_RAW_OVERCONFIDENT: float = 0.30
+
+    # EOD_BIAS_RAW_UNDERCONFIDENT (default -0.20, 2026-08-22):
+    #   Underconfidence threshold for raw-bias mode (4h correction pass only).
+    #   Mirrors EOD_BIAS_RAW_OVERCONFIDENT but for the negative side. Symbols
+    #   with raw bias <= -0.20 are flagged UNDERCONFIDENT.
+    EOD_BIAS_RAW_UNDERCONFIDENT: float = -0.20
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at
