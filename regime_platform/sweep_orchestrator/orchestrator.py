@@ -1805,11 +1805,26 @@ class SweepOrchestrator(HeavySweepMixin):
                 # doesn't re-inflate overconfidence from a stale raw value.
                 ev_result.p_win = calib_adj["p_win"]
                 effective_kelly = calib_adj["kelly_f"]
+                # ── Fix #1 (2026-08-22 audit): recompute derived fields ──
+                # ev/ev_per_dollar/rr/allowed/ev_scale/aggression were
+                # previously left stale (computed from the PRE-enforcement
+                # p_win) after this mutation — corrupting the aggression
+                # (execution-style) decision and all EV telemetry persisted
+                # downstream. See worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md.
+                _recomputed = self._ev_engine.recompute_ev_fields(
+                    ev_result.p_win, ev_result.profit, ev_result.stake,
+                )
+                ev_result.ev = _recomputed["ev"]
+                ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
+                ev_result.rr = _recomputed["rr"]
+                ev_result.allowed = _recomputed["allowed"]
+                ev_result.aggression = _recomputed["aggression"]
+                ev_result.ev_scale = _recomputed["ev_scale"]
                 logger.info(
                     "[sweep:orch] %s: calibration ENFORCED (%s, bias=%s) — "
-                    "p_win→%.4f, kelly→%.6f",
+                    "p_win→%.4f, kelly→%.6f, ev→%.4f, aggression→%s",
                     symbol, calib_adj.get("status"), calib_adj.get("bias"),
-                    ev_result.p_win, effective_kelly,
+                    ev_result.p_win, effective_kelly, ev_result.ev, ev_result.aggression,
                 )
 
         # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────

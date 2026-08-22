@@ -674,6 +674,47 @@ class EVEngine:
             reason=reason,
         )
 
+    # ── Post-hoc recompute (audit 2026-08-22) ───────────────────────
+    # Calibration enforcement (calibration_enforcement.apply_calibration_adjustment)
+    # shrinks p_win toward 0.5 AFTER compute_ev() has already run, and the
+    # orchestrator mutates EVFullResult.p_win in place. Without this method,
+    # ev/ev_per_dollar/rr/allowed/ev_scale/aggression silently stayed computed
+    # from the PRE-enforcement p_win — an internal-consistency bug that also
+    # corrupted the aggression (execution-style) decision and all EV-based
+    # telemetry downstream. See worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md
+    # §1 "New finding — stale derived fields after calibration enforcement".
+
+    def recompute_ev_fields(
+        self, p_win: float, profit: float, stake: float
+    ) -> Dict[str, Any]:
+        """Recompute ev/ev_per_dollar/rr/allowed/ev_scale/aggression for a
+        p_win that changed after ``compute_ev()`` already ran.
+
+        ``profit``/``stake`` are unchanged by a post-hoc p_win adjustment
+        (they're purely brick_size * brick_count), so they're passed through
+        from the original ``EVFullResult`` rather than recomputed. ``rr``
+        (``profit / stake``) is therefore also unchanged in value, but is
+        returned for callers that want to overwrite the field consistently.
+
+        Callers should overwrite ``EVFullResult.{ev, ev_per_dollar, rr,
+        allowed, aggression, ev_scale}`` with this method's return values
+        after mutating ``EVFullResult.p_win`` — never mutate ``p_win`` alone.
+        """
+        ev = (p_win * profit) - ((1.0 - p_win) * stake)
+        ev_per_dollar = ev / stake if stake > 0 else 0.0
+        rr = profit / stake if stake > 0 else 0.0
+        allowed = (ev > self.min_ev) and (rr >= self.min_rr)
+        aggression = self.compute_aggression(ev_per_dollar)
+        ev_scale = self.compute_ev_scale(ev_per_dollar)
+        return {
+            "ev": round(ev, 4),
+            "ev_per_dollar": round(ev_per_dollar, 4),
+            "rr": round(rr, 4),
+            "allowed": allowed,
+            "aggression": aggression,
+            "ev_scale": round(ev_scale, 4),
+        }
+
     # ── v5: validate_signal / validate_signal_sync ──────────────────
     # Both methods are DEPRECATED in v5. They are kept only for backward
     # compatibility with renko/signal_filter.py:239 (validate_signal_sync)
