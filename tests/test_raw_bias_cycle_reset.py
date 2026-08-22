@@ -357,11 +357,13 @@ class TestRunEodCorrectionRawMode:
             clear_fn=clear_mock,
             win_rates={"recent_3d_wr": 0.80, "prior_3d_wr": 0.80},
         )
+        # With unconditional 4h cycle reset, clearing is called once unconditionally
+        # (the CALIBRATED path no longer calls it separately since it's already cleared)
         clear_mock_ret.assert_awaited_once_with("AUDUSD")
         insert_mock.assert_not_awaited()  # CALIBRATED → no penalty actions written
 
     def test_overconfident_writes_three_actions(self):
-        """Overconfident raw bias → 3 penalty actions + no action clearing."""
+        """Overconfident raw bias → 3 penalty actions + stale actions cleared first."""
         cal_raw = {"bias": 0.50, "n": 30, "win_rate": 0.30,
                    "avg_pred": 0.55, "avg_pred_raw": 0.90, "status": "OVERCONFIDENT"}
         result, insert_mock, clear_mock, _, _ = _run_eod_correction_mocked(
@@ -373,7 +375,8 @@ class TestRunEodCorrectionRawMode:
         assert len(actions) == 3
         action_names = {a["action"] for a in actions}
         assert action_names == {"emergency_heavy_sweep", "bayesian_penalty", "kelly_reduction"}
-        clear_mock.assert_not_awaited()
+        # Stale actions cleared unconditionally at 4h boundary BEFORE new actions written
+        clear_mock.assert_awaited_once_with("EURUSD")
 
     def test_bayesian_shrink_uses_raw_pwin(self):
         """In raw mode, the Bayesian penalty is applied to raw p_win, not enforced."""

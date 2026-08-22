@@ -237,6 +237,16 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
         try:
             venue = _derive_venue(sym)
 
+            # ── 4h cycle reset: clear stale enforcement actions for ALL symbols ──
+            # At each 4h intraday correction boundary, stale penalty actions from the
+            # previous cycle must be cleared before re-evaluation. This is a true reset:
+            # symbols with insufficient calibration records (< EOD_BIAS_MIN_RECORDS)
+            # previously entered the degeneracy path where clearing was skipped entirely,
+            # leaving actions from Aug 18-19 persisting indefinitely.
+            # See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
+            if raw_bias_mode:
+                await _clear_stale_eod_actions(symbol)
+
             if raw_bias_mode:
                 # ── 4h intraday correction pass — raw-bias mode ──
                 cal = await fetch_calibration_bias_raw(symbol, venue=venue)
@@ -306,14 +316,11 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 status = _classify_bias(bias)
             detail: dict[str, Any] = {"bias": bias, "status": status}
 
-            # ── Cycle reset (Step 4): clear stale penalty actions when CALIBRATED ──
-            # At the 4h cycle boundary, stale bayesian_penalty / kelly_reduction
-            # / emergency_heavy_sweep actions from the *previous* cycle are stale
-            # — the reset re-evaluates from raw p_win and writes fresh actions only
-            # when the symbol is still outside the band. This prevents the Bayesian
-            # penalty from compounding on top of already-shrunk values.
-            if raw_bias_mode and status == "CALIBRATED":
-                await _clear_stale_eod_actions(symbol)
+            # ── Stale action clearing moved to unconditional 4h cycle reset ──
+            # At: eod_correction.py L240 (before bias computation)
+            # Previously cleared here only when status == "CALIBRATED" — but symbols
+            # with insufficient records never reached this branch. Now cleared for ALL
+            # symbols at the 4h boundary. See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
 
             if status == "CALIBRATED":
                 # Parameter-decay check: realized win rate declining?
