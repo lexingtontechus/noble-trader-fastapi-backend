@@ -358,6 +358,35 @@ class Settings(BaseSettings):
     #   restore the original always-floor behaviour.
     KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU: bool = True
 
+    # ── Stagnation breaker (2026-08-22 audit fix #3c) ──────────────────────
+    # Live evidence: AAPL/US500 stayed OVERCONFIDENT at BIT-FOR-BIT IDENTICAL
+    # raw bias across 6+ consecutive 4h correction passes (18+ hours) —
+    # emergency_heavy_sweep/bayesian_penalty/kelly_reduction re-fired every
+    # cycle without resolving, because neither mechanism (HMM state-flip
+    # noise, negative-mu Kelly floor) is something a parameter re-sweep can
+    # fix. This is a GENERALIZED detector: it doesn't diagnose why a symbol
+    # is stuck, only THAT it is (bias unmoved by more than
+    # STAGNATION_EPSILON across consecutive raw-bias correction cycles), and
+    # escalates automatically — no human gate, per user direction.
+    #   Tier 0 (streak < TIER1_CYCLES):  normal actions, unchanged.
+    #   Tier 1 (streak >= TIER1_CYCLES): deeper penalty — kelly reduction
+    #     factor drops from 0.5 to STAGNATION_KELLY_REDUCTION_TIER1.
+    #   Tier 2 (streak >= TIER2_CYCLES): hard kill switch — kelly_f forced
+    #     to 0.0 (blocks publishing entirely) via a "stagnation_kill_switch"
+    #     action.
+    #   Auto-recovery: (a) immediate — the unconditional stale-action-clear
+    #     at each 4h cycle boundary already lifts everything the moment the
+    #     symbol's raw bias returns to the calibrated band; (b) time-boxed —
+    #     once the streak reaches STAGNATION_RESET_CYCLES, the tier ladder
+    #     resets to 0 and a fresh emergency_heavy_sweep is forced, so a
+    #     truly-stuck symbol gets periodic new attempts rather than a
+    #     permanent, unrecoverable block.
+    STAGNATION_EPSILON: float = 0.02
+    STAGNATION_TIER1_CYCLES: int = 2
+    STAGNATION_TIER2_CYCLES: int = 4
+    STAGNATION_RESET_CYCLES: int = 8
+    STAGNATION_KELLY_REDUCTION_TIER1: float = 0.25
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at

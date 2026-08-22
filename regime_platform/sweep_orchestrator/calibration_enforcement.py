@@ -71,7 +71,14 @@ KELLY_REDUCTION = 0.5
 ACTION_FRESH_WINDOW_HOURS = 8
 
 # Penalty actions that activate enforcement (see eod_correction module doc).
-PENALTY_ACTIONS = ("bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep")
+# "stagnation_kill_switch" (2026-08-22 audit fix #3c) is the Tier 2 hard
+# block written by the generalized stagnation breaker — see
+# apply_calibration_adjustment()'s handling below and
+# worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §4 fix #3c.
+PENALTY_ACTIONS = (
+    "bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep",
+    "stagnation_kill_switch",
+)
 
 # Recommended actions that should NOT downgrade sizing (audit-only).
 AUDIT_ONLY_ACTIONS = ("parameter_decay_check",)
@@ -232,16 +239,51 @@ async def apply_calibration_adjustment(
         except Exception:
             detail = {}
     n_records = _num(detail.get("n")) or _num(action.get("count")) or 0
+    bias = _num(action.get("bias"))
+
+    if action_name == "stagnation_kill_switch":
+        # Tier 2 hard block (fix #3c, 2026-08-22 audit): the symbol has been
+        # stuck in the same over/underconfident status for
+        # settings.STAGNATION_TIER2_CYCLES+ consecutive 4h correction
+        # cycles — a parameter re-sweep provably isn't fixing it (see
+        # worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2). Force
+        # kelly_f to 0.0 unconditionally so the symbol cannot qualify
+        # (kelly_min_ok always fails at 0.0) — no bayesian-shrink math,
+        # just a hard stop until the stagnation streak resets (either the
+        # bias returns to CALIBRATED, or STAGNATION_RESET_CYCLES elapses
+        # and eod_correction.py automatically forces a fresh attempt).
+        adjusted_p_win = 0.5
+        adjusted_kelly = 0.0
+        status = "STAGNATION_KILL_SWITCH"
+        log.warning(
+            "[calibration:enforce] %s: STAGNATION KILL SWITCH (bias=%s, "
+            "streak=%s) → kelly forced to 0.0",
+            symbol, bias, detail.get("stagnation_streak"),
+        )
+        return {
+            "applied": True,
+            "status": status,
+            "bias": bias,
+            "p_win": adjusted_p_win,
+            "kelly_f": adjusted_kelly,
+            "reason": f"penalty:{action_name}",
+        }
+
+    # Tier 1 (fix #3c) writes a deeper kelly_reduction_override in detail
+    # when the symbol has been stagnant for 2+ cycles; otherwise falls back
+    # to the standard KELLY_REDUCTION (0.5).
+    kelly_reduction = _num(detail.get("kelly_reduction_override")) or KELLY_REDUCTION
 
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
-    adjusted_kelly = float(kelly_f) * KELLY_REDUCTION
-    bias = _num(action.get("bias"))
+    adjusted_kelly = float(kelly_f) * kelly_reduction
     status = "OVERCONFIDENT" if (bias is not None and bias > OVERCONFIDENT_BIAS) else (
         "UNDERCONFIDENT" if (bias is not None and bias < UNDERCONFIDENT_BIAS) else "PENALTY"
     )
     log.info(
-        "[calibration:enforce] %s: %s bias=%s n=%s → p_win %.4f→%.4f, kelly %.6f→%.6f",
+        "[calibration:enforce] %s: %s bias=%s n=%s → p_win %.4f→%.4f, kelly %.6f→%.6f "
+        "(kelly_reduction=%.2f)",
         symbol, status, bias, n_records, p_win, adjusted_p_win, kelly_f, adjusted_kelly,
+        kelly_reduction,
     )
     return {
         "applied": True,

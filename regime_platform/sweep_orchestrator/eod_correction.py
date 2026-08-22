@@ -68,6 +68,20 @@ BAYES_PRIOR_PWIN = 0.5
 # Kelly reduction factor for overconfident symbols
 KELLY_REDUCTION = 0.5
 
+# ── Stagnation breaker (2026-08-22 audit fix #3c) ────────────────────────
+# See settings.py's STAGNATION_* fields for the full rationale. Defaults
+# mirrored here for the no-settings-available fallback path (same pattern
+# as DEFAULT_RAW_OVERCONFIDENT above).
+DEFAULT_STAGNATION_EPSILON = 0.02
+DEFAULT_STAGNATION_TIER1_CYCLES = 2
+DEFAULT_STAGNATION_TIER2_CYCLES = 4
+DEFAULT_STAGNATION_RESET_CYCLES = 8
+DEFAULT_STAGNATION_KELLY_REDUCTION_TIER1 = 0.25
+
+# Action name for the Tier 2 hard block. Enforcement (calibration_enforcement.py)
+# forces kelly_f=0.0 for this action regardless of the usual bayesian-shrink math.
+STAGNATION_KILL_SWITCH_ACTION = "stagnation_kill_switch"
+
 # Parameter-decay window: realized win rate over the LAST 3 days vs the 3
 # days before that; decline beyond this threshold flags fatigue.
 DECAY_LOOKBACK_DAYS = 3
@@ -129,6 +143,67 @@ def _classify_bias_raw(
     if bias <= uc:
         return "UNDERCONFIDENT"
     return "CALIBRATED"
+
+
+def _settings_number(name: str, default: float) -> float:
+    """Best-effort numeric read of a settings field.
+
+    Falls back to ``default`` when the field is missing OR is not actually
+    numeric (e.g. a test double / misconfigured mock that auto-generates
+    non-numeric attributes) — this module's design rule is "never raise
+    out," so a bad settings value must degrade to the documented default
+    rather than crash the correction pass for that symbol.
+    """
+    try:
+        from regime_platform.core.settings import settings
+        value = getattr(settings, name, default)
+        return float(value)
+    except (TypeError, ValueError, ImportError, AttributeError):
+        return default
+
+
+def _stagnation_streak(
+    bias_history: list[float],
+    current_bias: float,
+    epsilon: float | None = None,
+) -> int:
+    """Count how many consecutive cycles (including the current one) have
+    a bias within ``epsilon`` of the current bias — i.e. "no real movement."
+
+    ``bias_history`` must be ordered NEWEST-FIRST and must NOT include
+    ``current_bias`` (it's the prior cycles' recorded bias values, e.g.
+    from ``fetch_recent_action_bias``). Counting stops at the first cycle
+    that moved by more than ``epsilon`` — a genuinely-improving symbol
+    should not be penalized just because it was once stagnant.
+    """
+    eps = epsilon if epsilon is not None else _settings_number(
+        "STAGNATION_EPSILON", DEFAULT_STAGNATION_EPSILON
+    )
+    streak = 1
+    for b in bias_history:
+        if abs(b - current_bias) <= eps:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _stagnation_tier(streak: int) -> int:
+    """Map a stagnation streak (see ``_stagnation_streak``) to an escalation
+    tier: 0 (normal), 1 (deeper penalty), 2 (hard kill switch), or back to
+    0 once ``STAGNATION_RESET_CYCLES`` is reached — a truly-stuck symbol
+    gets a fresh start + forced re-sweep rather than a permanent block.
+    """
+    tier1 = _settings_number("STAGNATION_TIER1_CYCLES", DEFAULT_STAGNATION_TIER1_CYCLES)
+    tier2 = _settings_number("STAGNATION_TIER2_CYCLES", DEFAULT_STAGNATION_TIER2_CYCLES)
+    reset = _settings_number("STAGNATION_RESET_CYCLES", DEFAULT_STAGNATION_RESET_CYCLES)
+    if streak >= reset:
+        return 0
+    if streak >= tier2:
+        return 2
+    if streak >= tier1:
+        return 1
+    return 0
 
 
 def _days_ago(days: int) -> str:
@@ -359,15 +434,67 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             adj_p_win = bayesian_adjusted_p_win(obs_p_win, n_records)
             detail["adjusted_p_win"] = adj_p_win
             detail["avg_pred"] = obs_p_win
-            detail["kelly_factor"] = KELLY_REDUCTION
             detail["n"] = n_records  # consumed by calibration_enforcement live
+
+            # ── Stagnation breaker (fix #3c, 2026-08-22 audit) ──────────
+            # Only meaningful at the 4h raw-bias cycle boundary, where
+            # "consecutive cycles" has a clear definition. Fully automated,
+            # tiered, no human gate — see settings.STAGNATION_* docstrings
+            # and worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §4 fix #3c.
+            tier = 0
+            streak = 0
+            if raw_bias_mode:
+                try:
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        fetch_recent_action_bias,
+                    )
+                    history = await fetch_recent_action_bias(
+                        symbol, action="bayesian_penalty", limit=8
+                    )
+                except Exception:
+                    history = []
+                streak = _stagnation_streak(history, bias)
+                tier = _stagnation_tier(streak)
+                detail["stagnation_streak"] = streak
+                detail["stagnation_tier"] = tier
+
+            kelly_reduction = KELLY_REDUCTION
+            if tier == 1:
+                from regime_platform.core.settings import settings as _settings
+                kelly_reduction = getattr(
+                    _settings, "STAGNATION_KELLY_REDUCTION_TIER1",
+                    DEFAULT_STAGNATION_KELLY_REDUCTION_TIER1,
+                )
+                detail["kelly_reduction_override"] = kelly_reduction
+                logger.warning(
+                    "[eod:correction] %s: STAGNATION Tier 1 (streak=%d cycles unmoved) "
+                    "— deeper penalty, Kelly×%.2f",
+                    symbol, streak, kelly_reduction,
+                )
+            detail["kelly_factor"] = kelly_reduction
 
             for action in ("emergency_heavy_sweep", "bayesian_penalty", "kelly_reduction"):
                 await _write_eod_action(symbol, action, bias, detail)
                 summary["actions"].append({"symbol": symbol, "action": action, "bias": bias})
+
+            if tier == 2:
+                # Written LAST so it's the "latest" row fetch_latest_eod_action
+                # reads — forces kelly_f=0.0 in enforcement (blocks publishing
+                # entirely) regardless of the usual bayesian-shrink math.
+                await _write_eod_action(symbol, STAGNATION_KILL_SWITCH_ACTION, bias, detail)
+                summary["actions"].append({
+                    "symbol": symbol, "action": STAGNATION_KILL_SWITCH_ACTION, "bias": bias,
+                })
+                logger.warning(
+                    "[eod:correction] %s: STAGNATION Tier 2 (streak=%d) — "
+                    "KILL SWITCH, kelly forced to 0.0",
+                    symbol, streak,
+                )
+
             logger.warning(
-                "[eod:correction] %s: %s bias=%.4f → emergency sweep + p_win'=%.4f + Kelly×%.2f",
-                symbol, status, bias, adj_p_win, KELLY_REDUCTION,
+                "[eod:correction] %s: %s bias=%.4f → emergency sweep + p_win'=%.4f + "
+                "Kelly×%.2f (stagnation_tier=%d)",
+                symbol, status, bias, adj_p_win, kelly_reduction, tier,
             )
         except Exception as exc:
             summary["errors"] += 1

@@ -286,8 +286,21 @@ def _run_eod_correction_mocked(
     active_symbols_mock = AsyncMock(
         return_value=symbols if symbols else [{"symbol": "EURUSD"}]
     )
+    # Stagnation breaker (fix #3c, 2026-08-22) added a new dependency —
+    # fetch_recent_action_bias — to run_eod_correction's OVERCONFIDENT/
+    # UNDERCONFIDENT branch. Mock it to no-history (streak=1, Tier 0) so
+    # these pre-existing tests keep asserting the un-escalated 3-action
+    # behaviour; see tests/test_stagnation_breaker.py for tier coverage.
+    action_bias_mock = AsyncMock(return_value=[])
 
     mock_settings = AsyncMock()
+    # Explicit (not auto-mocked) so _stagnation_tier's settings reads resolve
+    # to real numbers rather than MagicMock's default __float__ (1.0).
+    mock_settings.STAGNATION_EPSILON = 0.02
+    mock_settings.STAGNATION_TIER1_CYCLES = 2
+    mock_settings.STAGNATION_TIER2_CYCLES = 4
+    mock_settings.STAGNATION_RESET_CYCLES = 8
+    mock_settings.STAGNATION_KELLY_REDUCTION_TIER1 = 0.25
     mock_settings.EOD_BIAS_RAW_OVERCONFIDENT = raw_oc
     mock_settings.EOD_BIAS_RAW_UNDERCONFIDENT = raw_uc
 
@@ -304,6 +317,8 @@ def _run_eod_correction_mocked(
               new=clear_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_latest_sweep",
               new=fetch_latest_sweep_mock),
+        patch("regime_platform.sweep_orchestrator.supabase_client.fetch_recent_action_bias",
+              new=action_bias_mock),
         patch("regime_platform.sweep_orchestrator.eod_correction._fetch_recent_win_rates",
               new=win_rates_mock),
         patch("regime_platform.sweep_orchestrator.orchestrator._derive_venue",

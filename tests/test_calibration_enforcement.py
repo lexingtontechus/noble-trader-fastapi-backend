@@ -54,6 +54,7 @@ def test_bayesian_prior_constants_match_eod_correction():
     assert KELLY_REDUCTION == ec.KELLY_REDUCTION
     assert PENALTY_ACTIONS == (
         "bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep",
+        "stagnation_kill_switch",
     )
 
 

@@ -610,13 +610,19 @@ async def _clear_stale_eod_actions(symbol: str) -> None:
     penalty actions are cleared; ``parameter_decay_check`` / ``degeneracy_breaker``
     rows are preserved (they are audit-only, not enforcement).
 
+    ``stagnation_kill_switch`` (2026-08-22 audit fix #3c) is included so a
+    symbol whose bias has returned to CALIBRATED gets its Tier 2 hard block
+    lifted immediately at the next cycle boundary — the stagnation streak
+    is recomputed fresh from the (now-improving) bias history, so the kill
+    switch is only re-written if the symbol is still genuinely stuck.
+
     Best-effort: failures are logged, never raised.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         return
     url = _url("nt_eod_actions")
     params = {
-        "action": "in.(bayesian_penalty,kelly_reduction,emergency_heavy_sweep)",
+        "action": "in.(bayesian_penalty,kelly_reduction,emergency_heavy_sweep,stagnation_kill_switch)",
         "symbol": f"eq.{symbol}",
     }
     try:
@@ -634,6 +640,52 @@ async def _clear_stale_eod_actions(symbol: str) -> None:
                 )
     except Exception as exc:
         logger.warning("_clear_stale_eod_actions %s failed: %s", symbol, exc)
+
+
+async def fetch_recent_action_bias(
+    symbol: str, action: str = "bayesian_penalty", limit: int = 8
+) -> list[float]:
+    """Return the most recent ``limit`` bias values (newest first) written
+    for ``action`` on ``symbol`` in ``nt_eod_actions``.
+
+    Used by the stagnation breaker (``eod_correction._stagnation_streak``,
+    2026-08-22 audit fix #3c) to detect a symbol whose raw bias has stopped
+    moving across consecutive 4h correction cycles — the audit trail
+    (``nt_eod_actions``) already carries this history, so no separate
+    accumulator/counter table is needed.
+
+    Best-effort: returns ``[]`` on any failure or when Supabase is not
+    configured (never raises).
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return []
+    url = _url("nt_eod_actions")
+    params = {
+        "select": "bias,ts",
+        "symbol": f"eq.{symbol}",
+        "action": f"eq.{action}",
+        "order": "ts.desc",
+        "limit": str(int(limit)),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_recent_action_bias %s/%s failed: %s", symbol, action, exc)
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[float] = []
+    for row in data:
+        b = row.get("bias")
+        if b is not None:
+            try:
+                out.append(float(b))
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
