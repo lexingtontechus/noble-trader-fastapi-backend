@@ -465,3 +465,23 @@ The nightly 00:30 pass and 5-min light sweeps use the **tighter 0.10 band** beca
 4. **Drift monitor re-flags cleared symbols**: The drift monitor (runs every light sweep, 5-min) uses `fetch_calibration_bias` (enforced path) with threshold 0.15. When the 4h raw-bias pass clears stale actions for a CALIBRATED symbol (e.g., XAGUSD with raw bias < 0.30), the drift monitor sees no fresh penalty action, checks bias via the enforced path (which reads `predicted_p_win`, not `predicted_p_win_raw`), and if bias > 0.15 writes a new `bayesian_penalty`. Observed: XAGUSD cleared at 04:30:00 → drift monitor re-flagged at 04:31:16 (bias=0.4005 via enforced path). This is by design — the drift monitor catches intraday drift between 4h passes.
 
 ---
+
+## 11. Extended Monitoring Window (2026-08-22 05:22 UTC → 08:30 UTC)
+
+### Baseline marked
+- **Timestamp**: 2026-08-22 05:22:00 UTC
+- **Studio restart**: 2026-08-22 05:05:04 UTC (clean state, log truncated to 71,312 lines)
+- **Next scheduled raw-bias pass**: 2026-08-22 08:30:00 UTC (4h cycle: 04:30/08:30/12:30/16:30/20:30)
+
+### Purpose
+Wait 12 hours (until ~17:30 UTC) to allow multiple 4h raw-bias correction passes plus intervening light sweeps to accumulate data. Key validation points:
+1. **08:30 UTC pass**: Should detect new overconfidence drift if any symbols' raw p_win diverged since 04:30
+2. **12:30 UTC pass**: Second full cycle — verify stale action clearing prevents compounding
+3. **Light sweeps**: Monitor drift monitor activity between 4h passes (should see 0.15 threshold triggers)
+
+### Expected behavior during window
+- Light sweeps every 5 minutes continue enforcing existing `nt_eod_actions`
+- Drift monitor (0.15 threshold) catches new intraday drift on CALIBRATED symbols
+- At 08:30: new raw-bias computation; if AAPL/US500 raw bias drops below 0.30 (due to Bayesian shrink applied by light sweeps), they should flip to CALIBRATED and have actions cleared
+
+---
