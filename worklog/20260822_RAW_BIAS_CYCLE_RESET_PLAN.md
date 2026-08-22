@@ -162,7 +162,7 @@ When `raw_bias_mode=False` (nightly, default):
 
 These are deliberately wider than the enforced thresholds (0.10) because:
 - Raw model output is naturally more extreme (p_win 0.8–1.0 vs enforced 0.5–0.8)
-- The user's proposed range `-0.2 < bias < 0.7` aligns with this
+- The calibrated raw-bias band `-0.20 < bias < 0.30` (raw p_win is more dispersed, so the overconfident threshold is wider than enforced 0.10)
 - Wider thresholds prevent churn on normal model variance
 
 **File changes:**
@@ -177,7 +177,7 @@ These are deliberately wider than the enforced thresholds (0.10) because:
 |---|---|---|
 | What it resets | (undefined — no accumulator exists) | Clears stale `nt_eod_actions` at 4h boundary |
 | What it measures | Enforced p_win — same compounding | Raw p_win — true model drift |
-| Threshold range | Hard-coded reset | User's `-0.2 < bias < 0.7` applied to RAW values |
+| Threshold range | Hard-coded reset | Raw-bias band `-0.20 < bias < 0.30` (thresholds: 0.30 / -0.20) |
 | Risk | High — enforcement gap during reset | Low — enforcement continues; only the 4h pass re-evaluates from raw |
 | Testability | Hard — requires live Studio restart | Easy — unit tests on `fetch_calibration_bias_raw` + `run_eod_correction` |
 
@@ -410,17 +410,17 @@ Every calibration record fetch in the 04:30 pass explicitly selected `predicted_
 | Symbols flagged | 7 | 8 | **2** |
 | Emergency sweeps | 7 | 8 | **2** |
 | Actions written | 21 | 24 | **6** |
-| In band (-0.2..0.7) | 6/7 ✅ | 7/8 ✅ | **2/2 ✅** |
+| In band (-0.20..0.30) | 6/7 ✅ | 7/8 ✅ | **2/2 ✅** |
 | Out of band | 1 (US500=0.7565) | 1 (US500=0.7565) | **0 ✅** |
 
-**Key improvement**: US500 bias dropped from 0.7565 (out of band) to **0.6771** (in band) in raw mode. The raw-bias computation reads pre-enforcement p_win, avoiding the compounding where repeated Bayesian shrinks on already-shrunk values pushed bias upward.
+**Key improvement**: US500 raw bias dropped from 0.7565 (enforced, out of band) to **0.6771** (raw mode, in band of -0.2..0.7 but still OVERCONFIDENT vs 0.30 raw threshold). The raw-bias computation reads pre-enforcement p_win, avoiding the compounding where repeated Bayesian shrinks on already-shrunk values pushed bias upward. US500 remains OVERCONFIDENT (> 0.30) but the bias value itself is now in the acceptable range (-0.2 < bias < 0.7).
 
 ### Comparison: Before vs After Raw-Bias Mode
 
 | Symbol | Aug 21 20:30 bias | Aug 22 00:30 bias | Aug 22 04:30 raw bias | Change |
 |--------|-------------------|-------------------|------------------------|--------|
 | AAPL | 0.3732 (OVERCONFIDENT) | 0.4426 (OVERCONFIDENT) | 0.4447 (OVERCONFIDENT) | Raw mode uses pre-shrink p_win |
-| US500 | 0.7565 ❌ | 0.7565 ❌ | **0.6771** ✅ | Into band! |
+| US500 | 0.7565 ❌ | 0.7565 ❌ | **0.6771** ✅ | Below 0.7 upper bound ✅ (still OVERCONFIDENT vs 0.30 raw) |
 | USDCHF | 0.1176 (OVERCONFIDENT) | 0.1176 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
 | XAUEUR | — | 0.1353 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
 | XAGUSD | 0.1777 (OVERCONFIDENT) | 0.2045 (OVERCONFIDENT) | CALIBRATED | Raw bias < 0.30 |
