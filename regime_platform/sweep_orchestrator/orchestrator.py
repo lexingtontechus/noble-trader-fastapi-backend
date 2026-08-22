@@ -1624,8 +1624,27 @@ class SweepOrchestrator(HeavySweepMixin):
                 state_row = _markov_T.get(_markov_current_state, {})
                 p_up = float(state_row.get("UP", 0.5))
                 p_dn = float(state_row.get("DOWN", 0.5))
+                # DIAGNOSTIC (2026-08-22, worklog 20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md
+                # §2 Finding B / Mechanism 1): AAPL/US500 p_win has been swinging between
+                # ~0.47 and ~0.85 tick-to-tick while regime/TimesFM stay frozen. This log
+                # line disambiguates the two candidate causes before any fix is built:
+                #   - current_state flips (UP<->DOWN classification noise at the 5->3
+                #     state-mapping boundary), vs.
+                #   - current_state is stable but the matrix ROW itself is noisy
+                #     (transition-matrix re-estimation instability tick-to-tick).
+                # Remove once the mechanism is confirmed and a fix lands.
+                logger.info(
+                    "%s: markov diag — current_state=%s row=%s (p_up=%.4f, p_dn=%.4f)",
+                    symbol, _markov_current_state, state_row, p_up, p_dn,
+                )
             except Exception:
                 pass
+        else:
+            logger.info(
+                "%s: markov diag — no transition matrix/current_state "
+                "(T is None=%s, current_state=%r)",
+                symbol, _markov_T is None, _markov_current_state,
+            )
 
         trade_signal = _compute_trade_signal(
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
