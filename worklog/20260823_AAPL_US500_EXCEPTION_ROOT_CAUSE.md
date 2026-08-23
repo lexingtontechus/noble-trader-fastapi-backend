@@ -484,3 +484,69 @@ overconfidence). R1 fix #2 (label continuity) is validated in principle but not
 against real data — before treating it as confirmed, it would need either a live
 capture of a genuinely fragile moment as it happens, or a more faithful
 reproduction of tick-to-tick data than a single archived snapshot allows.
+
+---
+
+## R4 (scoped, not built) — non-convergence as a live blend-weight trigger
+
+Follow-up to the "Model is not converging" warnings observed on BOTH symbols'
+real feature data during the live-data validation above. Two separate,
+complementary levers exist here — this section scopes only the second one.
+
+**Lever A (not R4, a separate future option):** reduce how often non-convergence
+happens at all, by changing the fit itself — `tol` (currently unset, so
+hmmlearn's default 0.01 applies; loosening it, e.g. to 0.1, may stop EM before it
+drifts into the observed oscillation, since the actual deltas seen (~0.03 against
+a total log-likelihood of ~2200) are tiny relative to the total); multiple
+random-restart fits (hmmlearn has no built-in `n_init` — would need a manual loop
+over a few `random_state`s, keeping the best final log-likelihood);
+`covariance_type="spherical"` instead of `"diag"` (fewer params to estimate, more
+robust on thin data); or falling back to fewer states (2/3 instead of 4 — already
+half-built via `VOL_LABELS_BY_N`/`TREND_LABELS_BY_N`) for a symbol that keeps
+failing to converge at 4. None of these touch the blend — purely a fitting-process
+change, independent of R4.
+
+**Lever B — R4 itself:** non-convergence as a direct, boolean TRIGGER for
+discounting `p_regime`'s blend weight on that specific tick — not a separately
+computed "regime fit quality" score that merely correlates with convergence.
+Mirrors the existing TimesFM soft-gate pattern exactly (`orchestrator.py`
+`TIMESFM_GATE_MODE="soft"`, `EVEngine.temp_weights()`) — same shape, new trigger:
+
+```
+if <this tick's trend/vol HMM fit did not converge>:
+    with ev_engine.temp_weights({"p_regime": discounted_weight}):
+        ev_result = ev_engine.compute_ev(...)
+else:
+    ev_result = ev_engine.compute_ev(...)   # unchanged, today's behavior
+```
+
+No diagnostic fired → no discount → byte-identical behavior to today. This is
+important: R4 adds a gate, not a new independent scoring system running in
+parallel — the trigger IS the mechanism, not a proxy for it.
+
+**Implementation detail that matters for correctness:** `model.monitor_.converged`
+is `True` if EITHER the log-likelihood improvement fell below `tol` OR `n_iter`
+was simply exhausted — the latter doesn't mean the fit is trustworthy, just that
+it ran out of iterations, so the boolean alone can under-detect a bad fit. R4
+should instead inspect the fuller `model.monitor_.history` (the full per-iteration
+log-likelihood deque hmmlearn already keeps, currently never read) and check
+whether ANY consecutive pair decreased across the whole fit — not just rely on
+the `.converged` property's name. Both `_vol_model` and `_trend_model` have their
+own independent `monitor_` — R4 should check both (only `_trend_model`'s feeds
+`p_regime` directly via `trend_probs`, but a non-converged `_vol_model` also means
+`vol_state`/`risk_multiplier` are suspect, worth surfacing even if not blend-gated
+yet).
+
+**Not built.** Scoping only, per this request — implementation, a discount-factor
+formula (e.g. a fixed cut like the existing `KELLY_REDUCTION=0.5`, or scaled to
+`|Δlog-likelihood|`), and tests are unstarted.
+
+## Note (verified, not fixed): `TIMESFM_GATE_MODE` is still a live env var, not retired
+
+`orchestrator.py:133`: `TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()`
+— the code DEFAULT is already `"soft"`, so the system no longer *requires* the
+env var to be set. But it has NOT been removed: confirmed live via SSH
+(`env | grep TIMESFM_GATE_MODE` → `TIMESFM_GATE_MODE=soft`) and it's also
+explicit in `.env.local`. Currently redundant (set to the same value the code
+would default to anyway), not required — safe to retire from Studio secrets
+whenever wanted, but that hasn't happened yet.
