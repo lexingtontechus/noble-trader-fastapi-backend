@@ -51,12 +51,15 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
         from regime_platform.sweep_orchestrator.calibration_enforcement import (
             PENALTY_ACTIONS,
             _action_is_fresh,
+            _settings_number,
             fetch_latest_eod_action,
         )
 
         window_h = float(getattr(settings, "EOD_DRIFT_WINDOW_HOURS", 48) or 48)
         min_n = int(getattr(settings, "EOD_DRIFT_MIN_SAMPLE", 20) or 20)
-        threshold = float(getattr(settings, "EOD_DRIFT_THRESHOLD", 0.15) or 0.15)
+        # Registry-tunable (Layer 1, 2026-08-23) — see
+        # worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.2.1.
+        threshold = _settings_number("EOD_DRIFT_THRESHOLD", 0.15)
 
         # A fresh penalty already exists → the scheduled passes own this
         # symbol; do not churn actions every 5 minutes.

@@ -150,14 +150,25 @@ def _build_bias_response(
     from regime_platform.sweep_orchestrator.eod_correction import (
         _classify_bias,
         _classify_bias_raw,
+        _settings_number,
     )
 
+    # Registry-tunable (Layer 1, 2026-08-23) — read the SAME way
+    # _classify_bias/_classify_bias_raw do, so what's displayed here can
+    # never disagree with what's actually enforced. See
+    # worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.2.1.
     fields: dict = {
         "symbol": symbol,
         "window_days": window_days,
-        "threshold_enforced": settings.EOD_BIAS_ENFORCED_THRESHOLD,
-        "threshold_raw_overconfident": getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", 0.30),
-        "threshold_raw_underconfident": getattr(settings, "EOD_BIAS_RAW_UNDERCONFIDENT", -0.20),
+        "threshold_enforced": _settings_number(
+            "EOD_BIAS_ENFORCED_THRESHOLD", settings.EOD_BIAS_ENFORCED_THRESHOLD
+        ),
+        "threshold_raw_overconfident": _settings_number(
+            "EOD_BIAS_RAW_OVERCONFIDENT", getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", 0.30)
+        ),
+        "threshold_raw_underconfident": _settings_number(
+            "EOD_BIAS_RAW_UNDERCONFIDENT", getattr(settings, "EOD_BIAS_RAW_UNDERCONFIDENT", -0.20)
+        ),
     }
     if enforced is not None:
         fields.update(

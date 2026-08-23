@@ -88,25 +88,65 @@ DECAY_LOOKBACK_DAYS = 3
 DECAY_DECLINE_THRESHOLD = 0.05
 
 
+def _settings_number(name: str, default: float) -> float:
+    """Read a tunable numeric value: tuning registry file -> settings ->
+    ``default``.
+
+    2026-08-23 (Layer 1 E2E wiring, worklog/PARAMETER_TUNING_PLAYBOOK.md
+    §2.5.2.1): checks ``tuning_registry.read_param()`` FIRST so the
+    autonomous auto-tuner's writes actually reach this decision, not just
+    the audit trail. Falls back to the ``settings`` value (today's
+    behaviour), then to ``default``, if a field is missing or not
+    numeric (e.g. a test double that auto-generates non-numeric
+    attributes) — this module's design rule is "never raise out," so a
+    bad value must degrade gracefully rather than crash the correction
+    pass for that symbol.
+    """
+    try:
+        from regime_platform.core import tuning_registry
+        from regime_platform.core.settings import settings
+        settings_value = getattr(settings, name, default)
+        # isinstance, NOT float(settings_value) — a fully-mocked `settings`
+        # object (patch(".settings") with no spec, common in this test
+        # suite) auto-generates attributes that satisfy float() (returning
+        # 1.0 via the mock's __float__) instead of raising, which would
+        # silently ignore `default` and feed a wrong value into
+        # tuning_registry.read_param(). isinstance is a real type check,
+        # not a dunder call, so it correctly rejects a Mock.
+        if isinstance(settings_value, (int, float)) and not isinstance(settings_value, bool):
+            settings_default = float(settings_value)
+        else:
+            settings_default = default
+        return tuning_registry.read_param(name, default=settings_default)
+    except (TypeError, ValueError, ImportError, AttributeError):
+        return default
+
+
 def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     """Shrink ``p_win`` toward 0.5 using a weak neutral prior.
 
     p_win' = (p_win * n + 0.5 * prior_count) / (n + prior_count)
+    ``prior_count`` (BAYES_PRIOR_COUNT) is registry-tunable (Layer 1);
+    the 0.5 anchor (BAYES_PRIOR_PWIN) is not — see §2.5.2.1.
     """
     try:
         p = float(p_win)
     except (TypeError, ValueError):
         p = 0.5
     n = max(0, int(n_records or 0))
-    numerator = p * n + BAYES_PRIOR_PWIN * BAYES_PRIOR_COUNT
-    denominator = n + BAYES_PRIOR_COUNT
+    prior_count = _settings_number("BAYES_PRIOR_COUNT", BAYES_PRIOR_COUNT)
+    numerator = p * n + BAYES_PRIOR_PWIN * prior_count
+    denominator = n + prior_count
     return round(max(0.001, min(0.999, numerator / denominator)), 4)
 
 
 def _classify_bias(bias: float) -> str:
-    if bias > OVERCONFIDENT_BIAS:
+    """Classify enforced-bias using the (registry-tunable, symmetric)
+    ``EOD_BIAS_ENFORCED_THRESHOLD`` — see §2.5.2.1."""
+    threshold = _settings_number("EOD_BIAS_ENFORCED_THRESHOLD", OVERCONFIDENT_BIAS)
+    if bias > threshold:
         return "OVERCONFIDENT"
-    if bias < UNDERCONFIDENT_BIAS:
+    if bias < -threshold:
         return "UNDERCONFIDENT"
     return "CALIBRATED"
 
@@ -121,45 +161,21 @@ def _classify_bias_raw(
     Mirrors ``_classify_bias`` but with configurable boundaries for the 4h
     intraday correction pass, which reads ``predicted_p_win_raw`` (pre-enforcement).
     Defaults come from ``DEFAULT_RAW_OVERCONFIDENT`` / ``DEFAULT_RAW_UNDERCONFIDENT``
-    but can be overridden via settings (EOD_BIAS_RAW_OVERCONFIDENT /
-    EOD_BIAS_RAW_UNDERCONFIDENT).
+    but are registry-tunable (Layer 1) via ``_settings_number`` — see
+    §2.5.2.1 — falling back to settings (EOD_BIAS_RAW_OVERCONFIDENT /
+    EOD_BIAS_RAW_UNDERCONFIDENT) when the registry has no entry yet.
     """
     oc = overconfident_threshold
     if oc is None:
-        try:
-            from regime_platform.core.settings import settings
-            oc = getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", DEFAULT_RAW_OVERCONFIDENT)
-        except Exception:
-            oc = DEFAULT_RAW_OVERCONFIDENT
+        oc = _settings_number("EOD_BIAS_RAW_OVERCONFIDENT", DEFAULT_RAW_OVERCONFIDENT)
     uc = underconfident_threshold
     if uc is None:
-        try:
-            from regime_platform.core.settings import settings
-            uc = getattr(settings, "EOD_BIAS_RAW_UNDERCONFIDENT", DEFAULT_RAW_UNDERCONFIDENT)
-        except Exception:
-            uc = DEFAULT_RAW_UNDERCONFIDENT
+        uc = _settings_number("EOD_BIAS_RAW_UNDERCONFIDENT", DEFAULT_RAW_UNDERCONFIDENT)
     if bias >= oc:
         return "OVERCONFIDENT"
     if bias <= uc:
         return "UNDERCONFIDENT"
     return "CALIBRATED"
-
-
-def _settings_number(name: str, default: float) -> float:
-    """Best-effort numeric read of a settings field.
-
-    Falls back to ``default`` when the field is missing OR is not actually
-    numeric (e.g. a test double / misconfigured mock that auto-generates
-    non-numeric attributes) — this module's design rule is "never raise
-    out," so a bad settings value must degrade to the documented default
-    rather than crash the correction pass for that symbol.
-    """
-    try:
-        from regime_platform.core.settings import settings
-        value = getattr(settings, name, default)
-        return float(value)
-    except (TypeError, ValueError, ImportError, AttributeError):
-        return default
 
 
 def _stagnation_streak(
@@ -458,11 +474,10 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 detail["stagnation_streak"] = streak
                 detail["stagnation_tier"] = tier
 
-            kelly_reduction = KELLY_REDUCTION
+            kelly_reduction = _settings_number("KELLY_REDUCTION", KELLY_REDUCTION)
             if tier == 1:
-                from regime_platform.core.settings import settings as _settings
-                kelly_reduction = getattr(
-                    _settings, "STAGNATION_KELLY_REDUCTION_TIER1",
+                kelly_reduction = _settings_number(
+                    "STAGNATION_KELLY_REDUCTION_TIER1",
                     DEFAULT_STAGNATION_KELLY_REDUCTION_TIER1,
                 )
                 detail["kelly_reduction_override"] = kelly_reduction

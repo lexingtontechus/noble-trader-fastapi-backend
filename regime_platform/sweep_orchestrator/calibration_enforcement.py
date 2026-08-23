@@ -84,20 +84,48 @@ PENALTY_ACTIONS = (
 AUDIT_ONLY_ACTIONS = ("parameter_decay_check",)
 
 
+def _settings_number(name: str, default: float) -> float:
+    """Read a tunable numeric value: tuning registry file -> settings ->
+    ``default``. Mirrors ``eod_correction._settings_number`` (2026-08-23,
+    Layer 1 E2E wiring — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.2.1),
+    kept as a separate copy rather than a cross-module import, consistent
+    with this file's existing "mirror, don't share" convention for
+    BAYES_PRIOR_COUNT / KELLY_REDUCTION (both guarded by a sync test).
+    """
+    try:
+        from regime_platform.core import tuning_registry
+        settings_value = getattr(settings, name, default)
+        # isinstance, NOT float(settings_value) — see
+        # eod_correction._settings_number's comment: a fully-mocked
+        # `settings` object (patch(".settings") with no spec, common in
+        # this test suite) auto-generates attributes that satisfy float()
+        # (returning 1.0) instead of raising, silently ignoring `default`.
+        if isinstance(settings_value, (int, float)) and not isinstance(settings_value, bool):
+            settings_default = float(settings_value)
+        else:
+            settings_default = default
+        return tuning_registry.read_param(name, default=settings_default)
+    except (TypeError, ValueError, ImportError, AttributeError):
+        return default
+
+
 def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     """Shrink ``p_win`` toward 0.5 with a Bayesian prior.
 
-    p_win' = (p_win * n + 0.5 * 10) / (n + 10)
+    p_win' = (p_win * n + 0.5 * prior_count) / (n + prior_count)
 
     With few calibration records the prior dominates (shrink hard); with
     many records the observed p_win dominates (shrink less).
+    ``prior_count`` (BAYES_PRIOR_COUNT) is registry-tunable (Layer 1); the
+    0.5 anchor (BAYES_PRIOR_PWIN) is not — see §2.5.2.1.
     """
     n = max(int(n_records or 0), 0)
     if n == 0:
         # No records — no evidence to shrink on; keep the raw p_win.
         return float(p_win)
-    return (float(p_win) * n + BAYES_PRIOR_PWIN * BAYES_PRIOR_COUNT) / (
-        n + BAYES_PRIOR_COUNT
+    prior_count = _settings_number("BAYES_PRIOR_COUNT", BAYES_PRIOR_COUNT)
+    return (float(p_win) * n + BAYES_PRIOR_PWIN * prior_count) / (
+        n + prior_count
     )
 
 
@@ -272,7 +300,9 @@ async def apply_calibration_adjustment(
     # Tier 1 (fix #3c) writes a deeper kelly_reduction_override in detail
     # when the symbol has been stagnant for 2+ cycles; otherwise falls back
     # to the standard KELLY_REDUCTION (0.5).
-    kelly_reduction = _num(detail.get("kelly_reduction_override")) or KELLY_REDUCTION
+    kelly_reduction = _num(detail.get("kelly_reduction_override")) or _settings_number(
+        "KELLY_REDUCTION", KELLY_REDUCTION
+    )
 
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
     adjusted_kelly = float(kelly_f) * kelly_reduction
