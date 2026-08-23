@@ -62,13 +62,20 @@ generalize — not settings.py.
 
 **Read precedence (per parameter):**
 
-1. **Config file** (e.g. `config/tuning_registry.yaml`) — primary. Fast
-   local read, no network round-trip, git-diffable after the fact (even
-   without live review, `git log` gives you an audit trail), and — this is
-   the important part — hot-reloadable. The orchestrator re-reads it
-   (cached with a short TTL, same shape as `_load_brick_params()`) so a
-   value written by an autonomous tuner is live within one tick, no
-   restart.
+1. **Config file** (`config/tuning_registry.yaml`) — primary. Fast local
+   read, no network round-trip, and — this is the important part —
+   hot-reloadable via `lru_cache` + an explicit `reload()` call after
+   every write (same shape as `brick_params.py`'s
+   `_load_yaml_cached()`/`reload()`), so a value written by an autonomous
+   tuner is live on the very next read, no restart.
+   **Correction (2026-08-23):** an earlier draft of this doc claimed the
+   file gives a git-diffable audit trail "for free." Checked against
+   `config/brick_params.yaml` — false. It IS git-tracked, but
+   `heavy_sweep.py`'s live rewrites on Studio never get committed back;
+   the tracked copy is stale (last touched months ago by an unrelated
+   commit) while the live one has moved on. `config/tuning_registry.yaml`
+   is git-ignored on purpose (see `.gitignore`) — it's a fast local cache
+   only. The real audit trail is #2 below.
 2. **Supabase table** (`nt_tuning_params`) — fallback + durability. Used
    when the file has no entry for a parameter (cold start, or the file
    was lost in a Studio rebuild), and as the cross-instance sync target.
@@ -119,13 +126,138 @@ autonomous tuning at once, mirroring existing kill switches like
 `NOBLE_TRADER_DISABLE_EXECUTION`. Absence of human attention is the
 default assumption everywhere else in this design.
 
-### 2.4 What's NOT built yet
+### 2.4 Build status (updated 2026-08-23)
 
-This section describes the target design. As of 2026-08-23, `heavy_sweep.py`
-+ `brick_params.yaml` is the only parameter family actually running this
-pattern. `nt_tuning_params`, `tuning_registry.yaml`, `PARAM_BOUNDS`, and
-`TUNING_AUTONOMY_ENABLED` do not exist yet — building them is future work,
-tracked separately from this doc.
+**Layer 0 (this section's design) is now built**, on top of
+`heavy_sweep.py` + `brick_params.yaml` (Tier A, already running this
+pattern before this work started):
+
+| Piece | Status |
+|---|---|
+| `regime_platform/core/tuning_registry.py` (`PARAM_BOUNDS`, `clamp()`, `read_param()`/`read_param_async()`, `write_param()`, `get_history()`) | ✅ Built, tested (`tests/test_tuning_registry.py`) |
+| `nt_tuning_params` Supabase table (migration 117) | ✅ Migration written — **not yet applied to live Supabase** (no DDL execution access from this session; needs the operator or `supabase db push`) |
+| `config/tuning_registry.yaml` | Created lazily on first write; git-ignored |
+| `settings.TUNING_AUTONOMY_ENABLED` | ✅ Built |
+| `fetch_latest_tuning_param` / `fetch_tuning_param_history` / `insert_tuning_param_row` (`supabase_client.py`) | ✅ Built |
+
+**Not yet built — the actual tuning logic (Layer 1 and Layer 2 below).**
+Layer 0 is deliberately just the storage/safety primitives: it doesn't
+decide when or how much to tune anything. No parameter has been migrated
+to read through the registry yet — `eod_correction.py`, `orchestrator.py`,
+etc. still read `settings.py`/env vars directly. Migrating the Tier D
+pilot family (stagnation breaker tunables) through the registry is future
+work.
+
+**Bug found while building this (unrelated to Layer 0 itself, migration
+116):** `nt_eod_actions.action` has a `CHECK` constraint (migrations
+102/104) listing only 4 action values. Two action types added to the
+Python code since then — `degeneracy_breaker` (2026-08-21) and this
+session's `stagnation_kill_switch` (fix #3c, commit `3b37e89`) — were
+never added to the constraint. Confirmed live via Supabase query
+(2026-08-23): **`degeneracy_breaker` has 0 rows ever**, despite the code
+path having run for 2+ days — every insert has been silently failing
+(best-effort writes swallow the exception). `stagnation_kill_switch` would
+hit the same wall. Migration 116 widens the constraint; **it also has not
+been applied to live Supabase yet**, for the same DDL-access reason.
+
+---
+
+## 2.5 Layer 1 & Layer 2 — the tuning logic itself (design, not built)
+
+Layer 0 only provides bounded storage. This section is the two-layer
+architecture for what actually decides to change a value — matching the
+"dream state" framing: a cheap, continuous, autonomous baseline, with an
+agent escalation reserved for detected regime shifts, not routine ticks.
+
+### 2.5.1 Scheduling: in-process APScheduler, not Supabase cron
+
+The orchestrator already runs an in-process APScheduler instance
+(`orchestrator.py`) scheduling the light sweep (5 min), heavy sweep
+(weekly), and `eod_correction.run_eod_correction` (4h). Supabase-side
+scheduling (pg_cron / Edge Functions) is a legacy, now-deprecated path
+for this system — `EVEngine.compute_tail_risk()`'s docstring already
+flags its only caller as "the deprecated Supabase Edge Function path."
+
+**Both Layer 1 and Layer 2's triggers belong on the same in-process
+APScheduler instance**, as new scheduled jobs alongside `eod_correction`
+— not a new external cron, and not Supabase-side. Reasons: they need the
+same Supabase credentials/connection handling the orchestrator process
+already holds, and any value they tune needs to be picked up by that
+SAME process's next tick — an external process would just be reading the
+registry and hoping the live orchestrator notices, for no benefit over
+being in-process. `eod_correction.py`'s CLI entrypoint
+(`python -m regime_platform.sweep_orchestrator.eod_correction`) is the
+model if an out-of-process/manual trigger is ever wanted in addition.
+
+### 2.5.2 Layer 1 — autonomous continuous self-tuning
+
+A scheduled job (own cadence, e.g. daily — slower than the 4h correction
+pass, since a Tier D parameter's effect needs time to show up in realized
+outcomes) that, per registry parameter:
+
+1. Reads the tracked outcome metric over a rolling window (calibration
+   bias, stagnation frequency, false-qualify rate — whatever §3's tier
+   table says to watch).
+2. Takes ONE bounded step (via `tuning_registry.write_param()`, which
+   already enforces `PARAM_BOUNDS` + the rate limit) in whichever
+   direction recently correlated with improvement.
+3. Relies on `write_param()`'s built-in clamp/rate-limit, plus a rollback
+   check on its next run: if the metric regressed since the last step,
+   the following write moves back toward `previous_value` instead of
+   continuing in the same direction.
+
+Deliberately NOT a black-box optimizer (no RL, no Bayesian search) —
+simple coordinate-ascent-with-a-governor, matching this codebase's
+existing style (explicit, logged, debuggable) and honest about the
+"arbitrary within bounds" reality instead of pretending a fancier
+algorithm would make the adjustments less arbitrary.
+
+**Pilot scope:** Tier D only (stagnation-breaker tunables first) — lowest
+blast radius, already reversible, already has an analogous auto-recovery
+shape (`STAGNATION_RESET_CYCLES`) to generalize from. Tier B/C stay out of
+Layer 1 entirely; they're Layer 2's job.
+
+### 2.5.3 Layer 2 — agent-triggered tuning on detected regime shift
+
+This is cheaper to build than it sounds because half of it already
+exists, unwired:
+
+- `orchestrator.py` already computes and persists `regime_shift` /
+  `prev_regime` / `shift_at` on every tick (a simple label-change
+  boolean).
+- `EVEngine.detect_regime_shift()` already computes shift `direction`,
+  `magnitude`, and `confidence` from two regime snapshots — but it is
+  called **nowhere** in the live codebase (confirmed via grep,
+  2026-08-23). It's a complete, unused method.
+
+**What's missing:**
+1. Call `detect_regime_shift()` with real consecutive snapshots (it needs
+   `prev`/`curr` dicts with `regime_label` + `trend_probs` — both already
+   available in `_process_symbol`).
+2. A threshold on `magnitude`/`confidence` that, when crossed, writes an
+   alert (new `nt_eod_actions`-style action, e.g. `regime_shift_alert`, or
+   a small dedicated table) instead of silently discarding the result
+   like today.
+3. A Hermes cron job (same pattern as the existing `eod-lookback-monitor`)
+   that watches for unactioned alerts and triggers an agent session — the
+   same kind of live-evidence-gathering, bounded-fix, test-gated work this
+   session did manually, but on a detected trigger instead of a human
+   asking.
+
+Tier B/C tuning (blend weights, gate thresholds — the parameters explicitly
+excluded from Layer 1) lives here: infrequent by construction (shifts
+aren't routine), which is what makes the full gate list in §4 affordable
+to run every time, unlike a tick-by-tick loop.
+
+### 2.5.4 Where MIN_RR fits, concretely
+
+`MIN_RR` (currently `1.5` in Studio Secrets, shared by the orchestrator
+gate and `heavy_sweep.py`'s grid search since the 2026-08-17 fix) is Tier
+C — a risk-acceptance knob, not a performance knob. Per §3's tier table
+it does NOT belong in Layer 1's continuous loop. It's exactly the kind of
+value that should only move via Layer 2, triggered by live evidence of a
+specific failure mode (as the 1.5 vs. 2.0 change itself was, per
+`20260817_RECALIBRATION_PERF_ASSESSMENT.md`), not a routine daily nudge.
 
 ---
 
