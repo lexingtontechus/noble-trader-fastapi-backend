@@ -595,3 +595,40 @@ US500: trend_converged=False, vol_converged=False  -> R4 DOES trigger
 A real, live, non-hypothetical correction on US500 — pulling `p_win` back
 toward the other (trustworthy) sources' consensus by discounting a regime read
 whose own fit hmmlearn itself flagged as not having converged cleanly.
+
+## Deployment + live verification (2026-08-23, weekend) — caveat: markets closed
+
+Deployed to the live Studio, restarted, cache refreshed. Verified: git HEAD on
+the Studio matches `3ee00b9` (latest R4 commit) exactly; sweeps completing
+cleanly every 5 minutes with no errors/tracebacks since restart; R4 confirmed
+firing live for US500 at 2026-08-23 06:45:43 UTC (`discounting p_regime weight
+to 0.1250`, matching `base_weight(0.25) × scale(0.5)` exactly).
+
+**Important caveat, flagged by the user:** this entire deployment window is a
+weekend, and both AAPL (NASDAQ single stock) and US500 (index CFD) are
+equity-hours-bound instruments. US500's price was observed EXACTLY unchanged
+(`last=7672.100000`) across every sweep tick from 04:40 through 06:35 UTC — the
+market is closed/inactive, not just quiet. At 06:45 UTC, R4 fired for 9+
+symbols simultaneously (GBPUSD, US30USD, US500, USDCAD, USDCHF, USDJPY, XAGUSD,
+XAUAUD, XAUEUR, XAUUSD) with much larger log-likelihood deltas than the earlier
+isolated noise (~-1223, -588 vs ~-0.0002) — more consistent with a shared
+weekend/thin-data artifact across the whole sweep group than genuine per-symbol
+regime instability.
+
+**What this weekend's verification does and doesn't prove:**
+- Confirmed, independent of market hours: the deploy is correct, the code
+  runs without errors, and R4's mechanism fires exactly as designed when its
+  trigger condition is met.
+- NOT yet confirmed: whether R1/R4 measurably improve behavior during REAL
+  trading. A closed/quiet market is the LEAST likely condition for AAPL's
+  specific flip-flop scenario (a boundary-crossing perturbation) to occur
+  naturally, and the widespread simultaneous non-convergence tonight is more
+  likely a data-quality artifact of thin weekend data than a demonstration of
+  the fixes working on genuine price action.
+
+**Real test: Monday market open.** Watch for: (1) AAPL's regime_label
+stabilizing (or not) once real intraday movement resumes; (2) US500's
+non-convergence rate dropping once its price actually updates tick-to-tick;
+(3) most importantly, whether AAPL/US500's raw bias in
+`v_eod_calibration_bias_latest` actually starts moving off its multi-day-frozen
+snapshot as fresh trades resolve under real conditions.
