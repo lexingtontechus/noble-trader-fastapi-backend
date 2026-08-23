@@ -304,30 +304,64 @@ already written for fixes #3a/#3b.
 
 ### 2.5.3 Layer 2 — agent-triggered tuning on detected regime shift
 
-This is cheaper to build than it sounds because half of it already
-exists, unwired:
+**Status (2026-08-23): items 1–2 below are built (commit `16a28a0`),
+verified with no design drift from Layer 1/the E2E migration first (see
+box below). Item 3 is NOT built — separate, outside this repo's scope.**
 
-- `orchestrator.py` already computes and persists `regime_shift` /
+**Design-drift check before building (2026-08-23):** confirmed via
+`grep` + a diff review of every commit since `392d582` that neither
+Layer 1 nor the E2E read-site migration touched `ev_engine.py`, the
+`regime_shift` computation block in `_process_symbol`, or any Tier B/C
+parameter (`MIN_REGIME_CONF`/`KELLY`/`RR`/`P_WIN`,
+`TIMESFM_SIGMOID_K`/`CLAMP`, the blend weights, `MARKOV_EMA_ALPHA`) — all
+untouched, exactly as this section originally described. `PARAM_BOUNDS`
+(Layer 0) already has entries for these Tier B/C names too, seeded when
+Layer 0 was built — Layer 2 can reuse `tuning_registry.write_param()`
+as-is once an agent decides to act on an alert; no additional registry
+work is needed for that half.
+
+This turned out cheaper to build than it sounded because half of it
+already existed, unwired:
+
+- `orchestrator.py` already computed and persisted `regime_shift` /
   `prev_regime` / `shift_at` on every tick (a simple label-change
-  boolean).
-- `EVEngine.detect_regime_shift()` already computes shift `direction`,
-  `magnitude`, and `confidence` from two regime snapshots — but it is
+  boolean) — unchanged by this work.
+- `EVEngine.detect_regime_shift()` already computed shift `direction`,
+  `magnitude`, and `confidence` from two regime snapshots — but was
   called **nowhere** in the live codebase (confirmed via grep,
-  2026-08-23). It's a complete, unused method.
+  2026-08-23 and re-confirmed just before building). It was a complete,
+  unused method.
 
-**What's missing:**
-1. Call `detect_regime_shift()` with real consecutive snapshots (it needs
-   `prev`/`curr` dicts with `regime_label` + `trend_probs` — both already
-   available in `_process_symbol`).
-2. A threshold on `magnitude`/`confidence` that, when crossed, writes an
-   alert (new `nt_eod_actions`-style action, e.g. `regime_shift_alert`, or
-   a small dedicated table) instead of silently discarding the result
-   like today.
-3. A Hermes cron job (same pattern as the existing `eod-lookback-monitor`)
-   that watches for unactioned alerts and triggers an agent session — the
-   same kind of live-evidence-gathering, bounded-fix, test-gated work this
-   session did manually, but on a detected trigger instead of a human
-   asking.
+**What was missing, and what got built:**
+1. **✅ Built.** `detect_regime_shift()` is now called with real
+   consecutive snapshots on every tick. `_last_regime` (label only) was
+   insufficient to compute a real magnitude — added
+   `SweepOrchestrator._last_trend_probs: dict[str, dict[str, float]]`
+   to cache the full posterior alongside the label. The decision logic
+   itself is a new pure function, `_evaluate_regime_shift()` (bounds:
+   `prev_regime`/`prev_trend_probs` both present, shift occurred, AND
+   magnitude ≥ `settings.REGIME_SHIFT_ALERT_THRESHOLD`) — unit-tested
+   independent of the orchestrator (`tests/test_regime_shift_alert.py`),
+   per gate §4.3.
+2. **✅ Built.** Crossing the threshold (default `0.35`, a judgment call
+   left as a plain settings field rather than a Tier D auto-tuned
+   parameter — see settings.py's docstring) writes a `regime_shift_alert`
+   row to `nt_eod_actions` (migration 118 widens the `CHECK` constraint,
+   same pattern as 116) via the new `_write_regime_shift_alert()`.
+   Detection-only: it flags the shift, it does not itself change any
+   parameter.
+3. **Not built — outside this repo.** A Hermes cron job (same pattern as
+   the existing `eod-lookback-monitor`) that watches `nt_eod_actions` for
+   unactioned `regime_shift_alert` rows and triggers an agent session —
+   the same kind of live-evidence-gathering, bounded-fix, test-gated work
+   this session did manually, but on a detected trigger instead of a
+   human asking. This requires Hermes-platform-side configuration, not a
+   backend code change — a separate step if wanted.
+
+**Also not built:** migrations 116/117/118 have not been applied to live
+Supabase from this session (no DDL execution access — no `supabase` CLI,
+no direct Postgres connection string). 116 and 117 were confirmed applied
+by the operator directly; 118 is pending the same way.
 
 Tier B/C tuning (blend weights, gate thresholds — the parameters explicitly
 excluded from Layer 1) lives here: infrequent by construction (shifts
