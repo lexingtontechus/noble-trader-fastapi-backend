@@ -518,10 +518,14 @@ Over 12 hours, the system processed **5 raw-bias correction passes** (every 4 ho
 
 These 5 symbols (AUDUSD, EURUSD, GBPUSD, USDCAD, XAUAUD) have low trading volume and may have <20 records, so their stale actions from Aug 18-19 are never cleared by the 4h pass. The stale actions persist and continue being enforced by light sweeps indefinitely.
 
-**Impact**: These symbols retain outdated penalty actions (`kelly_reduction`, `bayesian_penalty`) from Aug 18-19. The actions are never refreshed or cleared.
+**Fix implemented (commit `ca414e1`):** Added unconditional `await _clear_stale_eod_actions(symbol)` call at the start of the symbol loop (L326-327) when `raw_bias_mode=True`, before bias computation. Removed the old conditional clearing at L328-329 (which only fired for CALIBRATED status).
 
-**Proposed fixes** (awaiting authorization):
-1. Add `_clear_stale_eod_actions(symbol)` call to the degeneracy-check path (L249-300) for symbols that return `bias=None`
-2. Or: lower `EOD_BIAS_MIN_RECORDS` threshold for these low-volume symbols
+**Impact**: Previously, these symbols retained outdated penalty actions (`kelly_reduction`, `bayesian_penalty`) from Aug 18-19. The actions were never cleared by the 4h pass and continued being enforced by light sweeps indefinitely.
+
+**Verification (2026-08-23 04:30 UTC pass):**
+- Pre-fix 4h passes (08:30–20:30): Only 6 symbols cleared per pass
+- Post-fix 04:30 UTC pass: All **14 symbols cleared**, including the 5 previously-stale ones
+- DB state after 04:30 pass: Only 4 actions remain (AAPL, US500, XAGUSD, XAUEUR) — stale actions on 5 symbols completely cleared ✅
+- Light sweeps post-cleaning: No stale kelly_reduction actions on the 5 symbols ✅
 
 ---
