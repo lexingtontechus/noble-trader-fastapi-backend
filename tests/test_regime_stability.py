@@ -8,6 +8,8 @@ Covers:
      matching across refits (fix #2, targets the FLIP-FLOPPING symptom).
   3. ``SweepOrchestrator._smoothed_trend_probs`` — the supplementary EMA
      smoother (fix #3), mirroring ``_smoothed_markov_hold_prob``.
+  4. ``RegimeHMM._fit_converged`` — the R4 convergence diagnostic (non-
+     convergence as a live blend-weight trigger).
 """
 from types import SimpleNamespace
 
@@ -15,6 +17,7 @@ import numpy as np
 from unittest.mock import MagicMock
 
 from regime_platform.core.regime_engine import RegimeHMM
+from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
 from regime_platform.sweep_orchestrator.orchestrator import SweepOrchestrator
 
 
@@ -178,3 +181,124 @@ def test_per_symbol_isolation():
     SweepOrchestrator._smoothed_trend_probs(fake_self, "US500", {"bull": 0.1, "bear": 0.9})
     assert set(fake_self._regime_trend_ema.keys()) == {"AAPL", "US500"}
     assert fake_self._regime_trend_ema["AAPL"] != fake_self._regime_trend_ema["US500"]
+
+
+# ─── 4. R4: convergence diagnostic + blend-weight trigger ──────────────
+
+
+def _fake_monitor(history):
+    return SimpleNamespace(history=history)
+
+
+def _fake_model_with_monitor(history):
+    return SimpleNamespace(monitor_=_fake_monitor(history))
+
+
+def test_fit_converged_true_for_monotonic_history():
+    """A clean EM run (log-likelihood non-decreasing throughout) must
+    read as converged."""
+    model = _fake_model_with_monitor([100.0, 105.0, 106.0, 106.001])
+    assert RegimeHMM._fit_converged(model) is True
+
+
+def test_fit_converged_false_for_any_decrease():
+    """Exactly the condition that fires hmmlearn's own 'Model is not
+    converging' warning — ANY consecutive decrease beyond the same
+    precision tolerance hmmlearn uses internally, not just the last step."""
+    model = _fake_model_with_monitor([100.0, 105.0, 104.97, 106.0])
+    assert RegimeHMM._fit_converged(model) is False
+
+
+def test_fit_converged_ignores_negligible_float_noise():
+    """A decrease smaller than hmmlearn's own precision bound
+    (sqrt(machine epsilon), ~1.5e-8) must NOT trip the flag — otherwise
+    this would fire on virtually every real fit from floating-point noise
+    alone."""
+    model = _fake_model_with_monitor([100.0, 105.0, 105.0 - 1e-12, 106.0])
+    assert RegimeHMM._fit_converged(model) is True
+
+
+def test_fit_converged_true_when_history_too_short_to_compare():
+    """Fewer than 2 history entries -> nothing to compare -> can't
+    disprove convergence -> assume converged (fail open)."""
+    assert RegimeHMM._fit_converged(_fake_model_with_monitor([100.0])) is True
+    assert RegimeHMM._fit_converged(_fake_model_with_monitor([])) is True
+
+
+def test_fit_converged_true_when_monitor_missing():
+    """A model with no monitor_ at all (e.g. a bare mock in another test)
+    must not raise -- fail open, same posture as the missing-source
+    contract elsewhere in this codebase."""
+    assert RegimeHMM._fit_converged(None) is True
+    assert RegimeHMM._fit_converged(SimpleNamespace()) is True
+
+
+def test_predict_populates_convergence_fields_on_real_fit():
+    """Integration-level: a real (tiny synthetic) fit populates
+    trend_converged/vol_converged on the returned RegimeSnapshot --
+    confirms the wiring in predict(), not just the static helper."""
+    rng = np.random.RandomState(2)
+    prices = 100 + np.cumsum(rng.normal(0, 0.01, size=150))
+    model = RegimeHMM(n_components=4)
+    model.fit(prices)
+    snap = model.predict(prices)
+    assert isinstance(snap.trend_converged, bool)
+    assert isinstance(snap.vol_converged, bool)
+
+
+def test_regime_snapshot_defaults_converged_true():
+    """Every pre-R4 call site that constructs RegimeSnapshot directly
+    (gpu_engine.py, simulator.py, heavy_sweep.py's neutral fallback,
+    other tests) doesn't know about convergence -- must default to True
+    (fail open) so none of them need updating."""
+    from regime_platform.core.regime_engine import RegimeSnapshot
+    snap = RegimeSnapshot(
+        vol_probs=[0.5, 0.5], trend_probs=[0.5, 0.5],
+        vol_state="low", trend_state="bull", regime_label="low_vol_bull",
+        confidence=0.5, n_bars_fitted=10,
+    )
+    assert snap.trend_converged is True
+    assert snap.vol_converged is True
+
+
+def test_temp_weights_empty_dict_is_a_noop():
+    """R4's core contract: no diagnostic firing -> {} passed to
+    temp_weights() -> byte-identical behaviour to no R4 at all."""
+    engine = EVEngine()
+    before = engine.get_weights()
+    with engine.temp_weights({}):
+        during = engine.get_weights()
+    after = engine.get_weights()
+    assert before == during == after == P_WIN_WEIGHTS_FULL
+
+
+def test_temp_weights_discounts_p_regime_and_restores():
+    engine = EVEngine()
+    original = P_WIN_WEIGHTS_FULL["p_regime"]
+    with engine.temp_weights({"p_regime": original * 0.5}):
+        assert engine.get_weights()["p_regime"] == original * 0.5
+        # Other weights untouched during the override.
+        assert engine.get_weights()["p_historical"] == P_WIN_WEIGHTS_FULL["p_historical"]
+    # Fully restored after exit.
+    assert engine.get_weights() == P_WIN_WEIGHTS_FULL
+
+
+def test_discounted_p_regime_reduces_its_blend_influence():
+    """The end-to-end point of R4: a discounted p_regime weight makes a
+    wrong-but-confident regime read swing p_win less than it otherwise
+    would, relative to the other (converged) sources."""
+    engine = EVEngine()
+    extreme_bullish_regime = {"bull": 0.99, "bear": 0.01}
+    common = dict(
+        trend_probs=extreme_bullish_regime,
+        direction="short",  # regime disagrees with the trade direction
+        p_timesfm=0.5,
+        p_historical=0.5,
+        tp_bricks=5, sl_bricks=3, brick_size=0.5,
+    )
+    full_weight = engine.compute_ev(**common)
+    with engine.temp_weights({"p_regime": P_WIN_WEIGHTS_FULL["p_regime"] * 0.5}):
+        discounted = engine.compute_ev(**common)
+    # Regime disagrees with "short" -> pulls p_win down. Discounting its
+    # weight must pull p_win back UP toward the other sources' consensus.
+    assert discounted.p_win > full_weight.p_win

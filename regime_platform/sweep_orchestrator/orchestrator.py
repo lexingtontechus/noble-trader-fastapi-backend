@@ -30,7 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
-from regime_platform.services.statistics.ev_engine import EVEngine
+from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
 from regime_platform.services.redis_pool import redis_pool
 from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
 from regime_platform.services.hmm import quote_fetcher as hmm_quote_fetcher
@@ -1718,6 +1718,23 @@ class SweepOrchestrator(HeavySweepMixin):
         regime_conf = regime.confidence
         trend_probs = dict(zip(RegimeHMM.TREND_LABELS, regime.trend_probs))
 
+        # R4 (2026-08-23, worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md):
+        # the trend HMM's own EM fit is a live trust signal for p_regime that
+        # was previously computed and discarded. Non-convergence is the
+        # TRIGGER, not a separately-derived score — no diagnostic firing
+        # means no override, byte-identical to pre-R4 behaviour.
+        _regime_weight_override: dict[str, float] = {}
+        if not getattr(regime, "trend_converged", True):
+            scale = max(0.0, min(1.0, float(
+                getattr(settings, "REGIME_NONCONVERGENCE_WEIGHT_SCALE", 0.5)
+            )))
+            _regime_weight_override = {"p_regime": P_WIN_WEIGHTS_FULL["p_regime"] * scale}
+            logger.warning(
+                "%s: trend HMM did not converge cleanly this tick — "
+                "discounting p_regime weight to %.4f (scale=%.2f)",
+                symbol, _regime_weight_override["p_regime"], scale,
+            )
+
         # ── 2. Kelly sizing ──
         returns = np.diff(np.log(np_prices)).tolist()
         # Annualise factor: 8760 for 24/7 assets (crypto), 252 for stocks/ETFs
@@ -1861,19 +1878,23 @@ class SweepOrchestrator(HeavySweepMixin):
         )
         _smoothed_trend_probs = self._smoothed_trend_probs(symbol, trend_probs)
         _p_historical = await self._fetch_p_historical_cached(symbol)
-        ev_result = self._ev_engine.compute_ev(
-            trend_probs=_smoothed_trend_probs,
-            direction=direction,
-            p_historical=_p_historical,
-            transition_matrix=_markov_T,
-            current_state=_markov_current_state,
-            p_timesfm=p_timesfm,
-            brick_size=brick_size,
-            sl_bricks=sl_bricks,
-            tp_bricks=tp_bricks,
-            n_steps=MARKOV_HOLD_STEPS,
-            p_markov_override=_smoothed_p_markov,
-        )
+        # R4: apply the non-convergence discount (empty dict = no-op, exact
+        # pre-R4 behaviour) around the compute_ev() call itself, not a
+        # separately-tracked parallel state.
+        with self._ev_engine.temp_weights(_regime_weight_override):
+            ev_result = self._ev_engine.compute_ev(
+                trend_probs=_smoothed_trend_probs,
+                direction=direction,
+                p_historical=_p_historical,
+                transition_matrix=_markov_T,
+                current_state=_markov_current_state,
+                p_timesfm=p_timesfm,
+                brick_size=brick_size,
+                sl_bricks=sl_bricks,
+                tp_bricks=tp_bricks,
+                n_steps=MARKOV_HOLD_STEPS,
+                p_markov_override=_smoothed_p_markov,
+            )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
         effective_kelly = kelly_f * ev_result.ev_scale
@@ -1932,8 +1953,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     # the public API guarantees weight restoration even if
                     # compute_ev raises, and validates the key/value shape
                     # before the override is applied.
+                    # Merge with the R4 regime-non-convergence override
+                    # (empty dict if not triggered) so both discounts apply
+                    # together when both conditions hold this tick.
                     with self._ev_engine.temp_weights(
-                        {"p_timesfm": base_weight * scale}
+                        {**_regime_weight_override, "p_timesfm": base_weight * scale}
                     ):
                         adjusted_ev_result = self._ev_engine.compute_ev(
                             trend_probs=_smoothed_trend_probs,

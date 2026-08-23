@@ -550,3 +550,48 @@ env var to be set. But it has NOT been removed: confirmed live via SSH
 explicit in `.env.local`. Currently redundant (set to the same value the code
 would default to anyway), not required — safe to retire from Studio secrets
 whenever wanted, but that hasn't happened yet.
+
+---
+
+## R4 built (2026-08-23, same day)
+
+Implemented as scoped, with the correctness nuance already flagged (checking
+the full `monitor_.history`, not the misleading-when-`n_iter`-exhausted
+`.converged` property):
+
+- `RegimeHMM._fit_converged(model)` (new, `regime_engine.py`): checks the full
+  per-iteration log-likelihood history for any consecutive decrease, using the
+  SAME precision tolerance (`sqrt(machine epsilon)`) hmmlearn's own
+  `ConvergenceMonitor.report()` uses internally — so this flag is True iff
+  hmmlearn's "Model is not converging" warning did NOT fire during that fit.
+- `RegimeSnapshot.trend_converged` / `.vol_converged` (new fields, default
+  `True` — every pre-R4 construction site keeps working unchanged). Populated
+  by `RegimeHMM.predict()`.
+- `REGIME_NONCONVERGENCE_WEIGHT_SCALE` (new setting, default 0.5).
+- Wiring (`orchestrator.py` + `heavy_sweep.py`, both `compute_ev()` call sites
+  in each): `if not regime.trend_converged: override = {"p_regime": base_weight
+  * scale}`, applied via `EVEngine.temp_weights(override)` — an empty dict when
+  not triggered, so the no-fire path is byte-identical to pre-R4 (confirmed by
+  `test_temp_weights_empty_dict_is_a_noop`). The TimesFM soft-gate's own
+  override merges with R4's rather than fighting it (`{**regime_override,
+  "p_timesfm": ...}`) so both discounts stack correctly when both conditions
+  hold the same tick. Deliberately gates ONLY on `trend_converged` (the model
+  that actually feeds `p_regime`) — `vol_converged` is populated and available
+  but not blend-gated yet, per the original scoping.
+- 10 new tests in `tests/test_regime_stability.py` (diagnostic correctness,
+  no-op contract, restore-on-exit, end-to-end blend effect). Full suite: **599
+  passed, 23 skipped, 0 failed.**
+
+**Real-data confirmation, right now, on the two symbols this investigation is
+about:**
+```
+AAPL:  trend_converged=True,  vol_converged=False  -> R4 does not trigger today
+       (trend model — the one that feeds p_regime — happens to be clean right
+       now, even though the volatility model isn't; confirms gating only on
+       trend_converged, not vol_converged, was the right scope)
+US500: trend_converged=False, vol_converged=False  -> R4 DOES trigger
+       full-weight p_win=0.1922  ->  R4-discounted p_win=0.2992
+```
+A real, live, non-hypothetical correction on US500 — pulling `p_win` back
+toward the other (trustworthy) sources' consensus by discounting a regime read
+whose own fit hmmlearn itself flagged as not having converged cleanly.

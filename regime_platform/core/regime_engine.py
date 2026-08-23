@@ -63,6 +63,17 @@ class RegimeSnapshot:
     regime_label: str          # combined label e.g. "low_vol_bull"
     confidence:  float         # max(vol) * max(trend)
     n_bars_fitted: int
+    # R4 (2026-08-23, worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md):
+    # whether the HMM fit that produced this snapshot's trend/vol posteriors
+    # converged cleanly (see RegimeHMM._fit_converged). Default True so every
+    # existing call site that constructs a RegimeSnapshot directly (not via
+    # RegimeHMM.predict()) — gpu_engine.py, simulator.py, heavy_sweep.py's
+    # neutral fallback, tests — keeps working unchanged; they don't have a
+    # real hmmlearn monitor_ to check, so "assume converged" (fail open,
+    # same posture as p_timesfm=None not blocking trading) is the safe
+    # default rather than fail closed.
+    trend_converged: bool = True
+    vol_converged: bool = True
 
     @property
     def risk_multiplier(self) -> float:
@@ -326,6 +337,36 @@ class RegimeHMM:
             regime_label=f"{vol_state}_vol_{trend_state}",
             confidence=round(float(np.max(vol_probs) * np.max(trend_probs)), 4),
             n_bars_fitted=len(prices),
+            trend_converged=self._fit_converged(self._trend_model),
+            vol_converged=self._fit_converged(self._vol_model),
+        )
+
+    # ── Convergence diagnostic (R4) ─────────────────────────────────────
+
+    @staticmethod
+    def _fit_converged(model: Optional[hmm.GaussianHMM]) -> bool:
+        """Whether an already-fit model's EM run was numerically clean.
+
+        NOT the same as hmmlearn's own ``model.monitor_.converged`` —
+        that property is True if EITHER the log-likelihood improvement
+        fell below ``tol`` OR ``n_iter`` was simply exhausted, so it can
+        read True merely because the fit ran out of iterations, not
+        because it actually stabilized. This checks the FULL per-iteration
+        log-likelihood history (hmmlearn already records it, unbounded,
+        in ``monitor_.history`` — nothing new to compute) for ANY
+        consecutive decrease, using the SAME precision tolerance
+        hmmlearn's own ``ConvergenceMonitor.report()`` uses internally
+        for its "Model is not converging" warning — so this flag is
+        True if and only if that warning did NOT fire during this fit.
+        """
+        monitor = getattr(model, "monitor_", None)
+        history = list(getattr(monitor, "history", None) or [])
+        if len(history) < 2:
+            return True  # nothing to compare against — can't disprove convergence
+        precision = np.finfo(float).eps ** 0.5
+        return all(
+            (history[i + 1] - history[i]) >= -precision
+            for i in range(len(history) - 1)
         )
 
     # ── Feature Engineering ──────────────────────────────────────────────────

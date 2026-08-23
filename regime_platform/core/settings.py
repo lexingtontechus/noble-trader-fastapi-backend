@@ -357,6 +357,21 @@ class Settings(BaseSettings):
     #   which stays driven by the raw prediction.
     REGIME_EMA_ALPHA: float = 0.30
 
+    # REGIME_NONCONVERGENCE_WEIGHT_SCALE (default 0.5, 2026-08-23 R4 —
+    #   worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md):
+    #   When the trend HMM's EM fit did not converge cleanly this tick
+    #   (RegimeSnapshot.trend_converged is False — see
+    #   RegimeHMM._fit_converged), p_regime's blend weight is multiplied by
+    #   this factor before compute_ev() runs (via EVEngine.temp_weights()),
+    #   same mechanism already used for the TimesFM soft gate. 1.0 disables
+    #   the discount entirely (== previous behaviour, quick rollback without
+    #   a code change). A poorly-conditioned fit is exactly the AAPL/US500
+    #   condition this whole investigation is about — "Model is not
+    #   converging" was observed on BOTH symbols' real feature data — so an
+    #   unreliable regime read contributes less to that tick's p_win instead
+    #   of being trusted at full weight regardless of fit quality.
+    REGIME_NONCONVERGENCE_WEIGHT_SCALE: float = 0.5
+
     # KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU (default True, 2026-08-22 audit fix #3b):
     #   The regime-based Kelly floor (orchestrator.py, "Kelly was 0 — applied
     #   regime floor") exists so sampling noise on hourly returns doesn't zero

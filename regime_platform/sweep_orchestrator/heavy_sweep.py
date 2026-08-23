@@ -55,6 +55,7 @@ from typing import Any, Optional
 import numpy as np
 
 from regime_platform.core.settings import settings
+from regime_platform.services.statistics.ev_engine import P_WIN_WEIGHTS_FULL
 
 # Note: write_brick_params + fetch_calibration_bias + log_sweep_result +
 # fetch_candles_for_symbols are imported lazily inside their callers to
@@ -580,24 +581,40 @@ class HeavySweepMixin:
             # p_pattern=None (always-null server-side source; removed
             # rather than kept, see ev_engine.py's module docstring).
             _p_historical = await self._fetch_p_historical_cached(symbol)
-            ev_result = self._ev_engine.compute_ev(
-                trend_probs=dict(zip(
-                    # RegimeHMM.TREND_LABELS — accessed via the snapshot's
-                    # internal arrays; the orchestrator's _process_symbol
-                    # does the same zip.
-                    self._regime_trend_labels(),
-                    regime_snapshot.trend_probs,
-                )),
-                direction=direction,
-                p_historical=_p_historical,
-                transition_matrix=markov_T,
-                current_state=markov_current,
-                p_timesfm=p_timesfm,
-                brick_size=best.brick_size,
-                sl_bricks=best.sl_bricks,
-                tp_bricks=best.tp_bricks,
-                n_steps=MARKOV_HOLD_STEPS,
-            )
+            # R4 (2026-08-23): same non-convergence discount as the light
+            # sweep, reusing regime_snapshot.trend_converged (populated by
+            # RegimeHMM.predict() automatically via _regime_sync() above --
+            # nothing extra to fit here).
+            _regime_weight_override: dict[str, float] = {}
+            if not getattr(regime_snapshot, "trend_converged", True):
+                _scale = max(0.0, min(1.0, float(
+                    getattr(settings, "REGIME_NONCONVERGENCE_WEIGHT_SCALE", 0.5)
+                )))
+                _regime_weight_override = {"p_regime": P_WIN_WEIGHTS_FULL["p_regime"] * _scale}
+                logger.warning(
+                    "[sweep:heavy] %s: trend HMM did not converge cleanly — "
+                    "discounting p_regime weight to %.4f",
+                    symbol, _regime_weight_override["p_regime"],
+                )
+            with self._ev_engine.temp_weights(_regime_weight_override):
+                ev_result = self._ev_engine.compute_ev(
+                    trend_probs=dict(zip(
+                        # RegimeHMM.TREND_LABELS — accessed via the snapshot's
+                        # internal arrays; the orchestrator's _process_symbol
+                        # does the same zip.
+                        self._regime_trend_labels(),
+                        regime_snapshot.trend_probs,
+                    )),
+                    direction=direction,
+                    p_historical=_p_historical,
+                    transition_matrix=markov_T,
+                    current_state=markov_current,
+                    p_timesfm=p_timesfm,
+                    brick_size=best.brick_size,
+                    sl_bricks=best.sl_bricks,
+                    tp_bricks=best.tp_bricks,
+                    n_steps=MARKOV_HOLD_STEPS,
+                )
 
             # ── 9. Build + push qualified signal ──────────────────────
             trade_signal = _compute_trade_signal(
