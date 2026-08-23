@@ -157,12 +157,25 @@ never step size.
 
 **IMPORTANT — Layer 1 does not affect live behaviour yet.** It writes
 tuned values into the registry (exercising the real bounds/rate-limit/
-rollback machinery, building a real audit trail), but no read site has
-been migrated to consume them — `eod_correction.py`,
-`calibration_enforcement.py`, etc. still read `settings.py`/env vars
-directly for these same parameter names. Migrating those read sites is
-separate, not-yet-done work; until then, Layer 1 is tuning values nobody
-acts on.
+rollback machinery, building a real audit trail).
+
+**E2E read-site migration (§2.5.2.1) is now built (commit `3b65ada`)** —
+all 7 read sites / 11 parameters now check `tuning_registry.read_param()`
+before falling back to `settings.py`/module defaults. **Layer 1's tuned
+values now actually reach live behaviour.** 15 new tests
+(`tests/test_e2e_registry_wiring.py`), each seeding a real registry entry
+and asserting it's used, not just written. Full suite: 560 passed, 0
+failed.
+
+**Bug found and fixed while testing this:** `_settings_number`'s
+`float(settings_value)` silently returned `1.0` for a fully-mocked
+`settings` object (`patch(".settings")` with no spec — common in this
+test suite) instead of falling back to `default`, because `MagicMock`'s
+auto-configured `__float__` doesn't raise. This clamped `BAYES_PRIOR_COUNT`
+and `KELLY_REDUCTION` to their `PARAM_BOUNDS` extremes in 3 pre-existing
+tests. Fixed with an `isinstance(value, (int, float))` check (a real type
+check, not a dunder call) in both `eod_correction.py`'s and
+`calibration_enforcement.py`'s copies.
 
 **Layer 2 (§2.5.3) is still design-only** — not built.
 
