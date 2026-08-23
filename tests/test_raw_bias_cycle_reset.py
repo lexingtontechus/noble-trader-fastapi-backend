@@ -24,6 +24,7 @@ from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_calibration_bias_raw,
     _clear_stale_eod_actions,
+    _clear_stagnation_history,
 )
 from regime_platform.sweep_orchestrator.eod_correction import (
     run_eod_correction,
@@ -286,6 +287,7 @@ def _run_eod_correction_mocked(
     active_symbols_mock = AsyncMock(
         return_value=symbols if symbols else [{"symbol": "EURUSD"}]
     )
+    clear_stagnation_history_mock = AsyncMock()
     # Stagnation breaker (fix #3c, 2026-08-22) added a new dependency —
     # fetch_recent_action_bias — to run_eod_correction's OVERCONFIDENT/
     # UNDERCONFIDENT branch. Mock it to no-history (streak=1, Tier 0) so
@@ -315,6 +317,8 @@ def _run_eod_correction_mocked(
               new=insert_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client._clear_stale_eod_actions",
               new=clear_mock),
+        patch("regime_platform.sweep_orchestrator.supabase_client._clear_stagnation_history",
+              new=clear_stagnation_history_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_latest_sweep",
               new=fetch_latest_sweep_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_recent_action_bias",
@@ -468,8 +472,15 @@ class TestClearStaleEodActions:
         assert params["symbol"] == "eq.EURUSD"
         assert "action" in params
         actions_str = params["action"]
-        for a in ("bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep"):
+        for a in ("kelly_reduction", "emergency_heavy_sweep"):
             assert a in actions_str
+        # 2026-08-23 fix: bayesian_penalty is deliberately NOT cleared here —
+        # it's the stagnation breaker's own history, and clearing it every
+        # cycle (unconditionally, like the other actions) reset the streak
+        # to 1 every time, silently disabling Tier 1/2 escalation. See
+        # _clear_stagnation_history (clears it only on genuine CALIBRATED
+        # recovery) and worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2.
+        assert "bayesian_penalty" not in actions_str
 
     def test_best_effort_never_raises(self):
         """A 500 from Supabase must not raise."""
@@ -497,6 +508,57 @@ class TestClearStaleEodActions:
             ),
         ):
             asyncio.run(_clear_stale_eod_actions("EURUSD"))
+
+
+class TestClearStagnationHistory:
+    def test_deletes_only_bayesian_penalty_for_symbol(self):
+        client = FakeAsyncClient()
+        mock_s = AsyncMock()
+        mock_s.SUPABASE_URL = "https://x.supabase.co"
+        mock_s.SUPABASE_KEY = "k"
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._url",
+                return_value="https://x.supabase.co/rest/v1/nt_eod_actions",
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._headers",
+                return_value={"apikey": "k", "Authorization": "Bearer k"},
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                return_value=client,
+            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
+        ):
+            asyncio.run(_clear_stagnation_history("EURUSD"))
+        assert len(client.delete_calls) == 1
+        params = client.delete_calls[0]["params"]
+        assert params["symbol"] == "eq.EURUSD"
+        assert params["action"] == "eq.bayesian_penalty"
+
+    def test_best_effort_never_raises(self):
+        client = FakeAsyncClient()
+        client.delete = AsyncMock(return_value=_FakeDeleteResp(status=500))
+        mock_s = AsyncMock()
+        mock_s.SUPABASE_URL = "https://x.supabase.co"
+        mock_s.SUPABASE_KEY = "k"
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._url",
+                return_value="https://x.supabase.co/rest/v1/nt_eod_actions",
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._headers",
+                return_value={"apikey": "k", "Authorization": "Bearer k"},
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                return_value=client,
+            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
+        ):
+            asyncio.run(_clear_stagnation_history("EURUSD"))
 
 
 # ─── 5. Orchestrator wiring ─────────────────────────────────────────────

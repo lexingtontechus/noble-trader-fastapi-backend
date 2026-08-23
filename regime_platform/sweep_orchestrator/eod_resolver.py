@@ -12,7 +12,14 @@ pending rows using post-entry TradingView Data API (TDVA) 1h bars:
     ``fetch_candles_for_symbols`` (the pipeline's standard light-sweep
     fetcher; TDVA is the sole data source after Phase B).
   • **Expiry** — a signal that has not touched either level within
-    `EXPIRY_BARS` (48) post-entry 1h bars is marked ``expired``.
+    `EXPIRY_BARS` (48) post-entry 1h bars is marked ``expired``. A signal
+    with FEWER than 48 post-entry bars available (entered recently — this
+    pass runs once daily, so most pending signals are younger than 48h)
+    is left pending instead of force-expired early (2026-08-23 fix — see
+    ``_resolve_one``'s minimum-age gate and
+    ``worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md`` root cause 3).
+    A genuine TP/SL touch still resolves immediately regardless of bar
+    count; only a would-be "expired" verdict is deferred.
   • **Resolution** — a *close-walk*: for a BUY, ``tp_hit`` when a close
     ``>= take_profit`` (checked first) and ``sl_hit`` when a close
     ``<= stop_loss``; the bar index that comes first wins. For a SELL
@@ -398,7 +405,9 @@ async def _write_calibration_record(
 
 
 async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
-    """Resolve + persist one signal. Returns outcome key, or None on error."""
+    """Resolve + persist one signal. Returns outcome key, ``"pending"`` if
+    it's not old enough to judge yet (see minimum-age gate below), or None
+    on error."""
     entry = _as_float(sig.get("entry_price"))
     stop = _as_float(sig.get("stop_loss"))
     tp = _as_float(sig.get("take_profit"))
@@ -415,6 +424,25 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
         direction=sig.get("signal") or "buy",
         expiry_bars=EXPIRY_BARS,
     )
+
+    # ── Minimum-age gate (2026-08-23 fix) ──────────────────────────────
+    # resolve_signal_outcome only ever walks `closes[:EXPIRY_BARS]` — if
+    # fewer than EXPIRY_BARS closes were even available yet (a signal
+    # entered a few bars ago, not 48), an "expired" verdict here means
+    # "hasn't been checked long enough," not "genuinely timed out."
+    # Without this gate, every signal newer than EXPIRY_BARS bars gets
+    # force-resolved as 'expired' at whatever partial bar count this daily
+    # run happens to catch it at (confirmed live: US500 hold_bars 2-3,
+    # AAPL 1-9, nowhere near 48) — and since outcome is no longer NULL,
+    # it's permanently excluded from every future resolution attempt and
+    # never produces a calibration record (tp_hit/sl_hit only). A TP/SL
+    # touch still resolves immediately regardless of bar count — only a
+    # would-be "expired" verdict is deferred. See
+    # worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md root cause 3 and
+    # worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md.
+    if resolved["outcome"] == "expired" and len(closes) < EXPIRY_BARS:
+        return "pending"
+
     pnl = compute_pnl(
         resolved["outcome"],
         sig.get("tp_bricks"), sig.get("sl_bricks"), sig.get("brick_size"),
@@ -469,12 +497,15 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
       5. PATCH outcome/exit_*/hold_bars/mfe/mae/pnl_*/resolved_at back.
       6. Insert nt_calibration_records for tp_hit (win) / sl_hit (loss).
 
-    Returns ``{resolved, by_outcome, windowed_out, errors, batches}``.
+    Returns ``{resolved, by_outcome, windowed_out, insufficient_bars, errors,
+    batches}``. ``insufficient_bars`` counts signals left pending because
+    they haven't had their full EXPIRY_BARS window yet (not a failure —
+    they'll be re-attempted on a later run once more bars accumulate).
     Never raises — every failure path is caught and counted in ``errors``.
     """
     summary: dict[str, Any] = {
         "resolved": 0, "by_outcome": {}, "windowed_out": 0, "errors": 0,
-        "batches": 0,
+        "batches": 0, "insufficient_bars": 0,
     }
     if not settings.SUPABASE_URL:
         logger.warning("eod_resolver: Supabase not configured — nothing to resolve")
@@ -560,6 +591,8 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
                     outcome = await _resolve_one(sig, post)
                     if outcome is None:
                         summary["errors"] += 1
+                    elif outcome == "pending":
+                        summary["insufficient_bars"] += 1
                     else:
                         summary["resolved"] += 1
                         outcomes[outcome] += 1
@@ -578,9 +611,9 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
     summary["by_outcome"] = dict(summary.get("by_outcome") or {})
     logger.info(
         "eod_resolver: resolved %d pending in %d batch(es) (%s), "
-        "windowed_out=%d, errors=%d",
+        "windowed_out=%d, insufficient_bars=%d, errors=%d",
         summary["resolved"], summary["batches"], summary["by_outcome"],
-        summary["windowed_out"], summary["errors"],
+        summary["windowed_out"], summary["insufficient_bars"], summary["errors"],
     )
     return summary
 

@@ -8,6 +8,9 @@ Covers the pure close-walk resolution logic and PnL convention:
   - PnL convention: tp_hit = +tp_bricks, sl_hit = -sl_bricks, expired = 0
 """
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from regime_platform.sweep_orchestrator.eod_resolver import (
@@ -16,6 +19,7 @@ from regime_platform.sweep_orchestrator.eod_resolver import (
     EXPIRY_BARS,
     CALIBRATION_RECORD_COLUMNS,
     _write_calibration_record,
+    _resolve_one,
 )
 
 
@@ -265,6 +269,134 @@ class TestResolveSignalOutcome:
 
     def test_default_expiry_is_48(self):
         assert EXPIRY_BARS == 48
+
+
+class TestResolveOneMinimumAgeGate:
+    """Regression coverage for the 2026-08-23 premature-expiry fix
+    (worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md root cause 3):
+    a signal with fewer than EXPIRY_BARS post-entry closes available must
+    NOT be force-resolved as 'expired' — it should stay pending until it
+    either hits TP/SL or genuinely accumulates the full window. Confirmed
+    live: US500 hold_bars 2-3, AAPL 1-9 — nowhere near EXPIRY_BARS=48.
+    """
+
+    def _sig(self, **overrides):
+        base = {
+            "signal_id": "sig-1", "symbol": "AAPL", "signal": "buy",
+            "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 110.0,
+            "tp_bricks": 6, "sl_bricks": 3, "brick_size": 1.0,
+            "ts": "2026-08-23T00:00:00Z",
+        }
+        base.update(overrides)
+        return base
+
+    def test_few_bars_no_touch_stays_pending_not_expired(self):
+        """3 bars available (like the live US500 case), none touching
+        TP/SL — must return 'pending', NOT be patched as 'expired'."""
+        patch_mock = AsyncMock(return_value=True)
+        calib_mock = AsyncMock()
+        with (
+            patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock),
+            patch("regime_platform.sweep_orchestrator.eod_resolver._write_calibration_record", new=calib_mock),
+        ):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=[101.0, 102.0, 103.0]))
+        assert outcome == "pending"
+        patch_mock.assert_not_awaited()  # nt_signal_sim row must NOT be touched
+        calib_mock.assert_not_awaited()
+
+    def test_genuine_expiry_at_full_window_still_resolves(self):
+        """A signal that HAS accumulated the full EXPIRY_BARS window and
+        still never touched TP/SL must still resolve as a genuine 'expired'
+        — the gate must not disable real expiry entirely."""
+        patch_mock = AsyncMock(return_value=True)
+        calib_mock = AsyncMock()
+        closes = [101.0] * EXPIRY_BARS  # never reaches TP=110 or SL=95
+        with (
+            patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock),
+            patch("regime_platform.sweep_orchestrator.eod_resolver._write_calibration_record", new=calib_mock),
+        ):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=closes))
+        assert outcome == "expired"
+        patch_mock.assert_awaited_once()
+        args, kwargs = patch_mock.call_args
+        assert args[1]["outcome"] == "expired"
+        calib_mock.assert_not_awaited()  # expired never writes a calibration record
+
+    def test_tp_hit_within_few_bars_resolves_immediately(self):
+        """A real TP touch must resolve right away even with very few bars
+        available — the gate only defers a would-be 'expired' verdict, it
+        must never delay a genuine win/loss."""
+        patch_mock = AsyncMock(return_value=True)
+        calib_mock = AsyncMock()
+        with (
+            patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock),
+            patch("regime_platform.sweep_orchestrator.eod_resolver._write_calibration_record", new=calib_mock),
+        ):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=[105.0, 111.0]))
+        assert outcome == "tp_hit"
+        patch_mock.assert_awaited_once()
+        calib_mock.assert_awaited_once()
+
+    def test_sl_hit_within_few_bars_resolves_immediately(self):
+        patch_mock = AsyncMock(return_value=True)
+        calib_mock = AsyncMock()
+        with (
+            patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock),
+            patch("regime_platform.sweep_orchestrator.eod_resolver._write_calibration_record", new=calib_mock),
+        ):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=[97.0, 94.0]))
+        assert outcome == "sl_hit"
+        patch_mock.assert_awaited_once()
+        calib_mock.assert_awaited_once()
+
+    def test_exactly_expiry_bars_with_no_touch_is_genuine_expiry(self):
+        """Boundary: len(closes) == EXPIRY_BARS (not less) must resolve as
+        real 'expired', not 'pending' — off-by-one check on the gate."""
+        patch_mock = AsyncMock(return_value=True)
+        with patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=[101.0] * EXPIRY_BARS))
+        assert outcome == "expired"
+
+    def test_one_bar_short_of_expiry_stays_pending(self):
+        """Boundary: EXPIRY_BARS - 1 closes, no touch — still 'pending'."""
+        patch_mock = AsyncMock(return_value=True)
+        with patch("regime_platform.sweep_orchestrator.eod_resolver._patch_signal", new=patch_mock):
+            outcome = asyncio.run(_resolve_one(self._sig(), closes=[101.0] * (EXPIRY_BARS - 1)))
+        assert outcome == "pending"
+        patch_mock.assert_not_awaited()
+
+
+class TestResolvePendingSignalsInsufficientBarsCounter:
+    def test_insufficient_bars_counted_separately_from_resolved_and_errors(self):
+        from regime_platform.sweep_orchestrator import eod_resolver as mod
+
+        pending_sig = {
+            "signal_id": "sig-1", "symbol": "AAPL", "signal": "buy",
+            "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 110.0,
+            "tp_bricks": 6, "sl_bricks": 3, "brick_size": 1.0,
+            "ts": "2026-08-23T00:00:00Z", "tradingview_symbol": "NASDAQ:AAPL",
+        }
+        fetch_pending_mock = AsyncMock(side_effect=[[pending_sig], []])
+        active_symbols_mock = AsyncMock(return_value=[{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}])
+        candles_mock = AsyncMock(return_value={"AAPL": [101.0, 102.0, 103.0]})  # only 3 bars, no touch
+
+        with (
+            patch.object(mod, "_fetch_pending", new=fetch_pending_mock),
+            patch.object(mod, "fetch_candles_for_symbols", new=candles_mock),
+            # Bypass real-time entry-offset windowing — not under test here;
+            # this test is about the insufficient_bars counter plumbing.
+            patch.object(mod, "anchor_post_entry_closes", side_effect=lambda closes, *a, **kw: list(closes)),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=active_symbols_mock,
+            ),
+            patch.object(mod.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        ):
+            summary = asyncio.run(mod.resolve_pending_signals(limit=10))
+
+        assert summary["insufficient_bars"] == 1
+        assert summary["resolved"] == 0
+        assert summary["errors"] == 0
 
 
 class TestComputePnl:

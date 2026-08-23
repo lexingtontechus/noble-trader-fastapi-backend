@@ -603,11 +603,11 @@ async def fetch_calibration_bias_raw(
 
 
 async def _clear_stale_eod_actions(symbol: str) -> None:
-    """DELETE stale penalty actions for ``symbol`` from ``nt_eod_actions``.
+    """DELETE stale enforcement-state actions for ``symbol`` from ``nt_eod_actions``.
 
     Used at the start of each 4h intraday correction pass (raw-bias mode) to
     reset the enforcement state before re-evaluating from raw p_win. Only
-    penalty actions are cleared; ``parameter_decay_check`` / ``degeneracy_breaker``
+    enforcement actions are cleared; ``parameter_decay_check`` / ``degeneracy_breaker``
     rows are preserved (they are audit-only, not enforcement).
 
     ``stagnation_kill_switch`` (2026-08-22 audit fix #3c) is included so a
@@ -616,13 +616,24 @@ async def _clear_stale_eod_actions(symbol: str) -> None:
     is recomputed fresh from the (now-improving) bias history, so the kill
     switch is only re-written if the symbol is still genuinely stuck.
 
+    ``bayesian_penalty`` is deliberately NOT included here (2026-08-23 fix,
+    see worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2). This call runs
+    unconditionally every cycle for every symbol; ``bayesian_penalty`` rows
+    are also the sole history source ``fetch_recent_action_bias`` reads for
+    ``_stagnation_streak`` in the SAME cycle they'd be deleted, which made
+    the streak reset to 1 every single cycle — Tier 1/2 escalation could
+    never fire. ``_clear_stagnation_history`` below clears bayesian_penalty
+    specifically, and only on genuine recovery to CALIBRATED, restoring the
+    originally-documented auto-recovery behavior without destroying the
+    streak's own history in the process.
+
     Best-effort: failures are logged, never raised.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         return
     url = _url("nt_eod_actions")
     params = {
-        "action": "in.(bayesian_penalty,kelly_reduction,emergency_heavy_sweep,stagnation_kill_switch)",
+        "action": "in.(kelly_reduction,emergency_heavy_sweep,stagnation_kill_switch)",
         "symbol": f"eq.{symbol}",
     }
     try:
@@ -635,11 +646,51 @@ async def _clear_stale_eod_actions(symbol: str) -> None:
                 )
             elif resp.status_code == 204:
                 logger.info(
-                    "_clear_stale_eod_actions %s: cleared stale penalty actions",
+                    "_clear_stale_eod_actions %s: cleared stale enforcement actions",
                     symbol,
                 )
     except Exception as exc:
         logger.warning("_clear_stale_eod_actions %s failed: %s", symbol, exc)
+
+
+async def _clear_stagnation_history(symbol: str) -> None:
+    """DELETE ``bayesian_penalty`` rows for ``symbol`` — the stagnation
+    breaker's bias history (``_stagnation_streak``, ``eod_correction.py``).
+
+    Call this ONLY when a symbol's bias has just been classified CALIBRATED
+    in raw-bias mode — i.e. genuine recovery — so the next time it goes
+    OVERCONFIDENT/UNDERCONFIDENT, its stagnation streak starts fresh instead
+    of picking up stale pre-recovery history. This is the auto-recovery half
+    of fix #3c that ``_clear_stale_eod_actions`` was originally documented as
+    providing; splitting it out fixes the 2026-08-23 clear-order bug (see
+    ``_clear_stale_eod_actions``'s docstring) without losing the intended
+    recovery behavior.
+
+    Best-effort: failures are logged, never raised.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return
+    url = _url("nt_eod_actions")
+    params = {
+        "action": "eq.bayesian_penalty",
+        "symbol": f"eq.{symbol}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.delete(url, headers=_headers(), params=params)
+            if not resp.is_success and resp.status_code != 204:
+                logger.warning(
+                    "_clear_stagnation_history %s: HTTP %d — %s",
+                    symbol, resp.status_code, resp.text[:200],
+                )
+            elif resp.status_code == 204:
+                logger.info(
+                    "_clear_stagnation_history %s: cleared bayesian_penalty history "
+                    "(bias recovered to CALIBRATED)",
+                    symbol,
+                )
+    except Exception as exc:
+        logger.warning("_clear_stagnation_history %s failed: %s", symbol, exc)
 
 
 async def fetch_recent_action_bias(

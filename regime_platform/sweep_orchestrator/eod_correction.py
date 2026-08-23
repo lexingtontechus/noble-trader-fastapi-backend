@@ -316,6 +316,7 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             fetch_calibration_bias,
             fetch_calibration_bias_raw,
             _clear_stale_eod_actions,
+            _clear_stagnation_history,
         )
         from regime_platform.sweep_orchestrator.orchestrator import _derive_venue
 
@@ -333,12 +334,21 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             venue = _derive_venue(sym)
 
             # ── 4h cycle reset: clear stale enforcement actions for ALL symbols ──
-            # At each 4h intraday correction boundary, stale penalty actions from the
-            # previous cycle must be cleared before re-evaluation. This is a true reset:
-            # symbols with insufficient calibration records (< EOD_BIAS_MIN_RECORDS)
-            # previously entered the degeneracy path where clearing was skipped entirely,
-            # leaving actions from Aug 18-19 persisting indefinitely.
-            # See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
+            # At each 4h intraday correction boundary, stale enforcement actions
+            # (kelly_reduction/emergency_heavy_sweep/stagnation_kill_switch) from
+            # the previous cycle must be cleared before re-evaluation. This is a
+            # true reset: symbols with insufficient calibration records
+            # (< EOD_BIAS_MIN_RECORDS) previously entered the degeneracy path
+            # where clearing was skipped entirely, leaving actions from Aug 18-19
+            # persisting indefinitely. See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
+            #
+            # NOTE (2026-08-23): does NOT include bayesian_penalty — that's the
+            # stagnation breaker's own bias history, cleared separately (and only
+            # on genuine recovery) by _clear_stagnation_history below, once this
+            # cycle's status is known. See _clear_stale_eod_actions's docstring
+            # and worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2 — clearing
+            # it unconditionally here made the stagnation streak reset to 1 every
+            # cycle, silently disabling Tier 1/2 escalation entirely.
             if raw_bias_mode:
                 await _clear_stale_eod_actions(symbol)
 
@@ -418,6 +428,16 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             # symbols at the 4h boundary. See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
 
             if status == "CALIBRATED":
+                # ── Stagnation-history auto-recovery (2026-08-23 fix) ──
+                # Genuine recovery: clear this symbol's bayesian_penalty
+                # history so a *future* stagnation streak starts fresh
+                # instead of picking up stale pre-recovery bias values.
+                # Only fires here (on CALIBRATED), not every cycle — see
+                # _clear_stagnation_history's docstring and
+                # worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2.
+                if raw_bias_mode:
+                    await _clear_stagnation_history(symbol)
+
                 # Parameter-decay check: realized win rate declining?
                 wr = await _fetch_recent_win_rates(symbol)
                 detail.update(wr)
