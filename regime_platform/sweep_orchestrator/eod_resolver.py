@@ -608,6 +608,29 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
         for k, v in batch_outcomes.items():
             summary["by_outcome"][k] = summary["by_outcome"].get(k, 0) + v
 
+        # ── No-forward-progress guard (2026-08-23, found live) ────────────
+        # Only a successful terminal PATCH (tp_hit/sl_hit/expired-at-full-
+        # window) removes a row from the `outcome IS NULL` pool. `pending`
+        # (insufficient_bars), `windowed_out`, and `errors` all leave it in
+        # the pool — so if this batch resolved zero rows to a terminal
+        # state, the NEXT `_fetch_pending` call returns the exact same rows
+        # (deterministic close-walk over unchanged candle data → identical
+        # result), forever. Confirmed live: after the minimum-age gate
+        # shipped, a fresh backlog (mostly signals too young to judge yet)
+        # made this loop re-fetch + re-fetch-candles-for-all-symbols in a
+        # tight cycle with no delay, hitting TradingView 429 rate limits
+        # within seconds. Stop as soon as a batch makes no progress —
+        # there's nothing more this invocation can do; a later run (once
+        # signals mature or the cron fires again) will pick it back up.
+        if sum(outcomes.values()) == 0:
+            logger.info(
+                "eod_resolver: batch made no forward progress (0 resolved this "
+                "batch) — stopping to avoid refetching the same unresolvable "
+                "rows; %d insufficient_bars / %d windowed_out / %d errors so far",
+                summary["insufficient_bars"], summary["windowed_out"], summary["errors"],
+            )
+            break
+
     summary["by_outcome"] = dict(summary.get("by_outcome") or {})
     logger.info(
         "eod_resolver: resolved %d pending in %d batch(es) (%s), "

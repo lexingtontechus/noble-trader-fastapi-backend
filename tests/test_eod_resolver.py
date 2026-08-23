@@ -399,6 +399,103 @@ class TestResolvePendingSignalsInsufficientBarsCounter:
         assert summary["errors"] == 0
 
 
+class TestResolvePendingSignalsNoForwardProgressGuard:
+    """Regression coverage for a live incident (2026-08-23, same day as the
+    minimum-age gate above): running the drain script against the real
+    backlog caused resolve_pending_signals' own internal while-loop to
+    refetch and reprocess the EXACT SAME unresolvable rows over and over
+    (nothing in a 'pending'/windowed_out/error batch ever leaves the
+    `outcome IS NULL` pool), hammering the TradingView API into 429 rate
+    limits within seconds. Confirmed live via SSH: the process had to be
+    killed manually. See worklog for the incident writeup."""
+
+    def test_stops_after_batch_resolves_nothing_does_not_refetch_same_rows(self):
+        from regime_platform.sweep_orchestrator import eod_resolver as mod
+
+        pending_sig = {
+            "signal_id": "sig-1", "symbol": "AAPL", "signal": "buy",
+            "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 110.0,
+            "tp_bricks": 6, "sl_bricks": 3, "brick_size": 1.0,
+            "ts": "2026-08-23T00:00:00Z", "tradingview_symbol": "NASDAQ:AAPL",
+        }
+        # Always returns the SAME non-empty batch -- without the no-progress
+        # guard, this would loop until max_total, calling _fetch_pending
+        # dozens of times for a batch that can never resolve (all
+        # insufficient_bars, deterministic given unchanged candle data).
+        fetch_pending_mock = AsyncMock(return_value=[pending_sig])
+        active_symbols_mock = AsyncMock(return_value=[{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}])
+        candles_mock = AsyncMock(return_value={"AAPL": [101.0, 102.0, 103.0]})  # never resolves
+
+        with (
+            patch.object(mod, "_fetch_pending", new=fetch_pending_mock),
+            patch.object(mod, "fetch_candles_for_symbols", new=candles_mock),
+            patch.object(mod, "anchor_post_entry_closes", side_effect=lambda closes, *a, **kw: list(closes)),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=active_symbols_mock,
+            ),
+            patch.object(mod.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        ):
+            # max_total bounds the test itself in case the guard regresses --
+            # without the fix this runs ~50 fast (mocked) iterations rather
+            # than hanging outright.
+            summary = asyncio.run(mod.resolve_pending_signals(limit=10, max_total=50))
+
+        assert fetch_pending_mock.call_count == 1, (
+            f"expected the loop to stop after 1 no-progress batch, but "
+            f"_fetch_pending was called {fetch_pending_mock.call_count} times — "
+            "the same never-resolvable batch was refetched repeatedly"
+        )
+        assert summary["insufficient_bars"] == 1
+        assert summary["batches"] == 1
+
+    def test_continues_across_batches_while_making_progress(self):
+        """The guard must not stop a genuinely multi-batch drain early --
+        only a batch with ZERO resolutions should halt it."""
+        from regime_platform.sweep_orchestrator import eod_resolver as mod
+
+        def make_sig(i, ts):
+            return {
+                "signal_id": f"sig-{i}", "symbol": "AAPL", "signal": "buy",
+                "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 110.0,
+                "tp_bricks": 6, "sl_bricks": 3, "brick_size": 1.0,
+                "ts": ts, "tradingview_symbol": "NASDAQ:AAPL",
+            }
+
+        # Batch 1: one signal that hits TP (real progress). Batch 2: one
+        # signal that stays pending (no progress) -- must stop AFTER batch 2,
+        # having processed both, not loop on batch 2 forever.
+        fetch_pending_mock = AsyncMock(side_effect=[
+            [make_sig(1, "2026-08-23T00:00:00Z")],
+            [make_sig(2, "2026-08-23T00:00:00Z")],
+        ])
+        active_symbols_mock = AsyncMock(return_value=[{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}])
+        # First call's closes hit TP (111 >= 110); second call's don't.
+        candles_mock = AsyncMock(side_effect=[
+            {"AAPL": [105.0, 111.0]},
+            {"AAPL": [101.0, 102.0]},
+        ])
+
+        with (
+            patch.object(mod, "_fetch_pending", new=fetch_pending_mock),
+            patch.object(mod, "fetch_candles_for_symbols", new=candles_mock),
+            patch.object(mod, "anchor_post_entry_closes", side_effect=lambda closes, *a, **kw: list(closes)),
+            patch.object(mod, "_patch_signal", new=AsyncMock(return_value=True)),
+            patch.object(mod, "_write_calibration_record", new=AsyncMock()),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=active_symbols_mock,
+            ),
+            patch.object(mod.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        ):
+            summary = asyncio.run(mod.resolve_pending_signals(limit=10, max_total=50))
+
+        assert fetch_pending_mock.call_count == 2
+        assert summary["resolved"] == 1
+        assert summary["insufficient_bars"] == 1
+        assert summary["batches"] == 2
+
+
 class TestComputePnl:
     def test_tp_hit_positive(self):
         pnl = compute_pnl("tp_hit", tp_bricks=6, sl_bricks=3, brick_size=0.001)
