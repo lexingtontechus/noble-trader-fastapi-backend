@@ -545,6 +545,34 @@ def _apply_regime_kelly_floor(
     return round(min(floor, 0.06), 6), True, False
 
 
+def _evaluate_regime_shift(
+    ev_engine: EVEngine,
+    prev_regime: str | None,
+    prev_trend_probs: dict[str, float] | None,
+    regime_label: str,
+    trend_probs: dict[str, float] | None,
+    alert_threshold: float,
+) -> dict[str, Any] | None:
+    """Pure decision logic for Layer 2's regime-shift alert (2026-08-23,
+    worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3).
+
+    Returns the ``shift_info`` dict from ``EVEngine.detect_regime_shift()``
+    when a shift occurred AND its magnitude crosses ``alert_threshold``;
+    returns ``None`` otherwise, including the cold-start case (no prior
+    snapshot for this symbol yet — ``prev_regime``/``prev_trend_probs``
+    are ``None`` on a symbol's first tick).
+    """
+    if prev_regime is None or prev_trend_probs is None:
+        return None
+    shift_info = ev_engine.detect_regime_shift(
+        {"regime_label": prev_regime, "trend_probs": prev_trend_probs},
+        {"regime_label": regime_label, "trend_probs": trend_probs or {}},
+    )
+    if shift_info["shifted"] and shift_info["magnitude"] >= alert_threshold:
+        return shift_info
+    return None
+
+
 def _derive_venue(sym: dict[str, Any]) -> str:
     """Derive the execution venue / exchange from the symbol config.
 
@@ -700,6 +728,12 @@ class SweepOrchestrator(HeavySweepMixin):
         self._last_ok: dict[str, float] = {}
         # Last-known regime labels per symbol (for shift detection)
         self._last_regime: dict[str, str] = {}
+        # Last-known HMM trend-posterior dict per symbol (Layer 2,
+        # 2026-08-23 — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3): the
+        # label alone isn't enough to compute a real shift MAGNITUDE via
+        # EVEngine.detect_regime_shift(), which needs the full posterior
+        # distribution on both sides.
+        self._last_trend_probs: dict[str, dict[str, float]] = {}
         # ── Markov EMA smoothing (2026-08-22 audit fix #3a) ────────────
         # Per-symbol EMA of the raw T^N P_markov_hold_N estimate. See
         # _smoothed_markov_hold_prob() below and
@@ -1304,6 +1338,39 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[auto-tuner] failed: %s", exc)
+
+    async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
+        """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,
+        2026-08-23 — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3, migration 118).
+
+        Detection-only: flags a large regime-posterior shift for a
+        human/agent to review Tier B/C parameters (EV blend weights, gate
+        thresholds) against fresh live evidence — mirrors the live-
+        evidence-gathering, bounded-fix, test-gated workflow this session
+        used manually, but triggered by a detected shift instead of a
+        human asking. Does NOT itself change any parameter. Best-effort:
+        failures are logged, never raised into the sweep tick.
+        """
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import _insert_row
+            row = {
+                "symbol": symbol,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "action": "regime_shift_alert",
+                "bias": round(float(shift_info.get("magnitude") or 0.0), 4),
+                "detail": shift_info,
+            }
+            ok = await _insert_row("nt_eod_actions", row)
+            if ok:
+                logger.warning(
+                    "[regime-shift] %s: ALERT — %s shift, magnitude=%.4f, "
+                    "confidence=%.4f (%s -> %s)",
+                    symbol, shift_info.get("direction"),
+                    shift_info.get("magnitude", 0.0), shift_info.get("confidence", 0.0),
+                    shift_info.get("prev_label"), shift_info.get("curr_label"),
+                )
+        except Exception as exc:
+            logger.warning("[regime-shift] %s: alert write failed: %s", symbol, exc)
 
     async def _run_eod_correction_only(self) -> None:
         """Intraday calibration correction pass (2026-08-13 plan, B = every 4h).
@@ -2148,13 +2215,35 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── 7. Regime shift detection ──
         prev_regime = self._last_regime.get(symbol)
+        prev_trend_probs = self._last_trend_probs.get(symbol)
         regime_shift = (
             prev_regime is not None
             and prev_regime not in ("unknown", "market_closed")
             and regime_label not in ("unknown", "market_closed")
             and prev_regime != regime_label
         )
+
+        # Layer 2 (2026-08-23, worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3):
+        # compute the FULL shift signal (direction/magnitude/confidence),
+        # not just the label-change boolean above, and flag it for
+        # agent review when it's large enough to warrant reconsidering
+        # Tier B/C parameters (EV blend weights, gate thresholds) —
+        # deliberately excluded from Layer 1's routine daily nudging.
+        # This is detection-only: it does not itself change any parameter.
+        try:
+            shift_info = _evaluate_regime_shift(
+                self._ev_engine, prev_regime, prev_trend_probs,
+                regime_label, trend_probs,
+                getattr(settings, "REGIME_SHIFT_ALERT_THRESHOLD", 0.35),
+            )
+        except Exception as exc:
+            logger.warning("[regime-shift] %s: detection failed: %s", symbol, exc)
+            shift_info = None
+        if shift_info is not None:
+            await self._write_regime_shift_alert(symbol, shift_info)
+
         self._last_regime[symbol] = regime_label
+        self._last_trend_probs[symbol] = trend_probs or {}
 
         # ── 8. Write to Redis ──
         # DEPRECATED: trading:config:{symbol} HSET and trading:heartbeat:{symbol}

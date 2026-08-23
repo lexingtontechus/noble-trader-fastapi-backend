@@ -399,6 +399,16 @@ class Settings(BaseSettings):
     # reads still work, only writes are blocked).
     TUNING_AUTONOMY_ENABLED: bool = True
 
+    # REGIME_SHIFT_ALERT_THRESHOLD (default 0.35, 2026-08-23, Layer 2 —
+    # worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3): minimum shift
+    # magnitude (EVEngine.detect_regime_shift()'s total-variation
+    # distance between consecutive regime posteriors, 0-1) that triggers
+    # a `regime_shift_alert` row in nt_eod_actions. This is a DETECTION
+    # threshold, not a Tier D auto-tuned parameter — it decides how
+    # sensitive the Layer 2 trigger is, which is a judgment call best
+    # left to a human/operator rather than the autonomous Tier D loop.
+    REGIME_SHIFT_ALERT_THRESHOLD: float = 0.35
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at
