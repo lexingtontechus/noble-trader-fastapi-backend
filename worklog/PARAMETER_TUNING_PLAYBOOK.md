@@ -235,6 +235,60 @@ blast radius, already reversible, already has an analogous auto-recovery
 shape (`STAGNATION_RESET_CYCLES`) to generalize from. Tier B/C stay out of
 Layer 1 entirely; they're Layer 2's job.
 
+#### 2.5.2.1 Read-site migration scope (E2E — Layer 1 → live behaviour)
+
+As of the Layer 1 build (commit `392d582`), it writes tuned values but
+**nothing reads them** — `eod_correction.py`, `calibration_enforcement.py`,
+and `drift_monitor.py` still read `settings.py`/hardcoded module constants
+directly for these same 11 parameter names. This subsection scopes the
+7 read sites (3 files) that need to change for a tuned value to actually
+reach live behaviour.
+
+| Parameter(s) | File : function | Current code |
+|---|---|---|
+| `EOD_BIAS_ENFORCED_THRESHOLD` | `eod_correction.py` : `_classify_bias()` | Compares `bias` against hardcoded `OVERCONFIDENT_BIAS`/`UNDERCONFIDENT_BIAS` — no settings/registry lookup at all today |
+| `EOD_BIAS_RAW_OVERCONFIDENT`, `EOD_BIAS_RAW_UNDERCONFIDENT` | `eod_correction.py` : `_classify_bias_raw()` | Already has a lazy `getattr(settings, "EOD_BIAS_RAW_OVERCONFIDENT", DEFAULT_RAW_OVERCONFIDENT)` indirection per side — closest thing to a ready-made hook |
+| `EOD_DRIFT_THRESHOLD` | `drift_monitor.py` : `check_drift()` | `threshold = float(getattr(settings, "EOD_DRIFT_THRESHOLD", 0.15) or 0.15)` |
+| `STAGNATION_EPSILON`, `_TIER1_CYCLES`, `_TIER2_CYCLES`, `_RESET_CYCLES` | `eod_correction.py` : `_settings_number()` | One shared helper already funnels all four through `getattr(settings, name, default)` — one change covers four parameters |
+| `STAGNATION_KELLY_REDUCTION_TIER1` | `eod_correction.py` : Tier-1 escalation block (~L465) | `getattr(_settings, "STAGNATION_KELLY_REDUCTION_TIER1", DEFAULT_STAGNATION_KELLY_REDUCTION_TIER1)` |
+| `BAYES_PRIOR_COUNT` | `eod_correction.py` **and** `calibration_enforcement.py` : `bayesian_adjusted_p_win()` (mirrored copy in each file) | `numerator = p * n + BAYES_PRIOR_PWIN * BAYES_PRIOR_COUNT` |
+| `KELLY_REDUCTION` | `eod_correction.py` : `run_eod_correction()` **and** `calibration_enforcement.py` : `apply_calibration_adjustment()` (mirrored constants) | `detail["kelly_factor"] = KELLY_REDUCTION` / `... or KELLY_REDUCTION` |
+
+`BAYES_PRIOR_PWIN` (the 0.5 shrink anchor) stays fixed — deliberately not
+in `PARAM_BOUNDS`, out of scope.
+
+**The change, mechanically:** every site swaps its `getattr(settings,
+name, default)` (or hardcoded constant) for `tuning_registry.read_param(
+name, default=<today's value>)` — the sync, file-only variant, since all
+seven call sites are themselves synchronous and Layer 1 already writes to
+the file first. No new async plumbing needed anywhere.
+
+**Why this is lower-risk than it looks:** the registry file has at most
+one entry per day (whichever parameter Layer 1's round-robin touched),
+and `read_param()` falls back to `default` when there's no entry — so
+wiring all seven sites is a no-op for every parameter Layer 1 hasn't
+tuned yet, and a small, already-bounded/rate-limited nudge for whichever
+one it has. The risk is concentrated in "did I wire the read correctly,"
+not "did I change behaviour."
+
+**Sequencing (mechanical → careful):**
+1. `_classify_bias_raw` — trivial, already has the shape.
+2. `_settings_number` — one change, four parameters.
+3. `drift_monitor.check_drift` — trivial.
+4. Tier-1 `STAGNATION_KELLY_REDUCTION_TIER1` — trivial.
+5. `_classify_bias` — needs restructuring (no lookup exists today), and
+   its threshold is also *displayed* by `routers/calibration.py`'s
+   `threshold_enforced` field (fix #2) — that display value should read
+   the same way so what's shown matches what's enforced.
+6. `bayesian_adjusted_p_win` in **both** files — same registry key, so
+   they become identical by construction instead of by a sync test.
+7. `KELLY_REDUCTION` default in **both** files — same treatment.
+
+**Testing:** per site, one test asserting no-registry-entry → byte-identical
+to today's value (regression guard), one test asserting a seeded registry
+entry → that value is actually used — mirrors the escape-hatch tests
+already written for fixes #3a/#3b.
+
 ### 2.5.3 Layer 2 — agent-triggered tuning on detected regime shift
 
 This is cheaper to build than it sounds because half of it already
