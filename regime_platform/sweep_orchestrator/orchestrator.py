@@ -741,6 +741,24 @@ class SweepOrchestrator(HeavySweepMixin):
         # (AAPL/US500 current_state flipping tick-to-tick swung p_win
         # between ~0.47 and ~0.85 even though the market wasn't moving).
         self._markov_ema: dict[str, float] = {}
+        # ── Regime-HMM stability (2026-08-23, worklog/
+        # 20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md R1) ──────────────
+        # Per-symbol label→mean maps from the LAST fit, fed back into the
+        # next fit() call so RegimeHMM can match new components to their
+        # previous label instead of re-sorting blind (fix #2 — stops
+        # AAPL-style bull/bear relabeling with no price move). Per-symbol
+        # EMA of the trend posterior dict, mirroring _markov_ema — feeds
+        # ONLY the EV blend (compute_p_regime), not the regime_label/
+        # regime_shift bookkeeping, which stays driven by the raw
+        # (label-continuity-fixed) prediction.
+        self._regime_label_means: dict[str, dict[str, dict[str, float]]] = {}
+        self._regime_trend_ema: dict[str, dict[str, float]] = {}
+        # Per-symbol cache of the Bayesian-shrunk realized win rate
+        # (p_historical EV-blend source, R3) — same TTL pattern as
+        # _TIMESFM_CACHE, since calibration bias only actually changes on
+        # the 4h EOD-correction / daily EOD-resolver cadence, not every
+        # 5-minute sweep tick.
+        self._p_historical_cache: dict[str, tuple[Optional[float], float]] = {}
         # ── Signal cooldown tracking ──────────────────────────────────
         # Maps (symbol, direction) → timestamp of last PUBLISHED signal.
         # Used to suppress duplicate signals within the cooldown window.
@@ -1678,9 +1696,23 @@ class SweepOrchestrator(HeavySweepMixin):
         np_prices = np.array(prices, dtype=float)
 
         # ── 1. Regime detection ──
+        # Fix #2 (R1, 2026-08-23): pass the PREVIOUS fit's label→mean maps
+        # so RegimeHMM matches new components to their previous label
+        # instead of re-sorting blind every tick — see regime_engine.py's
+        # module docstring. ``symbol_prev_means`` is empty on a symbol's
+        # first fit (falls back to rank-sort, unchanged from before).
+        symbol_prev_means = self._regime_label_means.get(symbol, {})
         model = await RegimeHMM.from_runtime_config()
-        model.fit(np_prices)
+        model.fit(
+            np_prices,
+            prev_vol_means=symbol_prev_means.get("vol"),
+            prev_trend_means=symbol_prev_means.get("trend"),
+        )
         regime: RegimeSnapshot = model.predict(np_prices)
+        self._regime_label_means[symbol] = {
+            "vol": model.vol_label_means,
+            "trend": model.trend_label_means,
+        }
 
         regime_label = regime.regime_label or "unknown"
         regime_conf = regime.confidence
@@ -1807,24 +1839,32 @@ class SweepOrchestrator(HeavySweepMixin):
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
         )
 
-        # ── 5. EV Engine (v5 — 4-source logit pool) ──
-        # Pattern stats (p_pattern) are NOT available server-side — they
-        # live in the agent DuckDB. The EV engine renormalises around the
-        # missing source. Pattern stats will be re-blended by the agent's
-        # synthesizer when it re-evaluates the signal locally.
+        # ── 5. EV Engine (v6 — 4-source logit pool) ──
+        # p_historical (R3, 2026-08-23): Bayesian-shrunk realized win rate
+        # for this symbol, reusing the existing calibration-bias
+        # infrastructure as a first-class blend INPUT (replaces the old
+        # p_pattern source, which was always None server-side — pattern
+        # stats lived only in the agent's DuckDB, a single-user-era
+        # assumption that no longer holds; removed rather than kept null).
         #
         # Fix #3a (2026-08-22 audit): feed an EMA-smoothed P_markov_hold_N
         # into the blend instead of the raw per-tick T^N estimate — see
         # _smoothed_markov_hold_prob() for why (AAPL/US500 current_state
         # flapping). Computed once per tick and reused by the soft-TimesFM-
         # gate recompute below so both calls see the same smoothed value.
+        #
+        # Fix #3 (R1, 2026-08-23): also EMA-smooth trend_probs itself
+        # before it drives p_regime — supplementary to the RegimeHMM-level
+        # variance-floor + label-continuity fixes in regime_engine.py.
         _smoothed_p_markov = self._smoothed_markov_hold_prob(
             symbol, _markov_T, _markov_current_state, direction, MARKOV_HOLD_STEPS,
         )
+        _smoothed_trend_probs = self._smoothed_trend_probs(symbol, trend_probs)
+        _p_historical = await self._fetch_p_historical_cached(symbol)
         ev_result = self._ev_engine.compute_ev(
-            trend_probs=trend_probs,
+            trend_probs=_smoothed_trend_probs,
             direction=direction,
-            p_pattern=None,  # server-side: not available; agent re-blends locally
+            p_historical=_p_historical,
             transition_matrix=_markov_T,
             current_state=_markov_current_state,
             p_timesfm=p_timesfm,
@@ -1896,9 +1936,9 @@ class SweepOrchestrator(HeavySweepMixin):
                         {"p_timesfm": base_weight * scale}
                     ):
                         adjusted_ev_result = self._ev_engine.compute_ev(
-                            trend_probs=trend_probs,
+                            trend_probs=_smoothed_trend_probs,
                             direction=direction,
-                            p_pattern=None,
+                            p_historical=_p_historical,
                             transition_matrix=_markov_T,
                             current_state=_markov_current_state,
                             p_timesfm=p_timesfm,
@@ -1906,9 +1946,10 @@ class SweepOrchestrator(HeavySweepMixin):
                             sl_bricks=sl_bricks,
                             tp_bricks=tp_bricks,
                             n_steps=MARKOV_HOLD_STEPS,
-                            # Reuse the SAME smoothed value computed above —
-                            # not a fresh call — so both compute_ev() calls
-                            # in this tick agree on P_markov_hold_N (fix #3a).
+                            # Reuse the SAME smoothed values computed above —
+                            # not fresh calls — so both compute_ev() calls in
+                            # this tick agree on P_markov_hold_N (fix #3a) and
+                            # P_regime/P_historical (R1 fix #3 / R3).
                             p_markov_override=_smoothed_p_markov,
                         )
                     # In soft mode, the TimesFM gate always "passes" —
@@ -2369,7 +2410,11 @@ class SweepOrchestrator(HeavySweepMixin):
             "p_regime": round(ev_result.p_regime, 4),
             "p_markov": round(ev_result.p_markov, 4),
             "p_timesfm": round(ev_result.p_timesfm, 4) if p_timesfm is not None else None,
-            "p_pattern": round(ev_result.p_pattern, 4) if ev_result.p_pattern else None,
+            # v6 (2026-08-23): p_pattern -> p_historical. Payload key
+            # renamed to match — the value is no longer a pattern win-rate
+            # placeholder (always null previously), so keeping the old key
+            # name would mislabel real data to any downstream consumer.
+            "p_historical": round(ev_result.p_historical, 4) if ev_result.p_historical else None,
             "sources_used": list(ev_result.sources_used),
             "weights_used": ev_result.weights_used or {},
             "timesfm_available": p_timesfm is not None,
@@ -2905,3 +2950,36 @@ class SweepOrchestrator(HeavySweepMixin):
         smoothed = raw if previous is None else (alpha * raw + (1.0 - alpha) * previous)
         self._markov_ema[symbol] = smoothed
         return smoothed
+
+    def _smoothed_trend_probs(
+        self, symbol: str, trend_probs: dict[str, float]
+    ) -> dict[str, float]:
+        """EMA-smooth the HMM trend posterior for ``symbol`` before it
+        feeds the EV blend (R1 fix #3, 2026-08-23, supplementary to the
+        RegimeHMM-level fixes in ``regime_engine.py`` — variance floor +
+        label continuity. Mirrors ``_smoothed_markov_hold_prob``).
+
+        Only affects what ``compute_ev()`` sees as ``trend_probs`` (via
+        ``compute_p_regime``) — it deliberately does NOT touch
+        ``regime_label``/``regime_shift`` bookkeeping (Layer 2), which
+        stays driven by the raw, label-continuity-fixed prediction so
+        shift *detection* isn't itself dampened by this smoothing.
+        """
+        alpha = max(0.0, min(1.0, float(getattr(settings, "REGIME_EMA_ALPHA", 0.30))))
+        previous = self._regime_trend_ema.get(symbol)
+        if not previous:
+            smoothed = dict(trend_probs)
+        else:
+            keys = set(trend_probs) | set(previous)
+            blended = {
+                k: alpha * trend_probs.get(k, 0.0) + (1.0 - alpha) * previous.get(k, 0.0)
+                for k in keys
+            }
+            total = sum(blended.values())
+            smoothed = {k: v / total for k, v in blended.items()} if total > 0 else blended
+        self._regime_trend_ema[symbol] = smoothed
+        return smoothed
+
+    # _fetch_p_historical_cached lives on HeavySweepMixin (heavy_sweep.py)
+    # since both the light-sweep path (this class) and the heavy-sweep
+    # path (the mixin) call it — see that module for the implementation.

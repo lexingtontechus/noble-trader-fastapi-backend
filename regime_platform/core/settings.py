@@ -345,6 +345,18 @@ class Settings(BaseSettings):
     #   behaviour, useful for a quick rollback without a code change).
     MARKOV_EMA_ALPHA: float = 0.30
 
+    # REGIME_EMA_ALPHA (default 0.30, 2026-08-23 R1 fix #3 — worklog/
+    #   20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md):
+    #   Same EMA-smoothing formula as MARKOV_EMA_ALPHA, applied to the HMM
+    #   trend posterior (trend_probs) before it drives p_regime in the EV
+    #   blend. Supplementary to the root fixes in regime_engine.py (a
+    #   data-relative min_covar floor + label-continuity matching across
+    #   refits) — this alone does not fix the regime HMM's instability, it
+    #   only dampens residual tick-to-tick noise on top of those fixes.
+    #   Does NOT affect regime_label/regime_shift bookkeeping (Layer 2),
+    #   which stays driven by the raw prediction.
+    REGIME_EMA_ALPHA: float = 0.30
+
     # KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU (default True, 2026-08-22 audit fix #3b):
     #   The regime-based Kelly floor (orchestrator.py, "Kelly was 0 — applied
     #   regime floor") exists so sampling noise on hourly returns doesn't zero

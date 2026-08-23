@@ -362,3 +362,69 @@ much new infrastructure they require:
 None of these are implemented. (1) is the recommended starting point: it reuses
 existing infrastructure, has an existing min-sample safeguard pattern to copy, and
 most directly counteracts the exact failure this whole investigation is about.
+
+---
+
+## Built (2026-08-23, same day) — R1 + R2 + R3
+
+All three accepted recommendations shipped in one pass. Full test suite:
+**589 passed, 23 skipped, 0 failed** (up from 569 passed pre-change — added 20 new
+tests). No migrations required.
+
+### R1 — regime-HMM stability (`regime_platform/core/regime_engine.py`)
+- **Fix #1 (variance floor):** `RegimeHMM._data_min_covar()` computes a
+  data-relative `min_covar` (5% of the fitting window's own max feature std,
+  floored at `1e-6` absolute) and passes it into both the vol and trend
+  `GaussianHMM` constructors via `_build_hmm()`. Mirrors the Markov module's
+  `lr_std` floor. `_MIN_COVAR_STD_FRACTION=0.05` is a first-pass constant, not
+  backtested — flagged in the code as a tuning starting point, not a final value.
+- **Fix #2 (label continuity):** `_label_states()` now accepts `previous_means`
+  and greedy-nearest-matches each new component to whichever previous-fit label
+  it's closest to, instead of blind rank-sort every tick. `RegimeHMM.fit()` takes
+  `prev_vol_means`/`prev_trend_means`; new `vol_label_means`/`trend_label_means`
+  properties expose the current fit's means for the caller to persist and feed
+  into the next call.
+- **Fix #3 (supplementary EMA):** `SweepOrchestrator._smoothed_trend_probs()`
+  (new, mirrors `_smoothed_markov_hold_prob`) smooths `trend_probs` before it
+  drives `p_regime` in the blend. New setting `REGIME_EMA_ALPHA=0.30`. Does
+  **not** touch `regime_label`/`regime_shift` bookkeeping (Layer 2) — that stays
+  driven by the raw, continuity-fixed prediction.
+- Wiring: `_process_symbol` now persists `self._regime_label_means` per symbol
+  across ticks and feeds it into each `fit()` call. Only wired into the
+  light-sweep path — `heavy_sweep.py`'s own `_regime_sync()` fit still gets fix
+  #1 automatically (it's inside `_build_hmm`/`fit()` unconditionally) but not
+  fix #2's cross-tick continuity (scoped out — heavy sweep's own regime fit
+  wasn't the confirmed mechanism behind the live AAPL/US500 flapping).
+
+### R2 — removed `p_pattern` (`ev_engine.py` + all call sites)
+Deleted the parameter, `compute_p_pattern()`, and the three dead
+`P_WIN_WEIGHTS_NO_TIMESFM`/`_NO_PATTERN`/`_MINIMAL` fallback dicts (never
+referenced anywhere; `_NO_PATTERN` didn't even sum to 1.0). Updated every real
+call site: both `orchestrator.py` `compute_ev()` calls, `heavy_sweep.py`'s, and
+the ad-hoc `/ev/compute` dev endpoint (`renko/router.py` — its `EVComputeResponse.p_pattern`
+field and the `ev_result.p_pattern` read that would otherwise have hard-crashed
+with `AttributeError` post-rename). Left `renko/pipeline.py`, `renko/trade_journal.py`,
+`scripts/backtest_regime_fix.py`, and `tests/test_degeneracy_backtest.py`
+untouched — confirmed by grep that none of them read `EVFullResult.p_pattern`
+directly; they're independent legacy dict/dataclass fields or standalone
+backtest scripts with their own local formula copy, out of scope for this change.
+
+### R3 — `p_historical` (new source, same 0.30 base weight `p_pattern` had)
+- `calibration_enforcement.fetch_historical_p_win(symbol)` (new): reads
+  `n`/`realized_win_rate`/`status_raw` from `v_eod_calibration_bias_latest`
+  (migration 119 — zero new SQL needed) and applies the existing
+  `bayesian_adjusted_p_win()` shrink. Returns `None` (blend renormalizes it out)
+  on `INSUFFICIENT_DATA`, no row, or any fetch error.
+- `EVEngine.compute_p_historical()`: pass-through/clamp, same contract shape the
+  old `compute_p_pattern()` had.
+- Wiring: `SweepOrchestrator._fetch_p_historical_cached()` / `P_HISTORICAL_CACHE_TTL_S`
+  (15 min, mirrors the TimesFM cache) live on `HeavySweepMixin` (not
+  `SweepOrchestrator`) specifically so both the light-sweep and heavy-sweep
+  paths share one implementation and one cache dict.
+- Per-SYMBOL, not per-(symbol, direction) — as scoped in R3's original writeup,
+  `nt_calibration_records` has no direction column yet.
+
+### New tests
+`tests/test_p_historical_blend.py` (fetch/shrink/gate + blend integration, 10
+tests) and `tests/test_regime_stability.py` (variance floor, label continuity,
+trend-probs EMA smoothing, 10 tests).

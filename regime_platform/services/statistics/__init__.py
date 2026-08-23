@@ -6,7 +6,7 @@ Provides tools for validating backtest results with statistical rigor:
   - Bootstrap Confidence Intervals: Percentile and circular block bootstrap CIs
   - Multiple Testing Correction: Bonferroni, Holm-Bonferroni, Benjamini-Hochberg FDR
   - Significance Tests: White's Reality Check and Hansen's SPA
-  - EV Engine: 4-source logit-pooled P_win (p_pattern + p_regime + p_markov_hold_n + p_timesfm)
+  - EV Engine: 4-source logit-pooled P_win (p_historical + p_regime + p_markov_hold_n + p_timesfm)
   - Markov Chain: Internal module used by the renko router's ad-hoc /ev/compute
     endpoint. The live sweep path uses the multivariate Gaussian HMM
     (regime_platform.services.hmm) as the p_markov source.

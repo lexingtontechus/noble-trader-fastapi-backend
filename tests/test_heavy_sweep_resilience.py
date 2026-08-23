@@ -36,6 +36,8 @@ def _make_orchestrator(redis=None, hmm_model=None):
     orch._ev_engine = MagicMock()
     orch._sizer = MagicMock()
     orch._scheduler = None
+    # R3 (2026-08-23): _fetch_p_historical_cached needs this cache dict.
+    orch._p_historical_cache = {}
     return orch
 
 

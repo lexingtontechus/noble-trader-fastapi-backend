@@ -229,7 +229,7 @@ class BayesianUpdater:
                 ``statistics/``, same package as ``ev_engine``).
             bias_field: which canonical weight key to scale. Default
                 ``p_regime`` (the source most correlated with
-                in-session outcomes). One of ``p_pattern``,
+                in-session outcomes). One of ``p_historical``,
                 ``p_regime``, ``p_markov_hold_n``, ``p_timesfm``.
             max_scale: cap on the multiplier applied to the base weight.
                 Default 0.5 means: at most halve the weight (when

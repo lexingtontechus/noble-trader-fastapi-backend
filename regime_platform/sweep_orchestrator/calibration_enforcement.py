@@ -129,6 +129,60 @@ def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     )
 
 
+async def fetch_historical_p_win(symbol: str) -> Optional[float]:
+    """Bayesian-shrunk realized win rate for ``symbol`` — the ``p_historical``
+    EV-blend source (2026-08-23, worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md
+    R3).
+
+    Reads the already-computed rolling-7-day ``n``/``realized_win_rate``
+    from ``v_eod_calibration_bias_latest`` (migration 119) and shrinks it
+    toward 0.5 with the SAME Bayesian prior used for post-hoc enforcement
+    (``bayesian_adjusted_p_win``) — reusing existing infrastructure instead
+    of a second parallel query/shrink path. This is the first time that
+    infrastructure feeds the EV blend directly rather than only correcting
+    an already-computed ``p_win`` after the fact.
+
+    Returns ``None`` (source unavailable → the EV blend renormalizes it
+    out, same contract as ``compute_p_markov_hold_n``/TimesFM) when
+    Supabase is unreachable, the symbol has no row yet, or the view itself
+    already flagged the row ``INSUFFICIENT_DATA`` (n below
+    ``EOD_BIAS_MIN_RECORDS`` — migration 119's own min-sample gate; not
+    re-derived here so the two stay in sync by construction).
+
+    NOTE: per-SYMBOL, not per-(symbol, direction) — ``nt_calibration_records``
+    carries no direction/signal column today. See R3 item 2 in the worklog
+    for a possible future per-setup-shape refinement.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return None
+    url = _url("v_eod_calibration_bias_latest")
+    params = {
+        "select": "n,realized_win_rate,status_raw",
+        "symbol": f"eq.{symbol}",
+        "limit": "1",
+    }
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.debug("fetch_historical_p_win %s failed: %s", symbol, exc)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    row = data[0]
+    if row.get("status_raw") == "INSUFFICIENT_DATA":
+        return None
+    n = _num(row.get("n"))
+    win_rate = _num(row.get("realized_win_rate"))
+    if n is None or win_rate is None or n <= 0:
+        return None
+    return bayesian_adjusted_p_win(win_rate, int(n))
+
+
 async def fetch_latest_eod_action(symbol: str) -> Optional[dict[str, Any]]:
     """Fetch the most recent ``nt_eod_actions`` row for ``symbol``.
 

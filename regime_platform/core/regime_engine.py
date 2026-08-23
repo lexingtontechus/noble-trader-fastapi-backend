@@ -6,6 +6,40 @@ trend (Strong-Bear / Bear / Bull / Strong-Bull) regimes.
 Upgraded from 3 -> 4 states per dimension for finer-grained risk segmentation.
 The 4×4 grid yields 16 distinct regime labels, allowing the position sizer
 to react more precisely to transitional market conditions.
+
+2026-08-23 stability fixes (worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md
+R1 — AAPL/US500 root-cause deep-dive):
+
+  1. Data-relative ``min_covar`` floor (``_data_min_covar``): a fresh
+     ``RegimeHMM`` is fit from scratch every ~5-minute sweep tick (no
+     persistence between fits). In a calm/low-volatility market,
+     hmmlearn's EM can fit an artificially tight covariance to one
+     component, and a tight covariance makes ``predict_proba``'s
+     forward-backward posterior swing to near-0/near-1 for a negligible
+     wiggle in the input — this is the direct cause of the OVERCONFIDENCE
+     symptom (e.g. US500 pinned at regime_conf=1.000 for hours). hmmlearn's
+     fixed default (``min_covar=1e-3``) isn't scaled to a given symbol's
+     actual feature magnitudes; flooring it relative to the fitting
+     window's own feature variance (mirroring the Markov module's
+     ``lr_std`` floor in ``services/hmm/model.py``) keeps the floor
+     meaningful regardless of how calm the symbol is.
+  2. Label continuity across refits (``_label_states``' ``previous_means``
+     param): because every fit is independent, ``_label_states`` used to
+     re-sort that fit's own component means and assign labels by rank
+     order every single time, with no memory of the previous fit's
+     mapping. When two components' means are nearly tied — exactly the
+     calm-market condition above — a tiny window shift can swap their
+     rank order and silently relabel e.g. "bull" as "strong_bull" between
+     two 5-minutes-apart ticks (confirmed live for AAPL). Fix: match each
+     newly-fit component to whichever *previous* fit's labeled mean it's
+     closest to, falling back to fresh rank-sort only when no previous
+     mapping exists (a symbol's first fit). Callers (orchestrator.py) are
+     responsible for persisting ``trend_label_means``/``vol_label_means``
+     per symbol between ticks and passing them into the next ``fit()``.
+
+Both fixes stabilize ``RegimeSnapshot.regime_label``/``confidence`` directly
+(not just ``p_regime``), which also reduces spurious ``regime_shift``
+detections (Layer 2) caused by the same relabeling artifact.
 """
 
 from __future__ import annotations
@@ -179,11 +213,27 @@ class RegimeHMM:
 
     # ── Fitting ──────────────────────────────────────────────────────────────
 
-    def fit(self, prices: np.ndarray) -> "RegimeHMM":
+    def fit(
+        self,
+        prices: np.ndarray,
+        prev_vol_means: Optional[dict[str, float]] = None,
+        prev_trend_means: Optional[dict[str, float]] = None,
+    ) -> "RegimeHMM":
         """
         Fit both HMMs on a price series (1-D numpy array).
         Requires at least 4 × n_components bars for stable EM convergence
         (minimum 80 at the default n_components=4; enforced at 80).
+
+        Args:
+            prices: 1-D price series.
+            prev_vol_means: Optional ``{label: mean}`` from the PREVIOUS
+                fit's volatility model (this symbol's ``vol_label_means``
+                after its last ``fit()``). When given, new components are
+                matched to the closest previous label instead of being
+                re-sorted from scratch — see the module docstring's R1
+                fix #2. ``None`` (default) preserves the original
+                rank-sort behavior (a symbol's first fit).
+            prev_trend_means: Same, for the trend model.
         """
         min_bars = max(50, 4 * self.n_components * 5)   # 80 for n=4
         if len(prices) < min_bars:
@@ -196,8 +246,8 @@ class RegimeHMM:
         vol_features   = self._vol_features(returns, self.vol_window_long, self.vol_window_short)
         trend_features = self._trend_features(returns, self.trend_window_short, self.trend_window_long)
 
-        self._vol_model   = self._build_hmm()
-        self._trend_model = self._build_hmm()
+        self._vol_model   = self._build_hmm(self._data_min_covar(vol_features))
+        self._trend_model = self._build_hmm(self._data_min_covar(trend_features))
 
         self._vol_model.fit(vol_features)
         self._trend_model.fit(trend_features)
@@ -206,10 +256,31 @@ class RegimeHMM:
         self._sanitize_model(self._vol_model)
         self._sanitize_model(self._trend_model)
 
-        self._vol_label_map   = self._label_states(self._vol_model, self._vol_labels)
-        self._trend_label_map = self._label_states(self._trend_model, self._trend_labels)
+        self._vol_label_map   = self._label_states(self._vol_model, self._vol_labels, prev_vol_means)
+        self._trend_label_map = self._label_states(self._trend_model, self._trend_labels, prev_trend_means)
         self.fitted = True
         return self
+
+    # ── Label-mean introspection (for cross-tick label continuity) ────────
+    # Callers persist these per-symbol and pass them back into the NEXT
+    # fit() call as prev_vol_means/prev_trend_means (R1 fix #2).
+
+    @property
+    def vol_label_means(self) -> dict[str, float]:
+        """``{label: fitted component mean}`` for the volatility model."""
+        if not self.fitted or self._vol_model is None:
+            return {}
+        means = self._vol_model.means_[:, 0]
+        return {lbl: float(means[i]) for i, lbl in self._vol_label_map.items()}
+
+    @property
+    def trend_label_means(self) -> dict[str, float]:
+        """``{label: fitted component mean}`` for the trend model."""
+        if not self.fitted or self._trend_model is None:
+            return {}
+        feature_idx = 2 if len(self._trend_labels) > 2 else 0
+        means = self._trend_model.means_[:, feature_idx]
+        return {lbl: float(means[i]) for i, lbl in self._trend_label_map.items()}
 
     # ── Inference ────────────────────────────────────────────────────────────
 
@@ -285,13 +356,47 @@ class RegimeHMM:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _build_hmm(self) -> hmm.GaussianHMM:
+    def _build_hmm(self, min_covar: float = 1e-3) -> hmm.GaussianHMM:
         return hmm.GaussianHMM(
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             n_iter=self.n_iter,
             random_state=self.random_state,
+            min_covar=min_covar,
         )
+
+    # Data-relative covariance floor (R1 fix #1). hmmlearn's own default
+    # (min_covar=1e-3) is an ABSOLUTE floor, not scaled to a given symbol's
+    # actual feature magnitudes — for a calm/low-volatility symbol whose
+    # feature variance is already well below that, the floor barely
+    # engages, letting EM fit an artificially tight covariance to one
+    # component and produce a near-certain (overconfident) posterior for a
+    # negligible input wiggle. Flooring min_covar at a FRACTION of the
+    # fitting window's own feature std (squared, since min_covar is a
+    # variance) keeps the floor meaningful regardless of how calm the
+    # symbol is — same spirit as services/hmm/model.py's lr_std floor for
+    # the Markov module. _MIN_COVAR_STD_FRACTION is a first-pass constant,
+    # not empirically backtested; treat as a starting point for tuning.
+    _MIN_COVAR_STD_FRACTION: float = 0.05
+    _MIN_COVAR_ABSOLUTE_FLOOR: float = 1e-6  # guards a literally-zero-variance window
+
+    @staticmethod
+    def _data_min_covar(features: np.ndarray) -> float:
+        """Data-relative ``min_covar`` for one feature matrix.
+
+        Uses the LARGEST per-column std (the most-informative feature is
+        the one most at risk of EM collapsing a component onto it) as the
+        reference scale.
+        """
+        if features.size == 0:
+            return RegimeHMM._MIN_COVAR_ABSOLUTE_FLOOR
+        stds = np.std(features, axis=0)
+        reference_std = float(np.max(stds)) if stds.size else 0.0
+        floor_std = max(
+            reference_std * RegimeHMM._MIN_COVAR_STD_FRACTION,
+            RegimeHMM._MIN_COVAR_ABSOLUTE_FLOOR ** 0.5,
+        )
+        return floor_std ** 2
 
     @staticmethod
     def _sanitize_model(model: hmm.GaussianHMM) -> None:
@@ -336,17 +441,71 @@ class RegimeHMM:
                 model._covars_ = np.where(bad, 1e-3, model._covars_)
 
     @staticmethod
-    def _label_states(model: hmm.GaussianHMM, labels: list[str]) -> dict[int, str]:
+    def _label_states(
+        model: hmm.GaussianHMM,
+        labels: list[str],
+        previous_means: Optional[dict[str, float]] = None,
+    ) -> dict[int, str]:
         """
-        Sort HMM component means to auto-label states.
+        Label HMM components either by continuity with a previous fit, or
+        (when no previous fit exists) by sorting component means.
+
         Uses feature 0 for vol (ascending -> low to high),
         feature 2 for trend (ascending -> bear to bull).
         Works for any n_components (2, 3, or 4).
+
+        Args:
+            previous_means: Optional ``{label: mean}`` from the PREVIOUS
+                fit (this symbol's ``vol_label_means``/``trend_label_means``
+                after its last fit). When given, each label is assigned to
+                whichever of THIS fit's components has the closest mean to
+                its previous value (greedy nearest-match, closest pair
+                first) instead of blind rank-sort — R1 fix #2
+                (worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md).
+                Every fit is independent (refit from scratch each tick), so
+                without this, two near-tied component means can swap rank
+                order between ticks and silently relabel e.g. "bull" as
+                "strong_bull" with no underlying price move. ``None``
+                (a symbol's first fit) falls back to the original
+                rank-sort behavior.
         """
         n = min(model.n_components, len(labels))
         feature_idx = 2 if len(labels) > 2 and labels[0] in ("strong_bear", "bear", "neutral") else 0
         means  = model.means_[:, feature_idx]
-        order  = np.argsort(means)
+
+        if previous_means:
+            remaining = list(range(n))
+            label_map: dict[int, str] = {}
+            # Closest (label, component) pair first, so a genuinely
+            # ambiguous case doesn't steal the best match away from an
+            # unambiguous one processed later.
+            candidates = [
+                (abs(float(means[i]) - target), lbl, i)
+                for lbl, target in previous_means.items()
+                if lbl in labels[:n]
+                for i in remaining
+            ]
+            candidates.sort(key=lambda c: c[0])
+            assigned_labels: set[str] = set()
+            for _, lbl, i in candidates:
+                if lbl in assigned_labels or i not in remaining:
+                    continue
+                label_map[i] = lbl
+                assigned_labels.add(lbl)
+                remaining.remove(i)
+                if not remaining:
+                    break
+            # Any components with no previous-label match (new symbol
+            # mid-warm-up, or a label set change) fall back to rank-sort
+            # among themselves, preserving relative order.
+            if remaining:
+                leftover_labels = [l for l in labels[:n] if l not in assigned_labels]
+                order = sorted(remaining, key=lambda i: means[i])
+                for i, lbl in zip(order, leftover_labels):
+                    label_map[i] = lbl
+            return label_map
+
+        order = np.argsort(means)
         return {int(order[i]): labels[i] for i in range(n)}
 
     @staticmethod

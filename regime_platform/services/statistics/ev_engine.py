@@ -1,8 +1,10 @@
 """
-EV Engine v5 — 4-source logit-pooled P_win with T^N Markov hold probability.
+EV Engine v6 — 4-source logit-pooled P_win with T^N Markov hold probability.
 
 Sources (default weights, override via ``set_weights()``):
-    P_pattern       0.30   — historical pattern win-rate (from agent DuckDB)
+    P_historical    0.30   — Bayesian-shrunk realized win rate (server-side,
+                             from nt_calibration_records — see
+                             calibration_enforcement.fetch_historical_p_win())
     P_regime        0.25   — HMM regime posterior
     P_markov_hold_N 0.20   — T^N multi-step hold probability (N = bars to TP)
     P_timesfm       0.25   — TimesFM foundation model forecast
@@ -12,6 +14,17 @@ to sum to 1.0 and blends only the available sources — it does NOT silently
 substitute 0.5 (which would dilute signal). This is the correct logit-pooling
 behaviour for missing sources.
 
+v6 changes from v5 (2026-08-23, worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md
+R2+R3): ``p_pattern`` removed — the server has always called ``compute_ev()``
+with ``p_pattern=None`` (pattern stats lived only in the agent's DuckDB, a
+single-user-era assumption that no longer holds), so it contributed nothing
+live. Replaced with ``p_historical``: a genuinely server-side, learned source
+— the symbol's own Bayesian-shrunk realized win rate — reusing the existing
+calibration-bias infrastructure as a first-class blend INPUT rather than only
+a post-hoc correction applied after the blend. See R3 in the worklog for the
+full rationale, including why it's per-symbol rather than per-(symbol,
+direction) (``nt_calibration_records`` has no direction column yet).
+
 v5 changes from v4:
     - 4-source blend (was 3-source; v4 had p_ext_signal which is deprecated)
     - Markov moved BACK into P_win blend as P_markov_hold_N (v4 had it as a
@@ -20,7 +33,6 @@ v5 changes from v4:
       genuinely different question: "what is the probability the price
       reaches the TP brick count within N bars?")
     - ``external_signal`` parameter removed (microstructure deprecated from EV)
-    - ``p_pattern`` parameter added (source from agent DuckDB, optional)
     - ``transition_matrix`` + ``current_state`` + ``n_steps`` drive T^N
     - ``markov_multiplier`` kept on ``EVFullResult`` for backward
       compatibility but always 1.0 in v5 (no-op) — sizing is driven by
@@ -60,37 +72,25 @@ def _inv_logit(x: float) -> float:
     return ex / (1.0 + ex)
 
 
-# ── EV Engine v5 defaults ────────────────────────────────────────────
+# ── EV Engine v6 defaults ────────────────────────────────────────────
 # 4-source blend (full).
 # Markov hold probability is now blended into P_win (no longer a sizing
 # multiplier) because the T^N multi-step question — "does price reach TP
 # within N bars?" — is genuinely different from the HMM regime question.
+#
+# NOTE: this is the engine's only weight table. Missing sources are handled
+# by the dynamic renormalization in compute_ev() (see "Step 2" below), not
+# by precomputed fallback tables — a previous version of this module carried
+# three dead ``P_WIN_WEIGHTS_NO_*`` fallback dicts that were never referenced
+# anywhere (one of them didn't even sum to 1.0); removed 2026-08-23
+# (worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md R2) rather than fixed,
+# since the dynamic renormalization already covers every missing-source case
+# they were meant to hand-document.
 P_WIN_WEIGHTS_FULL = {
-    "p_pattern": 0.30,
+    "p_historical": 0.30,
     "p_regime": 0.25,
     "p_markov_hold_n": 0.20,
     "p_timesfm": 0.25,
-}
-
-# Renormalised 3-source fallback when TimesFM is unavailable.
-P_WIN_WEIGHTS_NO_TIMESFM = {
-    "p_pattern": 0.40,   # 0.30 / 0.75
-    "p_regime": 0.3333,  # 0.25 / 0.75
-    "p_markov_hold_n": 0.2667,  # 0.20 / 0.75
-}
-
-# Renormalised 3-source fallback when no pattern stats (server-side sweep
-# without agent DuckDB access).
-P_WIN_WEIGHTS_NO_PATTERN = {
-    "p_regime": 0.3125,        # 0.25 / 0.80
-    "p_markov_hold_n": 0.2500, # 0.20 / 0.80
-    "p_timesfm": 0.3125,       # 0.25 / 0.80
-}
-
-# Renormalised 2-source fallback when both TimesFM and pattern are missing.
-P_WIN_WEIGHTS_MINIMAL = {
-    "p_regime": 0.5556,        # 0.25 / 0.45
-    "p_markov_hold_n": 0.4444, # 0.20 / 0.45
 }
 
 # Regime shift meta-signal thresholds
@@ -114,10 +114,13 @@ class EVFullResult:
     v5: ``p_markov`` is the T^N multi-step hold probability (not the v4
     single-step persistence). ``markov_multiplier`` is kept for backward
     compatibility but always 1.0 in v5 (no-op).
+
+    v6 (2026-08-23): ``p_pattern`` renamed to ``p_historical`` — see the
+    module docstring.
     """
     p_win: float
     p_regime: float
-    p_pattern: float
+    p_historical: float
     p_markov: float               # T^N multi-step hold probability
     p_timesfm: float = 0.0
     ev: float = 0.0
@@ -301,7 +304,7 @@ class EVEngine:
     # Canonical key set — used by set_weights() / temp_weights() to
     # validate keys and reject typos / stale v4 keys like ``p_ext_signal``.
     _ALLOWED_WEIGHT_KEYS: Tuple[str, ...] = (
-        "p_pattern",
+        "p_historical",
         "p_regime",
         "p_markov_hold_n",
         "p_timesfm",
@@ -311,7 +314,7 @@ class EVEngine:
         """Override the 4-source P_win weights at runtime.
 
         Accepts a dict with any subset of the canonical keys:
-        ``p_pattern``, ``p_regime``, ``p_markov_hold_n``, ``p_timesfm``.
+        ``p_historical``, ``p_regime``, ``p_markov_hold_n``, ``p_timesfm``.
         Missing keys keep their current values. Weights are NOT
         renormalised here — the engine renormalises at blend time based
         on which sources are actually available.
@@ -400,8 +403,9 @@ class EVEngine:
                 raise ValueError(
                     f"Unknown weight key {key!r}. "
                     f"Allowed keys: {self._ALLOWED_WEIGHT_KEYS}. "
-                    f"Note: 'p_ext_signal' was removed in v5 — use 'p_pattern' "
-                    f"for the historical-pattern source."
+                    f"Note: 'p_ext_signal' was removed in v5, and 'p_pattern' "
+                    f"was replaced by 'p_historical' in v6 — use 'p_historical' "
+                    f"for the realized-win-rate source."
                 )
             try:
                 v = float(value)
@@ -466,32 +470,41 @@ class EVEngine:
         # informative without allowing overconfidence to hijack the blend.
         return min(EVEngine._P_REGIME_CAP, p)
 
-    # ── P_pattern from agent DuckDB (optional) ──────────────────────
+    # ── P_historical — Bayesian-shrunk realized win rate (server-side) ──
+    # v6 (2026-08-23): replaces the old agent-DuckDB-only p_pattern source.
+    # The engine itself stays a pure function here — fetching the win/loss
+    # counts from nt_calibration_records and applying the Bayesian shrink
+    # is the CALLER's responsibility (see
+    # calibration_enforcement.fetch_historical_p_win()), mirroring how
+    # p_markov_override works: the caller computes/smooths a value and
+    # passes the already-final probability in.
 
     @staticmethod
-    def compute_p_pattern(
-        p_pattern: Optional[float],
+    def compute_p_historical(
+        p_historical: Optional[float],
         direction: str,
     ) -> Optional[float]:
-        """Pass through the pattern win-rate from agent DuckDB.
+        """Pass through the Bayesian-shrunk realized win-rate estimate.
 
-        Returns ``None`` when no pattern stats are available — the blend
-        will renormalise around the missing source. Returns the value
-        unchanged otherwise (it is already a P(win) for the trade
-        direction).
+        Returns ``None`` when no historical estimate is available (new
+        symbol, or below the minimum-sample threshold) — the blend will
+        renormalise around the missing source. Returns the value unchanged
+        otherwise (it is already a Bayesian-shrunk P(win) estimate for this
+        symbol — see ``calibration_enforcement.fetch_historical_p_win()``).
 
         Args:
-            p_pattern: Historical win-rate for this pattern+regime+direction,
+            p_historical: Bayesian-shrunk realized win rate for this symbol,
                        in [0, 1]. None when not available.
-            direction: "long" or "short" — used to flip the probability
-                       when the pattern stats are stored as bullish-only.
-                       Currently a pass-through (caller is responsible for
-                       selecting the correct pattern row).
+            direction: "long" or "short" — accepted for interface symmetry
+                       with the other ``compute_p_*`` methods. Currently a
+                       pass-through: the estimate is per-symbol, not
+                       per-(symbol, direction), since ``nt_calibration_records``
+                       has no direction column yet (see the module docstring).
         """
-        if p_pattern is None:
+        if p_historical is None:
             return None
         try:
-            p = float(p_pattern)
+            p = float(p_historical)
             return max(0.0, min(1.0, p))
         except (TypeError, ValueError):
             return None
@@ -545,7 +558,7 @@ class EVEngine:
         self,
         trend_probs: Optional[Dict[str, float]] = None,
         direction: str = "long",
-        p_pattern: Optional[float] = None,
+        p_historical: Optional[float] = None,
         transition_matrix: Optional[Dict[str, Dict[str, float]]] = None,
         current_state: str = "FLAT",
         tp_bricks: int = 5,
@@ -569,9 +582,10 @@ class EVEngine:
         Args:
             trend_probs: HMM regime posterior dict. Drives P_regime.
             direction: "long" or "short".
-            p_pattern: Historical win-rate from agent DuckDB. None if
-                       not available (server-side sweep without agent
-                       access). Drives P_pattern.
+            p_historical: Bayesian-shrunk realized win rate for this symbol
+                       (see ``calibration_enforcement.fetch_historical_p_win()``).
+                       None if not available (new symbol, or below the
+                       minimum-sample threshold). Drives P_historical.
             transition_matrix: 3x3 dict-of-dicts keyed by {UP, DOWN, FLAT}.
                                Drives P_markov_hold_N via T^N.
             current_state: One of "UP", "DOWN", "FLAT".
@@ -600,7 +614,7 @@ class EVEngine:
         """
         # Step 1: Compute individual P_win sources
         p_regime = self.compute_p_regime(trend_probs or {}, direction)
-        p_pattern_computed = self.compute_p_pattern(p_pattern, direction)
+        p_historical_computed = self.compute_p_historical(p_historical, direction)
 
         # N for T^N — default to tp_bricks (brick velocity: 1 brick = 1 bar)
         N = int(n_steps) if n_steps is not None else int(tp_bricks)
@@ -618,8 +632,8 @@ class EVEngine:
         # to 1.0. This prevents dilution toward 0.5 when a source is
         # genuinely unavailable.
         available: Dict[str, float] = {}
-        if p_pattern_computed is not None:
-            available["p_pattern"] = p_pattern_computed
+        if p_historical_computed is not None:
+            available["p_historical"] = p_historical_computed
         available["p_regime"] = p_regime  # always available (defaults to 0.5)
         if p_markov_hold_n is not None:
             available["p_markov_hold_n"] = p_markov_hold_n
@@ -675,7 +689,7 @@ class EVEngine:
         return EVFullResult(
             p_win=round(p_win, 4),
             p_regime=round(p_regime, 4),
-            p_pattern=round(p_pattern_computed, 4) if p_pattern_computed is not None else 0.0,
+            p_historical=round(p_historical_computed, 4) if p_historical_computed is not None else 0.0,
             p_markov=round(p_markov_hold_n, 4) if p_markov_hold_n is not None else 0.0,
             p_timesfm=round(p_timesfm_val, 4) if p_timesfm_val is not None else 0.0,
             ev=round(ev, 4),

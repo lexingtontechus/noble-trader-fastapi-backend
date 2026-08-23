@@ -283,7 +283,7 @@ class EVComputeResponse(BaseModel):
     """Full EV computation response with blended P_win breakdown and execution strategy."""
     p_win: float
     p_regime: float
-    p_pattern: float  # v5: was p_ext_signal in v4 (microstructure deprecated from EV)
+    p_historical: float  # v6: was p_pattern in v5 (agent-DuckDB source removed; see ev_engine.py)
     p_markov: float
     ev: float
     ev_per_dollar: float
@@ -2090,8 +2090,10 @@ if FASTAPI_AVAILABLE:
         """
         Compute full Expected Value with 4-source logit-pooled P_win (v5):
 
-        1. **P_pattern**     — historical win-rate for this pattern+regime+direction
-                               (None when agent DuckDB is not available server-side)
+        1. **P_historical**  — Bayesian-shrunk realized win-rate for this symbol
+                               (None when below the minimum-sample threshold;
+                               not wired into this ad-hoc endpoint's request —
+                               always renormalised out here, same as before)
         2. **P_regime**      — from HMM trend posteriors (auto-detected if not provided)
         3. **P_markov_hold_N** — T^N multi-step hold probability from the Markov
                                transition matrix (built from prices)
@@ -2155,7 +2157,7 @@ if FASTAPI_AVAILABLE:
         return EVComputeResponse(
             p_win=ev_result.p_win,
             p_regime=ev_result.p_regime,
-            p_pattern=ev_result.p_pattern,
+            p_historical=ev_result.p_historical,
             p_markov=ev_result.p_markov,
             ev=ev_result.ev,
             ev_per_dollar=ev_result.ev_per_dollar,

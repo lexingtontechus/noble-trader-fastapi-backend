@@ -23,7 +23,7 @@ def _minimal_ev_result():
         p_regime=0.7,
         p_markov=0.55,
         p_timesfm=0.5,
-        p_pattern=0.6,
+        p_historical=0.6,
         sources_used=["hmm"],
         weights_used={"hmm": 1.0},
     )
