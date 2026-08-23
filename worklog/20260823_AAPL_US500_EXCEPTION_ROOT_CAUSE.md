@@ -205,7 +205,123 @@ full active set, are the worst-hit.
 
 ## Not done in this pass
 
-No code changes. No proposed-fix design work beyond what's implicit in the root
-causes above (a resolver minimum-age gate, and separately smoothing/dampening the
-regime HMM the same way Markov was smoothed, are the two most obvious candidate
-directions — not scoped or estimated here).
+No code changes. Recommendations proposed in the follow-up section below; none
+implemented yet.
+
+---
+
+## Follow-up (2026-08-23, same day): does existing telemetry already cover this? + blend redesign scope
+
+Three questions came up reviewing the above: (1) do `prev_regime`/`regime_shift`
+(and the derived `aggression` label) already provide some persistence/damping that
+the root-cause analysis missed? (2) `p_pattern` should be removed outright — it was
+wired in back when the platform was single-user and the client-side agent could
+locally re-blend; that assumption no longer holds. (3) if a 4th blend source is
+worth restoring, it must be a genuinely server-side *learned* source, not something
+sourced from a client. Answers and recommendations below — **still audit/design
+only, nothing implemented.**
+
+### R1 — `prev_regime` / `regime_shift` / `aggression`: do they help stabilize `p_regime`? No.
+
+Traced all three end-to-end in `orchestrator.py`. None of them feed back into
+`compute_ev()`, the blend, or Kelly sizing — they're a one-directional audit trail,
+not a control loop:
+
+- **`prev_regime`** (`self._last_regime.get(symbol)`, `orchestrator.py:2217`) and
+  **`regime_shift`** (`prev_regime != regime_label`, `:2219-2223`) exist purely to
+  *detect* a flip and feed `EVEngine.detect_regime_shift()` →
+  `_write_regime_shift_alert()` (`:1342-1359`) — a **Layer 2 alert row** written to
+  `nt_eod_actions` (`action="regime_shift_alert"`). That's the entire consumption
+  path. Nothing reads `prev_regime`/`regime_shift` back into `p_regime`,
+  `p_markov_hold_n`, or sizing on this or any later tick.
+- **`shifts_24h`** (`_count_shifts_24h`, `:1640-1656`) is a per-symbol rolling
+  24h counter, written to `nt_sweep_result` for observability only — grepped
+  `eod_correction.py`, `calibration_enforcement.py`, `ev_engine.py`, and
+  `position_sizer.py`: zero read sites. It is not consumed anywhere as a damping
+  input, confidence discount, or gate.
+- **`aggression`** (`compute_aggression(ev_per_dollar)` — passive/mid/aggressive)
+  is a **downstream label derived from `ev_per_dollar`**, which is itself derived
+  from `p_win`. It's computed *after* the blend, describing execution style for a
+  given EV outcome — it cannot retroactively stabilize the very `p_win` it's
+  computed from. It's not a proxy for "how calm the market is"; it's a proxy for
+  "how good does the current (possibly wrong) p_win estimate look."
+
+So: all three exist today as **observability/alerting**, correctly wired for that
+purpose (Layer 2 uses `regime_shift` exactly as designed), but they don't do the
+job of damping the regime HMM's tick-to-tick instability, and were never intended
+to — that's a distinct, unbuilt capability.
+
+**Recommendation:** if a shift-frequency signal is going to double as a damping
+input, it needs a new, explicit read site — e.g., feed `shifts_24h` (already
+computed and already persisted) into the SAME EMA-smoothing wrapper pattern used
+for Markov (§R3 below extends this), rather than assuming the existing write-only
+telemetry already does it. Low effort (the data already exists), not yet built.
+
+### R2 — Remove `p_pattern`
+
+Agreed — `p_pattern`/`compute_p_pattern()` is dead weight in the current
+architecture: the server always calls `compute_ev(p_pattern=None, ...)`
+(`orchestrator.py:1827,1901`), so it contributes nothing today, and the premise
+that motivated it (client-side agent re-blends pattern stats locally, single-user)
+no longer matches how the platform runs. Recommended removal, not just leaving it
+permanently `None`:
+
+- Delete the `p_pattern` parameter and `compute_p_pattern()` from `ev_engine.py`.
+- Delete `p_pattern=None` from both `orchestrator.py` call sites (`:1827`, `:1901`).
+- Delete the dead `P_WIN_WEIGHTS_NO_TIMESFM` / `_NO_PATTERN` / `_MINIMAL` dicts
+  (`ev_engine.py:76-94`) — never referenced anywhere, and `_NO_PATTERN` doesn't even
+  sum to 1.0 (a latent doc bug, moot once deleted).
+- Redefine `P_WIN_WEIGHTS_FULL` as a genuine 3-source (or 4-source, if R3 ships)
+  dict with explicit weights — **not** relying on the dynamic renormalization to
+  quietly redistribute pattern's old 30% share. Renormalizing 3 leftover sources
+  is a reasonable *fallback* for a source that's temporarily missing (TimesFM down,
+  etc.); it's the wrong tool for a source that's permanently gone by design.
+
+**This is still a Tier B change** (blend weights, highest blast radius per the
+tiering established in `PARAMETER_TUNING_PLAYBOOK.md`) — needs the same
+backtest/validation care as any live-weight change, and is explicitly out of Layer
+1's autonomous-tuning scope (Tier D only). Not something to autonomously ship;
+scoping it here, not shipping it.
+
+### R3 — A genuinely server-side, learned 4th source (not client-sourced)
+
+Agreed with the premise: restoring pattern-matching by piping the *client's* DuckDB
+stats back to the server would just reintroduce the same single-user coupling in
+reverse. The 4th source needs to be learned from data the server already owns.
+Three candidates, ranked by how directly they fix the AAPL/US500 problem and how
+much new infrastructure they require:
+
+1. **(Recommended) `p_historical` — per-symbol realized win rate as a first-class
+   blend input, not just a post-hoc correction.** The infrastructure already
+   exists and was built this session: `nt_calibration_records`, the raw-bias
+   tracking, the Bayesian-shrink math, and the minimum-sample gate
+   (`EOD_BIAS_MIN_RECORDS` / `n<20 → INSUFFICIENT_DATA`, migration 119). Today
+   that machinery only runs *after* the blend, as a corrective shrink applied to
+   an already-computed `p_win`. Proposal: compute the same
+   Wilson-lower-bound-or-Bayesian-shrunk realized win rate for
+   `(symbol, direction)` and feed it into `compute_ev()`'s `available` sources
+   dict as `p_historical`, pooled via the same logit blend as `p_regime`/
+   `p_markov_hold_n`/`p_timesfm` — not applied as a separate downstream
+   correction step. This directly targets the observed failure mode: a
+   symbol's own track record pulls its blended `p_win` toward reality as a
+   first-class *input*, rather than requiring a bolted-on enforcement pass to
+   claw it back afterward. Needs a cold-start rule (drop from `available` below
+   the min-sample threshold, exactly like the existing dynamic renormalization
+   already handles a missing `p_timesfm`) so new/thin-history symbols aren't
+   penalized before they have data.
+2. **Per-setup-shape empirical hit rate** — a refinement of (1): instead of one
+   number per `(symbol, direction)`, bucket by `(regime_label, direction,
+   tp:sl ratio bucket)` so the learned prior reflects "how has *this kind of
+   setup* actually performed," not just the symbol overall. More granular, more
+   valuable, but needs materially more history per bucket before it's reliable —
+   a natural v2 once (1) is shipped and its min-sample gating is proven out.
+3. **Brick-velocity/persistence feature** — a much simpler, non-HMM empirical
+   signal (e.g. consecutive-same-direction brick count, bricks-per-hour) as a
+   lower-variance-of-estimation supplement. Cheaper to build than (1)/(2) but
+   doesn't address the actual overconfidence mechanism (it's still a fresh
+   statistical estimate prone to its own noise, not grounded in realized
+   outcomes) — lowest priority of the three.
+
+None of these are implemented. (1) is the recommended starting point: it reuses
+existing infrastructure, has an existing min-sample safeguard pattern to copy, and
+most directly counteracts the exact failure this whole investigation is about.
