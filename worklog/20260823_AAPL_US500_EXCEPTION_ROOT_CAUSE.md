@@ -251,13 +251,50 @@ purpose (Layer 2 uses `regime_shift` exactly as designed), but they don't do the
 job of damping the regime HMM's tick-to-tick instability, and were never intended
 to — that's a distinct, unbuilt capability.
 
-**Recommendation:** if a shift-frequency signal is going to double as a damping
-input, it needs a new, explicit read site — e.g., feed `shifts_24h` (already
-computed and already persisted) into the SAME EMA-smoothing wrapper pattern used
-for Markov (§R3 below extends this), rather than assuming the existing write-only
-telemetry already does it. Low effort (the data already exists), not yet built.
+**What's actually required to fix the regime instability itself** (not just note
+that today's telemetry doesn't do it) — two root causes were traced in
+`regime_engine.py`, and a real fix needs both, not a smoother bolted on top:
 
-### R2 — Remove `p_pattern`
+1. **(Root fix, required) Variance floor in `_sanitize_model()`.** This is the
+   direct cause of the *overconfidence*. In a calm market, `GaussianHMM` fits
+   ultra-tight covariances, and tight covariances make `predict_proba`'s
+   forward-backward posterior swing to near-0/near-1 for a negligible wiggle in
+   the input. The Markov module already has exactly this fix (`hmm/model.py`
+   floors `lr_std` at `1e-4`, the "L2 fix"); `_sanitize_model()`
+   (`regime_engine.py:296-336`) has no equivalent — it only patches literal NaN/
+   zero degeneracy, not "too-tight-to-be-trustworthy." Without this, smoothing
+   the output just averages together numbers that shouldn't have been that
+   extreme to begin with.
+2. **(Root fix, required) Label continuity across refits.** This is the direct
+   cause of the *flip-flopping* (confidently swapping which regime it's
+   confident about, not just being overconfident about one). `_label_states()`
+   (`:338-350`) sorts each fresh fit's component means and assigns labels by
+   rank order every time, with no memory of the previous fit's mapping. When two
+   components' means are nearly tied — the calm-market condition seen in
+   AAPL/US500 — a tiny window shift can swap their rank order and silently
+   relabel "bull" as "strong_bull" between ticks. Fix: match each newly-fit
+   component to whichever *previous* fit's labeled component it's closest to
+   (nearest-mean assignment), falling back to fresh rank-sort only on a
+   symbol's very first fit. An EMA on the output cannot undo a mislabeling that
+   happened upstream of it.
+3. **(Supplementary, not a substitute for 1+2) EMA-smooth `trend_probs`/
+   `vol_probs`**, mirroring `_smoothed_markov_hold_prob` — worth adding *after*
+   1+2 for residual tick-to-tick noise, but on its own has the same ceiling
+   already observed with Markov's own EMA: smoothing 30% of a swing between two
+   falsely-extreme values still yields a falsely-extreme smoothed series. This
+   is where `shifts_24h` could earn a first real read site (as a per-symbol
+   input to how aggressively to smooth), but it's a refinement of 3, not a
+   substitute for 1 or 2.
+4. **(Fallback, not recommended first) Refit less frequently.** Refitting from
+   scratch every 5 minutes is what creates repeated *opportunities* for 1 and 2
+   to bite. Reducing frequency reduces exposure but trades away regime
+   freshness and is a larger architectural change — worth revisiting only if
+   1-3 prove insufficient.
+
+1 and 2 fix the actual mechanism; 3 is a reasonable companion but fixes nothing by
+itself; 4 is a fallback, not a starting point.
+
+### R2 — Remove `p_pattern` (accepted)
 
 Agreed — `p_pattern`/`compute_p_pattern()` is dead weight in the current
 architecture: the server always calls `compute_ev(p_pattern=None, ...)`
@@ -283,7 +320,7 @@ backtest/validation care as any live-weight change, and is explicitly out of Lay
 1's autonomous-tuning scope (Tier D only). Not something to autonomously ship;
 scoping it here, not shipping it.
 
-### R3 — A genuinely server-side, learned 4th source (not client-sourced)
+### R3 — A genuinely server-side, learned 4th source (not client-sourced) (accepted)
 
 Agreed with the premise: restoring pattern-matching by piping the *client's* DuckDB
 stats back to the server would just reintroduce the same single-user coupling in
