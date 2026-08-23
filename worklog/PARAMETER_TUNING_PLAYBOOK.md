@@ -140,13 +140,31 @@ pattern before this work started):
 | `settings.TUNING_AUTONOMY_ENABLED` | ✅ Built |
 | `fetch_latest_tuning_param` / `fetch_tuning_param_history` / `insert_tuning_param_row` (`supabase_client.py`) | ✅ Built |
 
-**Not yet built — the actual tuning logic (Layer 1 and Layer 2 below).**
-Layer 0 is deliberately just the storage/safety primitives: it doesn't
-decide when or how much to tune anything. No parameter has been migrated
-to read through the registry yet — `eod_correction.py`, `orchestrator.py`,
-etc. still read `settings.py`/env vars directly. Migrating the Tier D
-pilot family (stagnation breaker tunables) through the registry is future
-work.
+**Layer 1 (§2.5.2) is now built** — `regime_platform/sweep_orchestrator/auto_tuner.py`
+(`run_auto_tuning()`), scheduled daily at 01:30 UTC on the same in-process
+APScheduler instance as `eod_correction` (`orchestrator.py`'s new
+`_run_auto_tuning` job, gated on `TUNING_AUTONOMY_ENABLED`). Tested
+(`tests/test_auto_tuner.py`, 29 tests). Health metric: mean |raw
+calibration bias| across active symbols (lower is better) — one shared
+objective for all Tier D pilot parameters rather than a bespoke metric
+per parameter, to keep attribution clean (only one parameter is nudged
+per cycle, round-robin by recency). Each cycle: evaluate the previous
+cycle's pending write (auto-revert on regression), then nudge whichever
+pilot parameter has gone longest without a write, by requesting the full
+bound extreme in the chosen direction — `write_param()`'s own rate
+limiter clips that to one small step, so Layer 1 only decides direction,
+never step size.
+
+**IMPORTANT — Layer 1 does not affect live behaviour yet.** It writes
+tuned values into the registry (exercising the real bounds/rate-limit/
+rollback machinery, building a real audit trail), but no read site has
+been migrated to consume them — `eod_correction.py`,
+`calibration_enforcement.py`, etc. still read `settings.py`/env vars
+directly for these same parameter names. Migrating those read sites is
+separate, not-yet-done work; until then, Layer 1 is tuning values nobody
+acts on.
+
+**Layer 2 (§2.5.3) is still design-only** — not built.
 
 **Bug found while building this (unrelated to Layer 0 itself, migration
 116):** `nt_eod_actions.action` has a `CHECK` constraint (migrations
