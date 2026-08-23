@@ -428,3 +428,59 @@ backtest scripts with their own local formula copy, out of scope for this change
 `tests/test_p_historical_blend.py` (fetch/shrink/gate + blend integration, 10
 tests) and `tests/test_regime_stability.py` (variance floor, label continuity,
 trend-probs EMA smoothing, 10 tests).
+
+---
+
+## Live-data validation (2026-08-23, same day, follow-up) — honest mixed result
+
+User asked whether the tests actually verify against AAPL/US500's own data. They
+don't (they're unit tests on synthetic/hand-crafted inputs "shaped like" the real
+symptoms). Ran a real empirical check instead —
+`scripts/validate_r1_regime_fix_live_data.py` (kept in-repo, not a pytest test) —
+pulling the ACTUAL current 200-bar hourly TDVA window for both symbols and running
+it through OLD (pre-fix: fixed `min_covar`, no label continuity) vs NEW (post-fix)
+`RegimeHMM`, via a subclass that overrides only the two things R1 changed so both
+variants run the identical current feature-engineering/labeling code otherwise.
+
+**US500 (pinned overconfidence) — confirmed on real data.** One fit, no
+perturbation needed (the symptom isn't flip-flopping, it's being confidently
+wrong): OLD `confidence=1.0000` exactly, `trend_probs=[1.0, 0.0, 0.0, 0.0]`
+(fully degenerate) vs NEW `confidence=0.9769`, `trend_probs=[0.9781, 0.0214,
+0.0, 0.0005]` — a real, measurable reduction in overconfidence with actual
+probability mass now on other states. Fix #1 (variance floor) does what it's
+supposed to, on the real symbol, today.
+
+**AAPL (flip-flopping) — NOT confirmed; result is genuinely mixed.**
+- Small perturbation (±0.02–0.5% on the last 1–5 bars, simulating live tick-to-tick
+  wobble within a still-forming hourly bar): 0 flips for BOTH old and new across
+  20-30 simulated ticks. Checked why: today's window's actual fragile pair is
+  (`bear`, `strong_bear`) at only 0.003 apart — but the historical live flip was
+  `bear`↔`bull` (0.088 apart today, not fragile right now). TDVA only serves the
+  current trailing window, not an archived snapshot of the exact 04:30-04:35
+  window that actually flipped, so the specific historical incident couldn't be
+  reproduced directly.
+- Larger perturbation (±1% on the last 15 bars) targeting today's actual fragile
+  pair DID produce flips, but OLD: 6/39, NEW: 7/39 — no improvement, if anything
+  marginally worse. Not read as evidence against the fix: a 1% synthetic shock is
+  large enough that the underlying signal is genuinely crossing the boundary each
+  time, which continuity-matching isn't designed to suppress — it targets a
+  *rank-order swap between components that haven't actually changed*, not
+  real (or injected) signal movement.
+- The controlled unit test (`test_continuity_prevents_relabel_on_near_tied_means`)
+  DOES correctly prove the mechanism works exactly as designed, in the narrow
+  scenario it targets. That scenario could not be reproduced against live AAPL
+  data in the time available — this remains proven-in-principle, not
+  empirically confirmed against the real incident.
+
+**Unprompted corroborating signal:** hmmlearn itself repeatedly logged `Model is
+not converging` (oscillating log-likelihood, not monotonically improving) while
+fitting BOTH symbols' real feature data — independent evidence that these two
+symbols' HMM fits are poorly-conditioned, consistent with the whole R1 theory,
+though this specific instability isn't directly addressed by either fix.
+
+**Bottom line:** R1 fix #1 (variance floor) is empirically validated against real
+AAPL/US500 data for the specific symptom it targets (US500-style pinned
+overconfidence). R1 fix #2 (label continuity) is validated in principle but not
+against real data — before treating it as confirmed, it would need either a live
+capture of a genuinely fragile moment as it happens, or a more faithful
+reproduction of tick-to-tick data than a single archived snapshot allows.
