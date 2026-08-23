@@ -703,7 +703,7 @@ async def fetch_latest_tuning_param(param_name: str) -> dict[str, Any] | None:
         return None
     url = _url("nt_tuning_params")
     params = {
-        "select": "value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
+        "select": "id,value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
         "param_name": f"eq.{param_name}",
         "order": "ts.desc",
         "limit": "1",
@@ -734,7 +734,7 @@ async def fetch_tuning_param_history(param_name: str, limit: int = 10) -> list[d
         return []
     url = _url("nt_tuning_params")
     params = {
-        "select": "value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
+        "select": "id,value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
         "param_name": f"eq.{param_name}",
         "order": "ts.desc",
         "limit": str(int(limit)),
@@ -780,6 +780,41 @@ async def insert_tuning_param_row(
         "reverted": reverted,
     }
     return await _insert_row("nt_tuning_params", row)
+
+
+async def update_tuning_param_cycle_result(row_id: str, cycle_result: str) -> bool:
+    """PATCH one ``nt_tuning_params`` row's ``cycle_result`` by ``id``.
+
+    Used by the Layer 1 auto-tuner (``regime_platform.sweep_orchestrator.auto_tuner``)
+    to fill in whether a pending write improved/regressed/stayed neutral,
+    once the next cycle's health metric is available — mirrors
+    ``eod_resolver.py``'s pattern of writing a row once (``outcome IS
+    NULL``) and PATCHing it later once the outcome is known, rather than
+    treating this table as strictly insert-only.
+
+    Best-effort: returns False on any failure, never raises.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return False
+    url = _url("nt_tuning_params")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.patch(
+                url,
+                headers={**_headers(), "Prefer": "return=minimal"},
+                params={"id": f"eq.{row_id}"},
+                json={"cycle_result": cycle_result},
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "update_tuning_param_cycle_result %s: HTTP %d — %s",
+                    row_id, resp.status_code, resp.text[:200],
+                )
+                return False
+            return True
+    except Exception as exc:
+        logger.warning("update_tuning_param_cycle_result %s failed: %s", row_id, exc)
+        return False
 
 
 async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:

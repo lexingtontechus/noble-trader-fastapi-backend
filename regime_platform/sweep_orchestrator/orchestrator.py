@@ -867,6 +867,22 @@ class SweepOrchestrator(HeavySweepMixin):
                 [(k * interval) % 24 for k in range(1, 24 // interval)],
             )
 
+        # Layer 1 auto-tuner (2026-08-23, worklog/PARAMETER_TUNING_PLAYBOOK.md
+        # §2.5.2): daily, 01:30 UTC — an hour after the nightly EOD lookback
+        # (00:30) so resolved outcomes are fresh, and clear of the 4h
+        # intraday correction slots (:30 past hours 4/8/12/16/20). Gated on
+        # the SAME kill switch write_param() itself checks, so a disabled
+        # job doesn't even bother computing the health metric every day.
+        if getattr(settings, "TUNING_AUTONOMY_ENABLED", True):
+            self._scheduler.add_job(
+                self._run_auto_tuning,
+                trigger=CronTrigger.from_crontab("30 1 * * *"),
+                id="auto-tuner-daily",
+                name="Layer 1 auto-tuner (daily)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
 
@@ -1262,6 +1278,32 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.error(
                 "[eod:lookback] emergency heavy sweep batch failed: %s", exc,
             )
+
+    async def _run_auto_tuning(self) -> None:
+        """Layer 1 autonomous parameter self-tuning (daily, 01:30 UTC).
+
+        See ``regime_platform/sweep_orchestrator/auto_tuner.py`` and
+        worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.2. Writes tuned values
+        into the tuning registry (bounded, rate-limited, self-reverting on
+        regression) for the Tier D pilot parameter family — it does NOT
+        yet change live behaviour, since no read site has been migrated
+        to consume the registry (that's separate, not-yet-done work).
+        Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.sweep_orchestrator.auto_tuner import run_auto_tuning
+
+        try:
+            summary = await run_auto_tuning()
+            logger.info(
+                "[auto-tuner] done: metric=%s, checked=%d, evaluated=%d, "
+                "reverted=%d, tuned=%d, target=%s, skipped=%s, errors=%d",
+                summary.get("metric_now"), summary.get("checked", 0),
+                summary.get("evaluated", 0), summary.get("reverted", 0),
+                summary.get("tuned", 0), summary.get("target"),
+                summary.get("skipped"), summary.get("errors", 0),
+            )
+        except Exception as exc:
+            logger.error("[auto-tuner] failed: %s", exc)
 
     async def _run_eod_correction_only(self) -> None:
         """Intraday calibration correction pass (2026-08-13 plan, B = every 4h).
