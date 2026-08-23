@@ -47,6 +47,14 @@
 -- timestamp column is entered_at, not ts.
 --
 -- Idempotent: CREATE OR REPLACE VIEW.
+--
+-- Fix-up (2026-08-23, second pass): first apply attempt failed with 42P16
+-- ("cannot change name of view column ... to ...") because the new raw
+-- columns were interleaved with the pre-existing ones. CREATE OR REPLACE
+-- VIEW can only APPEND columns, never reorder or insert mid-list. Both
+-- SELECT lists below now keep the original 103/115 column order (day,
+-- symbol, avg_predicted_p_win, realized_win_rate, bias, status) untouched
+-- and append avg_predicted_p_win_raw / n / bias_raw / status_raw after it.
 -- ═══════════════════════════════════════════════════════════════
 
 -- ─── 1. v_eod_calibration_bias — per-day breakdown (historical/trend) ──────
@@ -56,18 +64,21 @@ SELECT
   DATE(entered_at)                                                    AS day,
   symbol,
   AVG(predicted_p_win)                                                AS avg_predicted_p_win,
-  AVG(predicted_p_win_raw)                                            AS avg_predicted_p_win_raw,
   AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)                AS realized_win_rate,
-  COUNT(*)                                                            AS n,
   (AVG(predicted_p_win)
      - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias,
-  (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win))
-     - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias_raw,
   CASE
     WHEN (AVG(predicted_p_win) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) > 0.10 THEN 'OVERCONFIDENT'
     WHEN (AVG(predicted_p_win) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) < -0.10 THEN 'UNDERCONFIDENT'
     ELSE 'CALIBRATED'
   END                                                                 AS status,
+  -- New columns appended AFTER the pre-existing ones (migrations 103/115) —
+  -- CREATE OR REPLACE VIEW cannot reorder or insert columns mid-list, only
+  -- append (42P16). See migration 119 fix-up note below.
+  AVG(predicted_p_win_raw)                                            AS avg_predicted_p_win_raw,
+  COUNT(*)                                                            AS n,
+  (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win))
+     - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias_raw,
   CASE
     WHEN (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win)) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) >= 0.30 THEN 'OVERCONFIDENT'
     WHEN (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win)) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) <= -0.20 THEN 'UNDERCONFIDENT'
@@ -89,19 +100,22 @@ SELECT
   now()::date                                                         AS day,
   symbol,
   AVG(predicted_p_win)                                                AS avg_predicted_p_win,
-  AVG(predicted_p_win_raw)                                            AS avg_predicted_p_win_raw,
   AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)                AS realized_win_rate,
-  COUNT(*)                                                            AS n,
   (AVG(predicted_p_win)
      - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias,
-  (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win))
-     - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias_raw,
   CASE
     WHEN COUNT(*) < 20 THEN 'INSUFFICIENT_DATA'
     WHEN (AVG(predicted_p_win) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) > 0.10 THEN 'OVERCONFIDENT'
     WHEN (AVG(predicted_p_win) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) < -0.10 THEN 'UNDERCONFIDENT'
     ELSE 'CALIBRATED'
   END                                                                 AS status,
+  -- New columns appended AFTER the pre-existing ones (migration 115) —
+  -- CREATE OR REPLACE VIEW cannot reorder or insert columns mid-list, only
+  -- append (42P16).
+  AVG(predicted_p_win_raw)                                            AS avg_predicted_p_win_raw,
+  COUNT(*)                                                            AS n,
+  (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win))
+     - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END))          AS bias_raw,
   CASE
     WHEN COUNT(*) < 20 THEN 'INSUFFICIENT_DATA'
     WHEN (COALESCE(AVG(predicted_p_win_raw), AVG(predicted_p_win)) - AVG(CASE WHEN outcome = 'win' THEN 1.0 ELSE 0.0 END)) >= 0.30 THEN 'OVERCONFIDENT'
