@@ -387,6 +387,18 @@ class Settings(BaseSettings):
     STAGNATION_RESET_CYCLES: int = 8
     STAGNATION_KELLY_REDUCTION_TIER1: float = 0.25
 
+    # TUNING_AUTONOMY_ENABLED (default True, 2026-08-23, Layer 0 of the
+    # tuning registry): global kill switch for ALL autonomous/agent-driven
+    # writes to regime_platform.core.tuning_registry (Layer 1's continuous
+    # tuner, Layer 2's agent-triggered adjustments). This is deliberately
+    # the ONE human-facing control in the whole registry design — not a
+    # per-change review gate (that doesn't fire in practice, see
+    # worklog/PARAMETER_TUNING_PLAYBOOK.md §1 revision note), just a single
+    # switch to freeze all autonomous tuning at once if ever needed. Set
+    # "0" in Studio Secrets to disable; reads are unaffected (registry
+    # reads still work, only writes are blocked).
+    TUNING_AUTONOMY_ENABLED: bool = True
+
     # Drift monitor (D): on each light sweep, per symbol, a rolling
     # EOD_DRIFT_WINDOW_HOURS realized win rate is compared against the mean
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at

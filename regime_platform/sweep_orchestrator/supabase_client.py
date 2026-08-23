@@ -688,6 +688,100 @@ async def fetch_recent_action_bias(
     return out
 
 
+async def fetch_latest_tuning_param(param_name: str) -> dict[str, Any] | None:
+    """Fetch the most recent ``nt_tuning_params`` row for ``param_name``.
+
+    DB fallback for the tuning registry (``regime_platform.core.tuning_registry``,
+    2026-08-23, Layer 0) — used when the local config file has no entry
+    (cold start, or the file was lost in a Studio rebuild). Returns the row
+    dict (``value``, ``previous_value``, ``ts``, ``updated_by``, ``reason``,
+    ``clamped``, ``rate_limited``, ``cycle_result``, ``reverted``) or
+    ``None`` on failure / no rows. See
+    worklog/PARAMETER_TUNING_PLAYBOOK.md §2.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return None
+    url = _url("nt_tuning_params")
+    params = {
+        "select": "value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
+        "param_name": f"eq.{param_name}",
+        "order": "ts.desc",
+        "limit": "1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_latest_tuning_param %s failed: %s", param_name, exc)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data[0]
+
+
+async def fetch_tuning_param_history(param_name: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch the most recent ``limit`` ``nt_tuning_params`` rows for
+    ``param_name``, newest first — for auto-rollback / streak-style
+    decisions (mirrors ``fetch_recent_action_bias``'s role for the
+    stagnation breaker, generalized to any registry parameter).
+
+    Best-effort: returns ``[]`` on any failure or when Supabase is not
+    configured (never raises).
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return []
+    url = _url("nt_tuning_params")
+    params = {
+        "select": "value,previous_value,ts,updated_by,reason,clamped,rate_limited,cycle_result,reverted",
+        "param_name": f"eq.{param_name}",
+        "order": "ts.desc",
+        "limit": str(int(limit)),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_tuning_param_history %s failed: %s", param_name, exc)
+        return []
+    return data if isinstance(data, list) else []
+
+
+async def insert_tuning_param_row(
+    param_name: str,
+    value: Any,
+    previous_value: Any,
+    updated_by: str,
+    reason: str,
+    *,
+    clamped: bool = False,
+    rate_limited: bool = False,
+    cycle_result: str | None = None,
+    reverted: bool = False,
+) -> bool:
+    """Insert one audit row into ``nt_tuning_params``. Returns True on success.
+
+    Best-effort — the config file (written by the caller BEFORE this is
+    called) is authoritative for the current process; a failed DB insert
+    here is logged, not raised, matching this module's other write paths.
+    """
+    row = {
+        "param_name": param_name,
+        "value": value,
+        "previous_value": previous_value,
+        "updated_by": updated_by,
+        "reason": reason,
+        "clamped": clamped,
+        "rate_limited": rate_limited,
+        "cycle_result": cycle_result,
+        "reverted": reverted,
+    }
+    return await _insert_row("nt_tuning_params", row)
+
+
 async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
     """Fetch the most recent nt_sweep_result row for a symbol.
 

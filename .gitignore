@@ -111,3 +111,12 @@ venv.bak/
 data/
 monitor_ev_fix_results.json
 monitor_ev_fix_delivery.log
+
+# Tuning registry (2026-08-23, Layer 0) — live-mutated runtime state, NOT
+# an audit trail. config/brick_params.yaml is tracked in git but drifts
+# from its live-mutated copy on Studio (heavy_sweep.py's rewrites never
+# get committed back) — the tracked file just goes stale. Don't repeat
+# that for this one: nt_tuning_params (Supabase) is the real audit trail;
+# this file is a fast local cache only. See
+# worklog/PARAMETER_TUNING_PLAYBOOK.md §2.3/§2.4.
+config/tuning_registry.yaml
