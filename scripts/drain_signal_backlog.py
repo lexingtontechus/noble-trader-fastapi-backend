@@ -19,6 +19,15 @@ Flags:
 The script is read-only except for the resolver's own PATCH/insert writes
 (outcome/exit fields + nt_calibration_records). It NEVER boots the sweep
 engine. Re-run any time the pending count grows large again.
+
+2026-08-23: the resolver gained a minimum-age gate (see
+worklog/20260823_CALIBRATION_BIAS_FIXES_APPLIED.md) — a signal younger than
+EXPIRY_BARS post-entry bars is left pending (`insufficient_bars`) instead of
+force-expired. That means most of a fresh backlog (signals entered within
+the last ~2 days) will legitimately resolve 0 rows per pass, repeatedly,
+until they mature or hit TP/SL — this is NOT the same "stuck" condition the
+zero-progress retry logic below was built to catch (transient API errors).
+See the `errors == 0` branch below.
 """
 from __future__ import annotations
 
@@ -80,11 +89,14 @@ async def main() -> int:
     for pass_no in range(1, args.max_passes + 1):
         summary = await resolve_pending_signals(limit=args.limit)
         resolved = summary.get("resolved", 0)
+        errors = summary.get("errors", 0)
+        windowed_out = summary.get("windowed_out", 0)
+        insufficient_bars = summary.get("insufficient_bars", 0)
         total_resolved += resolved
         print(
             f"[drain] pass {pass_no}: resolved={resolved} "
             f"by_outcome={summary.get('by_outcome')} "
-            f"windowed_out={summary.get('windowed_out')} errors={summary.get('errors')}",
+            f"windowed_out={windowed_out} insufficient_bars={insufficient_bars} errors={errors}",
             flush=True,
         )
         remaining = await _count_pending()
@@ -92,15 +104,31 @@ async def main() -> int:
         if remaining <= 0:
             print(f"[drain] backlog cleared — {total_resolved} resolved over {pass_no} pass(es)", flush=True)
             return 0
-        # Guard against hot loops when the resolver can't make progress.
-        # Transient API errors are retried (a single failed pass must not
-        # abort a multi-hour drain); only 3 consecutive zero-progress passes
-        # stop the run (2026-08-13 resilience fix).
+        if resolved == 0 and errors == 0:
+            # Nothing resolved, but not because anything is broken: the
+            # remaining pending rows are either too young to judge yet
+            # (insufficient_bars — 2026-08-23 minimum-age gate) or predate the
+            # fetch window (windowed_out). An immediate retry changes neither
+            # condition, so retrying in a loop would just hammer Supabase for
+            # no benefit. Stop cleanly (exit 0) — the daily cron will pick
+            # this backlog up again once it matures.
+            print(
+                f"[drain] pass {pass_no}: {remaining} pending can't resolve yet "
+                f"(insufficient_bars={insufficient_bars}, windowed_out={windowed_out}, "
+                "errors=0) — stopping cleanly, not a failure. Re-run later once "
+                "signals have matured or hit TP/SL.",
+                flush=True,
+            )
+            return 0
+        # Guard against hot loops when the resolver can't make progress due
+        # to genuine errors. Transient API errors are retried (a single
+        # failed pass must not abort a multi-hour drain); only 3 consecutive
+        # zero-progress passes stop the run (2026-08-13 resilience fix).
         if resolved == 0:
             zero_progress += 1
             print(
                 f"[drain] pass {pass_no}: zero progress "
-                f"(errors={summary.get('errors')}, windowed_out={summary.get('windowed_out')}) "
+                f"(errors={errors}, windowed_out={windowed_out}) "
                 f"— {zero_progress}/3 consecutive, retrying in 10s",
                 flush=True,
             )
