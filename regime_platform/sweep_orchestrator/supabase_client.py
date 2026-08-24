@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -694,7 +694,8 @@ async def _clear_stagnation_history(symbol: str) -> None:
 
 
 async def fetch_recent_action_bias(
-    symbol: str, action: str = "bayesian_penalty", limit: int = 8
+    symbol: str, action: str = "bayesian_penalty", limit: int = 8,
+    source: Optional[str] = None,
 ) -> list[float]:
     """Return the most recent ``limit`` bias values (newest first) written
     for ``action`` on ``symbol`` in ``nt_eod_actions``.
@@ -705,19 +706,31 @@ async def fetch_recent_action_bias(
     (``nt_eod_actions``) already carries this history, so no separate
     accumulator/counter table is needed.
 
+    ``source``, when given, additionally filters on ``detail->>source``
+    (2026-08-24 fix) — ``drift_monitor.py`` writes its OWN ``bayesian_penalty``
+    rows (different window/threshold, tagged ``detail.source="drift_monitor"``)
+    to the same table. Without this filter, those rows interleave with
+    ``eod_correction.py``'s own (tagged ``detail.source="eod_correction"``)
+    and dilute the "same 4h cycle, unmoved" signal the stagnation streak is
+    meant to measure. Rows written before this fix shipped have no
+    ``detail.source`` key at all and won't match either filter value — a
+    one-time, acceptable reset of accumulated streak history, not a bug.
+
     Best-effort: returns ``[]`` on any failure or when Supabase is not
     configured (never raises).
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         return []
     url = _url("nt_eod_actions")
-    params = {
+    params: dict[str, str] = {
         "select": "bias,ts",
         "symbol": f"eq.{symbol}",
         "action": f"eq.{action}",
         "order": "ts.desc",
         "limit": str(int(limit)),
     }
+    if source:
+        params["detail->>source"] = f"eq.{source}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, headers=_headers(), params=params)

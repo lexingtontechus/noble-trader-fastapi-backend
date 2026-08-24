@@ -419,7 +419,13 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 status = _classify_bias_raw(bias)
             else:
                 status = _classify_bias(bias)
-            detail: dict[str, Any] = {"bias": bias, "status": status}
+            # "source": "eod_correction" (2026-08-24 fix) tags every action
+            # this module writes so fetch_recent_action_bias can tell them
+            # apart from drift_monitor.py's OWN bayesian_penalty writes,
+            # which use a different window/threshold and would otherwise
+            # dilute _stagnation_streak's "same 4h cycle, unmoved" signal —
+            # see worklog/20260824_STAGNATION_STREAK_SOURCE_FILTER.md.
+            detail: dict[str, Any] = {"bias": bias, "status": status, "source": "eod_correction"}
 
             # ── Stale action clearing moved to unconditional 4h cycle reset ──
             # At: eod_correction.py L240 (before bias computation)
@@ -484,8 +490,14 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                     from regime_platform.sweep_orchestrator.supabase_client import (
                         fetch_recent_action_bias,
                     )
+                    # source="eod_correction" (2026-08-24 fix): drift_monitor.py
+                    # also writes bayesian_penalty rows (its own 48h-window,
+                    # different threshold) — without this filter they'd mix
+                    # into the same 8-row lookback and dilute the "same 4h
+                    # cycle, unmoved" signal this streak is meant to measure.
                     history = await fetch_recent_action_bias(
-                        symbol, action="bayesian_penalty", limit=8
+                        symbol, action="bayesian_penalty", limit=8,
+                        source="eod_correction",
                     )
                 except Exception:
                     history = []

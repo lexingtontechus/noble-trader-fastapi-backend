@@ -192,6 +192,10 @@ class TestStagnationBreakerIntegration:
         action_bias_mock.assert_awaited_once()
         _, kwargs = action_bias_mock.call_args
         assert kwargs.get("action") == "bayesian_penalty"
+        # 2026-08-24 fix: must request the eod_correction-sourced rows
+        # specifically, not the unfiltered default -- otherwise
+        # drift_monitor.py's own bayesian_penalty writes dilute the streak.
+        assert kwargs.get("source") == "eod_correction"
 
 
 # ─── 4. apply_calibration_adjustment — enforcement side ────────────────────
@@ -357,6 +361,10 @@ class _FakeEodActionsTable:
         action = str(params.get("action", "")).removeprefix("eq.")
         limit = int(params.get("limit", 1000))
         matched = [r for r in self.rows if r["symbol"] == symbol and r["action"] == action]
+        source_filter = str(params.get("detail->>source", ""))
+        if source_filter.startswith("eq."):
+            wanted = source_filter[len("eq."):]
+            matched = [r for r in matched if (r.get("detail") or {}).get("source") == wanted]
         matched.sort(key=lambda r: r["ts"], reverse=True)
         return _FakeResp(200, matched[:limit])
 
@@ -458,3 +466,42 @@ class TestStagnationHistorySurvivesRealClearCycle:
         _run_real_cycle(table, overconfident)  # stuck again — should be a FRESH streak
         bp_rows = [r for r in table.rows if r["action"] == "bayesian_penalty"]
         assert bp_rows[-1]["detail"]["stagnation_tier"] == 0, "streak must restart at 1 (tier 0) after recovery"
+
+    def test_drift_monitor_rows_do_not_count_toward_the_streak(self):
+        """Regression test for the 2026-08-24 fix: drift_monitor.py writes
+        its own bayesian_penalty rows (detail.source='drift_monitor', a
+        different 48h-window bias) to the SAME table. 3 such rows land
+        between two real eod_correction cycles, all with a bias close
+        enough to count as "unmoved" if they were included. If they
+        counted toward the streak, cycle 2 would incorrectly jump straight
+        to Tier 2 (the hard kill switch) off of drift-monitor noise instead
+        of genuine repeated 4h-cycle stagnation (only 2 real cycles have
+        actually run)."""
+        table = _FakeEodActionsTable()
+        cal_raw = {"bias": 0.45, "n": 30, "win_rate": 0.30,
+                   "avg_pred": 0.55, "avg_pred_raw": 0.90, "status": "OVERCONFIDENT"}
+
+        _run_real_cycle(table, cal_raw)  # real cycle 1: streak=1, tier=0
+
+        for i, ts in enumerate([
+            "2020-01-01T00:00:00+00:00",
+            "2020-01-01T00:30:00+00:00",
+            "2020-01-01T01:00:00+00:00",
+        ]):
+            table.rows.append({
+                "symbol": "AAPL", "action": "bayesian_penalty", "bias": 0.44 + i * 0.001,
+                "ts": ts, "detail": {"n": 12, "source": "drift_monitor", "window_hours": 48},
+            })
+
+        _run_real_cycle(table, cal_raw)  # real cycle 2
+        eod_rows = [
+            r for r in table.rows
+            if r["action"] == "bayesian_penalty" and r["detail"].get("source") == "eod_correction"
+        ]
+        # Correct: streak=2 (only the 2 real eod_correction cycles), Tier 1.
+        # An unfiltered fetch (picking up the 3 drift_monitor rows too)
+        # would compute streak=5, Tier 2 -- and fire the kill switch.
+        assert eod_rows[-1]["detail"]["stagnation_streak"] == 2
+        assert eod_rows[-1]["detail"]["stagnation_tier"] == 1
+        kill_switch_rows = [r for r in table.rows if r["action"] == STAGNATION_KILL_SWITCH_ACTION]
+        assert not kill_switch_rows, "drift_monitor noise must not trigger the Tier 2 kill switch"

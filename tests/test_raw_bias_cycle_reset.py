@@ -25,6 +25,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_calibration_bias_raw,
     _clear_stale_eod_actions,
     _clear_stagnation_history,
+    fetch_recent_action_bias,
 )
 from regime_platform.sweep_orchestrator.eod_correction import (
     run_eod_correction,
@@ -559,6 +560,46 @@ class TestClearStagnationHistory:
             patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
         ):
             asyncio.run(_clear_stagnation_history("EURUSD"))
+
+
+class TestFetchRecentActionBiasSourceFilter:
+    """2026-08-24 fix: fetch_recent_action_bias's optional ``source``
+    param, so the stagnation streak can distinguish eod_correction.py's
+    own bayesian_penalty writes from drift_monitor.py's."""
+
+    def test_no_source_omits_the_filter(self):
+        client = FakeAsyncClient(get_rows=[])
+        with (
+            patch("regime_platform.sweep_orchestrator.supabase_client._url",
+                  return_value="https://x.supabase.co/rest/v1/nt_eod_actions"),
+            patch("regime_platform.sweep_orchestrator.supabase_client._headers",
+                  return_value={"apikey": "k", "Authorization": "Bearer k"}),
+            patch("regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                  return_value=client),
+            patch.object(settings, "SUPABASE_URL", "https://x.supabase.co"),
+            patch.object(settings, "SUPABASE_KEY", "k"),
+        ):
+            asyncio.run(fetch_recent_action_bias("EURUSD", action="bayesian_penalty"))
+        params = client.get_calls[0]["params"]
+        assert "detail->>source" not in params
+
+    def test_source_adds_the_detail_jsonb_filter(self):
+        client = FakeAsyncClient(get_rows=[])
+        with (
+            patch("regime_platform.sweep_orchestrator.supabase_client._url",
+                  return_value="https://x.supabase.co/rest/v1/nt_eod_actions"),
+            patch("regime_platform.sweep_orchestrator.supabase_client._headers",
+                  return_value={"apikey": "k", "Authorization": "Bearer k"}),
+            patch("regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                  return_value=client),
+            patch.object(settings, "SUPABASE_URL", "https://x.supabase.co"),
+            patch.object(settings, "SUPABASE_KEY", "k"),
+        ):
+            asyncio.run(fetch_recent_action_bias(
+                "EURUSD", action="bayesian_penalty", source="eod_correction",
+            ))
+        params = client.get_calls[0]["params"]
+        assert params["detail->>source"] == "eq.eod_correction"
 
 
 # ─── 5. Orchestrator wiring ─────────────────────────────────────────────
