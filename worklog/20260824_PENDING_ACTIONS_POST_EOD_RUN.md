@@ -9,6 +9,91 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 20:34 UTC 2026-08-24: kill switch fired for AAPL/US500/XAGUSD
+
+12h calibration analysis (08:34→20:34 UTC) found the situation escalated
+past "frozen bias" while this checklist was open:
+
+- `stagnation_streak` climbed 3→4→5 across the 12:30 / 16:30 / 20:30 UTC
+  intraday correction cycles for all three symbols, bias identical
+  (bit-for-bit) every cycle: AAPL 0.4466, US500 0.6771, XAGUSD 0.3739.
+  XAGUSD is new to this list (`commodities`, not `stocks` — confirms the
+  problem was never asset-class-specific).
+- At streak=5 (≥ `STAGNATION_TIER2_CYCLES=4`), all three hit
+  `stagnation_kill_switch` at the 20:30 UTC cycle — **kelly forced to 0.0,
+  publishing blocked entirely** (`eod_correction.py:527-539`). This is
+  Finding 1's source-tagging fix working correctly: it detected a genuine,
+  real 5-cycle stagnation and escalated as designed.
+- Root cause unchanged from this morning: `n` (calibration record count) is
+  identical to hours ago for all three (AAPL 427, US500 63, XAGUSD 711) —
+  zero fresh resolved outcomes all day. Confirmed fleet-wide: **zero
+  signals resolved, any symbol, in the entire 12h window** — expected,
+  since `resolve_pending_signals` only runs once/day and this window falls
+  entirely between runs.
+- **Timing correction to this checklist's original framing**: the
+  meaningful test isn't "tomorrow" — it's **tonight's 00:32 UTC run**
+  (~4h out from 20:34 UTC), the first live exercise of both this fix and
+  `20260824_RESOLVER_429_RETRY_AND_CRON_OFFSET.md`'s two fixes together.
+- Escalation path if tonight's run does NOT get fresh data flowing: streak
+  6 @ 04:30, 7 @ 08:30, then `STAGNATION_RESET_CYCLES=8` @ ~12:30 UTC
+  2026-08-25 forces a tier reset + fresh emergency sweep automatically —
+  no manual intervention required either way.
+
+### Assessment: is a manual backlog drain required right now?
+
+**No.** Recommend waiting for the natural 00:32 UTC cron rather than
+manually invoking `resolve_pending_signals` (or the drain script) ahead of
+it. Reasoning:
+
+1. **No time actually saved.** `run_eod_correction` (the pass that reads
+   calibration bias and could lift the kill switch) only runs on the fixed
+   4h-boundary schedule (`eod-correction-intraday-{04,08,12,16,20}` +
+   `eod-lookback` at 00:32) — it is not triggered by the resolver finishing.
+   Manually draining now would populate fresh `nt_calibration_records` rows
+   sooner, but nothing re-reads them until the next scheduled correction
+   pass anyway, which is the **same 00:32 UTC run** either way. A manual
+   drain buys zero clock time here unless `run_eod_correction` were also
+   invoked manually right after — a bigger, less-tested intervention than
+   just letting the cron fire.
+2. **No urgency.** The kill switch is doing exactly what it's designed to
+   do — safely idling 3 already-poorly-performing symbols rather than
+   trading on stale/frozen p_win estimates. Nothing gets worse by waiting
+   4 hours; the reset-at-streak-8 safety net fires automatically regardless.
+3. **Risk asymmetry.** The last manual drain (2026-08-23) caused a real
+   production incident (runaway resolver loop, TradingView 429 storm,
+   required an SSH kill). The fixes from that incident plus today's
+   batching/retry/cron-offset changes have never been exercised via the
+   real cron path yet — letting the actual scheduled job run them for the
+   first time is a lower-risk, more representative test than another
+   ad-hoc manual invocation, especially with zero time benefit to justify
+   the risk.
+
+**If tonight's 00:32 UTC run also fails to drain the backlog**, that would
+be a stronger signal something in the fix is incomplete — worth a live
+SSH check at that point, not a reason to intervene manually beforehand.
+
+### Other corrective actions surfaced by the 12h analysis
+
+- **Legacy Markov HMM NaN bug is wider than first spotted** (item 5 below
+  originally named only AUDUSD/US500): confirmed over the past 12h across
+  AUDUSD, BTCUSD, EURUSD, USDCAD, XAUAUD, XAUEUR, XAUUSD — 7+ symbols, most
+  of the active roster. Still not investigated. Given the spread, this
+  strengthens the case for treating Change B (retire this model) as higher
+  priority once Change A's stability window closes, rather than patching
+  the legacy model in place.
+- **New candidate investigation, not yet scoped**: once the resolver
+  backlog clears and AAPL/US500/XAGUSD get fresh calibration evidence, if
+  bias *still* doesn't move toward CALIBRATED, that points to genuine
+  miscalibration in the underlying p_win model for these three symbols
+  specifically (not a plumbing bug) — a different, deeper investigation
+  than anything scoped so far. Don't start this until the 00:32 UTC run's
+  outcome is known (per item 3 below — this is exactly the fork item 3
+  already anticipates).
+- Change B stability window: still not started, still gated on Change A's
+  observation period (item 6 below) — no change to that status.
+
+---
+
 ## 1. Confirm the batching fix actually eliminated the 429 collision
 
 Check `logs/orchestrator.log` around 2026-08-25 00:30 UTC for `regime.sweep.prices`
