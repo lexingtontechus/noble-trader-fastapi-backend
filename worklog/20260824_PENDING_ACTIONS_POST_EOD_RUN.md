@@ -64,20 +64,21 @@ order by ts desc limit 10;
   underlying p_win model for these two symbols) and needs fresh
   investigation — don't assume today's fix explains it without this check.
 
-## 4. Deferred/scoped-but-not-built items to revisit
+## 4. Retry-with-backoff + cron offset — DONE (commit `62f54d7`, same day)
 
-Not built today — scope discipline, one fix at a time. Revisit only if item 1
-shows the collision persists, or on its own merits:
+Both items originally deferred here were built later on 2026-08-24 — see
+`20260824_RESOLVER_429_RETRY_AND_CRON_OFFSET.md`:
 
-- **Retry-with-backoff on 429**: `fetch_tradingview_batch`
-  (`price_fetcher.py`) already parses the `Retry-After` header on a 429 but
-  just logs and skips the chunk. A short sleep-and-retry would recover
-  within the same run instead of losing the day's only attempt.
-- **De-collide cron schedules**: `eod-lookback` (`resolve_pending_signals`)
-  and the light sweep's `*/5 * * * *` tick both fire at `:00` of every 5
-  minutes, so 00:30 UTC is a guaranteed overlap point every day. Offsetting
-  the resolver by even 1-2 minutes removes the guaranteed-collision window
-  independent of how well each side batches.
+- `fetch_tradingview_batch` now retries once on a 429, honoring (capped)
+  `Retry-After` before giving up, instead of skipping the chunk outright.
+- `eod-lookback` moved from `"30 0 * * *"` to `"32 0 * * *"` — no longer
+  shares the light sweep's `*/5 * * * *` grid tick.
+
+Both deployed live — confirm as part of item 1's log check above: the
+resolver's own job should now start at `00:32:xx` UTC, not `00:30:xx`, and
+any 429 that does occur should show a retry attempt line before either
+succeeding or exhausting (`MAX_429_RETRIES=1`, i.e. 2 total attempts) rather
+than skipping immediately.
 
 ## 5. New live bug spotted, unrelated to anything fixed today
 
