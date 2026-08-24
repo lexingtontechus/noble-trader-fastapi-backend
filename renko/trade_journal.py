@@ -61,6 +61,18 @@ from renko.signal_filter import FilteredSignal
 
 log = logging.getLogger(__name__)
 
+# Sentinel cap for profit_factor when there are no losing trades (2026-08-24).
+# gross_profit / gross_loss is undefined at gross_loss == 0 — the previous
+# behavior returned literal float("inf"), which Postgres/JSON reject
+# ("Out of range float values are not JSON compliant"), silently dropping
+# the entire nt_sweep_result row for that tick (confirmed live: a US500
+# emergency sweep with win_rate=1.0 lost its telemetry row this way).
+# A 0-loss window is exactly the "absurd outlier, likely overfit/small
+# sample" case heavy_sweep.py's own MAX_SHARPE already exists to flag for a
+# different metric — same rationale, a finite cap here instead of a
+# rejection filter, since get_stats() reports rather than picks combos.
+_PROFIT_FACTOR_CAP = 999.0
+
 
 # ── Fire-and-forget task tracking ─────────────────────────────────────
 # When we schedule a calibration write via ``loop.create_task()``, we
@@ -411,7 +423,7 @@ class TradeJournal:
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": len(wins) / len(trades),
-            "profit_factor": gross_profit / gross_loss if gross_loss > 0 else float("inf"),
+            "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else _PROFIT_FACTOR_CAP,
             "total_pnl_bricks": round(total_pnl, 4),
             "avg_pnl_bricks": round(total_pnl / len(trades), 4),
             "avg_win_bricks": round(gross_profit / len(wins), 4) if wins else 0.0,
