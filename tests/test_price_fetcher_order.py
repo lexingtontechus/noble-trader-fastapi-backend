@@ -19,6 +19,8 @@ import pytest
 
 from regime_platform.sweep_orchestrator.price_fetcher import (
     fetch_tradingview_batch,
+    MAX_429_RETRIES,
+    RETRY_AFTER_CAP_SECONDS,
 )
 
 
@@ -221,3 +223,112 @@ async def test_multi_symbol_keys_and_order(tv_settings):
     assert set(result.keys()) == {"USDJPY", "EURUSD"}
     assert result["USDJPY"] == [162.87, 159.35]
     assert result["EURUSD"] == [1.0900, 1.0850]
+
+
+class TestBatch429RetryWithBackoff:
+    """Regression (2026-08-24): a 429 used to be logged and the chunk
+    skipped outright, discarding data a short wait would have recovered.
+    Confirmed live: eod_resolver lost an entire day's resolution attempt
+    for 4 symbols to a 429 burst that a single retry would very likely have
+    survived. One bounded retry, honoring Retry-After (capped), should
+    recover within the same call instead of giving up immediately."""
+
+    @pytest.mark.asyncio
+    async def test_429_then_success_retries_and_recovers(self, tv_settings):
+        symbols = [{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}]
+        resp_429 = _mock_resp({}, status=429)
+        resp_429.headers = {"Retry-After": "3"}
+        resp_ok = _mock_resp({
+            "success": True,
+            "data": {"data": [{
+                "success": True,
+                "symbol": "NASDAQ:AAPL",
+                "current": _bar(3000, 200.0),
+                "history": [_bar(3000, 200.0)],
+            }]},
+        })
+
+        sleep_mock = AsyncMock()
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.httpx.AsyncClient"
+            ) as mock_client_cls,
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.asyncio.sleep",
+                new=sleep_mock,
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = [resp_429, resp_ok]
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await fetch_tradingview_batch(symbols, hours=5)
+
+        assert result["AAPL"] == [200.0]
+        assert mock_client.post.call_count == 2
+        sleep_mock.assert_awaited_once()
+        assert sleep_mock.await_args.args[0] == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_429_retry_after_is_capped_not_taken_verbatim(self, tv_settings):
+        """A huge Retry-After must not stall a sweep tick for its full
+        duration."""
+        symbols = [{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}]
+        resp_429_a = _mock_resp({}, status=429)
+        resp_429_a.headers = {"Retry-After": "600"}
+        resp_429_b = _mock_resp({}, status=429)
+        resp_429_b.headers = {"Retry-After": "600"}
+
+        sleep_mock = AsyncMock()
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.httpx.AsyncClient"
+            ) as mock_client_cls,
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.asyncio.sleep",
+                new=sleep_mock,
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = [resp_429_a, resp_429_b]
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await fetch_tradingview_batch(symbols, hours=5)
+
+        assert result == {}
+        sleep_mock.assert_awaited_once()
+        assert sleep_mock.await_args.args[0] == pytest.approx(RETRY_AFTER_CAP_SECONDS)
+
+    @pytest.mark.asyncio
+    async def test_429_exhausts_retries_and_skips_chunk_like_before(self, tv_settings):
+        """After MAX_429_RETRIES, give up on the chunk exactly like the old
+        behavior — no crash, symbol simply absent from the result."""
+        symbols = [{"symbol": "AAPL", "tradingview_symbol": "NASDAQ:AAPL"}]
+        resp_429_a = _mock_resp({}, status=429)
+        resp_429_a.headers = {"Retry-After": "1"}
+        resp_429_b = _mock_resp({}, status=429)
+        resp_429_b.headers = {"Retry-After": "1"}
+
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.httpx.AsyncClient"
+            ) as mock_client_cls,
+            patch(
+                "regime_platform.sweep_orchestrator.price_fetcher.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = [resp_429_a, resp_429_b]
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await fetch_tradingview_batch(symbols, hours=5)
+
+        assert result == {}
+        assert mock_client.post.call_count == MAX_429_RETRIES + 1

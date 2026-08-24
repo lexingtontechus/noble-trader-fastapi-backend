@@ -884,12 +884,18 @@ class SweepOrchestrator(HeavySweepMixin):
         )
 
         # EOD signal-lookback: forward-resolve pending nt_signal_sim rows
-        # then run the calibration self-correction audit. Daily 00:30 UTC —
+        # then run the calibration self-correction audit. Daily 00:32 UTC —
         # after the market day closes (forex 22:00 UTC / equities 21:00 UTC)
-        # and before the 05:00 UTC weekend heavy-sweep window.
+        # and before the 05:00 UTC weekend heavy-sweep window. Offset 2
+        # minutes off the light sweep's `*/5 * * * *` grid (2026-08-24):
+        # at :30 exactly, both jobs fired their own TradingView batch calls
+        # concurrently and the resolver's requests got 429'd — confirmed
+        # live. This doesn't guarantee no overlap (a slow resolver run can
+        # still run into the next light-sweep tick), but removes the
+        # guaranteed every-single-day collision at the shared :30 mark.
         self._scheduler.add_job(
             self._run_eod_lookback,
-            trigger=CronTrigger.from_crontab("30 0 * * *"),
+            trigger=CronTrigger.from_crontab("32 0 * * *"),
             id="eod-lookback",
             name="EOD signal lookback (resolve + correct)",
             misfire_grace_time=3600,
@@ -1186,8 +1192,10 @@ class SweepOrchestrator(HeavySweepMixin):
     async def _run_eod_lookback(self) -> None:
         """EOD signal-lookback: resolve pending signals + self-correction.
 
-        Scheduled daily 00:30 UTC (job id ``eod-lookback``). Runs the two
-        EOD modules in order:
+        Scheduled daily 00:32 UTC (job id ``eod-lookback`` — offset 2 minutes
+        off the light sweep's `*/5 * * * *` grid, 2026-08-24, to avoid a
+        guaranteed daily TradingView-request collision at the shared :30
+        mark). Runs the two EOD modules in order:
 
           1. ``eod_resolver.resolve_pending_signals`` — forward-resolve every
              ``nt_signal_sim`` row with ``outcome IS NULL`` against post-entry

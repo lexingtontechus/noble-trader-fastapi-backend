@@ -18,6 +18,7 @@ TheTradingView batch endpoint accepts up to 10 symbols per request
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -34,6 +35,16 @@ LIGHT_CANDLE_BARS = 200            # light sweep default
 # TradingView batch endpoint hard-limits to 10 symbols per request.
 # Larger lists are chunked into BATCH_CHUNK_SIZE groups automatically.
 BATCH_CHUNK_SIZE = 10
+
+# 429 retry (2026-08-24): one bounded retry per chunk, honoring the
+# Retry-After header the API already sends — previously a 429 was just
+# logged and the chunk skipped outright, discarding data that a few
+# seconds' wait would have recovered (confirmed live: eod_resolver lost an
+# entire day's resolution attempt for 4 symbols to a 429 burst that a
+# single retry would very likely have survived). Capped so a
+# misbehaving/huge Retry-After value can't stall a sweep tick.
+MAX_429_RETRIES = 1
+RETRY_AFTER_CAP_SECONDS = 10.0
 
 
 # ─── TradingView Batch API (TDVA — sole data source) ─────────────
@@ -119,33 +130,54 @@ async def fetch_tradingview_batch(
             for s in chunk
         ]
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, headers=headers, json={"requests": requests_body})
+        data: dict[str, Any] | None = None
+        for attempt in range(MAX_429_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, headers=headers, json={"requests": requests_body})
 
-                if resp.status_code == 429:
-                    retry_after = resp.headers.get("Retry-After", "5")
-                    logger.warning(
-                        "TradingView batch 429 rate limited (chunk %d/%d) — "
-                        "retry after %ss. Skipping chunk.",
-                        chunk_idx + 1, len(chunks), retry_after,
-                    )
-                    continue
+                    if resp.status_code == 429:
+                        try:
+                            retry_after = min(
+                                float(resp.headers.get("Retry-After", "5")),
+                                RETRY_AFTER_CAP_SECONDS,
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = RETRY_AFTER_CAP_SECONDS
+                        if attempt < MAX_429_RETRIES:
+                            logger.warning(
+                                "TradingView batch 429 rate limited (chunk %d/%d, "
+                                "attempt %d/%d) — retrying after %.1fs.",
+                                chunk_idx + 1, len(chunks), attempt + 1,
+                                MAX_429_RETRIES + 1, retry_after,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                        logger.warning(
+                            "TradingView batch 429 rate limited (chunk %d/%d) — "
+                            "retries exhausted. Skipping chunk.",
+                            chunk_idx + 1, len(chunks),
+                        )
+                        break
 
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "TradingView batch HTTP %d (chunk %d/%d): %s. Skipping chunk.",
-                exc.response.status_code, chunk_idx + 1, len(chunks),
-                exc.response.text[:200],
-            )
-            continue
-        except Exception as exc:
-            logger.warning(
-                "TradingView batch failed (chunk %d/%d): %s. Skipping chunk.",
-                chunk_idx + 1, len(chunks), exc,
-            )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "TradingView batch HTTP %d (chunk %d/%d): %s. Skipping chunk.",
+                    exc.response.status_code, chunk_idx + 1, len(chunks),
+                    exc.response.text[:200],
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "TradingView batch failed (chunk %d/%d): %s. Skipping chunk.",
+                    chunk_idx + 1, len(chunks), exc,
+                )
+                break
+
+        if data is None:
             continue
 
         # Parse batch response:
