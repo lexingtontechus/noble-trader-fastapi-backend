@@ -550,6 +550,20 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
             by_symbol.setdefault(row.get("symbol"), []).append(row)
 
         outcomes: Counter[str] = Counter()
+
+        # ── Batched candle fetch (2026-08-24 fix) ──────────────────────
+        # Previously fetched one symbol at a time — N sequential HTTP
+        # requests with no delay between them. That collided with the
+        # light sweep's own concurrent TradingView batch call at the same
+        # cron tick and tripped 429s on whichever symbols happened to be
+        # later in the loop (confirmed live 2026-08-24: 4 consecutive
+        # single-symbol requests all 429'd within ~100ms, wiping out that
+        # day's only resolution attempt for those symbols — not a real
+        # data gap, self-inflicted rate limiting). Fetch every symbol in
+        # this batch in ONE call; fetch_candles_for_symbols auto-chunks
+        # into ceil(N/10) HTTP requests per TradingView's batch limit,
+        # the same pattern the light sweep already uses.
+        symbol_specs: list[dict[str, Any]] = []
         for symbol, sigs in by_symbol.items():
             tv = tv_map.get(symbol)
             if not tv:
@@ -559,17 +573,25 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
                 )
                 summary["errors"] += len(sigs)
                 continue
-            try:
-                batch = await fetch_candles_for_symbols(
-                    [{"symbol": symbol, "tradingview_symbol": tv}],
-                    n_bars=LIGHT_BARS,
-                    interval=INTERVAL,
+            symbol_specs.append({"symbol": symbol, "tradingview_symbol": tv})
+
+        try:
+            candles_by_symbol = (
+                await fetch_candles_for_symbols(
+                    symbol_specs, n_bars=LIGHT_BARS, interval=INTERVAL,
                 )
-            except Exception as exc:
-                logger.error("eod_resolver: candle fetch failed for %s: %s", symbol, exc)
-                summary["errors"] += len(sigs)
-                continue
-            closes = batch.get(symbol, [])
+                if symbol_specs else {}
+            )
+        except Exception as exc:
+            logger.error("eod_resolver: candle batch fetch failed: %s", exc)
+            for spec in symbol_specs:
+                summary["errors"] += len(by_symbol[spec["symbol"]])
+            symbol_specs = []
+
+        for spec in symbol_specs:
+            symbol = spec["symbol"]
+            sigs = by_symbol[symbol]
+            closes = candles_by_symbol.get(symbol, [])
             if not closes:
                 logger.warning(
                     "eod_resolver: no candles returned for %s — %d pending unresolved",

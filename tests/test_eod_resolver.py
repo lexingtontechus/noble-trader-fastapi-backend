@@ -496,6 +496,96 @@ class TestResolvePendingSignalsNoForwardProgressGuard:
         assert summary["batches"] == 2
 
 
+class TestResolvePendingSignalsBatchedCandleFetch:
+    """Regression coverage for a live incident (2026-08-24): resolve_pending_
+    signals used to call fetch_candles_for_symbols ONCE PER SYMBOL — N
+    sequential single-symbol HTTP requests with no delay between them. That
+    collided with the light sweep's own concurrent TradingView batch call at
+    the same 00:30 UTC cron tick and tripped 429s on whichever symbols
+    happened to be later in the loop (confirmed live: USDCHF/USDJPY/XAUEUR/
+    AAPL all 429'd within ~100ms of each other), losing that day's only
+    resolution attempt for those symbols even though the data was available
+    — self-inflicted rate limiting, not a genuine data gap. Fix: fetch all
+    symbols in one batch call, same pattern the light sweep already uses."""
+
+    def _sig(self, i, symbol, ts="2026-08-23T00:00:00Z"):
+        return {
+            "signal_id": f"sig-{i}", "symbol": symbol, "signal": "buy",
+            "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 110.0,
+            "tp_bricks": 6, "sl_bricks": 3, "brick_size": 1.0,
+            "ts": ts, "tradingview_symbol": f"TV:{symbol}",
+        }
+
+    def test_fetches_candles_once_for_all_symbols_not_once_per_symbol(self):
+        from regime_platform.sweep_orchestrator import eod_resolver as mod
+
+        rows = [self._sig(1, "AAPL"), self._sig(2, "US500"), self._sig(3, "US30USD")]
+        fetch_pending_mock = AsyncMock(side_effect=[rows, []])
+        active_symbols_mock = AsyncMock(return_value=[
+            {"symbol": "AAPL", "tradingview_symbol": "TV:AAPL"},
+            {"symbol": "US500", "tradingview_symbol": "TV:US500"},
+            {"symbol": "US30USD", "tradingview_symbol": "TV:US30USD"},
+        ])
+        candles_mock = AsyncMock(return_value={
+            "AAPL": [101.0, 102.0], "US500": [101.0, 102.0], "US30USD": [101.0, 102.0],
+        })
+
+        with (
+            patch.object(mod, "_fetch_pending", new=fetch_pending_mock),
+            patch.object(mod, "fetch_candles_for_symbols", new=candles_mock),
+            patch.object(mod, "anchor_post_entry_closes", side_effect=lambda closes, *a, **kw: list(closes)),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=active_symbols_mock,
+            ),
+            patch.object(mod.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        ):
+            asyncio.run(mod.resolve_pending_signals(limit=10))
+
+        assert candles_mock.call_count == 1, (
+            f"expected ONE batched candle fetch for all 3 symbols, got "
+            f"{candles_mock.call_count} calls — each call is a separate "
+            "HTTP request that can independently trip a rate limit"
+        )
+        fetched_symbols = {spec["symbol"] for spec in candles_mock.call_args.args[0]}
+        assert fetched_symbols == {"AAPL", "US500", "US30USD"}
+
+    def test_one_symbol_missing_from_batch_response_does_not_block_others(self):
+        """A partial batch failure (e.g. one symbol returned success=false or
+        was omitted by the provider) must only cost that symbol's signals —
+        the others in the same batched call still resolve normally."""
+        from regime_platform.sweep_orchestrator import eod_resolver as mod
+
+        rows = [self._sig(1, "AAPL"), self._sig(2, "US500")]
+        fetch_pending_mock = AsyncMock(side_effect=[rows, []])
+        active_symbols_mock = AsyncMock(return_value=[
+            {"symbol": "AAPL", "tradingview_symbol": "TV:AAPL"},
+            {"symbol": "US500", "tradingview_symbol": "TV:US500"},
+        ])
+        # US500 missing entirely from the response (e.g. provider-side drop);
+        # AAPL hits TP.
+        candles_mock = AsyncMock(return_value={"AAPL": [105.0, 111.0]})
+
+        with (
+            patch.object(mod, "_fetch_pending", new=fetch_pending_mock),
+            patch.object(mod, "fetch_candles_for_symbols", new=candles_mock),
+            patch.object(mod, "anchor_post_entry_closes", side_effect=lambda closes, *a, **kw: list(closes)),
+            patch.object(mod, "_patch_signal", new=AsyncMock(return_value=True)),
+            patch.object(mod, "_write_calibration_record", new=AsyncMock()),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
+                new=active_symbols_mock,
+            ),
+            patch.object(mod.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        ):
+            summary = asyncio.run(mod.resolve_pending_signals(limit=10))
+
+        assert candles_mock.call_count == 1
+        assert summary["resolved"] == 1
+        assert summary["by_outcome"] == {"tp_hit": 1}
+        assert summary["errors"] == 1  # US500's signal, no candles in the response
+
+
 class TestComputePnl:
     def test_tp_hit_positive(self):
         pnl = compute_pnl("tp_hit", tp_bricks=6, sl_bricks=3, brick_size=0.001)
