@@ -10,19 +10,26 @@ to react more precisely to transitional market conditions.
 2026-08-23 stability fixes (worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md
 R1 — AAPL/US500 root-cause deep-dive):
 
-  1. Data-relative ``min_covar`` floor (``_data_min_covar``): a fresh
+  1. ~~Data-relative ``min_covar`` floor (``_data_min_covar``)~~ — REMOVED
+     2026-08-24, superseded by fix #3 below. Originally: a fresh
      ``RegimeHMM`` is fit from scratch every ~5-minute sweep tick (no
      persistence between fits). In a calm/low-volatility market,
      hmmlearn's EM can fit an artificially tight covariance to one
      component, and a tight covariance makes ``predict_proba``'s
      forward-backward posterior swing to near-0/near-1 for a negligible
      wiggle in the input — this is the direct cause of the OVERCONFIDENCE
-     symptom (e.g. US500 pinned at regime_conf=1.000 for hours). hmmlearn's
-     fixed default (``min_covar=1e-3``) isn't scaled to a given symbol's
-     actual feature magnitudes; flooring it relative to the fitting
-     window's own feature variance (mirroring the Markov module's
-     ``lr_std`` floor in ``services/hmm/model.py``) keeps the floor
-     meaningful regardless of how calm the symbol is.
+     symptom (e.g. US500 pinned at regime_conf=1.000 for hours). The fix
+     floored ``min_covar`` at a fraction of the fitting window's own
+     feature std — but that computed ONE value from the LARGEST-std
+     feature column and applied it uniformly across all columns, which
+     were never on the same scale to begin with. Non-binding for the
+     smaller-scale columns, it let EM shrink their variance further than
+     intended — reproducing the same overconfidence on a different
+     dimension. Standardizing every feature to std=1 (fix #3) makes this
+     entire per-window computation unnecessary — a single fixed floor
+     works identically well for every dimension once they're all on the
+     same scale, which is a strictly better fix, not a parallel one; see
+     ``_STANDARDIZED_MIN_COVAR``.
   2. Label continuity across refits (``_label_states``' ``previous_means``
      param): because every fit is independent, ``_label_states`` used to
      re-sort that fit's own component means and assign labels by rank
@@ -36,10 +43,33 @@ R1 — AAPL/US500 root-cause deep-dive):
      mapping exists (a symbol's first fit). Callers (orchestrator.py) are
      responsible for persisting ``trend_label_means``/``vol_label_means``
      per symbol between ticks and passing them into the next ``fit()``.
+     Still live, unaffected by fix #3 (means_ are converted back to
+     original units immediately after each fit — see
+     ``_destandardize_means`` — so this comparison keeps working on the
+     same units it always has).
 
-Both fixes stabilize ``RegimeSnapshot.regime_label``/``confidence`` directly
-(not just ``p_regime``), which also reduces spurious ``regime_shift``
-detections (Layer 2) caused by the same relabeling artifact.
+2026-08-24 fix #3 — feature standardization (root-cause fix for
+"Model is not converging", not just the overconfidence symptom fix #1
+targeted). Confirmed live: the trend HMM logged "did not converge cleanly"
+on ~99% of ticks for 13/14 symbols. Root-cause research (real-data tested,
+not theoretical) found the cause was unscaled features — e.g. trend model
+returns std ~0.0004 vs cum_long std ~0.003 (~8x spread) sharing one
+min_covar floor and one EM optimization with no per-dimension scale
+awareness. Z-scoring ``vol_features``/``trend_features`` (per fitting
+window, per column) before fitting resolved convergence in every real
+symbol tested (EURUSD, XAUUSD, BTCUSD, AAPL) — dropping collinear features
+and multi-restart fitting were tried first and did NOT reliably fix it
+(see ``scripts/diagnose_hmm_convergence.py``). Implementation:
+``_fit_scale``/``_standardize`` compute and apply per-fit (mu, sigma);
+``_destandardize_means`` converts ``means_`` back to original units
+immediately after fitting so every downstream consumer (label assignment,
+continuity matching, ``vol_label_means``/``trend_label_means``) is
+unaffected and unchanged.
+
+All three fixes stabilize ``RegimeSnapshot.regime_label``/``confidence``
+directly (not just ``p_regime``), which also reduces spurious
+``regime_shift`` detections (Layer 2) caused by the same relabeling
+artifact.
 """
 
 from __future__ import annotations
@@ -175,6 +205,11 @@ class RegimeHMM:
         self._trend_model:  Optional[hmm.GaussianHMM] = None
         self._vol_label_map:   dict[int, str] = {}
         self._trend_label_map: dict[int, str] = {}
+        # Per-fit standardization stats (mu, sigma), set by fit(), consumed
+        # by predict() to standardize query features identically — see
+        # module docstring fix #3.
+        self._vol_scale:   Optional[tuple[np.ndarray, np.ndarray]] = None
+        self._trend_scale: Optional[tuple[np.ndarray, np.ndarray]] = None
         self.fitted = False
 
         # Active label sets for current n_components
@@ -257,11 +292,28 @@ class RegimeHMM:
         vol_features   = self._vol_features(returns, self.vol_window_long, self.vol_window_short)
         trend_features = self._trend_features(returns, self.trend_window_short, self.trend_window_long)
 
-        self._vol_model   = self._build_hmm(self._data_min_covar(vol_features))
-        self._trend_model = self._build_hmm(self._data_min_covar(trend_features))
+        # Standardize before fitting (fix #3, see module docstring). Store
+        # this fit's (mu, sigma) so predict() can standardize query features
+        # identically, and so means_ can be converted back to original units
+        # immediately after fitting (below) — everything downstream of that
+        # point (_label_states, vol_label_means/trend_label_means, cross-tick
+        # continuity matching) keeps operating on original-unit values,
+        # unchanged.
+        self._vol_scale   = self._fit_scale(vol_features)
+        self._trend_scale = self._fit_scale(trend_features)
+        vol_features_std   = self._standardize(vol_features, self._vol_scale)
+        trend_features_std = self._standardize(trend_features, self._trend_scale)
 
-        self._vol_model.fit(vol_features)
-        self._trend_model.fit(trend_features)
+        self._vol_model   = self._build_hmm()
+        self._trend_model = self._build_hmm()
+
+        self._vol_model.fit(vol_features_std)
+        self._trend_model.fit(trend_features_std)
+
+        # Convert means_ back to original units now, before anything else
+        # reads them.
+        self._destandardize_means(self._vol_model, self._vol_scale)
+        self._destandardize_means(self._trend_model, self._trend_scale)
 
         # Sanitize degenerate parameters before predict() is called
         self._sanitize_model(self._vol_model)
@@ -304,8 +356,14 @@ class RegimeHMM:
         vol_features   = self._vol_features(returns, self.vol_window_long, self.vol_window_short)
         trend_features = self._trend_features(returns, self.trend_window_short, self.trend_window_long)
 
-        vol_posteriors   = self._vol_model.predict_proba(vol_features)[-1]
-        trend_posteriors = self._trend_model.predict_proba(trend_features)[-1]
+        # Standardize with THIS instance's fit-time (mu, sigma) — the model
+        # was fit on standardized features (fix #3), so query features must
+        # go through the identical transform.
+        vol_features_std   = self._standardize(vol_features, self._vol_scale)
+        trend_features_std = self._standardize(trend_features, self._trend_scale)
+
+        vol_posteriors   = self._vol_model.predict_proba(vol_features_std)[-1]
+        trend_posteriors = self._trend_model.predict_proba(trend_features_std)[-1]
 
         vol_probs   = self._reorder(vol_posteriors,   self._vol_label_map,   self._vol_labels)
         trend_probs = self._reorder(trend_posteriors, self._trend_label_map, self._trend_labels)
@@ -397,47 +455,63 @@ class RegimeHMM:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _build_hmm(self, min_covar: float = 1e-3) -> hmm.GaussianHMM:
+    def _build_hmm(self) -> hmm.GaussianHMM:
         return hmm.GaussianHMM(
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             n_iter=self.n_iter,
             random_state=self.random_state,
-            min_covar=min_covar,
+            min_covar=self._STANDARDIZED_MIN_COVAR,
         )
 
-    # Data-relative covariance floor (R1 fix #1). hmmlearn's own default
-    # (min_covar=1e-3) is an ABSOLUTE floor, not scaled to a given symbol's
-    # actual feature magnitudes — for a calm/low-volatility symbol whose
-    # feature variance is already well below that, the floor barely
-    # engages, letting EM fit an artificially tight covariance to one
-    # component and produce a near-certain (overconfident) posterior for a
-    # negligible input wiggle. Flooring min_covar at a FRACTION of the
-    # fitting window's own feature std (squared, since min_covar is a
-    # variance) keeps the floor meaningful regardless of how calm the
-    # symbol is — same spirit as services/hmm/model.py's lr_std floor for
-    # the Markov module. _MIN_COVAR_STD_FRACTION is a first-pass constant,
-    # not empirically backtested; treat as a starting point for tuning.
-    _MIN_COVAR_STD_FRACTION: float = 0.05
-    _MIN_COVAR_ABSOLUTE_FLOOR: float = 1e-6  # guards a literally-zero-variance window
+    # Fixed min_covar in standardized-feature space (fix #3, see module
+    # docstring). SUPERSEDES the old data-relative floor
+    # (``_data_min_covar``, R1 fix #1, removed 2026-08-24): that floor
+    # computed a per-symbol, per-window covariance floor from the LARGEST
+    # per-column feature std, then applied that ONE value uniformly across
+    # all feature dimensions — but the dimensions were never on the same
+    # scale to begin with (e.g. trend model: returns std ~0.0004 vs cum_long
+    # std ~0.003, an 8x spread; the Markov module's separate 9-feature model
+    # was far worse, up to 18,000x). A floor sized for the largest-std
+    # column is non-binding for the smaller ones, letting EM shrink their
+    # variance further than intended — reproducing the exact overconfidence
+    # the floor was meant to prevent, just on a different dimension, and
+    # confirmed (real-data tested) to be a contributor to the "Model is not
+    # converging" instability. Standardizing every feature to std=1 before
+    # fitting (see ``_fit_scale``/``_standardize`` below) makes ONE fixed
+    # floor value meaningful for every dimension, every symbol, every
+    # window — no per-window computation needed.
+    _STANDARDIZED_MIN_COVAR: float = 0.01
 
     @staticmethod
-    def _data_min_covar(features: np.ndarray) -> float:
-        """Data-relative ``min_covar`` for one feature matrix.
+    def _fit_scale(features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-column (mu, sigma) for standardizing ``features``.
 
-        Uses the LARGEST per-column std (the most-informative feature is
-        the one most at risk of EM collapsing a component onto it) as the
-        reference scale.
+        A zero-variance column (e.g. a degenerate/constant window) would
+        divide by zero — sigma is floored at 1.0 for those columns so
+        standardization becomes a no-op (mean-centering only) rather than
+        producing inf/NaN.
         """
-        if features.size == 0:
-            return RegimeHMM._MIN_COVAR_ABSOLUTE_FLOOR
-        stds = np.std(features, axis=0)
-        reference_std = float(np.max(stds)) if stds.size else 0.0
-        floor_std = max(
-            reference_std * RegimeHMM._MIN_COVAR_STD_FRACTION,
-            RegimeHMM._MIN_COVAR_ABSOLUTE_FLOOR ** 0.5,
-        )
-        return floor_std ** 2
+        mu = np.mean(features, axis=0)
+        sigma = np.std(features, axis=0)
+        sigma = np.where(sigma > 0, sigma, 1.0)
+        return mu, sigma
+
+    @staticmethod
+    def _standardize(features: np.ndarray, scale: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
+        mu, sigma = scale
+        return (features - mu) / sigma
+
+    @staticmethod
+    def _destandardize_means(model: hmm.GaussianHMM, scale: tuple[np.ndarray, np.ndarray]) -> None:
+        """Convert a just-fit model's ``means_`` from standardized back to
+        original feature units, in place, using the SAME (mu, sigma) the
+        features were standardized with. Must run before anything reads
+        ``means_`` (label assignment, continuity matching, introspection
+        properties) — those all expect original-unit values, unchanged
+        from before fix #3."""
+        mu, sigma = scale
+        model.means_ = model.means_ * sigma + mu
 
     @staticmethod
     def _sanitize_model(model: hmm.GaussianHMM) -> None:

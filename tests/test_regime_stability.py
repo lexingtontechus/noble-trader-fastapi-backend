@@ -1,13 +1,17 @@
 """Tests for the RegimeHMM stability fixes (R1, 2026-08-23 — worklog/
-20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md).
+20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md; feature standardization,
+2026-08-24).
 
 Covers:
-  1. ``RegimeHMM._data_min_covar`` — the data-relative covariance floor
-     (fix #1, targets the OVERCONFIDENCE symptom).
+  1. Feature standardization (``_fit_scale``/``_standardize``/
+     ``_destandardize_means``) — the 2026-08-24 fix for chronic
+     "Model is not converging" (root cause, not just the overconfidence
+     symptom fix #1 originally targeted). Supersedes and removes
+     ``_data_min_covar`` (the old data-relative covariance floor).
   2. ``RegimeHMM._label_states`` with ``previous_means`` — continuity
      matching across refits (fix #2, targets the FLIP-FLOPPING symptom).
   3. ``SweepOrchestrator._smoothed_trend_probs`` — the supplementary EMA
-     smoother (fix #3), mirroring ``_smoothed_markov_hold_prob``.
+     smoother, mirroring ``_smoothed_markov_hold_prob``.
   4. ``RegimeHMM._fit_converged`` — the R4 convergence diagnostic (non-
      convergence as a live blend-weight trigger).
 """
@@ -21,24 +25,76 @@ from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHT
 from regime_platform.sweep_orchestrator.orchestrator import SweepOrchestrator
 
 
-# ─── 1. Data-relative min_covar floor ───────────────────────────────────
+# ─── 1. Feature standardization (fix #3) ────────────────────────────────
 
 
-def test_min_covar_scales_with_feature_std():
-    """A calm (low-std) feature matrix must get a SMALLER absolute floor
-    than a volatile one — the floor is relative, not the fixed hmmlearn
-    default (1e-3) that doesn't adapt to how calm a symbol is."""
-    calm = np.random.RandomState(0).normal(0, 1e-6, size=(100, 3))
-    volatile = np.random.RandomState(0).normal(0, 0.5, size=(100, 3))
-    calm_floor = RegimeHMM._data_min_covar(calm)
-    volatile_floor = RegimeHMM._data_min_covar(volatile)
-    assert calm_floor < volatile_floor
-    # Still floored at a sane absolute minimum, never truly zero.
-    assert calm_floor >= RegimeHMM._MIN_COVAR_ABSOLUTE_FLOOR
+def test_fit_scale_returns_mean_and_std_per_column():
+    features = np.array([[0.0, 10.0], [1.0, 20.0], [2.0, 30.0]])
+    mu, sigma = RegimeHMM._fit_scale(features)
+    assert np.allclose(mu, [1.0, 20.0])
+    assert np.allclose(sigma, np.std(features, axis=0))
 
 
-def test_min_covar_handles_empty_features():
-    assert RegimeHMM._data_min_covar(np.array([]).reshape(0, 3)) > 0
+def test_fit_scale_floors_zero_variance_column_to_avoid_division_by_zero():
+    """A constant column (e.g. a degenerate window, or one of the
+    real-world unscaled-feature cases confirmed live) must not produce
+    inf/NaN when standardized — sigma floors to 1.0, making
+    standardization a no-op (mean-centering only) for that column."""
+    features = np.array([[5.0, 1.0], [5.0, 2.0], [5.0, 3.0]])
+    mu, sigma = RegimeHMM._fit_scale(features)
+    assert sigma[0] == 1.0
+    standardized = RegimeHMM._standardize(features, (mu, sigma))
+    assert np.all(np.isfinite(standardized))
+    assert np.allclose(standardized[:, 0], 0.0)
+
+
+def test_standardize_produces_zero_mean_unit_variance_columns():
+    rng = np.random.RandomState(0)
+    features = rng.normal(loc=[5.0, -3.0, 100.0], scale=[0.001, 2.0, 50.0], size=(200, 3))
+    scale = RegimeHMM._fit_scale(features)
+    standardized = RegimeHMM._standardize(features, scale)
+    assert np.allclose(np.std(standardized, axis=0), 1.0, atol=1e-8)
+    assert np.allclose(np.mean(standardized, axis=0), 0.0, atol=1e-8)
+
+
+def test_destandardize_means_recovers_original_units():
+    """After fitting in standardized space, means_ converted back must
+    match the ORIGINAL feature scale — this is what keeps _label_states,
+    continuity matching, and vol_label_means/trend_label_means working on
+    the same units as before fix #3, with no changes needed to that code."""
+    mu = np.array([5.0, -3.0, 100.0])
+    sigma = np.array([0.001, 2.0, 50.0])
+    standardized_means = np.array([[1.0, 0.5, -0.5], [-1.0, -0.5, 0.5]])
+    fake_model = SimpleNamespace(means_=standardized_means.copy())
+    RegimeHMM._destandardize_means(fake_model, (mu, sigma))
+    expected = standardized_means * sigma + mu
+    assert np.allclose(fake_model.means_, expected)
+
+
+def test_build_hmm_uses_fixed_standardized_min_covar():
+    """The old per-window _data_min_covar computation is gone — every
+    model gets the same fixed floor, which is only correct because
+    features are standardized (std=1) before fitting."""
+    model = RegimeHMM(n_components=4)
+    hmm_instance = model._build_hmm()
+    assert hmm_instance.min_covar == RegimeHMM._STANDARDIZED_MIN_COVAR
+
+
+def test_fit_converges_with_realistic_scale_disparity():
+    """Regression test for the 2026-08-24 fix: reproduces the real-world
+    feature-scale disparity confirmed live (trend model returns std
+    ~0.0004 vs cum_long std ~0.003, roughly 8x — see
+    scripts/diagnose_hmm_convergence.py, tested against real EURUSD/
+    XAUUSD/BTCUSD data) via a synthetic price series with the same return
+    scale, and asserts the resulting fit converges cleanly."""
+    rng = np.random.RandomState(7)
+    returns = rng.normal(0, 0.0004, size=250)
+    prices = 100 * np.exp(np.cumsum(returns))
+    model = RegimeHMM(n_components=4)
+    model.fit(prices)
+    snap = model.predict(prices)
+    assert snap.trend_converged is True
+    assert snap.vol_converged is True
 
 
 # ─── 2. Label continuity across refits ──────────────────────────────────
