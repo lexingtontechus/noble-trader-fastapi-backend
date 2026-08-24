@@ -183,23 +183,43 @@ async def fetch_historical_p_win(symbol: str) -> Optional[float]:
     return bayesian_adjusted_p_win(win_rate, int(n))
 
 
-async def fetch_latest_eod_action(symbol: str) -> Optional[dict[str, Any]]:
+async def fetch_latest_eod_action(
+    symbol: str, actions: Optional[tuple[str, ...]] = None,
+) -> Optional[dict[str, Any]]:
     """Fetch the most recent ``nt_eod_actions`` row for ``symbol``.
 
-    Returns the row dict (or ``None`` on failure / no rows). The EOD pass
-    writes one row per action (3 for a penalty symbol), so the latest row
-    is the freshest recommendation.
+    Returns the row dict (or ``None`` on failure / no rows).
+
+    ``actions``, when given, restricts the query to those action types
+    server-side (``action=in.(...)``) — pass ``PENALTY_ACTIONS`` to get the
+    latest ENFORCEABLE row specifically, ignoring audit-only rows written
+    by other subsystems in between. This matters as of 2026-08-23: Layer
+    2's ``regime_shift_alert`` (and the older ``parameter_decay_check``)
+    write to the SAME table, and without this filter, whichever one of
+    those happens to be the true latest row silently defeats BOTH real
+    callers of this function — ``apply_calibration_adjustment`` (reads
+    "no penalty active" and skips enforcement entirely) and
+    ``drift_monitor.check_drift`` (its "don't churn" freshness check reads
+    "no fresh penalty" and re-fires even though one exists underneath).
+    Confirmed live: USDCAD had 9 consecutive ``regime_shift_alert`` rows
+    with zero penalty actions interspersed across a 2-hour span, during
+    which any active penalty for it was invisible to both call sites. Both
+    real callers pass ``actions=PENALTY_ACTIONS``; ``actions=None``
+    (default) preserves the original "latest row of any type" behavior for
+    any future caller that genuinely wants that.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         log.debug("Supabase not configured — no EOD action for %s", symbol)
         return None
     url = _url("nt_eod_actions")
-    params = {
+    params: dict[str, str] = {
         "select": "action,bias,ts,detail",
         "symbol": f"eq.{symbol}",
         "order": "ts.desc",
         "limit": "1",
     }
+    if actions:
+        params["action"] = f"in.({','.join(actions)})"
     try:
         import httpx
 
@@ -280,7 +300,14 @@ async def apply_calibration_adjustment(
         return noop
 
     try:
-        action = await fetch_latest_eod_action(symbol)
+        # actions=PENALTY_ACTIONS (2026-08-24 fix): fetch the latest
+        # ENFORCEABLE row specifically, not the latest row of any type.
+        # Without this, an audit-only row (regime_shift_alert,
+        # parameter_decay_check) written after a still-fresh penalty would
+        # be seen here instead, silently no-op'ing enforcement for a
+        # symbol that has an active, fresh penalty underneath it — see
+        # fetch_latest_eod_action's docstring for the live-confirmed case.
+        action = await fetch_latest_eod_action(symbol, actions=PENALTY_ACTIONS)
     except Exception as exc:
         log.warning("calibration adjustment %s failed: %s", symbol, exc)
         return {**noop, "reason": f"fetch_error:{type(exc).__name__}"}
@@ -289,13 +316,6 @@ async def apply_calibration_adjustment(
         return {**noop, "reason": "no_eod_action"}
 
     action_name = action.get("action")
-    if action_name not in PENALTY_ACTIONS:
-        return {
-            **noop,
-            "status": None,
-            "bias": _num(action.get("bias")),
-            "reason": f"audit_only:{action_name}",
-        }
 
     if not _action_is_fresh(action):
         return {

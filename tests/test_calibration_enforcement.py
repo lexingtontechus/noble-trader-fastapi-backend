@@ -26,6 +26,7 @@ from regime_platform.sweep_orchestrator.calibration_enforcement import (
     _action_is_fresh,
     apply_calibration_adjustment,
     bayesian_adjusted_p_win,
+    fetch_latest_eod_action,
 )
 
 
@@ -56,6 +57,124 @@ def test_bayesian_prior_constants_match_eod_correction():
         "bayesian_penalty", "kelly_reduction", "emergency_heavy_sweep",
         "stagnation_kill_switch",
     )
+
+
+# ─── 1b. fetch_latest_eod_action — real filtering behavior ─────────────
+#
+# The tests above mock fetch_latest_eod_action itself, which cannot catch
+# a bug IN that function's own query filtering. This section uses a fake
+# httpx client implementing just enough real PostgREST semantics (action
+# in.(...) filtering, ts.desc ordering, limit) to prove the actual live
+# incident is fixed: a regime_shift_alert written after a still-fresh
+# penalty must not hide that penalty from either real caller.
+
+class _FakeEodActionsResp:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._rows
+
+
+class _FakeEodActionsClient:
+    """In-memory nt_eod_actions substitute with real action=in.(...)
+    filtering + ts.desc ordering + limit, so fetch_latest_eod_action's
+    OWN query logic is exercised, not just its caller's handling of a
+    mocked return value."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        params = params or {}
+        symbol = str(params.get("symbol", "")).removeprefix("eq.")
+        matched = [r for r in self.rows if r["symbol"] == symbol]
+        action_filter = str(params.get("action", ""))
+        if action_filter.startswith("in.(") and action_filter.endswith(")"):
+            allowed = set(action_filter[len("in.("):-1].split(","))
+            matched = [r for r in matched if r["action"] in allowed]
+        matched.sort(key=lambda r: r["ts"], reverse=True)
+        limit = int(params.get("limit", 1))
+        return _FakeEodActionsResp(matched[:limit])
+
+
+def _run_fetch_latest(rows, actions=None):
+    mock_settings = MagicMock()
+    mock_settings.SUPABASE_URL = "https://x.supabase.co"
+    mock_settings.SUPABASE_KEY = "k"
+    client = _FakeEodActionsClient(rows)
+    with (
+        patch("regime_platform.sweep_orchestrator.calibration_enforcement.settings", mock_settings),
+        patch("regime_platform.sweep_orchestrator.calibration_enforcement._url",
+              return_value="https://x.supabase.co/rest/v1/nt_eod_actions"),
+        patch("regime_platform.sweep_orchestrator.calibration_enforcement._headers",
+              return_value={"apikey": "k", "Authorization": "Bearer k"}),
+    ):
+        with patch("httpx.AsyncClient", return_value=client):
+            return asyncio.run(fetch_latest_eod_action("USDCAD", actions=actions))
+
+
+class TestFetchLatestEodActionRealFiltering:
+    def test_default_returns_absolute_latest_regardless_of_type(self):
+        """actions=None preserves the original behavior — needed as a
+        baseline showing WHY the bug existed: without a filter, the audit
+        row wins."""
+        rows = [
+            {"symbol": "USDCAD", "action": "bayesian_penalty", "bias": 0.3,
+             "ts": "2026-08-23T21:05:00+00:00", "detail": {"n": 40}},
+            {"symbol": "USDCAD", "action": "regime_shift_alert", "bias": 0.99,
+             "ts": "2026-08-23T23:05:44+00:00", "detail": {}},
+        ]
+        latest = _run_fetch_latest(rows, actions=None)
+        assert latest["action"] == "regime_shift_alert"
+
+    def test_penalty_filter_finds_the_fresh_penalty_underneath(self):
+        """Regression test for the live-confirmed incident (USDCAD: 9
+        consecutive regime_shift_alert rows, penalty buried underneath).
+        With actions=PENALTY_ACTIONS, the alert is correctly skipped and
+        the real penalty is returned instead."""
+        rows = [
+            {"symbol": "USDCAD", "action": "bayesian_penalty", "bias": 0.3,
+             "ts": "2026-08-23T21:05:00+00:00", "detail": {"n": 40}},
+            {"symbol": "USDCAD", "action": "regime_shift_alert", "bias": 0.99,
+             "ts": "2026-08-23T23:05:44+00:00", "detail": {}},
+        ]
+        latest = _run_fetch_latest(rows, actions=PENALTY_ACTIONS)
+        assert latest["action"] == "bayesian_penalty"
+        assert latest["bias"] == 0.3
+
+    def test_penalty_filter_returns_none_when_only_audit_rows_exist(self):
+        rows = [
+            {"symbol": "USDCAD", "action": "regime_shift_alert", "bias": 0.99,
+             "ts": "2026-08-23T23:05:44+00:00", "detail": {}},
+            {"symbol": "USDCAD", "action": "parameter_decay_check", "bias": 0.02,
+             "ts": "2026-08-23T20:00:00+00:00", "detail": {}},
+        ]
+        assert _run_fetch_latest(rows, actions=PENALTY_ACTIONS) is None
+
+    def test_penalty_filter_still_finds_stagnation_kill_switch(self):
+        """The kill switch's own design depends on being 'the latest row'
+        — confirm it's still found correctly (and not buried) once other
+        audit rows are filtered out."""
+        rows = [
+            {"symbol": "USDCAD", "action": "bayesian_penalty", "bias": 0.4,
+             "ts": "2026-08-23T20:30:00+00:00", "detail": {"n": 50}},
+            {"symbol": "USDCAD", "action": "stagnation_kill_switch", "bias": 0.4,
+             "ts": "2026-08-23T20:30:05+00:00", "detail": {"stagnation_streak": 4}},
+            {"symbol": "USDCAD", "action": "regime_shift_alert", "bias": 0.99,
+             "ts": "2026-08-23T23:05:44+00:00", "detail": {}},
+        ]
+        latest = _run_fetch_latest(rows, actions=PENALTY_ACTIONS)
+        assert latest["action"] == "stagnation_kill_switch"
 
 
 # ─── 2. apply_calibration_adjustment (async, mocked Supabase read) ─────
@@ -100,14 +219,26 @@ def test_apply_noop_when_no_action():
     assert result["p_win"] == 0.65
 
 
-def test_apply_noop_for_audit_only_action():
-    """parameter_decay_check is audit-only — never shrinks sizing."""
-    result, _ = asyncio.run(_run_apply(
-        action_row={"action": "parameter_decay_check", "bias": 0.05},
-    ))
+def test_apply_noop_when_only_audit_only_action_exists():
+    """2026-08-24: fetch_latest_eod_action is now called with
+    actions=PENALTY_ACTIONS, so a real fetch never returns an audit-only
+    row (parameter_decay_check, regime_shift_alert) to this function in
+    the first place — it returns None when that's all that exists,
+    exactly like "no penalty action ever recorded" (see the real-fetch
+    regression test below for proof the filtering itself works)."""
+    result, mock_fetch = asyncio.run(_run_apply(action_row=None))
     assert result["applied"] is False
-    assert result["reason"].startswith("audit_only:")
+    assert result["reason"] == "no_eod_action"
     assert result["p_win"] == 0.65
+
+
+def test_apply_calls_fetch_with_penalty_actions_filter():
+    """Regression guard for the 2026-08-24 fix itself: the caller must
+    request the penalty-filtered fetch, not the latest-row-of-any-type
+    default — this is what makes the filtering in fetch_latest_eod_action
+    actually take effect for live enforcement."""
+    _, mock_fetch = asyncio.run(_run_apply(action_row=None))
+    mock_fetch.assert_awaited_once_with("XAUUSD", actions=PENALTY_ACTIONS)
 
 
 def test_apply_penalty_active_shrinks_p_win_and_kelly():

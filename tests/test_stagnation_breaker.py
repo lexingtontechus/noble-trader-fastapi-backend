@@ -198,7 +198,7 @@ class TestStagnationBreakerIntegration:
 
 class TestEnforcementStagnationHandling:
     def test_stagnation_kill_switch_forces_kelly_zero(self):
-        async def fake_fetch(symbol):
+        async def fake_fetch(symbol, actions=None):
             return {
                 "action": "stagnation_kill_switch",
                 "bias": 0.45,
@@ -226,7 +226,7 @@ class TestEnforcementStagnationHandling:
     def test_kelly_reduction_override_respected(self):
         """A Tier 1 bayesian_penalty row with kelly_reduction_override=0.25
         must apply that factor instead of the default 0.5."""
-        async def fake_fetch(symbol):
+        async def fake_fetch(symbol, actions=None):
             return {
                 "action": "bayesian_penalty",
                 "bias": 0.45,

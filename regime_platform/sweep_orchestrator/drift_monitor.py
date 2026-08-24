@@ -63,12 +63,15 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
 
         # A fresh penalty already exists → the scheduled passes own this
         # symbol; do not churn actions every 5 minutes.
-        latest = await fetch_latest_eod_action(symbol)
-        if (
-            latest
-            and latest.get("action") in PENALTY_ACTIONS
-            and _action_is_fresh(latest)
-        ):
+        #
+        # actions=PENALTY_ACTIONS (2026-08-24 fix): without this, an
+        # audit-only row (regime_shift_alert, parameter_decay_check)
+        # written after a real penalty would be seen as "the latest
+        # action," fail the action-type check below, and let this
+        # function re-fire even though a fresh penalty exists underneath
+        # it — defeating the "don't churn" guard this block exists for.
+        latest = await fetch_latest_eod_action(symbol, actions=PENALTY_ACTIONS)
+        if latest and _action_is_fresh(latest):
             return None
 
         bias_info = await fetch_calibration_bias(
