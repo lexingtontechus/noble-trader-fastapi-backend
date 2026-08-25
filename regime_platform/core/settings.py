@@ -303,6 +303,26 @@ class Settings(BaseSettings):
     EOD_BIAS_WINDOW_DAYS: int = 7
     EOD_BIAS_MIN_RECORDS: int = 20
 
+    # EOD_BIAS_MIN_DISTINCT_DAYS (default 3, 2026-08-25):
+    #   The 7-day window above has no protection against a single clustered
+    #   burst dominating it — confirmed live: USDCAD's stagnation_kill_switch
+    #   was driven by n=69 records that were ALL written within one 6-hour
+    #   stretch, counted with the same confidence as 69 records spread evenly
+    #   across a week. When distinct_days (count of distinct entered_at dates
+    #   in the window) falls below this, the effective sample size fed to the
+    #   Bayesian shrink is scaled down proportionally (see
+    #   fetch_calibration_bias) rather than vetoing the status outright — a
+    #   genuinely-stuck symbol should be trusted less, not silently ignored.
+    EOD_BIAS_MIN_DISTINCT_DAYS: int = 3
+
+    # EOD_BIAS_DECAY_HALFLIFE_DAYS (default 3, 2026-08-25):
+    #   Records within EOD_BIAS_WINDOW_DAYS are weighted by recency
+    #   (weight = 0.5 ** (age_days / this)) instead of counting equally up to
+    #   an abrupt cutoff — smooths the "bias swings sharply the moment a bad
+    #   week rolls out of the 7-day window" failure mode without widening the
+    #   window itself (which would slow reaction to genuine regime shifts).
+    EOD_BIAS_DECAY_HALFLIFE_DAYS: float = 3.0
+
     # EOD_BIAS_RAW_OVERCONFIDENT (default 0.30, 2026-08-22):
     #   Threshold for the 4h intraday correction pass (raw-bias mode). The raw
     #   p_win (predicted_p_win_raw, pre-enforcement) is naturally more extreme

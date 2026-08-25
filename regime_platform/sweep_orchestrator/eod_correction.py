@@ -468,6 +468,11 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             # In standard mode, cal.avg_pred IS the observed mean predicted p_win (the blend
             #   input). The old `cal.get("predicted_p_win")` key never existed, so the Bayesian
             #   shrink was a constant 0.5 (H1).
+            # n_records is already clustering-discounted by fetch_calibration_bias(_raw)
+            # (2026-08-25) — scaled down when the window's records span too few
+            # distinct days, so a burst crammed into a few hours doesn't feed the
+            # Bayesian shrink the same sample size as a full week would. raw_n /
+            # distinct_days are the true (undiscounted) figures, kept for audit.
             n_records = int(cal.get("n") or 0)
             if raw_bias_mode:
                 obs_p_win = float(cal.get("avg_pred_raw") or cal.get("avg_pred") or 0.5)
@@ -477,6 +482,8 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             detail["adjusted_p_win"] = adj_p_win
             detail["avg_pred"] = obs_p_win
             detail["n"] = n_records  # consumed by calibration_enforcement live
+            detail["raw_n"] = cal.get("raw_n", n_records)
+            detail["distinct_days"] = cal.get("distinct_days")
 
             # ── Stagnation breaker (fix #3c, 2026-08-22 audit) ──────────
             # Only meaningful at the 4h raw-bias cycle boundary, where

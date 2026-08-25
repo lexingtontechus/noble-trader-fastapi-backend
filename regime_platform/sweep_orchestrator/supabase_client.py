@@ -427,6 +427,89 @@ async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
         logger.warning("log_error %s failed: %s", symbol, exc)
 
 
+def _parse_iso_dt(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp (with/without tz, Z suffix) to aware UTC."""
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _count_distinct_days(records: list[dict], key: str = "entered_at") -> int:
+    """Count distinct UTC calendar dates among ``records[*][key]``.
+
+    Used to detect a clustered burst (many records, all from a narrow
+    window) vs. records genuinely spread across the bias window — a burst
+    crammed into a few hours should not be trusted the same as the same
+    row count spread over a week (2026-08-25, see
+    ``EOD_BIAS_MIN_DISTINCT_DAYS``).
+    """
+    days: set[str] = set()
+    for row in records:
+        dt = _parse_iso_dt(row.get(key))
+        if dt is not None:
+            days.add(dt.date().isoformat())
+    return len(days)
+
+
+def _decay_weighted_bias_stats(
+    records: list[dict],
+    pred_key: str,
+    half_life_days: float,
+    now: datetime,
+) -> tuple[float, float]:
+    """Recency-weighted (avg_pred, win_rate) over ``records``.
+
+    Each record is weighted by ``0.5 ** (age_days / half_life_days)``
+    instead of counted equally, so a 7-day-old record contributes less than
+    a fresh one and bias doesn't swing sharply the instant a bad stretch
+    ages past the window boundary (2026-08-25, see
+    ``EOD_BIAS_DECAY_HALFLIFE_DAYS``). Falls back to unweighted (weight=1)
+    for any record whose ``entered_at`` is unparseable, rather than
+    dropping it.
+    """
+    total_weight = 0.0
+    weighted_pred = 0.0
+    weighted_wins = 0.0
+    for row in records:
+        dt = _parse_iso_dt(row.get("entered_at"))
+        if dt is not None:
+            age_days = max((now - dt).total_seconds() / 86400.0, 0.0)
+            weight = 0.5 ** (age_days / max(half_life_days, 1e-6))
+        else:
+            weight = 1.0
+        pred = row.get(pred_key)
+        if pred is None:
+            pred = row.get("predicted_p_win", 0.5) or 0.5
+        total_weight += weight
+        weighted_pred += weight * float(pred)
+        if row.get("outcome") == "win":
+            weighted_wins += weight
+    if total_weight <= 0:
+        return 0.5, 0.0
+    return weighted_pred / total_weight, weighted_wins / total_weight
+
+
+def _clustering_discounted_n(raw_n: int, distinct_days: int, min_distinct_days: int) -> float:
+    """Scale ``raw_n`` down when records are clustered into fewer than
+    ``min_distinct_days`` distinct days — a burst of many records in a few
+    hours shouldn't carry the same weight in the Bayesian shrink
+    (``bayesian_adjusted_p_win``) as the same count spread over a full
+    window. No-op (returns ``raw_n`` unchanged) once the data spans enough
+    distinct days."""
+    if min_distinct_days <= 0 or distinct_days >= min_distinct_days:
+        return float(raw_n)
+    return round(raw_n * (distinct_days / min_distinct_days), 2)
+
+
 async def fetch_calibration_bias(
     symbol: str,
     venue: str | None = None,
@@ -436,11 +519,11 @@ async def fetch_calibration_bias(
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
 
-    Returns ``{bias: float, status: str, n: int, win_rate: float,
-    avg_pred: float}`` or ``None`` on failure (or when fewer than
-    ``min_records`` records exist in the window — ``n`` is too small for
-    the bias to be meaningful). If ``venue`` is provided, filters by both
-    symbol AND venue (exchange).
+    Returns ``{bias: float, status: str, n: float, raw_n: int,
+    distinct_days: int, win_rate: float, avg_pred: float}`` or ``None`` on
+    failure (or when fewer than ``min_records`` records exist in the window
+    — ``n`` is too small for the bias to be meaningful). If ``venue`` is
+    provided, filters by both symbol AND venue (exchange).
 
     ROLLING WINDOW (2026-08-13, intraday cadence plan): the bias is computed
     over records with ``entered_at`` within the last ``window_days`` days
@@ -448,16 +531,36 @@ async def fetch_calibration_bias(
     regime shift moves the bias in hours, not days. Pass ``window_days=0``
     for the legacy all-time behaviour. ``min_records`` defaults to
     ``settings.EOD_BIAS_MIN_RECORDS`` (20).
+
+    CLUSTERING GUARD + DECAY WEIGHTING (2026-08-25): a hard N-day cutoff has
+    no protection against a single anomalous burst dominating the window —
+    confirmed live: USDCAD's ``stagnation_kill_switch`` was driven by n=69
+    records all written within one 6-hour stretch, counted with the same
+    confidence as 69 records spread across a week. Two mitigations:
+      1. Recency decay (``_decay_weighted_bias_stats``): each record's
+         contribution to ``avg_pred``/``win_rate`` is weighted by
+         ``0.5 ** (age_days / EOD_BIAS_DECAY_HALFLIFE_DAYS)`` instead of
+         counted equally — smooths the abrupt 7-day cliff.
+      2. Clustering discount (``_clustering_discounted_n``): when records
+         span fewer than ``EOD_BIAS_MIN_DISTINCT_DAYS`` distinct calendar
+         days, the returned ``n`` (what callers feed to
+         ``bayesian_adjusted_p_win``) is scaled down proportionally — a
+         burst crammed into a few hours carries the sample size of a few
+         hours, not a full window. ``raw_n``/``distinct_days`` are returned
+         alongside for observability (surfaced in ``nt_eod_actions.detail``
+         by the caller) so this discount is auditable, not silent.
     """
     if not settings.SUPABASE_URL:
         return None
 
     win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
     min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
+    half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
+    min_distinct_days = getattr(settings, "EOD_BIAS_MIN_DISTINCT_DAYS", 3)
 
     url = _url("nt_calibration_records")
     params = {
-        "select": "predicted_p_win,outcome",
+        "select": "predicted_p_win,outcome,entered_at",
         "symbol": f"eq.{symbol}",
     }
     if venue:
@@ -477,16 +580,10 @@ async def fetch_calibration_bias(
     if not isinstance(data, list) or len(data) < min_n:
         return None
 
-    n = len(data)
-    sum_pred = 0.0
-    wins = 0
-    for row in data:
-        sum_pred += row.get("predicted_p_win", 0.5) or 0.5
-        if row.get("outcome") == "win":
-            wins += 1
-
-    avg_pred = sum_pred / n
-    win_rate = wins / n
+    raw_n = len(data)
+    distinct_days = _count_distinct_days(data)
+    now = datetime.now(timezone.utc)
+    avg_pred, win_rate = _decay_weighted_bias_stats(data, "predicted_p_win", half_life, now)
     bias = round(avg_pred - win_rate, 4)
 
     if abs(bias) < 0.05:
@@ -499,7 +596,9 @@ async def fetch_calibration_bias(
     return {
         "bias": bias,
         "status": status,
-        "n": n,
+        "n": _clustering_discounted_n(raw_n, distinct_days, min_distinct_days),
+        "raw_n": raw_n,
+        "distinct_days": distinct_days,
         "win_rate": round(win_rate, 4),
         "avg_pred": round(avg_pred, 4),
     }
@@ -528,22 +627,30 @@ async def fetch_calibration_bias_raw(
 
     Returns the same shape as ``fetch_calibration_bias`` plus
     ``avg_pred_raw`` (the average of the raw column) for observability:
-    ``{bias, status, n, win_rate, avg_pred, avg_pred_raw}``.
+    ``{bias, status, n, raw_n, distinct_days, win_rate, avg_pred, avg_pred_raw}``.
 
     The bias thresholds here are wider (``EOD_BIAS_RAW_OVERCONFIDENT`` /
     ``EOD_BIAS_RAW_UNDERCONFIDENT``) because raw model output is naturally
     more extreme. Classification is done by the caller (``run_eod_correction``
     in raw mode) using those settings.
+
+    CLUSTERING GUARD + DECAY WEIGHTING (2026-08-25): same mitigations as
+    ``fetch_calibration_bias`` — see that function's docstring. This is the
+    variant the 4h intraday correction pass (and therefore the stagnation
+    streak/kill-switch logic) actually reads, so the discount applies to
+    exactly the path that misfired for USDCAD.
     """
     if not settings.SUPABASE_URL:
         return None
 
     win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
     min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
+    half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
+    min_distinct_days = getattr(settings, "EOD_BIAS_MIN_DISTINCT_DAYS", 3)
 
     url = _url("nt_calibration_records")
     params = {
-        "select": "predicted_p_win,predicted_p_win_raw,outcome",
+        "select": "predicted_p_win,predicted_p_win_raw,outcome,entered_at",
         "symbol": f"eq.{symbol}",
     }
     if venue:
@@ -563,24 +670,11 @@ async def fetch_calibration_bias_raw(
     if not isinstance(data, list) or len(data) < min_n:
         return None
 
-    n = len(data)
-    sum_pred_enforced = 0.0
-    sum_pred_raw = 0.0
-    wins = 0
-    for row in data:
-        enforced = row.get("predicted_p_win", 0.5) or 0.5
-        raw = row.get("predicted_p_win_raw")
-        if raw is None:
-            # Fallback: use enforced p_win when raw wasn't captured.
-            raw = enforced
-        sum_pred_enforced += float(enforced)
-        sum_pred_raw += float(raw)
-        if row.get("outcome") == "win":
-            wins += 1
-
-    avg_pred_enforced = sum_pred_enforced / n
-    avg_pred_raw = sum_pred_raw / n
-    win_rate = wins / n
+    raw_n = len(data)
+    distinct_days = _count_distinct_days(data)
+    now = datetime.now(timezone.utc)
+    avg_pred_enforced, win_rate = _decay_weighted_bias_stats(data, "predicted_p_win", half_life, now)
+    avg_pred_raw, _ = _decay_weighted_bias_stats(data, "predicted_p_win_raw", half_life, now)
     # Bias is computed from the RAW (pre-enforcement) p_win so it reflects
     # the model's true miscalibration, not the enforcement compensation.
     bias = round(avg_pred_raw - win_rate, 4)
@@ -595,7 +689,9 @@ async def fetch_calibration_bias_raw(
     return {
         "bias": bias,
         "status": status,
-        "n": n,
+        "n": _clustering_discounted_n(raw_n, distinct_days, min_distinct_days),
+        "raw_n": raw_n,
+        "distinct_days": distinct_days,
         "win_rate": round(win_rate, 4),
         "avg_pred": round(avg_pred_enforced, 4),       # enforced average (for stamping)
         "avg_pred_raw": round(avg_pred_raw, 4),        # raw average (for bias)
