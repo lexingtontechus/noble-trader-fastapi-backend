@@ -9,6 +9,23 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 05:xx UTC 2026-08-25: US500/USDCAD scoped in full — see dedicated worklog
+
+Full investigation, numerical brick-formation verification, ranked fix
+candidates for US500, and USDCAD's Aug 6-12 historical closure moved to
+`20260825_US500_USDCAD_TIME_HORIZON_SCOPE.md` (this entry was getting
+long enough to warrant its own file, matching the convention used for
+Change A / Findings 1-3 elsewhere this session). Headline: US500
+genuinely closed **zero** renko bricks in 44 real hours at the brick size
+active for nearly that whole window (verified via simulation on real
+captured prices, not just theory) — confirms neither the backtest's
+10-brick time-stop nor a live TP/SL touch could plausibly fire in time.
+USDCAD's historical 1,413-loss catastrophe (Aug 6-12) is explained by the
+same degenerate-HMM class Change A already fixed, ~12 days before that
+fix shipped — no new work needed there. USDCAD's current flag folds into
+US500's fix track. No code changed — scope only, nothing built or
+approved.
+
 ## UPDATE — 05:xx UTC 2026-08-25: US500 root cause found — backtest/live time-horizon mismatch
 
 Traced why US500 resolves ~78% `expired` (2657/3394 historically resolved),
