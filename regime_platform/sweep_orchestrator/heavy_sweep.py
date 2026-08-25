@@ -17,7 +17,7 @@ frequency is ~0.6 runs/week/symbol.
 Per-symbol heavy sweep does:
   1. Skip check (sweep_skip_until from YAML metadata)
   2. Fetch 2160 hourly candles (90 d) from TDVA
-  3. TimesFM confidence gate (cache-first, skip if confident)
+  3. TimesFM confidence gate (skip if confident)
   4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0)
   5. Grid search: 5 bricks × 3 SL × 6 TP = 90 combos (RenkoPipeline)
   6. HMM regime + Kelly sizing (parallel with grid)
@@ -25,21 +25,20 @@ Per-symbol heavy sweep does:
   8. Calibration bias → set sweep_skip_until when CALIBRATED
   9. Write optimised brick params to config/brick_params.yaml
  10. Compute EV with Markov T^N (Phase A)
- 11. Build + push qualified signal to signal.raw.noble_trader
+ 11. Build qualified signal payload and deliver it directly to Discord
 
 T4 w/GPU runs 14 symbols in <30 s total — no stagger needed, no shadow
 mode, no transition period. All Supabase Edge Functions are already OFF.
 
-NOTE (2026-08-09): concurrency is CAPPED at ``HEAVY_SWEEP_MAX_CONCURRENCY``
-symbols at a time. The naive "fire all 14 via asyncio.gather" design
-exhausted the shared Redis pool (max_connections=10) on the first real
-weekend run — every symbol opens a ``timesfm:cached`` read simultaneously,
-and the last 4 (the metals) died with ``MaxConnectionsError``. The cap
-also keeps the CPU-bound grid-search thread pool sane (each symbol spawns
-3 to_thread tasks; 14 × 3 = 42 threads otherwise).
+NOTE (2026-08-09, historical): concurrency is CAPPED at
+``HEAVY_SWEEP_MAX_CONCURRENCY`` symbols at a time. Originally added
+because firing all 14 via ``asyncio.gather`` exhausted the (now-retired,
+2026-08-25) shared Redis pool. The cap remains because it also keeps the
+CPU-bound grid-search thread pool sane (each symbol spawns 3 to_thread
+tasks; 14 × 3 = 42 threads otherwise).
 
 This module is a mix-in: ``SweepOrchestrator`` inherits from
-``HeavySweepMixin`` so the heavy-sweep methods have access to ``self._redis``,
+``HeavySweepMixin`` so the heavy-sweep methods have access to
 ``self._ev_engine``, ``self._sizer``, ``self._scheduler``, etc.
 """
 
@@ -87,11 +86,10 @@ MIN_TRADES = int(_os.getenv("HEAVY_SWEEP_MIN_TRADES", "10"))
 # TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
 TIMESFM_CONFIDENT_THRESHOLD = 0.10
 
-# Heavy-sweep concurrency cap. Firing all 14 symbols at once (2026-08-09)
-# exhausted the shared Redis pool (max_connections=10) — every symbol opens
-# a `timesfm:cached` read at the same instant → MaxConnectionsError on the
-# last 4 symbols. Cap concurrent per-symbol sweeps so the pool and the
-# CPU-bound grid-search threads stay under their limits; the grid searches
+# Heavy-sweep concurrency cap. Originally added (2026-08-09) because firing
+# all 14 symbols at once exhausted the shared Redis pool; kept because it
+# also caps the CPU-bound grid-search thread pool (each symbol spawns 3
+# to_thread tasks — 14 × 3 = 42 threads otherwise). The grid searches
 # dominate wall time anyway.
 HEAVY_SWEEP_MAX_CONCURRENCY = 4
 
@@ -235,8 +233,8 @@ class HeavySweepMixin:
     """Mix-in providing heavy-sweep methods to ``SweepOrchestrator``.
 
     The orchestrator inherits this so the heavy-sweep methods can access
-    ``self._redis``, ``self._ev_engine``, ``self._sizer``, ``self._scheduler``,
-    etc. without passing them as arguments.
+    ``self._ev_engine``, ``self._sizer``, ``self._scheduler``, etc. without
+    passing them as arguments.
 
     Methods added:
       • ``run_heavy_sweep_for_symbol(sym)`` — single-symbol heavy sweep
@@ -341,11 +339,8 @@ class HeavySweepMixin:
 
         # Concurrent per-symbol heavy sweeps. Each runs its CPU-bound
         # grid search via asyncio.to_thread, so they don't block each
-        # other or the event loop. Concurrency is CAPPED: the shared
-        # Redis pool has max_connections=10 and every symbol opens a
-        # `timesfm:cached` read at start — firing all 14 at once
-        # exhausted the pool (MaxConnectionsError on the metals,
-        # 2026-08-09). The cap also bounds the to_thread fan-out.
+        # other or the event loop. Concurrency is CAPPED to bound the
+        # to_thread fan-out (see HEAVY_SWEEP_MAX_CONCURRENCY).
         semaphore = asyncio.Semaphore(HEAVY_SWEEP_MAX_CONCURRENCY)
 
         async def _run_capped(sym: dict[str, Any]):
@@ -414,49 +409,15 @@ class HeavySweepMixin:
                 logger.warning("[sweep:heavy] %s: %s", symbol, result.error)
                 return result
 
-            # ── 2. TimesFM confidence gate (cache-first) ──────────────
+            # ── 2. TimesFM confidence gate ─────────────────────────────
             # Skip the heavy sweep entirely if TimesFM is already confident
             # (|p_timesfm - 0.5| > 0.1). This negates the need for daily
             # heavy sweeps — TimesFM handles non-stationarity 24/7.
-            # The `timesfm:cached` key is ADVISORY: a Redis failure (pool
-            # exhausted, connection refused, Redis disabled) must degrade to
-            # cache-miss and proceed — it must never fail the sweep
-            # (2026-08-09: MaxConnectionsError killed the 4 metals).
-            cached_p_str = None
-            if self._redis is not None:
-                try:
-                    cached_p_str = await self._redis.get(f"timesfm:cached:{symbol}")
-                except Exception as exc:
-                    logger.warning(
-                        "[sweep:heavy] %s: timesfm cache read failed (%s) — proceeding without cache",
-                        symbol, type(exc).__name__,
-                    )
-            if cached_p_str:
-                try:
-                    cached_p = float(cached_p_str)
-                    if abs(cached_p - 0.5) > TIMESFM_CONFIDENT_THRESHOLD:
-                        result.skipped = True
-                        result.skip_reason = (
-                            f"timesfm_confident_cached (p={cached_p:.4f})"
-                        )
-                        result.duration_ms = int((time.time() - start_ts) * 1000)
-                        logger.info(
-                            "[sweep:heavy] %s: SKIPPED — %s",
-                            symbol, result.skip_reason,
-                        )
-                        return result
-                except (TypeError, ValueError):
-                    pass  # corrupt cache, proceed
-
             p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
             p_timesfm: Optional[float] = None
             if p_timesfm_result is not None:
                 p_timesfm, _ = p_timesfm_result
                 if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD:
-                    # Cache the confident value so subsequent sweeps skip too
-                    await self._redis.set(
-                        f"timesfm:cached:{symbol}", p_timesfm, ex=86400,
-                    )
                     result.skipped = True
                     result.skip_reason = (
                         f"timesfm_confident (p={p_timesfm:.4f})"
@@ -548,19 +509,6 @@ class HeavySweepMixin:
                 symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
             )
             result.persisted_yaml = True
-
-            # Cache p_timesfm so the next heavy sweep can skip if confident.
-            # Best-effort — a Redis failure here must not fail the sweep.
-            if p_timesfm is not None and self._redis is not None:
-                try:
-                    await self._redis.set(
-                        f"timesfm:cached:{symbol}", p_timesfm, ex=86400,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[sweep:heavy] %s: timesfm cache write failed (%s) — ignoring",
-                        symbol, type(exc).__name__,
-                    )
 
             # ── 8. EV compute with HMM markov (replaces discrete chain) ─
             direction = "short" if "bear" in result.regime_label.lower() else "long"
@@ -1027,12 +975,8 @@ class HeavySweepMixin:
         p_timesfm: Optional[float],
         cal: Optional[dict[str, Any]],
     ) -> None:
-        """Build + push qualified heavy-sweep signal to Redis Stream.
-
-        Same XADD path as the light sweep (``signal.raw.noble_trader``).
-        The agent listener treats heavy + light signals identically —
-        the heavy sweep just produces fewer, more-optimised signals.
-        """
+        """Build the qualified heavy-sweep signal payload and deliver it
+        to Discord directly. Same payload shape as the light sweep."""
         import json
         from regime_platform.sweep_orchestrator.orchestrator import _derive_venue
 
@@ -1107,55 +1051,18 @@ class HeavySweepMixin:
             "qualified": True,
         })
 
-        try:
-            if not settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED:
-                logger.info(
-                    "[sweep:heavy] %s: Redis publish DISABLED — qualified %s signal, skipping Redis write",
-                    symbol, trade_signal["signal"],
-                )
-            elif self._redis is None:
-                # Redis not configured at all (proxy-retirement direction).
-                # The signal is still persisted to Supabase + realtime, so
-                # this is not a data loss — just no Redis stream write.
-                logger.info(
-                    "[sweep:heavy] %s: Redis not configured — skipping Redis write for qualified %s signal",
-                    symbol, trade_signal["signal"],
-                )
-            else:
-                pipe = self._redis.pipeline(transaction=False)
-                pipe.publish("signal.raw.noble_trader", agent_payload)
-                pipe.xadd(
-                    "signal.raw.noble_trader",
-                    {"payload": agent_payload},
-                    maxlen=10000,
-                    approximate=True,
-                )
-                await pipe.execute()
-                logger.info(
-                    "[sweep:heavy] %s: PUBLISHED %s signal (sharpe=%.4f, brick=%.4f, sl=%d, tp=%d)",
-                    symbol, trade_signal["signal"], best.sharpe,
-                    best.brick_size, best.sl_bricks, best.tp_bricks,
-                )
-        except Exception as exc:
-            logger.error(
-                "[sweep:heavy] %s: Redis push failed — %s", symbol, exc,
-            )
+        logger.info(
+            "[sweep:heavy] %s: QUALIFIED %s signal (sharpe=%.4f, brick=%.4f, sl=%d, tp=%d)",
+            symbol, trade_signal["signal"], best.sharpe,
+            best.brick_size, best.sl_bricks, best.tp_bricks,
+        )
 
-        # ── Direct Discord delivery (Option 2 — decoupled) ─────────────
-        # Same decoupling as the light sweep: when the Redis feed is off
-        # (proxy retirement) the qualified heavy signal is sent DIRECTLY
-        # to the Discord notifier, gated by
-        # NOBLE_TRADER_DISCORD_SIGNALS_ENABLED. Skipped when Redis
-        # delivery is active (aggregator already handles Discord).
+        # ── Direct Discord delivery ──────────────────────────────────
         try:
             from regime_platform.sweep_orchestrator.discord_delivery import (
                 maybe_send_discord_signal,
             )
 
-            redis_delivery_active = bool(
-                settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
-                and self._redis is not None
-            )
             payload_obj = (
                 json.loads(agent_payload)
                 if isinstance(agent_payload, str)
@@ -1165,7 +1072,6 @@ class HeavySweepMixin:
                 maybe_send_discord_signal(
                     payload_obj,
                     source="sweep-heavy",
-                    redis_delivery_active=redis_delivery_active,
                 )
             )
         except Exception as discord_exc:

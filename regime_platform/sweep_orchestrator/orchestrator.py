@@ -31,7 +31,6 @@ from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
-from regime_platform.services.redis_pool import redis_pool
 from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
 from regime_platform.services.hmm import quote_fetcher as hmm_quote_fetcher
 from regime_platform.services.hmm import ta_fetcher as hmm_ta_fetcher
@@ -59,7 +58,6 @@ logger = logging.getLogger("regime.sweep.orch")
 STALE_THRESHOLD_S = 1200          # 20 minutes
 STALE_CHECK_INTERVAL_S = 60       # check every 60 s
 REFRESH_SYMBOLS_INTERVAL_S = 300  # re-read nt_symbol every 5 min
-LIGHT_LOCK_TTL_S = 90             # per-symbol lock TTL (matches edge fn)
 STAGGER_SECONDS = 5               # gap between symbols within a group
 
 # ── Markov chain parameters (v5 EV engine) ──────────────────────────
@@ -91,17 +89,17 @@ MARKOV_WINDOW_BARS = int(
 MARKOV_HOLD_STEPS = int(os.getenv("MARKOV_HOLD_STEPS", "10"))
 
 # ─── Qualification gate thresholds (configurable via env vars) ───────────
-# These determine which sweep signals get published to Redis pub/sub
-# "signal.raw.noble_trader" and forwarded to Discord. Tune them via env
-# vars to control signal volume vs. quality.
+# These determine which sweep signals qualify and get sent to Discord
+# directly (discord_delivery.py). Tune them via env vars to control signal
+# volume vs. quality.
 #
 # IMPORTANT: the EV/RR gate (Gate 6) is the most common blocker. The EV
 # engine requires rr >= MIN_RR (default 2.0), but with default brick
 # params sl_bricks=3, tp_bricks=5, the actual RR is 5/3 = 1.67 — below
 # the 2.0 minimum. Either:
 #   (a) lower MIN_RR to 1.5 (via env: MIN_RR=1.5), or
-#   (b) increase tp_bricks to 6+ in your Redis config per symbol, or
-#   (c) decrease sl_bricks to 2 in your Redis config per symbol
+#   (b) increase tp_bricks to 6+ in config/brick_params.yaml per symbol, or
+#   (c) decrease sl_bricks to 2 in config/brick_params.yaml per symbol
 MIN_REGIME_CONF = float(os.getenv("MIN_REGIME_CONF", "0.60"))
 MIN_KELLY = float(os.getenv("MIN_KELLY", "0.02"))
 MIN_TIMESFM_CONFIDENCE = float(os.getenv("MIN_TIMESFM_CONFIDENCE", "0.05"))
@@ -131,11 +129,6 @@ MIN_RR = float(os.getenv("MIN_RR", "2.0"))
 #       If TimesFM is uncertain, the blend naturally reduces p_win, which
 #       reduces EV, which the EV gate handles.
 TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
-# When True, publish ALL signals (even rejected ones) to Redis channel
-# "signal.debug.noble_trader" for diagnostic visibility. Set to "1" to
-# enable. Default: disabled (only qualified signals go to production
-# channel).
-DEBUG_SIGNALS = os.getenv("DEBUG_SIGNALS", "0") == "1"
 # When True, sweep ALL symbols regardless of market hours. Useful for:
 #   - Regime tracking outside market hours (you still want to know the
 #     regime even if you can't trade)
@@ -499,8 +492,8 @@ _PRICE_DECIMALS: dict[str, int] = {
     # ── OANDA metals (migration 031 multi-exchange symbols) ──────
     # XAUUSD / XAUEUR / XAUAUD / XAGUSD are quoted with 3-4 decimal
     # places on OANDA. Do NOT truncate them to the 2dp default — the
-    # full value must survive the sweep → Redis → Discord → Supabase
-    # pipeline (see nt_sweep_result.entry_price / stop_loss / take_profit).
+    # full value must survive the sweep → Discord → Supabase pipeline
+    # (see nt_sweep_result.entry_price / stop_loss / take_profit).
     "XAUUSD": 3, "XAUEUR": 4, "XAUAUD": 4, "XAGUSD": 4,
     "XAU": 3, "XAG": 4,
 }
@@ -722,7 +715,15 @@ class SweepOrchestrator(HeavySweepMixin):
 
     def __init__(self) -> None:
         self._scheduler: AsyncIOScheduler | None = None
-        self._redis = None
+
+        # Per-symbol in-process lock (2026-08-25, Redis deprecation) — was a
+        # Redis SET NX/DELETE distributed lock ("Layer 1, same as edge
+        # functions") guarding against light sweep and heavy sweep hitting
+        # the same symbol concurrently on their independent cron schedules.
+        # The deployment is a single process, so the race no longer needs
+        # to be distributed, just serialized in-process. Created lazily per
+        # symbol on first use.
+        self._sweep_locks: dict[str, asyncio.Lock] = {}
 
         # Track last-successful-sweep timestamps for stale detection
         self._last_ok: dict[str, float] = {}
@@ -816,7 +817,6 @@ class SweepOrchestrator(HeavySweepMixin):
             f"MIN_EV={MIN_EV}, MIN_RR={MIN_RR}, "
             f"MIN_P_WIN={MIN_P_WIN}, "
             f"SIGNAL_COOLDOWN_MINUTES={SIGNAL_COOLDOWN_MINUTES}, "
-            f"DEBUG_SIGNALS={DEBUG_SIGNALS}, "
             f"TIMESFM_SIGMOID_K={TIMESFM_SIGMOID_K}, "
             f"TIMESFM_CLAMP=[{TIMESFM_CLAMP_MIN}, {TIMESFM_CLAMP_MAX}]"
         )
@@ -825,11 +825,6 @@ class SweepOrchestrator(HeavySweepMixin):
 
     async def start(self) -> None:
         """Start the scheduler and background checks."""
-        self._redis = await redis_pool.get_client()
-        if not self._redis:
-            logger.error("Redis not available — sweep orchestrator cannot start")
-            return
-
         # ── TimesFM startup self-check (v5) ───────────────────────────
         # Fail loud when TimesFM env vars are unset — every fetch will
         # 401 silently and p_timesfm will be None for all symbols. We
@@ -1570,12 +1565,12 @@ class SweepOrchestrator(HeavySweepMixin):
             prices = valid_prices[symbol]
             start_ts = time.time()
 
-            # Per-symbol lock (Layer 1, same as edge functions)
-            lock_key = f"lock:sweep:{symbol}"
-            locked = await self._redis.set(lock_key, "1", nx=True, ex=LIGHT_LOCK_TTL_S)
-            if not locked:
+            # Per-symbol in-process lock — see __init__ for context.
+            lock = self._sweep_locks.setdefault(symbol, asyncio.Lock())
+            if lock.locked():
                 logger.info("%s: locked — skipping (concurrent sweep)", symbol)
                 continue
+            await lock.acquire()
 
             # Fetch TimesFM (cached 15min)
             p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
@@ -1647,7 +1642,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 logger.error("%s: sweep failed: %s", symbol, exc)
                 await log_error(symbol, "sweep-light", str(exc)[:1000])
             finally:
-                await self._redis.delete(lock_key)
+                lock.release()
 
             elapsed = time.time() - start_ts
             logger.info(
@@ -1908,7 +1903,7 @@ class SweepOrchestrator(HeavySweepMixin):
         effective_kelly = kelly_f * ev_result.ev_scale
 
         # ── 5a. Qualification gates ──
-        # Only publish qualified signals to signal.raw.noble_trader
+        # Only a qualified signal is sent to Discord / persisted as actionable.
         signal_is_qualifiable = trade_signal["signal"] not in ("neutral", "unknown")
 
         if p_timesfm is not None:
@@ -2010,8 +2005,8 @@ class SweepOrchestrator(HeavySweepMixin):
         effective_ev_result = adjusted_ev_result
 
         # ── In soft mode, the adjusted EV result replaces the original ──
-        # This ensures all downstream code (rejection log, Redis writes,
-        # agent payload, return dict) uses the soft-gate-adjusted values.
+        # This ensures all downstream code (rejection log, signal payload,
+        # return dict) uses the soft-gate-adjusted values.
         # In hard/off mode, effective_ev_result IS ev_result (no change).
         if TIMESFM_GATE_MODE == "soft" and effective_ev_result is not ev_result:
             ev_result = effective_ev_result
@@ -2230,55 +2225,6 @@ class SweepOrchestrator(HeavySweepMixin):
                 f"brick_size={brick_size}  -> rr={ev_result.rr:.4f}"
             )
 
-        # ── Debug channel: publish ALL signals for visibility ────────
-        # When DEBUG_SIGNALS=1, publish every signal (qualified or not)
-        # to "signal.debug.noble_trader" so you can subscribe and inspect
-        # what's being filtered. This is essential for threshold tuning —
-        # you can't optimize what you can't see.
-        # NOTE (2026-08-05): prices are now rounded to 6dp (full value) in
-        # both the debug payload and the Redis heartbeat — see the comments
-        # at the round() call sites. `_price_decimals()` is retained for
-        # heavy_sweep.py and any display-only formatting, but is no longer
-        # applied to entry/stop/tp on the signal path (it defaulted to 2dp
-        # for XAUUSD/XAUEUR/XAUAUD/XAGUSD and truncated the values).
-
-        if DEBUG_SIGNALS:
-            _debug_ts = int(time.time() * 1000)
-            debug_payload = json.dumps({
-                "type": "debug_signal",
-                "symbol": symbol,
-                "ts": _debug_ts,
-                "qualified": qualified,
-                "signal": trade_signal["signal"],
-                "regime": regime_label,
-                "regime_conf": round(regime_conf, 4),
-                "kelly_f": round(kelly_f, 6),
-                "p_timesfm": round(p_timesfm, 4) if p_timesfm is not None else None,
-                "timesfm_confidence": round(confidence, 4) if confidence is not None else None,
-                "ev": round(ev_result.ev, 4),
-                "rr": round(ev_result.rr, 4),
-                "ev_allowed": ev_result.allowed,
-                "ev_reason": ev_result.reason,
-                "failed_gates": [k for k, v in gate_results.items() if not v],
-                # ── FULL PRECISION PRICES (2026-08-05) ──────────────────
-                # Do NOT round to `decimals` here. `decimals` was 2dp for
-                # XAUUSD/XAUEUR/XAUAUD/XAGUSD (not in _PRICE_DECIMALS),
-                # which truncated the entry/stop/tp to 2dp in the debug
-                # channel. Round to 6dp so the debug stream carries the
-                # same full value as nt_sweep_result.
-                "entry_price": round(trade_signal["entry_price"], 6),
-                "stop_loss": round(trade_signal["stop_loss"], 6),
-                "take_profit": round(trade_signal["take_profit"], 6),
-                "sl_bricks": sl_bricks,
-                "tp_bricks": tp_bricks,
-                "brick_size": brick_size,
-            })
-            try:
-                if settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED:
-                    await self._redis.publish("signal.debug.noble_trader", debug_payload)
-            except Exception:
-                pass  # don't let debug publish break the sweep
-
         # ── 6. Calibration bias ──
         # Only fetch calibration when the signal is qualified — it's an
         # extra Supabase round-trip that's only useful for sizing decisions
@@ -2318,60 +2264,8 @@ class SweepOrchestrator(HeavySweepMixin):
         self._last_regime[symbol] = regime_label
         self._last_trend_probs[symbol] = trend_probs or {}
 
-        # ── 8. Write to Redis ──
-        # DEPRECATED: trading:config:{symbol} HSET and trading:heartbeat:{symbol}
-        # SET were the "poll" backup mechanism. The platform has moved to a
-        # push model (Redis Streams XADD + pub/sub PUBLISH to
-        # signal.raw.noble_trader). Downstream consumers now read from the
-        # stream, not from per-symbol config hashes.
-        #
-        # The config_dict, heartbeat_key, and agent_channel code below is
-        # commented out but preserved for reference. The agent_payload
-        # (pub/sub + stream) is still active.
-        #
-        # config_key = f"trading:config:{symbol}"
-        # heartbeat_key = f"trading:heartbeat:{symbol}"
-        # agent_channel = f"agent:{symbol}"
+        # ── 8. Build the enriched signal payload ──
         now_ms = int(time.time() * 1000)
-
-        # ── DEPRECATED: config_dict was written to trading:config:{symbol} ──
-        # Preserved for reference. Downstream consumers now read from the
-        # Redis Stream (signal.raw.noble_trader) instead of polling this hash.
-        #
-        # config_dict: dict[str, str | float] = {
-        #     "regime": regime_label,
-        #     "regime_conf": round(regime_conf, 4),
-        #     "brick_size": brick_size,
-        #     "sl_bricks": sl_bricks,
-        #     "tp_bricks": tp_bricks,
-        #     "markov_p_up": round(p_up, 4),
-        #     "markov_p_dn": round(p_dn, 4),
-        #     "kelly_f": round(kelly_f, 6),
-        #     "effective_kelly": round(effective_kelly, 6),
-        #     "last_update": now_ms,
-        #     "sweep_timestamp": now_ms,
-        #     "signal": trade_signal["signal"],
-        #     "entry_price": round(trade_signal["entry_price"], decimals),
-        #     "stop_loss": round(trade_signal["stop_loss"], decimals),
-        #     "take_profit": round(trade_signal["take_profit"], decimals),
-        #     "ev": round(ev_result.ev, 4),
-        #     "ev_per_dollar": round(ev_result.ev_per_dollar, 4),
-        #     "p_win": round(ev_result.p_win, 4),
-        #     "p_regime": round(ev_result.p_regime, 4),
-        #     "p_markov": round(ev_result.p_markov, 4),
-        #     "aggression": ev_result.aggression,
-        #     "ev_scale": round(ev_result.ev_scale, 4),
-        #     "regime_shift": "true" if regime_shift else "false",
-        #     "prev_regime": prev_regime or "",
-        #     "shift_at": str(now_ms) if regime_shift else "0",
-        #     "price_decimals": decimals,
-        #     "config_ts": round(time.time(), 3),
-        # }
-        # if p_timesfm is not None:
-        #     config_dict["p_timesfm"] = round(p_timesfm, 4)
-        # if cal:
-        #     config_dict["calibration_bias"] = round(cal["bias"], 4)
-        #     config_dict["calibration_status"] = cal["status"]
 
         # Compute size multiplier based on TimesFM confidence
         size_mult = 1.0
@@ -2509,151 +2403,77 @@ class SweepOrchestrator(HeavySweepMixin):
             "qualified": qualified,
         })
 
-        ttl = sym.get("heartbeat_ttl_seconds", 900)
-        try:
-            # ── Redis push model (replaces deprecated poll model) ────────
-            # The old poll model wrote to:
-            #   HSET trading:config:{symbol}  — DEPRECATED (commented out above)
-            #   SET  trading:heartbeat:{symbol} — DEPRECATED
-            #   PUBLISH agent:{symbol}          — DEPRECATED (liveness)
+        if qualified:
+            # ── D5: Content-hash dedup ────────────────────────────
+            # Hash the signal's "meaningful" content (symbol, direction,
+            # regime, brick params, price band) to detect duplicates
+            # even after cooldown expires. This prevents placeholder
+            # spam when the regime is stable but cooldown has lapsed.
             #
-            # The new push model publishes qualified signals via:
-            #   PUBLISH signal.raw.noble_trader  — for in-process SignalAggregator
-            #   XADD   signal.raw.noble_trader   — for downstream consumers (persistent)
-            #
-            # Only qualified signals are pushed. Non-qualified sweeps don't
-            # produce a Redis message — the downstream consumer only sees
-            # actionable signals.
-            # Create the pipeline ONLY when Redis publishing is enabled
-            # (NOBLE_TRADER_REDIS_PUBLISH_ENABLED). When disabled, the
-            # sweep never touches Redis — the proxy/agent feed is off.
-            pipe = (
-                self._redis.pipeline(transaction=False)
-                if settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
-                else None
-            )
-
-            # DEPRECATED — kept for reference. Downstream now reads from stream.
-            # pipe.hset(config_key, mapping=safe_config_dict)
-            # pipe.expire(config_key, CONFIG_TTL)
-            # pipe.set(heartbeat_key, str(now_ms), ex=ttl)
-            # pipe.publish(agent_channel, agent_payload)
-
-            if qualified:
-                # ── D5: Content-hash dedup ────────────────────────────
-                # Hash the signal's "meaningful" content (symbol, direction,
-                # regime, brick params, price band) to detect duplicates
-                # even after cooldown expires. This prevents placeholder
-                # spam when the regime is stable but cooldown has lapsed.
-                #
-                # We hash a small subset of agent_payload — not the whole
-                # thing — because timestamps + kelly_f + EV fluctuate even
-                # when the actionable signal content is unchanged.
-                try:
-                    payload_obj = (
-                        json.loads(agent_payload) if isinstance(agent_payload, str)
-                        else agent_payload
-                    )
-                    content_fields = {
-                        "symbol": payload_obj.get("symbol"),
-                        "direction": payload_obj.get("direction") or payload_obj.get("signal"),
-                        "regime": payload_obj.get("regime"),
-                        "brick_size": payload_obj.get("brick_size"),
-                        "sl_bricks": payload_obj.get("sl_bricks"),
-                        "tp_bricks": payload_obj.get("tp_bricks"),
-                        # Price band (rounded to brick_size granularity so
-                        # small intra-band moves don't trigger republish)
-                        "price_band": (
-                            round(
-                                float(payload_obj.get("entry_price", 0))
-                                / max(float(payload_obj.get("brick_size", 1)), 1e-9)
-                            )
-                            if payload_obj.get("entry_price")
-                            else None
-                        ),
-                    }
-                    content_hash = hashlib.sha256(
-                        json.dumps(content_fields, sort_keys=True).encode("utf-8")
-                    ).hexdigest()[:16]
-                except Exception as exc:
-                    logger.warning(
-                        f"[sweep:orch] {symbol}: content-hash failed ({exc}) — publishing without dedup"
-                    )
-                    content_hash = ""
-
-                dedup_key = (symbol, trade_signal["signal"])
-                if (
-                    content_hash
-                    and content_hash == self._last_signal_hash.get(dedup_key)
-                ):
-                    # Same content as last publish — suppress even if cooldown expired
-                    qualified = False
-                    gate_results["content_dedup_ok"] = False
-                    logger.info(
-                        f"[sweep:orch] {symbol}: DEDUP SUPPRESSED — "
-                        f"signal content unchanged (hash={content_hash[:8]}...)"
-                    )
-                else:
-                    gate_results["content_dedup_ok"] = True
-                    if content_hash:
-                        self._last_signal_hash[dedup_key] = content_hash
-
-            if qualified:
-                if pipe is not None:
-                    # ── Publish qualified signals via BOTH pub/sub AND Streams ──
-                    pipe.publish("signal.raw.noble_trader", agent_payload)
-                    pipe.xadd(
-                        "signal.raw.noble_trader",
-                        {"payload": agent_payload},
-                        maxlen=10000,
-                        approximate=True,
-                    )
-                    # ── Record cooldown timestamp ──────────────────────────
-                    # Mark this (symbol, direction) as published so subsequent
-                    # sweeps within the cooldown window are suppressed.
-                    self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
-                    logger.info(
-                        f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} signal "
-                        f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
-                    )
-                else:
-                    # Redis publish DISABLED (NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false):
-                    # keep the signal-generation cooldown so downstream capture/broadcast
-                    # cadence stays identical, but skip ALL Redis traffic (proxy feed off).
-                    self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
-                    logger.info(
-                        f"[sweep:orch] {symbol}: Redis publish DISABLED — qualified "
-                        f"{trade_signal['signal']} signal (cooldown started, no Redis write)"
-                    )
-            if pipe is not None:
-                await pipe.execute()
-                logger.debug(
-                    f"[sweep:orch] {symbol}: Redis push OK "
-                    f"(qualified={qualified})"
+            # We hash a small subset of agent_payload — not the whole
+            # thing — because timestamps + kelly_f + EV fluctuate even
+            # when the actionable signal content is unchanged.
+            try:
+                payload_obj = (
+                    json.loads(agent_payload) if isinstance(agent_payload, str)
+                    else agent_payload
                 )
-        except Exception as redis_exc:
-            # The previous implementation let this exception propagate,
-            # which aborted the rest of the sweep (Supabase log, return
-            # value). Log loudly and continue — a Redis hiccup should NOT
-            # prevent the sweep result from being recorded in Supabase.
-            logger.error(
-                f"[sweep:orch] {symbol}: Redis pipeline failed — "
-                f"{type(redis_exc).__name__}: {redis_exc}. "
-                f"Continuing without Redis state update; downstream "
-                f"consumers may see stale data until next sweep."
-            )
+                content_fields = {
+                    "symbol": payload_obj.get("symbol"),
+                    "direction": payload_obj.get("direction") or payload_obj.get("signal"),
+                    "regime": payload_obj.get("regime"),
+                    "brick_size": payload_obj.get("brick_size"),
+                    "sl_bricks": payload_obj.get("sl_bricks"),
+                    "tp_bricks": payload_obj.get("tp_bricks"),
+                    # Price band (rounded to brick_size granularity so
+                    # small intra-band moves don't trigger republish)
+                    "price_band": (
+                        round(
+                            float(payload_obj.get("entry_price", 0))
+                            / max(float(payload_obj.get("brick_size", 1)), 1e-9)
+                        )
+                        if payload_obj.get("entry_price")
+                        else None
+                    ),
+                }
+                content_hash = hashlib.sha256(
+                    json.dumps(content_fields, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:16]
+            except Exception as exc:
+                logger.warning(
+                    f"[sweep:orch] {symbol}: content-hash failed ({exc}) — publishing without dedup"
+                )
+                content_hash = ""
 
-        # ── 10b. Direct Discord delivery (Option 2 — decoupled) ────────
-        # Discord alerts previously depended on Redis
-        # (signal.raw.noble_trader → in-process SignalAggregator). With
-        # NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false (proxy retirement) the
-        # sweep writes nothing to Redis, the aggregator receives nothing,
-        # and Discord goes silent. This direct call keeps Discord flowing
-        # independent of the Redis gate, gated by its own toggle
-        # (NOBLE_TRADER_DISCORD_SIGNALS_ENABLED). Skipped when the Redis
-        # feed is active (the aggregator already delivers Discord — a
-        # direct send would duplicate the alert).
-        # Placed here — AFTER the Redis publish block — so `qualified` is
+            dedup_key = (symbol, trade_signal["signal"])
+            if (
+                content_hash
+                and content_hash == self._last_signal_hash.get(dedup_key)
+            ):
+                # Same content as last publish — suppress even if cooldown expired
+                qualified = False
+                gate_results["content_dedup_ok"] = False
+                logger.info(
+                    f"[sweep:orch] {symbol}: DEDUP SUPPRESSED — "
+                    f"signal content unchanged (hash={content_hash[:8]}...)"
+                )
+            else:
+                gate_results["content_dedup_ok"] = True
+                if content_hash:
+                    self._last_signal_hash[dedup_key] = content_hash
+
+            if qualified:
+                # ── Record cooldown timestamp ──────────────────────────
+                # Mark this (symbol, direction) as published so subsequent
+                # sweeps within the cooldown window are suppressed.
+                self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
+                logger.info(
+                    f"[sweep:orch] {symbol}: QUALIFIED {trade_signal['signal']} signal "
+                    f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
+                )
+
+        # ── 10b. Direct Discord delivery ────────────────────────────
+        # Placed here — AFTER the dedup block above — so `qualified` is
         # FINAL (cooldown suppression AND content-dedup suppression have
         # both already flipped it to False where applicable).
         if qualified and settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED:
@@ -2662,10 +2482,6 @@ class SweepOrchestrator(HeavySweepMixin):
                     maybe_send_discord_signal,
                 )
 
-                redis_delivery_active = bool(
-                    settings.NOBLE_TRADER_REDIS_PUBLISH_ENABLED
-                    and getattr(self, "_redis", None) is not None
-                )
                 payload_obj = (
                     json.loads(agent_payload)
                     if isinstance(agent_payload, str)
@@ -2675,7 +2491,6 @@ class SweepOrchestrator(HeavySweepMixin):
                     maybe_send_discord_signal(
                         payload_obj,
                         source=source,
-                        redis_delivery_active=redis_delivery_active,
                     )
                 )
             except Exception as discord_exc:
@@ -2687,7 +2502,7 @@ class SweepOrchestrator(HeavySweepMixin):
         # ── 11a. Signal-sim capture (nt_signal_sim) ─────────────────
         # Fire-and-forget persistence of EVERY generated non-neutral
         # signal (qualified or not) for the EOD signal simulator. Placed
-        # here — AFTER the Redis publish block — so `qualified` is FINAL
+        # here — AFTER the dedup block above — so `qualified` is FINAL
         # (cooldown suppression AND content-dedup suppression have both
         # already flipped it to False where applicable).
         # Must NEVER break the sweep: log_signal_sim swallows insert
@@ -2875,12 +2690,10 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                     continue
 
-                lock_key = f"lock:sweep:{symbol}"
-                locked = await self._redis.set(
-                    lock_key, "1", nx=True, ex=LIGHT_LOCK_TTL_S
-                )
-                if not locked:
+                lock = self._sweep_locks.setdefault(symbol, asyncio.Lock())
+                if lock.locked():
                     continue
+                await lock.acquire()
 
                 try:
                     await self._process_symbol(sym, prices)
@@ -2890,7 +2703,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     logger.error("%s: stale retry failed: %s", symbol, exc)
                     await log_error(symbol, "sweep-light-stale", str(exc)[:1000])
                 finally:
-                    await self._redis.delete(lock_key)
+                    lock.release()
 
                 await asyncio.sleep(STAGGER_SECONDS)
 

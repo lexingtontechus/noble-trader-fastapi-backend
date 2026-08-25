@@ -1,28 +1,14 @@
 """
-Direct Discord signal delivery for the sweep paths (Option 2 — decoupled
-from the Redis/proxy feed).
+Direct Discord signal delivery for the sweep paths.
 
-Incident (2026-08-10): qualified signals stopped reaching Discord when
-``NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false`` (proxy retirement). The ONLY
-Discord path for sweep signals was Redis ``signal.raw.noble_trader`` →
-in-process SignalAggregator (subscribed to that channel) → Discord. When
-the Redis feed is disabled the orchestrator writes nothing to Redis, the
-aggregator receives nothing, and Discord goes silent — even though the
-webhooks themselves are healthy.
+This module sends qualified sweep signals (light ``_process_symbol`` +
+heavy ``_push_heavy_signal``) straight to the Discord notifier, gated by
+``NOBLE_TRADER_DISCORD_SIGNALS_ENABLED``. Originally built (2026-08-10) as
+a fallback for when the Redis/proxy signal feed was disabled — now the
+only delivery path, since Redis has been fully retired (2026-08-25).
 
-This module adds a DIRECT Discord delivery path used by both sweep paths
-(light ``_process_symbol`` + heavy ``_push_heavy_signal``), gated by its
-OWN toggle ``NOBLE_TRADER_DISCORD_SIGNALS_ENABLED`` so Discord no longer
-depends on the Redis feed:
-
-  - Redis feed OFF (proxy retired) + flag ON  → direct Discord send. ✅
-  - Redis feed ON                              → aggregator already delivers
-    Discord (original path); the direct send is skipped to avoid
-    duplicate alerts.
-  - Flag OFF                                   → no direct Discord sends.
-
-The mapping mirrors ``SignalAggregator._route_to_discord``'s HEARTBEAT
-buy/sell branch (pattern="regime_trade", direction upper-cased, full-price
+The mapping mirrors the legacy SignalAggregator's HEARTBEAT buy/sell
+branch (pattern="regime_trade", direction upper-cased, full-price
 entry/stop/tp, plan routing) so Discord embeds are byte-for-byte the same
 format users already receive.
 
@@ -44,25 +30,18 @@ async def maybe_send_discord_signal(
     payload: dict[str, Any],
     *,
     source: str,
-    redis_delivery_active: bool,
 ) -> bool:
     """Send a qualified buy/sell signal directly to Discord (best-effort).
 
     Parameters
     ----------
     payload : dict
-        The heartbeat/agent payload dict (same shape the orchestrator
-        publishes to Redis: ``signal``, ``entry_price``, ``stop_loss``,
-        ``take_profit``, ``p_win``, ``kelly_f``, ``sl_bricks``,
-        ``tp_bricks``, ``prev_regime``, ``regime_shift``,
+        The enriched signal payload dict (``signal``, ``entry_price``,
+        ``stop_loss``, ``take_profit``, ``p_win``, ``kelly_f``,
+        ``sl_bricks``, ``tp_bricks``, ``prev_regime``, ``regime_shift``,
         ``asset_class``, ``venue``, ``plan_ids``, ...).
     source : str
         Sweep source label for logging ("sweep-light" / "sweep-heavy").
-    redis_delivery_active : bool
-        True when the Redis feed is live (``NOBLE_TRADER_REDIS_PUBLISH_ENABLED``
-        AND a Redis client is configured). In that state the in-process
-        SignalAggregator already delivers Discord via the original path —
-        this direct send is skipped to avoid duplicate alerts.
 
     Returns
     -------
@@ -71,10 +50,6 @@ async def maybe_send_discord_signal(
         False if gated off or the send failed. Never raises.
     """
     if not settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED:
-        return False
-    if redis_delivery_active:
-        # Original path alive — the aggregator delivers Discord. Direct
-        # send here would duplicate the alert.
         return False
 
     signal = str(payload.get("signal", "")).lower()

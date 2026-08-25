@@ -1,14 +1,15 @@
-"""NOBLE_TRADER_DISCORD_SIGNALS_ENABLED direct-delivery tests (Option 2).
+"""NOBLE_TRADER_DISCORD_SIGNALS_ENABLED direct-delivery tests.
 
-Covers the 2026-08-10 decoupling fix: qualified sweep signals are sent
-DIRECTLY to the Discord notifier from both sweep paths when the Redis
-feed is disabled (proxy retirement), gated by
-NOBLE_TRADER_DISCORD_SIGNALS_ENABLED (default True).
+Covers direct Discord delivery from both sweep paths (light
+``_process_symbol`` + heavy ``_push_heavy_signal``), gated by
+NOBLE_TRADER_DISCORD_SIGNALS_ENABLED (default True). Originally built
+(2026-08-10) as a Redis-feed-off fallback; now the only delivery path
+since Redis was fully retired (2026-08-25) — the redis_delivery_active
+param and the Redis pipeline publish it used to guard against are gone.
 """
 import asyncio
-import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.discord_delivery import (
@@ -96,10 +97,7 @@ def _push_args():
 
 
 class _Stub:
-    """Minimal stand-in exposing ``self._redis`` (what the mixin needs)."""
-
-    def __init__(self, redis):
-        self._redis = redis
+    """Minimal stand-in for HeavySweepMixin's host object."""
 
 
 def test_settings_default_enabled():
@@ -107,15 +105,13 @@ def test_settings_default_enabled():
     assert settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED is True
 
 
-def test_helper_sends_when_redis_off(monkeypatch):
-    """Redis feed off + flag on → direct Discord send with aggregator-identical kwargs."""
+def test_helper_sends_when_enabled(monkeypatch):
+    """Flag on → direct Discord send with aggregator-identical kwargs."""
     monkeypatch.setattr(settings, "NOBLE_TRADER_DISCORD_SIGNALS_ENABLED", True)
     send = AsyncMock(return_value=True)
     with patch("notifications.discord.discord_notifier.send_signal", send):
         ok = asyncio.run(
-            maybe_send_discord_signal(
-                _payload(), source="sweep-light", redis_delivery_active=False
-            )
+            maybe_send_discord_signal(_payload(), source="sweep-light")
         )
     assert ok is True
     send.assert_awaited_once()
@@ -143,23 +139,7 @@ def test_helper_skips_when_disabled(monkeypatch):
     send = AsyncMock()
     with patch("notifications.discord.discord_notifier.send_signal", send):
         ok = asyncio.run(
-            maybe_send_discord_signal(
-                _payload(), source="sweep-light", redis_delivery_active=False
-            )
-        )
-    assert ok is False
-    send.assert_not_awaited()
-
-
-def test_helper_skips_when_redis_active(monkeypatch):
-    """Redis feed on → aggregator delivers Discord; direct send must NOT duplicate."""
-    monkeypatch.setattr(settings, "NOBLE_TRADER_DISCORD_SIGNALS_ENABLED", True)
-    send = AsyncMock()
-    with patch("notifications.discord.discord_notifier.send_signal", send):
-        ok = asyncio.run(
-            maybe_send_discord_signal(
-                _payload(), source="sweep-light", redis_delivery_active=True
-            )
+            maybe_send_discord_signal(_payload(), source="sweep-light")
         )
     assert ok is False
     send.assert_not_awaited()
@@ -169,11 +149,7 @@ def test_helper_skips_neutral():
     send = AsyncMock()
     with patch("notifications.discord.discord_notifier.send_signal", send):
         ok = asyncio.run(
-            maybe_send_discord_signal(
-                _payload(signal="neutral"),
-                source="sweep-light",
-                redis_delivery_active=False,
-            )
+            maybe_send_discord_signal(_payload(signal="neutral"), source="sweep-light")
         )
     assert ok is False
     send.assert_not_awaited()
@@ -187,55 +163,25 @@ def test_helper_never_raises(monkeypatch):
         AsyncMock(side_effect=RuntimeError("webhook exploded")),
     ):
         ok = asyncio.run(
-            maybe_send_discord_signal(
-                _payload(), source="sweep-light", redis_delivery_active=False
-            )
+            maybe_send_discord_signal(_payload(), source="sweep-light")
         )
     assert ok is False
 
 
-def test_heavy_sweep_dispatches_direct_discord_when_redis_off(monkeypatch):
-    """Heavy path with Redis publish DISABLED → direct Discord helper invoked."""
-    monkeypatch.setattr(settings, "NOBLE_TRADER_REDIS_PUBLISH_ENABLED", False)
+def test_heavy_sweep_dispatches_direct_discord(monkeypatch):
+    """Heavy path always dispatches the direct Discord helper — no Redis
+    branch remains to skip it."""
     monkeypatch.setattr(settings, "NOBLE_TRADER_DISCORD_SIGNALS_ENABLED", True)
-    redis = MagicMock()
     helper = AsyncMock(return_value=True)
     with patch(
         "regime_platform.sweep_orchestrator.discord_delivery.maybe_send_discord_signal",
         helper,
     ):
-        asyncio.run(
-            HeavySweepMixin._push_heavy_signal(_Stub(redis), **_push_args())
-        )
-    redis.pipeline.assert_not_called()
+        asyncio.run(HeavySweepMixin._push_heavy_signal(_Stub(), **_push_args()))
     helper.assert_called_once()
     kwargs = helper.call_args.kwargs
     assert kwargs["source"] == "sweep-heavy"
-    assert kwargs["redis_delivery_active"] is False
+    assert "redis_delivery_active" not in kwargs
     payload = helper.call_args.args[0]
     assert payload["symbol"] == "XAUUSD"
     assert payload["qualified"] is True
-
-
-def test_heavy_sweep_no_duplicate_when_redis_on(monkeypatch):
-    """Heavy path with Redis publish ENABLED → Redis write, NO direct Discord."""
-    monkeypatch.setattr(settings, "NOBLE_TRADER_REDIS_PUBLISH_ENABLED", True)
-    monkeypatch.setattr(settings, "NOBLE_TRADER_DISCORD_SIGNALS_ENABLED", True)
-    redis = MagicMock()
-    pipe = MagicMock()
-    pipe.execute = AsyncMock()
-    redis.pipeline.return_value = pipe
-    helper = AsyncMock(return_value=False)
-    with patch(
-        "regime_platform.sweep_orchestrator.discord_delivery.maybe_send_discord_signal",
-        helper,
-    ):
-        asyncio.run(
-            HeavySweepMixin._push_heavy_signal(_Stub(redis), **_push_args())
-        )
-    redis.pipeline.assert_called_once_with(transaction=False)
-    pipe.publish.assert_called_once()
-    pipe.xadd.assert_called_once()
-    pipe.execute.assert_awaited_once()
-    helper.assert_called_once()
-    assert helper.call_args.kwargs["redis_delivery_active"] is True
