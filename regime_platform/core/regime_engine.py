@@ -399,6 +399,87 @@ class RegimeHMM:
             vol_converged=self._fit_converged(self._vol_model),
         )
 
+    # ── 3-state transition matrix derivation (Part 1 Change B, 2026-08-25) ──
+    # Derives a 3x3 {UP, DOWN, FLAT} transition matrix + current_state from
+    # the ALREADY-FITTED trend model above — replacing
+    # regime_platform/services/hmm/model.py's separate 5-state HmmModel
+    # (fit on 9 unscaled features; confirmed live 2026-08-25 to produce
+    # "startprob_ must sum to 1 (got nan)" and "state collapse detected"
+    # warnings across most symbols — the same numerical-instability class
+    # Change A already root-caused and fixed here via feature
+    # standardization). No new fitting, no new instability: this reuses
+    # the trend model's own transmat_ (already sanitized/finite via
+    # ``_sanitize_model``) and label map.
+
+    # {strong_bull, bull} -> UP, {strong_bear, bear} -> DOWN. The trend
+    # model has no neutral state, so FLAT is never assigned a component —
+    # its row in T3 falls through to the uniform-prior handling below
+    # (mirrors _aggregate_transition's existing "no state maps to this
+    # label" fallback in the legacy model), and current_state will
+    # therefore only ever resolve to UP or DOWN in practice. Also covers
+    # the 2/3-state label sets ("bear"/"bull", "bear"/"neutral"/"bull") —
+    # "neutral" and any unmapped label fall through to FLAT the same way.
+    _TREND_TO_3STATE: dict[str, str] = {
+        "strong_bull": "UP", "bull": "UP",
+        "strong_bear": "DOWN", "bear": "DOWN",
+    }
+
+    def trend_transition_matrix_3state(
+        self, trend_state: str,
+    ) -> tuple[dict[str, dict[str, float]], str]:
+        """
+        Derive a 3x3 {UP, DOWN, FLAT} transition matrix from the fitted
+        trend HMM's own ``transmat_`` — a drop-in replacement for
+        ``HmmModel.emit_markov()``'s return shape, for use as an
+        alternative source of ``p_markov_hold_n`` (see
+        ``settings.MARKOV_SOURCE_MODE``).
+
+        Args:
+            trend_state: The current tick's dominant trend label (e.g.
+                ``regime.trend_state`` from this instance's own
+                ``predict()`` call) — mapped through the same UP/DOWN
+                grouping used for the matrix itself, so "current state"
+                and "the matrix that describes it" always agree.
+
+        Returns:
+            (T3, current_state) — same shape as
+            ``HmmModel.emit_markov()``.
+        """
+        if not self.fitted or self._trend_model is None:
+            raise RuntimeError(
+                "Call .fit() before .trend_transition_matrix_3state()"
+            )
+
+        n = self._trend_model.n_components
+        transmat = self._trend_model.transmat_
+        component_to_3state = {
+            i: self._TREND_TO_3STATE.get(label, "FLAT")
+            for i, label in self._trend_label_map.items()
+        }
+
+        states3 = ("UP", "DOWN", "FLAT")
+        T3: dict[str, dict[str, float]] = {s: {t: 0.0 for t in states3} for s in states3}
+        for i in range(n):
+            from_3 = component_to_3state.get(i, "FLAT")
+            for j in range(n):
+                to_3 = component_to_3state.get(j, "FLAT")
+                T3[from_3][to_3] += float(transmat[i][j])
+
+        for s in states3:
+            row_sum = sum(T3[s].values())
+            if row_sum > 0:
+                for t in states3:
+                    T3[s][t] = round(T3[s][t] / row_sum, 6)
+            else:
+                # No component maps to this label (e.g. FLAT) — uniform
+                # prior, same fallback the legacy model's
+                # _aggregate_transition uses for an empty row.
+                for t in states3:
+                    T3[s][t] = 1.0 / 3.0
+
+        current_state = self._TREND_TO_3STATE.get(trend_state, "FLAT")
+        return T3, current_state
+
     # ── Convergence diagnostic (R4) ─────────────────────────────────────
 
     @staticmethod

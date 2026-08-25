@@ -128,6 +128,26 @@ MIN_RR = float(os.getenv("MIN_RR", "2.0"))
 #       If TimesFM is uncertain, the blend naturally reduces p_win, which
 #       reduces EV, which the EV gate handles.
 TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
+
+# MARKOV_SOURCE_MODE (Part 1 Change B, 2026-08-25): which source feeds
+# p_markov_hold_n's 3x3 {UP,DOWN,FLAT} transition matrix.
+#   "legacy_hmm" (default): the standalone 5-state HmmModel fit on 9
+#       unscaled features (regime_platform/services/hmm/model.py) — the
+#       source of the "startprob_ must sum to 1 (got nan)" / "state
+#       collapse detected" warnings confirmed live 2026-08-25 across most
+#       symbols. Unchanged behavior.
+#   "trend_hmm_shadow": compute BOTH the legacy value and the new
+#       RegimeHMM-derived value (see regime_engine.py's
+#       trend_transition_matrix_3state()), log a comparison line, but
+#       still feed the LEGACY value to the live blend. No behavior
+#       change — observation only.
+#   "trend_hmm_live": feed the new RegimeHMM-derived value to the live
+#       blend instead of the legacy model's.
+# The new derivation reuses RegimeHMM's trend model — already stabilized
+# by the 2026-08-24 feature-standardization fix (Change A) — instead of
+# fitting a second, separate, numerically-unstable HMM.
+MARKOV_SOURCE_MODE = os.getenv("MARKOV_SOURCE_MODE", "legacy_hmm").lower()
+
 # When True, sweep ALL symbols regardless of market hours. Useful for:
 #   - Regime tracking outside market hours (you still want to know the
 #     regime even if you can't trade)
@@ -1811,6 +1831,33 @@ class SweepOrchestrator(HeavySweepMixin):
         # from the transition matrix: P(UP|current_state) and P(DOWN|current_state).
         _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
         p_up, p_dn = 0.5, 0.5  # neutral defaults; replaced if HMM emits
+
+        # Part 1 Change B (2026-08-25): optionally derive the same matrix
+        # shape from RegimeHMM's own (Change-A-stabilized) trend model
+        # instead of the separate, numerically-unstable legacy HmmModel
+        # above. See MARKOV_SOURCE_MODE's docstring near the top of this
+        # file. Errors here never affect the live blend — they only skip
+        # the shadow comparison / live substitution, falling back to
+        # whatever the legacy model already produced above.
+        if MARKOV_SOURCE_MODE in ("trend_hmm_shadow", "trend_hmm_live"):
+            try:
+                _trend_hmm_T, _trend_hmm_current_state = model.trend_transition_matrix_3state(
+                    regime.trend_state
+                )
+                if MARKOV_SOURCE_MODE == "trend_hmm_shadow":
+                    logger.info(
+                        "%s: markov shadow — legacy current_state=%s row=%s | "
+                        "trend_hmm current_state=%s row=%s",
+                        symbol, _markov_current_state, _markov_T,
+                        _trend_hmm_current_state, _trend_hmm_T,
+                    )
+                elif MARKOV_SOURCE_MODE == "trend_hmm_live":
+                    _markov_T, _markov_current_state = _trend_hmm_T, _trend_hmm_current_state
+            except Exception as exc:
+                logger.warning(
+                    "%s: trend_hmm markov derivation failed (%s: %s), "
+                    "using legacy_hmm value", symbol, type(exc).__name__, exc,
+                )
 
         # ── 3a. TA indicator snapshot (migration 036) ──────────────────
         # Pull the latest 5 TA values (ADX, AO, BB Power, MACD, RSI) from

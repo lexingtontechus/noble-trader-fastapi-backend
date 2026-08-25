@@ -14,10 +14,15 @@ Covers:
      smoother, mirroring ``_smoothed_markov_hold_prob``.
   4. ``RegimeHMM._fit_converged`` — the R4 convergence diagnostic (non-
      convergence as a live blend-weight trigger).
+  5. ``RegimeHMM.trend_transition_matrix_3state`` — Part 1 Change B
+     (2026-08-25): derives p_markov_hold_n's 3x3 {UP,DOWN,FLAT} matrix
+     from the trend model instead of the separate, numerically-unstable
+     legacy HmmModel (regime_platform/services/hmm/model.py).
 """
 from types import SimpleNamespace
 
 import numpy as np
+from pytest import approx as pytest_approx
 from unittest.mock import MagicMock
 
 from regime_platform.core.regime_engine import RegimeHMM
@@ -358,3 +363,113 @@ def test_discounted_p_regime_reduces_its_blend_influence():
     # Regime disagrees with "short" -> pulls p_win down. Discounting its
     # weight must pull p_win back UP toward the other sources' consensus.
     assert discounted.p_win > full_weight.p_win
+
+
+# ─── 5. trend_transition_matrix_3state (Part 1 Change B) ────────────────
+
+
+def _make_fitted_stub(transmat: np.ndarray, label_map: dict[int, str]) -> RegimeHMM:
+    """A RegimeHMM instance with a hand-crafted trend model, bypassing a
+    real fit — lets the aggregation math be checked against hand-computed
+    expected values instead of whatever a real EM fit happens to produce."""
+    model = RegimeHMM(n_components=len(label_map))
+    model.fitted = True
+    model._trend_model = SimpleNamespace(
+        n_components=len(label_map), transmat_=transmat,
+    )
+    model._trend_label_map = label_map
+    return model
+
+
+def test_trend_transition_matrix_3state_raises_before_fit():
+    """Mirrors predict()'s own 'Call .fit() first' contract — this is a
+    read of the trend model fit() already produced, not independent
+    inference."""
+    model = RegimeHMM(n_components=4)
+    try:
+        model.trend_transition_matrix_3state("bull")
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_trend_transition_matrix_3state_aggregates_up_down_correctly():
+    """Hand-computed expected values for a known 4x4 transmat_, confirming
+    the UP/DOWN aggregation (and its renormalization) matches
+    _aggregate_transition's algorithm in the legacy model this replaces."""
+    # 0=strong_bear (DOWN), 1=bear (DOWN), 2=bull (UP), 3=strong_bull (UP)
+    transmat = np.array([
+        [0.5, 0.3, 0.1, 0.1],
+        [0.2, 0.2, 0.3, 0.3],
+        [0.1, 0.1, 0.4, 0.4],
+        [0.0, 0.0, 0.5, 0.5],
+    ])
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    model = _make_fitted_stub(transmat, label_map)
+
+    T3, current_state = model.trend_transition_matrix_3state("bull")
+
+    assert current_state == "UP"
+    assert T3["DOWN"]["DOWN"] == pytest_approx(0.6)
+    assert T3["DOWN"]["UP"] == pytest_approx(0.4)
+    assert T3["DOWN"]["FLAT"] == 0.0
+    assert T3["UP"]["UP"] == pytest_approx(0.9)
+    assert T3["UP"]["DOWN"] == pytest_approx(0.1)
+    assert T3["UP"]["FLAT"] == 0.0
+    for row in T3.values():
+        assert sum(row.values()) == pytest_approx(1.0)
+
+
+def test_trend_transition_matrix_3state_flat_gets_uniform_fallback():
+    """The trend model has no neutral state, so no component ever maps to
+    FLAT — its row must fall through to the uniform prior, mirroring the
+    legacy model's own 'no state maps to this label' handling rather than
+    silently reporting an all-zero (invalid, non-stochastic) row."""
+    transmat = np.array([
+        [0.6, 0.1, 0.2, 0.1],
+        [0.2, 0.5, 0.2, 0.1],
+        [0.1, 0.2, 0.5, 0.2],
+        [0.1, 0.1, 0.2, 0.6],
+    ])
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    model = _make_fitted_stub(transmat, label_map)
+
+    T3, _ = model.trend_transition_matrix_3state("bear")
+
+    assert T3["FLAT"] == {"UP": pytest_approx(1 / 3), "DOWN": pytest_approx(1 / 3), "FLAT": pytest_approx(1 / 3)}
+
+
+def test_trend_transition_matrix_3state_current_state_matches_grouping():
+    """current_state must resolve through the SAME UP/DOWN grouping the
+    matrix itself is built from, for every 4-state trend label — an
+    unmapped/unexpected label (e.g. a future label-set change) fails open
+    to FLAT rather than raising."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    model = _make_fitted_stub(transmat, label_map)
+
+    assert model.trend_transition_matrix_3state("strong_bull")[1] == "UP"
+    assert model.trend_transition_matrix_3state("bull")[1] == "UP"
+    assert model.trend_transition_matrix_3state("bear")[1] == "DOWN"
+    assert model.trend_transition_matrix_3state("strong_bear")[1] == "DOWN"
+    assert model.trend_transition_matrix_3state("neutral")[1] == "FLAT"
+    assert model.trend_transition_matrix_3state("unknown_label")[1] == "FLAT"
+
+
+def test_trend_transition_matrix_3state_on_real_fit_returns_valid_matrix():
+    """Integration-level: a real (tiny synthetic) fit + predict, then the
+    new derivation — confirms the wiring against real hmmlearn output,
+    not just the hand-crafted stub above."""
+    rng = np.random.RandomState(3)
+    prices = 100 + np.cumsum(rng.normal(0, 0.01, size=150))
+    model = RegimeHMM(n_components=4)
+    model.fit(prices)
+    regime = model.predict(prices)
+
+    T3, current_state = model.trend_transition_matrix_3state(regime.trend_state)
+
+    assert current_state in ("UP", "DOWN", "FLAT")
+    for row in T3.values():
+        assert sum(row.values()) == pytest_approx(1.0)
+        for p in row.values():
+            assert 0.0 <= p <= 1.0
