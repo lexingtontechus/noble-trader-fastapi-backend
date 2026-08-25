@@ -24,10 +24,16 @@ Supporting modules:
 - `pipeline.py` - Orchestrates the full pipeline flow
 - `trade_journal.py` - Records trades, computes win rate, profit factor, Sharpe, max drawdown, Kelly estimates
 - `config.py` - `RenkoConfig` dataclass with 30+ tunable parameters
-- `redis_cache.py` - Redis L1 cache for sub-5ms snapshot restores
 - `router.py` - 27 FastAPI REST endpoints
 - `integration.py` - Bridge to Noble Trader Agent backend (regime/Kelly) and Supabase trade push
 - `backtest.py` / `tests.py` - Backtesting and unit tests
+
+> **2026-08-25**: Redis retired from this module entirely. Pipeline
+> snapshots persist to Supabase (`nt_renko_snapshot`) only —
+> `redis_cache.py` (L1 cache) and `trading_heartbeat.py`
+> (`trading:heartbeat:{symbol}` / `trading:config:{symbol}`) are deleted.
+> `/renko/heartbeat` and `/renko/heartbeat/all` now derive their response
+> directly from the in-memory pipeline instead of a Redis-backed store.
 
 ## API Endpoints
 
@@ -166,26 +172,23 @@ The backend maintains an in-memory pipeline registry: one `RenkoPipeline` instan
 
 ## Data Persistence & Freshness
 
-### Tiered Cache Architecture (v7.2)
+### Persistence (Supabase only, 2026-08-25)
 
-The Renko pipeline uses a two-tier cache for state persistence, optimized for MCP agent autonomy:
-
-| Tier | Store | Latency | TTL | Format |
-|------|-------|---------|-----|--------|
-| **L1** | Redis | <5ms | 4h | gzip-compressed JSON |
-| **L2** | Supabase | ~100ms | Durable | JSONB |
+The Renko pipeline persists state to Supabase (`nt_renko_snapshot`) directly
+— the Redis L1 cache described in earlier versions of this doc has been
+retired (~100ms restores throughout; there was never a case in production
+where the L1 cache was actually populated in a way the L2 path didn't
+already cover).
 
 **Restore hierarchy** (MCP agent cold-start path):
-1. **Redis L1 hit** -> sub-5ms, instant hydration (ideal for MCP agents)
-2. **Supabase L2 hit** -> ~100ms, backfill Redis L1 for next time
-3. **Yahoo Finance fetch** -> 5-30s, full warmup cycle
+1. **Supabase hit** -> ~100ms, standard hydration
+2. **Yahoo Finance fetch** -> 5-30s, full warmup cycle
 
-**Dual-write strategy**:
-- Every save writes to Redis L1 first (fire-and-forget), then Supabase L2
-- Confirmed saves (`POST /renko/snapshot/save`) await both writes
+**Write strategy**:
+- Confirmed saves (`POST /renko/snapshot/save`) await the Supabase write
 - Auto-saves only trigger on state-change events (position open/close, config change) — no periodic checkpoint
 
-### Supabase L2 Cache (`ta_renko_snapshot`)
+### Supabase Cache (`nt_renko_snapshot`)
 
 Warm-up results are saved to Supabase for instant loading on subsequent visits. Each row is keyed by `(symbol, brick_size)` and stores:
 
@@ -193,12 +196,6 @@ Warm-up results are saved to Supabase for instant loading on subsequent visits. 
 - `config` (JSONB) - Pipeline configuration
 - `total_bricks`, `total_trades`, `total_pnl_bricks` - Quick-access columns
 - `updated_at` (TIMESTAMPTZ) - Last refresh timestamp
-
-### Redis L1 Cache (`renko:snapshot:{symbol}:{brick_size}`)
-
-The Redis L1 cache stores gzip-compressed v3.1 snapshots for sub-5ms restores. A lightweight metadata entry (`renko:snapshot:meta:{symbol}`) is also stored for quick readiness checks without deserializing the full snapshot.
-
-**Configuration**: Set `REDIS_URL` environment variable on Render. If not set, the L1 cache is a no-op and the system falls back to Supabase L2 directly (~100ms restores).
 
 ### Cache TTL: 4 Hours
 
@@ -213,7 +210,7 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
 - **Safety**: Only rows for the requested symbol are pruned; other symbols are unaffected
 - **Response field**: `pruned_snapshots` indicates how many rows were removed
 
-### Data Flow Decision Tree (v7.2 - 3-Tier)
+### Data Flow Decision Tree (2-Tier: Supabase + Yahoo)
 
 ```
 +---------------------------------------------------+
@@ -223,27 +220,25 @@ When the warmup endpoint fetches fresh Yahoo data, it automatically prunes Supab
                          |
                          v
               +----------------------+
-              |  Tiered Restore      |
               |  _restore_snapshot() |
               +----------+-----------+
                          |
-              +----------+----------+
-              |         |           |
-              v         v           v
-          L1: REDIS  L2: SUPA   L3: YAHOO
-          (<5ms)    (~100ms)   (5-30s)
-              |         |           |
-              v         v           v
-          Hydrate   Hydrate +   Full warmup
-          DONE      backfill    + prune +
-                    L1 cache    dual-write
-                                DONE
+                   +-----+-----+
+                   |           |
+                   v           v
+              SUPABASE       YAHOO
+              (~100ms)      (5-30s)
+                   |           |
+                   v           v
+               Hydrate    Full warmup
+               DONE       + prune +
+                          save
+                          DONE
 
 +---------------------------------------------------+
 |           Auto-Save Triggers (6 events)            |
 |  Position open/close, regime, equity, sizing,      |
-|  live toggle                                       |
-|  -> dual-write: Redis L1 + Supabase L2             |
+|  live toggle -> write to Supabase                  |
 +---------------------------------------------------+
 ```
 
@@ -266,56 +261,20 @@ When cached data is stale (>4 hours old), the UI does **not** block with a loadi
 
 This avoids a blank screen during the 10-30 second warm-up process and provides the best user experience for returning visitors.
 
-## True Signal Gateway (v8.0)
+## True Signal Gateway (v8.0-v8.1, RETIRED 2026-08-25)
 
-The True Signal Gateway decouples **liveness** from **state** to eliminate the need for external agents to poll Redis hashes. The **SweepOrchestrator on LightningAI** writes all Redis state and publishes pub/sub heartbeats in a single pipelined round-trip per symbol per sweep cycle. Edge functions are **deprecated** — `supabase/functions/` is retained for reference only.
-
-> **NOTE:** `agent:{symbol}` is a Redis pub/sub **channel**, not a key. It will never appear under `KEYS`/`SCAN`. Validate with `PUBSUB NUMSUB agent:{symbol}`.
-
-### Separation of Concerns
-
-| Key | Role | Written By | Frequency |
-|-----|------|-----------|----------|
-| `trading:heartbeat:{symbol}` | **Liveness** — proves system is alive | SweepOrchestrator (LightningAI) | Every sweep cycle |
-| `trading:config:{symbol}` | **Full State** — always written for reference | SweepOrchestrator (LightningAI) | Every sweep cycle (1h TTL) |
-| `agent:{symbol}` (Pub/Sub) | **Signal Push** — heartbeat + signal data | SweepOrchestrator (LightningAI) | Every sweep cycle |
-| `signal.raw.noble_trader` (Pub/Sub) | **Aggregate Heartbeat** — all symbol heartbeats in one channel | SweepOrchestrator (LightningAI) | Every sweep cycle |
-
-### The 4 Gates
-
-Applied by the SweepOrchestrator after computing the full config payload:
-
-1. **Regime Shift Hard Block** — No regime shift in the last 300s (5-min cooldown)
-2. **Shift Velocity Cap** — < 3 regime shifts in the last 24h (market not turbulent)
-3. **Regime Confidence** — `regime_conf > 0.40` (statistically confident)
-4. **Normalized EV** — `ev_per_dollar > 0.15` (positive edge)
-
-### What Changed (v8.1)
-
-- **Added**: `signal.raw.noble_trader` aggregate pub/sub channel — receives all heartbeat payloads alongside per-symbol `agent:{symbol}` channels. Enables Hermes L0 subscriber to listen to one channel instead of N per-symbol channels, eliminating restarts when symbols are added.
-
-### What Changed (v8.0)
-
-- **Removed**: Per-tick `trading:heartbeat:{symbol}` writes from the Python backend (`trading_heartbeat.update()` on every tick). Heartbeat is now written by the SweepOrchestrator on LightningAI every sweep cycle.
-- **Removed**: Per-snapshot `trading:config:{symbol}` cache writes from `_save_snapshot()` in `router.py` (the `cache_config()` method was removed — single writer is now the orchestrator).
-- **Removed**: Periodic 100th-tick L1 snapshot checkpoint — snapshots now only save on state-change events (position open/close), reducing Redis SET volume by ~90%.
-- **Added**: `PUBLISH agent:{symbol}` by the SweepOrchestrator as part of the pipelined Redis write (HSET + EXPIRE + SET + PUBLISH in one round-trip).
-- **Optimized**: Config writes are now a single Redis pipeline (HSET + EXPIRE + SET heartbeat + PUBLISH), cutting per-symbol round-trips from ~3 to 1. Config keys have a 1h TTL (previously immortal).
-
-### How an External Agent Consumes This
-
-```
-subscribe agent:BTC
-  → receives {"signal":"buy","ev_per_dollar":"0.55","regime":"high_vol_bull",...}
-  → Agent evaluates: True Signal. Execute on exchange.
-
-(silence — no push means conditions aren't favorable for a new signal)
-```
-
-The agent:
-- **Subscribes** to `agent:BTC` — gets pushed only when all 4 gates pass
-- **Polls** `trading:heartbeat:BTC` every 15 min — cheap liveness check (single key, no config hash)
-- **Never polls** `trading:config:BTC` — that data is pushed on True Signal
+Historical only — this entire mechanism depended on Redis (both the
+SweepOrchestrator's own state/heartbeat writes and this module's
+`trading_heartbeat`/`redis_cache` modules), all of which were retired when
+Redis was fully deprecated from the platform. The SweepOrchestrator no
+longer writes any Redis state or publishes pub/sub heartbeats; qualified
+signals go directly to Discord (`discord_delivery.py` in
+`regime_platform/sweep_orchestrator/`) instead of a Redis channel an
+external agent would subscribe to. Kept here only so the "4 Gates"
+qualification logic they describe (regime shift cooldown, shift velocity
+cap, regime confidence, normalized EV) is still discoverable — that
+qualification logic itself moved to the SweepOrchestrator's own gate
+evaluation and is unaffected by the Redis removal.
 
 ## Warm-up Process
 
@@ -370,13 +329,13 @@ v7.1 introduces a **backend-native warmup endpoint** that eliminates the need fo
 
 ### Snapshot Save Endpoint (`POST /renko/snapshot/save`)
 
-Explicitly saves the current pipeline state to Redis L1 + Supabase L2 (confirmed, dual-write). Useful for MCP agents that want to persist state after making changes (setting regime, equity, or after processing a series of ticks).
+Explicitly saves the current pipeline state to Supabase. Useful for MCP agents that want to persist state after making changes (setting regime, equity, or after processing a series of ticks).
 
 **Response includes:** `brick_count`, `total_trades`, `bricks_serialized`, `trades_serialized`, `classified_serialized`, `snapshot_ts`, `has_active_position`, `readiness`
 
 ### Auto-Save Events (MCP Agent Safety)
 
-The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2) on the following critical events, ensuring MCP agents never lose state after a restart:
+The pipeline automatically saves snapshots to Supabase on the following critical events, ensuring MCP agents never lose state after a restart:
 
 | Event | Trigger | Why Critical |
 |-------|---------|-------------|
@@ -388,7 +347,7 @@ The pipeline automatically saves snapshots (dual-write to Redis L1 + Supabase L2
 | Live toggle | `POST /renko/live/toggle` | Execution mode must persist |
 | Batch complete | `POST /renko/tick/batch` | Full pipeline state after warmup |
 
-> **v8.0**: Removed the periodic 100th-tick checkpoint. L1 snapshots are now writes only on actual state-change events, reducing Redis SET volume by ~90%. Supabase L2 persistence covers crash recovery for intermediate states.
+> **v8.0**: Removed the periodic 100th-tick checkpoint — snapshots are now written only on actual state-change events. **2026-08-25**: Redis L1 removed entirely; Supabase is now the sole persistence layer for both event-driven and crash-recovery snapshots.
 
 ## MCP Agent Workflow
 

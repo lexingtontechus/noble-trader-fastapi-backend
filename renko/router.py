@@ -46,8 +46,6 @@ from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
 from renko.brick_engine import BrickDirection
-from renko.redis_cache import renko_cache
-from renko.trading_heartbeat import trading_heartbeat
 
 # Discord & Telegram notifications (graceful import - not required for pipeline to work)
 try:
@@ -619,39 +617,9 @@ async def _get_pipeline_async(
         return restored
 
     # No snapshot available - create fresh pipeline from runtime config
-    # Try trading:config:{symbol} Redis cache first to skip Supabase query
-    cached_config = await trading_heartbeat.get_config(symbol)
-    if cached_config and not config_overrides:
-        try:
-            # Build RenkoConfig from cached Redis hash (sub-ms vs ~100ms Supabase)
-            config_kwargs = {"symbol": symbol}
-            _defaults = RenkoConfig()
-            for field_name in RenkoConfig.__dataclass_fields__:
-                if field_name in cached_config and field_name != "config_ts":
-                    field_type = type(getattr(_defaults, field_name))
-                    raw = cached_config[field_name]
-                    try:
-                        if field_type == bool:
-                            config_kwargs[field_name] = raw.lower() == "true"
-                        elif field_type == int:
-                            config_kwargs[field_name] = int(float(raw))
-                        elif field_type == float:
-                            config_kwargs[field_name] = float(raw)
-                        else:
-                            config_kwargs[field_name] = raw
-                    except (ValueError, TypeError):
-                        pass  # Skip fields we can't parse
-            config = RenkoConfig(**config_kwargs)
-            log.info("Created pipeline for %s from trading:config cache", symbol)
-        except Exception as e:
-            log.debug("Failed to create config from cache for %s: %s — falling back", symbol, e)
-            config = await RenkoConfig.from_runtime_config(
-                overrides={"symbol": symbol, **(config_overrides or {})}
-            )
-    else:
-        config = await RenkoConfig.from_runtime_config(
-            overrides={"symbol": symbol, **(config_overrides or {})}
-        )
+    config = await RenkoConfig.from_runtime_config(
+        overrides={"symbol": symbol, **(config_overrides or {})}
+    )
     _pipelines[key] = RenkoPipeline(config)
     return _pipelines[key]
 
@@ -676,19 +644,10 @@ async def _on_config_changed(key: str, entry) -> None:
     so the next request creates fresh pipelines with updated config.
     This ensures runtime config changes take effect immediately without
     requiring a server restart.
-    
-    Also invalidates trading:config:{symbol} Redis caches so the next
-    pipeline creation picks up the new config from Supabase.
     """
     if key.startswith("renko."):
         invalidated = list(_pipelines.keys())
         _pipelines.clear()
-        # Invalidate all config caches (they're now stale)
-        if trading_heartbeat.enabled:
-            for pipeline_key in invalidated:
-                # pipeline_key may be "symbol" or "user_id:symbol"
-                sym = pipeline_key.split(":")[-1] if ":" in pipeline_key else pipeline_key
-                asyncio.create_task(trading_heartbeat.invalidate_config(sym))
         if invalidated:
             log.info(
                 "Config %s changed - invalidated %d pipeline(s): %s",
@@ -815,18 +774,6 @@ if FASTAPI_AVAILABLE:
             checks["supabase_snapshot"] = {"ok": False, "error": str(e)}
             checks["errors"].append(f"supabase_snapshot: {e}")
 
-        # 5. Test Redis L1 cache
-        try:
-            checks["redis_l1_cache"] = {
-                "enabled": renko_cache.enabled,
-            }
-            if renko_cache.enabled:
-                symbols = await renko_cache.list_symbols()
-                checks["redis_l1_cache"]["cached_symbols"] = len(symbols)
-                checks["redis_l1_cache"]["symbols"] = symbols[:5]  # Show first 5
-        except Exception as e:
-            checks["redis_l1_cache"] = {"enabled": renko_cache.enabled, "error": str(e)}
-
         # 6. Test _get_pipeline_async (the actual call path for GET endpoints)
         try:
             pipeline = await _get_pipeline_async("SPY")
@@ -842,75 +789,15 @@ if FASTAPI_AVAILABLE:
 
         return checks
 
-    @renko_router.get("/heartbeat")
-    async def get_heartbeat(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
-        """Get instant pipeline state from trading:heartbeat:{symbol}.
-
-        O(1) Redis HGETALL — no Supabase query, no pipeline hydration.
-        Returns readiness level, brick count, last price, position state,
-        and data freshness. Use this for:
-          - Frontend initialization (skip 3-step waterfall)
-          - MCP agent readiness checks (before trading)
-          - Auto-warmup scheduler (find stale symbols)
-
-        Falls back to in-memory pipeline state if Redis is unavailable.
-        """
-        # Try Redis heartbeat first (sub-ms)
-        heartbeat = await trading_heartbeat.get(symbol)
-        if heartbeat:
-            # Parse numeric fields for convenience
-            try:
-                brick_count = int(heartbeat.get("brick_count", "0"))
-            except (ValueError, TypeError):
-                brick_count = 0
-            try:
-                last_price = float(heartbeat.get("last_price", "0"))
-            except (ValueError, TypeError):
-                last_price = 0.0
-            try:
-                snapshot_ts = float(heartbeat.get("snapshot_ts", "0"))
-            except (ValueError, TypeError):
-                snapshot_ts = 0.0
-            try:
-                last_tick_ts = float(heartbeat.get("last_tick_ts", "0"))
-            except (ValueError, TypeError):
-                last_tick_ts = 0.0
-            try:
-                last_brick_ts = float(heartbeat.get("last_brick_ts", "0"))
-            except (ValueError, TypeError):
-                last_brick_ts = 0.0
-
-            age_seconds = (time.time() - snapshot_ts) if snapshot_ts > 0 else None
-            tick_age_seconds = (time.time() - last_tick_ts) if last_tick_ts > 0 else None
-
-            return {
-                "available": True,
-                "source": "redis",
-                "symbol": symbol,
-                "status": heartbeat.get("status", "cold"),
-                "brick_count": brick_count,
-                "last_price": last_price,
-                "last_brick_ts": last_brick_ts,
-                "last_tick_ts": last_tick_ts,
-                "snapshot_ts": snapshot_ts,
-                "has_position": heartbeat.get("has_position", "false") == "true",
-                "warmup_mode": heartbeat.get("warmup_mode", ""),
-                "source_mode": heartbeat.get("source", ""),
-                "regime": heartbeat.get("regime", ""),
-                "direction": heartbeat.get("direction", ""),
-                "sizing_mode": heartbeat.get("sizing_mode", "kelly"),
-                "equity": heartbeat.get("equity", "100000"),
-                "age_seconds": round(age_seconds) if age_seconds is not None else None,
-                "tick_age_seconds": round(tick_age_seconds) if tick_age_seconds is not None else None,
-                "is_fresh": age_seconds is not None and age_seconds < 14400,
-            }
-
-        # Fallback: derive from in-memory pipeline
-        pipeline = await _get_pipeline_async(symbol)
+    def _pipeline_heartbeat(symbol: str, pipeline: RenkoPipeline) -> Dict[str, Any]:
+        """Derive a heartbeat-shaped summary from an in-memory pipeline —
+        the sole source now that the Redis heartbeat store is gone
+        (2026-08-25; it was never actually populated in production even
+        before removal — nothing wrote trading:heartbeat:{symbol})."""
         readiness = pipeline.readiness
         return {
             "available": True,
-            "source": "pipeline_fallback",
+            "source": "pipeline",
             "symbol": symbol,
             "status": readiness["level"],
             "brick_count": readiness["brick_count"],
@@ -933,24 +820,36 @@ if FASTAPI_AVAILABLE:
             "is_fresh": False,
         }
 
+    @renko_router.get("/heartbeat")
+    async def get_heartbeat(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
+        """Get instant pipeline state derived from the in-memory pipeline.
+
+        Returns readiness level, brick count, last price, position state.
+        Use this for:
+          - Frontend initialization (skip 3-step waterfall)
+          - MCP agent readiness checks (before trading)
+          - Auto-warmup scheduler (find stale symbols)
+        """
+        pipeline = await _get_pipeline_async(symbol)
+        return _pipeline_heartbeat(symbol, pipeline)
+
     @renko_router.get("/heartbeat/all")
     async def get_all_heartbeats(user=Depends(get_authed_user)) -> Dict[str, Any]:
-        """Get heartbeat status for all tracked symbols.
+        """Get heartbeat status for all currently in-memory pipelines.
 
         Useful for the auto-warmup scheduler and dashboard overview.
         """
-        symbols = await trading_heartbeat.list_symbols()
         results = {}
-        for sym in symbols:
-            hb = await trading_heartbeat.get(sym)
-            if hb:
-                results[sym] = {
-                    "status": hb.get("status", "cold"),
-                    "brick_count": int(hb.get("brick_count", "0")),
-                    "has_position": hb.get("has_position", "false") == "true",
-                    "direction": hb.get("direction", ""),
-                    "regime": hb.get("regime", ""),
-                }
+        for pipeline_key, pipeline in list(_pipelines.items()):
+            sym = pipeline_key.split(":")[-1] if ":" in pipeline_key else pipeline_key
+            hb = _pipeline_heartbeat(sym, pipeline)
+            results[sym] = {
+                "status": hb["status"],
+                "brick_count": hb["brick_count"],
+                "has_position": hb["has_position"],
+                "direction": hb["direction"] or "",
+                "regime": hb["regime"] or "",
+            }
         return {"symbols": results, "count": len(results)}
 
     @renko_router.post("/tick")
@@ -990,24 +889,6 @@ if FASTAPI_AVAILABLE:
         if has_position_event:
             asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
 
-        # ── v8.0 REMOVED: per-tick trading heartbeat writes ──────
-        # Heartbeat is now written by the SweepOrchestrator on LightningAI
-        # every sweep cycle (liveness). The Python backend no longer
-        # writes to trading:heartbeat:{symbol} on every tick.
-        # The agent subscribes to agent:{symbol} for signals
-        # and polls trading:heartbeat:{symbol} at 15-min cadence.
-        #
-        # if has_position_event:
-        #     asyncio.create_task(trading_heartbeat.update_from_pipeline(symbol, pipeline))
-        # else:
-        #     asyncio.create_task(trading_heartbeat.update(
-        #         symbol,
-        #         last_price=body.price,
-        #         last_tick_ts=time.time(),
-        #         brick_count=pipeline.brick_engine.brick_count,
-        #         has_position=pipeline.risk_manager.has_position,
-        #     ))
-
         return result
 
     @renko_router.post("/tick/batch")
@@ -1037,7 +918,7 @@ if FASTAPI_AVAILABLE:
         saved = await _save_pipeline_snapshot_confirmed(active_symbol, pipeline)
         result["_persistence"] = {
             "saved": saved,
-            "store": "L1+L2" if renko_cache.enabled else "L2-only",
+            "store": "supabase",
         }
 
         return result
@@ -1258,7 +1139,7 @@ if FASTAPI_AVAILABLE:
             saved = await _save_pipeline_snapshot_confirmed(symbol, pipeline)
             result["_persistence"] = {
                 "saved": saved,
-                "store": "L1+L2" if renko_cache.enabled else "L2-only",
+                "store": "supabase",
                 "mode": "cold_warmup",
             }
 
@@ -1792,12 +1673,6 @@ if FASTAPI_AVAILABLE:
                                     f"Warmup: restored fresh snapshot for {symbol} "
                                     f"(age={age_seconds:.0f}s)"
                                 )
-                                # Update heartbeat: snapshot restored
-                                asyncio.create_task(trading_heartbeat.update_from_pipeline(symbol, pipeline))
-                                asyncio.create_task(trading_heartbeat.update(
-                                    symbol, source="snapshot_restore", warmup_mode="restore",
-                                    snapshot_ts=_time.time(),
-                                ))
                                 resp_data = {
                                     "status": "ok",
                                     "symbol": symbol,
@@ -1880,11 +1755,6 @@ if FASTAPI_AVAILABLE:
                             f"Warmup: no new prices for {symbol} since last brick "
                             f"(cutoff={cutoff_ts})"
                         )
-                        # Update heartbeat: still up to date
-                        asyncio.create_task(trading_heartbeat.update(
-                            symbol, source="up_to_date", warmup_mode="incremental",
-                            snapshot_ts=_time.time(),
-                        ))
                         resp_data = {
                             "status": "ok",
                             "symbol": symbol,
@@ -1923,12 +1793,6 @@ if FASTAPI_AVAILABLE:
                 restored = await _restore_pipeline_snapshot(symbol, user_id=user_id)
                 if restored:
                     _pipelines[key] = restored
-                    # Update heartbeat: stale snapshot restored
-                    asyncio.create_task(trading_heartbeat.update_from_pipeline(symbol, restored))
-                    asyncio.create_task(trading_heartbeat.update(
-                        symbol, source="stale_snapshot_restore", warmup_mode="full",
-                        snapshot_ts=_time.time(),
-                    ))
                     resp_data = {
                         "status": "ok",
                         "symbol": symbol,
@@ -1984,12 +1848,6 @@ if FASTAPI_AVAILABLE:
         # ── Step 6: Save snapshot ──
         _pipelines[key] = pipeline
         await _save_pipeline_snapshot(symbol, pipeline, user_id=user_id)
-
-        # ── Step 6.1: Update trading heartbeat (warmup complete) ──
-        # The _save_snapshot also updates heartbeat, but we add warmup-specific fields
-        asyncio.create_task(trading_heartbeat.update(
-            symbol, source="yahoo_fetch", warmup_mode=effective_mode,
-        ))
 
         # ── Step 6.5: Prune stale snapshots (housekeeping) ──
         prune_count = await _prune_stale_snapshots(symbol, max_age_hours=24.0)
@@ -2411,19 +2269,6 @@ async def _save_snapshot(
         snap = pipeline.snapshot()
         brick_size = snap["config"].get("brick_size", 0.50)
 
-        # ── v8.0 REMOVED: per-snapshot heartbeat + config writes ──
-        # trading:heartbeat:{symbol} is now liveness-only (written by the
-        # SweepOrchestrator on LightningAI every sweep cycle). trading:config:{symbol}
-        # is the Golden State, written exclusively by the SweepOrchestrator.
-        #
-        # asyncio.create_task(trading_heartbeat.update_from_pipeline(symbol, pipeline))
-        # asyncio.create_task(trading_heartbeat.update(symbol, snapshot_ts=time.time()))
-
-        # ── Dual-write: Redis L1 (fast, always non-blocking) ──
-        if renko_cache.enabled:
-            asyncio.create_task(renko_cache.save(symbol, brick_size, snap))
-
-        # ── Dual-write: Supabase L2 (durable) ──
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
             return False
@@ -2461,9 +2306,8 @@ async def _save_snapshot(
                     n_bricks = len(snap.get("bricks", []))
                     n_trades = len(snap.get("trades", []))
                     has_pos = snap.get("active_position") is not None
-                    l1_status = "L1+L2" if renko_cache.enabled else "L2-only"
                     log.info(
-                        f"Confirmed snapshot save ({l1_status}) for {symbol}: "
+                        f"Confirmed snapshot save for {symbol}: "
                         f"{n_bricks} bricks, {n_trades} trades, "
                         f"active_position={has_pos}, user_id={user_id}"
                     )
@@ -2497,11 +2341,7 @@ async def _save_snapshot(
 
 
 async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None) -> Optional[RenkoPipeline]:
-    """Restore a pipeline from the best available cache tier. Returns None on failure.
-
-    Tiered restore (MCP agent perspective):
-      L1: Redis    - sub-5ms, compressed JSON, 4h TTL
-      L2: Supabase - ~100ms, durable, full history
+    """Restore a pipeline from Supabase. Returns None on failure.
 
     v2+ snapshots include ``bricks``, ``classified``, and ``trades`` arrays
     inside the ``stats`` JSONB column, allowing full pipeline hydration
@@ -2511,23 +2351,6 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
     user_id filter for user-scoped restore. Falls back to admin (user_id=NULL)
     namespace if no user-scoped snapshot exists.
     """
-    # ── Tier 1: Redis L1 cache (<5ms) ──
-    if renko_cache.enabled:
-        try:
-            data = await renko_cache.load(symbol)
-            if data:
-                pipeline = RenkoPipeline.from_snapshot(data)
-                n_bricks = len(data.get("bricks", []))
-                n_trades = len(data.get("trades", []))
-                log.info(
-                    f"Restored pipeline from Redis L1 for {symbol}: "
-                    f"{n_bricks} bricks, {n_trades} trades"
-                )
-                return pipeline
-        except Exception as e:
-            log.debug(f"Redis L1 restore failed for {symbol}: {e} - trying Supabase L2")
-
-    # ── Tier 2: Supabase L2 (~100ms) ──
     try:
         from regime_platform.core.settings import settings
         if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
@@ -2582,13 +2405,10 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
                         n_trades = len(data.get("trades", []))
                         n_classified = len(data.get("classified", []))
                         log.info(
-                            f"Restored pipeline from Supabase L2 for {symbol}: "
+                            f"Restored pipeline from Supabase for {symbol}: "
                             f"{n_bricks} bricks, {n_classified} classified, {n_trades} trades, "
                             f"regime={data.get('regime')}, equity={data.get('equity')}"
                         )
-                        # Backfill Redis L1 so next restore is faster
-                        brick_size = data.get("config", {}).get("brick_size", 0.50)
-                        asyncio.create_task(renko_cache.save(symbol, brick_size, data))
                         return pipeline
     except Exception as e:
         log.debug(f"Pipeline snapshot restore error for {symbol}: {e}")

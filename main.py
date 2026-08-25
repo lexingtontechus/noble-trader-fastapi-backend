@@ -371,14 +371,6 @@ async def lifespan(app: FastAPI):
     # v7.3: persistence.close() now also flushes remaining buffered prices
     await persistence.close()
 
-    # Close Renko L1 Redis cache
-    try:
-        from renko.redis_cache import renko_cache
-        await renko_cache.close()
-        log.info("Renko L1 Redis cache closed")
-    except Exception as e:
-        log.warning(f"Renko L1 cache shutdown error: {e}")
-
     # Close runtime config HTTP client
     try:
         from regime_platform.core.runtime_config import runtime_config

@@ -34,7 +34,6 @@ from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHT
 from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
 from regime_platform.services.hmm import quote_fetcher as hmm_quote_fetcher
 from regime_platform.services.hmm import ta_fetcher as hmm_ta_fetcher
-from renko.trading_heartbeat import CONFIG_TTL
 from regime_platform.sweep_orchestrator.market_hours import is_market_open
 from regime_platform.sweep_orchestrator.price_fetcher import (
     fetch_candles_for_symbols,

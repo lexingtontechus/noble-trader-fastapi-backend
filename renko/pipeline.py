@@ -18,14 +18,10 @@ Integration with Noble Trader Agent:
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
-
-import redis.asyncio as redis
 
 from renko.brick_engine import RenkoBrickEngine, Brick, BrickDirection
 from renko.swing_classifier import SwingClassifier, ClassifiedBrick, SwingLabel
@@ -35,7 +31,6 @@ from renko.risk_manager import RiskManager, RiskParams, ActivePosition, TradeRes
 from renko.executor import AlpacaExecutor, OrderResult
 from renko.trade_journal import TradeJournal, TradeRecord
 from renko.config import RenkoConfig
-from regime_platform.core.settings import settings
 
 import hashlib
 import numpy as np
@@ -109,15 +104,6 @@ class RenkoPipeline:
         self._on_signal = on_signal
         self._on_trade = on_trade
         self._on_brick = on_brick
-        
-        # Initialize Redis client for signal publishing
-        self._redis_client = None
-        if settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL:
-            self._redis_client = redis.from_url(
-                settings.REDIS_URL or settings.UPSTASH_REDIS_REST_URL,
-                decode_responses=False
-            )
-            self._redis_channel = "signal.raw.noble_trader"
 
         # Initialize pipeline components
         self.brick_engine = RenkoBrickEngine(
@@ -216,63 +202,6 @@ class RenkoPipeline:
         self._prev_regime: Optional[str] = None
         self._regime_shift: Optional[str] = None  # "bull_bear" or "bear_bull"
 
-    # ── Redis Signal Publishing ────────────────────────────────────────────────
-
-    async def _publish_qualified_signal(self, filtered_signal: FilteredSignal) -> None:
-        """
-        Publish qualified signals to Redis pub/sub for external subscribers.
-        
-        Args:
-            filtered_signal: The qualified signal that passed all filters
-        """
-        if not self._redis_client:
-            return
-            
-        try:
-            payload = {
-                "type": "renko_signal",
-                "symbol": filtered_signal.original_signal.symbol,
-                "timestamp": time.time(),
-                "pattern": filtered_signal.original_signal.pattern_type.value,
-                "direction": filtered_signal.original_signal.direction.value,
-                "price": filtered_signal.original_signal.price,
-                "confidence": filtered_signal.original_signal.strength,
-                "passed_filters": filtered_signal.passed_filters,
-                "regime_aligned": filtered_signal.regime_aligned,
-                "position_size_usd": filtered_signal.position_size_usd,
-                "kelly_fraction": filtered_signal.kelly_fraction,
-                "brick_size": filtered_signal.brick_size,
-                "pipeline_source": "renko_hft",
-                "regime": self._current_regime,
-                "regime_quality": self._current_regime_quality,
-                "regime_confidence": self._current_regime_confidence,
-                "current_drawdown": self._current_drawdown,
-                "equity": self._current_equity,
-                "masaniello_sizing": filtered_signal.sizing_mode == "masaniello",
-                "masaniello_factor": filtered_signal.masaniello_factor if filtered_signal.sizing_mode == "masaniello" else 0.0,
-                "quality_factor": filtered_signal.quality_factor,
-                "drawdown_factor": filtered_signal.drawdown_factor,
-                "volatility_factor": filtered_signal.volatility_factor,
-                "risk_fraction": filtered_signal.risk_fraction,
-                "contracts": filtered_signal.contracts
-            }
-            
-            await self._redis_client.publish(self._redis_channel, json.dumps(payload))
-            logger.info(f"Published qualified signal for {filtered_signal.original_signal.symbol} to Redis")
-            
-        except Exception as e:
-            logger.error(f"Failed to publish signal to Redis: {e}")
-            # Don't fail the pipeline - Redis is optional for core functionality
-
-    async def close(self) -> None:
-        """Close the Redis client connection."""
-        if self._redis_client:
-            try:
-                await self._redis_client.aclose()
-                logger.info("Redis client closed")
-            except Exception as e:
-                logger.error(f"Error closing Redis client: {e}")
-
     # ── Public API ────────────────────────────────────────────────
 
     def process_tick(self, price: float, ts: Optional[float] = None) -> Dict[str, Any]:
@@ -359,17 +288,6 @@ class RenkoPipeline:
             self._last_filtered = filtered
             if self._on_signal:
                 self._on_signal(filtered)
-            
-            # Publish qualified signal to Redis for external subscribers.
-            # Only fire when an event loop is running (live path); the sync
-            # backtest path has no loop and must not fail on this.
-            if filtered.original_signal.pattern_type.value != "no_pattern":
-                try:
-                    asyncio.get_running_loop()
-                    asyncio.create_task(self._publish_qualified_signal(filtered))
-                except RuntimeError:
-                    # No running event loop (sync backtest) — skip publish.
-                    pass
 
             # Stage 5: Open position (if none active)
             if not self.risk_manager.has_position:
@@ -1051,71 +969,17 @@ class RenkoPipeline:
         except RuntimeError as e:
             logger.warning(f"Cannot open position: {e}")
 
-    def _fetch_prediction_data(self) -> Optional[Dict[str, float]]:
-        """Fetch prediction data from Redis for the current symbol.
-
-        Best-effort enrichment for the journal record. The Redis client is
-        async (redis.asyncio), so in the sync backtest path (no running
-        event loop) we cannot await hgetall — return None there and let
-        the journal record proceed without prediction data.
-        """
-        if not self._redis_client:
-            return None
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # Sync backtest path — no loop to await on. Skip enrichment.
-            return None
-
-        # We are in an async context but this method is sync; hgetall on the
-        # async client returns a coroutine that cannot be awaited here.
-        # Callers that need prediction data should use the async variant.
-        return None
-
-    async def _fetch_prediction_data_async(self) -> Optional[Dict[str, float]]:
-        """Async variant: fetch prediction data from Redis (event-loop safe)."""
-        if not self._redis_client:
-            return None
-        try:
-            config_key = f"regime:symbol:{self.config.symbol}:config"
-            config_data = await self._redis_client.hgetall(config_key)
-
-            if not config_data:
-                return None
-
-            # Extract prediction fields from Redis data
-            prediction_data = {}
-            if "p_win" in config_data:
-                prediction_data["predicted_p_win"] = float(config_data["p_win"])
-            if "p_regime" in config_data:
-                prediction_data["p_regime"] = float(config_data["p_regime"])
-            if "p_pattern" in config_data:
-                prediction_data["p_pattern"] = float(config_data["p_pattern"])
-            if "p_markov" in config_data:
-                prediction_data["p_markov"] = float(config_data["p_markov"])
-            if "p_timesfm" in config_data:
-                prediction_data["p_timesfm"] = float(config_data["p_timesfm"])
-
-            return prediction_data if prediction_data else None
-        except Exception as e:
-            logger.warning(f"Failed to fetch prediction data from Redis: {e}")
-            return None
-
     def _handle_trade_close(self, result: TradeResult) -> None:
         """Handle a closed trade - update journal with full cost modeling."""
         self.signal_filter.record_trade_result(result.pnl_bricks)
 
         # Create journal record if we have filtered signal context
         if self._last_filtered is not None:
-            # Fetch prediction data from Redis
-            prediction_data = self._fetch_prediction_data()
-            
             record = self.journal.create_record(
                 symbol=self.config.symbol,
                 filtered=self._last_filtered,
                 result=result,
                 regime=self._current_regime,
-                prediction_data=prediction_data,
             )
             
             # ── Phase 2: Transaction cost modeling ──
