@@ -102,6 +102,20 @@ test-isolation quirk — confirmed identical on `main` via `git stash`
 comparison), 366 passed (baseline 362 + this fix's 4 new tests). Zero
 regressions.
 
+## Deployment status
+
+Deployed to the Studio (`c6b661a` confirmed via `git log -1` on the box,
+2026-08-25 ~06:02 UTC restart). **Not yet behaviorally verifiable**: the
+orchestrator process starts but its Redis connection fails during the
+protocol handshake (TCP connects fine; RESP read fails immediately —
+"Connection closed by server") on this and the prior restart, so the
+scheduler never starts at all — no sweeps, no EOD corrections, nothing
+runs, unrelated to this change. Per explicit direction, not investigating
+this further — Redis is being deprecated from this architecture soon.
+Stream C's code is confirmed correctly deployed; live verification (that
+the discount/decay actually shows up in `nt_eod_actions.detail` on a real
+cycle) is deferred until the orchestrator can actually run again.
+
 ## Not done in this pass
 
 Streams B (drift-triggered re-sweeps) and A (wall-clock backtest/live
