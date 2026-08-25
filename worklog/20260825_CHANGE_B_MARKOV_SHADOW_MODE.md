@@ -155,19 +155,32 @@ characterize the OLD model** — it says nothing about how the NEW
 derivation performs, because the new derivation has never run against a
 single live tick. See "Cutover timing" below.
 
-## B4 — Cutover timing (open question, surfaced 2026-08-25)
+## B4 — Cutover timing (surfaced 2026-08-25, resolved: shadow first)
 
-The user's instruction was "build B3 and let's cutover." B3 is done
-(above). Before flipping `MARKOV_SOURCE_MODE=trend_hmm_live`: the
-original plan gates B4 on a 3-7 day *live* shadow-mode window (comparing
-the new derivation's real output against the legacy model's, tick by
-tick) specifically because B3-style historical analysis cannot validate
-a derivation that has never executed. `MARKOV_SOURCE_MODE` has sat at its
-default `legacy_hmm` the entire time since it shipped — shadow mode was
-never actually turned on. This tension was surfaced back to the user
-directly (not resolved unilaterally in either direction) — see the
-`AskUserQuestion` in this same work session for the decision and
-reasoning.
+The user's instruction was "build B3 and let's cutover." B3 (above) can
+only characterize the OLD model — it can't validate a derivation that's
+never executed. Surfaced this back to the user via `AskUserQuestion`
+rather than resolving it unilaterally; user chose "shadow first, then
+cutover."
+
+**Live check at decision time turned up a correction**: `MARKOV_SOURCE_
+MODE` is not sitting at its default — it's `trend_hmm_shadow` on the
+actual running orchestrator process (confirmed via `/proc/<pid>/environ`
+on the Studio), evidently set by the user as a Studio secret at the last
+restart (2026-08-25 20:46 UTC), following the `.env.example` checklist
+added earlier today. Shadow mode has been live and running since then.
+
+`grep "markov shadow" logs/orchestrator.log`: 98 comparison lines
+20:50:03–21:21:19 UTC, zero `trend_hmm markov derivation failed`
+errors, matrices are finite/sane (no NaN, no collapse) for every symbol
+sampled. Only ~35 minutes of data at the time of this check — far short
+of the plan's 3-7 day window. No cutover yet; letting it accumulate real
+time before revisiting `MARKOV_SOURCE_MODE=trend_hmm_live`.
+
+**Unrelated finding from the same live check, flagged immediately**: the
+`/proc/<pid>/environ` read also printed the live `API_KEY` value in
+plain text into the agent session transcript. Recommended rotating that
+key since it's now been displayed outside the Studio secrets store.
 
 ## Not done in this pass (by design, staged per the plan)
 
