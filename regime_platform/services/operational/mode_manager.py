@@ -2,14 +2,16 @@
 Mode Manager Service - Paper/Live trading mode toggle with confirmation gates.
 
 Manages the current trading mode (simulation / paper / live) with:
-1. Redis-backed mode state (persists across restarts)
+1. Supabase-backed mode state (persists across restarts)
 2. Mode switch requires confirmation token (prevents accidental switches)
 3. Every mode change is audit-logged
 4. Mode change triggers health check on target environment
 5. Live mode requires explicit acknowledgment of risk disclaimer
 
 Flow for PAPER -> LIVE:
-1. User requests mode change -> generate confirmation token (5-min TTL in Redis)
+1. User requests mode change -> generate confirmation token (5-min TTL,
+   expiry checked manually against `requested_at` since Supabase has no
+   native key TTL the way Redis did)
 2. UI shows risk disclaimer + confirmation dialog with token
 3. User confirms (must provide acknowledgment text)
 4. Backend validates confirmation token
@@ -23,11 +25,19 @@ Flow for LIVE -> PAPER:
 2. Backend cancels all open live orders (safety)
 3. Backend switches to paper endpoint
 4. Audit log + Discord notification
+
+2026-08-25: Redis retired. `request_mode_change`/`confirm_mode_change`
+used to store the confirmation token in Redis with no fallback — when
+Redis was unavailable, `request_mode_change` would silently produce a
+token that could never be confirmed, and `confirm_mode_change` raised a
+hard RuntimeError. The token is now stored via `system_config`
+(Supabase `nt_system_config`), the same durable store the mode state
+itself already used as its authoritative L2 — paper<->live switching no
+longer depends on Redis being up at all.
 """
 
 from __future__ import annotations
 import logging
-import hashlib
 import secrets
 from datetime import datetime, timezone
 from enum import Enum
@@ -35,6 +45,11 @@ from typing import Optional
 from pydantic import BaseModel
 
 from regime_platform.core.tenant import tenant_key
+from regime_platform.services.operational.system_config import (
+    get_config,
+    set_config,
+    delete_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +76,7 @@ class ModeState(BaseModel):
 
 
 class ModeManager:
-    """Redis-backed trading mode manager with confirmation gates."""
+    """Supabase-backed trading mode manager with confirmation gates."""
 
     MODE_BASE_KEY = "noble:trading:mode"
     TOKEN_BASE_KEY = "noble:trading:mode_token"
@@ -71,76 +86,33 @@ class ModeManager:
     LIVE_ACKNOWLEDGMENT = "I UNDERSTAND THE RISKS"
 
     def __init__(self):
-        self._redis = None
         self._cached_state: Optional[ModeState] = None
 
-    async def _get_client(self):
-        """Get Redis client from the shared connection pool.
-
-        v7.3: Uses the shared RedisConnectionManager instead of creating
-        a per-service TCP connection. Reduces from 6 connections to 1 pool.
-        """
-        if self._redis is None:
-            try:
-                from regime_platform.services.redis_pool import redis_pool
-                self._redis = await redis_pool.get_client()
-                if self._redis:
-                    logger.info("ModeManager: Using shared Redis pool")
-                else:
-                    logger.warning("ModeManager: No Redis available, using in-memory only")
-            except Exception as e:
-                logger.error(f"ModeManager: Redis pool connection failed: {e}")
-        return self._redis
-
     async def close(self):
-        """Release Redis client reference (pool manages the connection)."""
-        self._redis = None
+        """No-op — kept for interface parity with the other operational
+        services main.py's shutdown block calls alongside this one."""
+        return None
 
     async def get_current_mode(self, org_id: Optional[str] = None) -> TradingMode:
         """Get current trading mode. Defaults to PAPER if not set.
 
-        v7.3: Reads from Supabase nt_system_config first (durable source of truth),
-                then falls back to Redis (L1 cache), then Alpaca config inference.
+        Reads from Supabase nt_system_config first (durable source of
+        truth), then falls back to Alpaca config inference.
         """
         # Check in-memory cache first (O(1), zero latency)
         if self._cached_state:
             return self._cached_state.current_mode
 
-        # Try Supabase nt_system_config (L2 - durable, authoritative)
-        try:
-            from regime_platform.core.settings import settings
-            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
-                import httpx
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(
-                        f"{settings.SUPABASE_URL}/rest/v1/nt_system_config",
-                        headers={
-                            "apikey": settings.SUPABASE_KEY,
-                            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
-                        },
-                        params={"key": "eq.noble:trading:mode", "select": "value"},
-                    )
-                    if resp.status_code == 200:
-                        rows = resp.json()
-                        if rows:
-                            state = ModeState.model_validate_json(rows[0]["value"])
-                            self._cached_state = state
-                            return state.current_mode
-        except Exception as e:
-            logger.debug(f"ModeManager: Supabase read failed, trying Redis: {e}")
-
-        # Try Redis (L1 cache)
-        client = await self._get_client()
+        # Try Supabase nt_system_config (durable, authoritative)
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
-        if client:
+        data = await get_config(mode_key)
+        if data:
             try:
-                data = await client.get(mode_key)
-                if data:
-                    state = ModeState.model_validate_json(data)
-                    self._cached_state = state
-                    return state.current_mode
+                state = ModeState.model_validate_json(data)
+                self._cached_state = state
+                return state.current_mode
             except Exception as e:
-                logger.error(f"ModeManager: Failed to read mode from Redis: {e}")
+                logger.error(f"ModeManager: Failed to parse mode state from Supabase: {e}")
 
         # Try to infer from AlpacaExecutor config
         try:
@@ -161,17 +133,15 @@ class ModeManager:
         if self._cached_state:
             return self._cached_state
 
-        client = await self._get_client()
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
-        if client:
+        data = await get_config(mode_key)
+        if data:
             try:
-                data = await client.get(mode_key)
-                if data:
-                    state = ModeState.model_validate_json(data)
-                    self._cached_state = state
-                    return state
+                state = ModeState.model_validate_json(data)
+                self._cached_state = state
+                return state
             except Exception as e:
-                logger.error(f"ModeManager: Failed to read mode state: {e}")
+                logger.error(f"ModeManager: Failed to parse mode state from Supabase: {e}")
 
         # Return default
         return ModeState(
@@ -207,38 +177,28 @@ class ModeManager:
 
         # Generate confirmation token
         token = secrets.token_urlsafe(32)
-
-        # Store token in Redis with TTL
-        client = await self._get_client()
-        if client:
-            try:
-                token_data = ModeChangeRequest(
-                    target_mode=target_mode,
-                    requested_by=requested_by,
-                    requested_at=datetime.now(timezone.utc),
-                    confirmation_token=token,
-                )
-                token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{token}", org_id=org_id)
-                await client.set(
-                    token_key,
-                    token_data.model_dump_json(),
-                    ex=self.TOKEN_TTL,
-                )
-                logger.info(
-                    f"ModeManager: Mode change requested "
-                    f"{current.value} -> {target_mode.value} by {requested_by} "
-                    f"(token expires in {self.TOKEN_TTL}s)"
-                )
-            except Exception as e:
-                logger.error(f"ModeManager: Failed to store token: {e}")
-                raise RuntimeError("Failed to create mode change request")
-
-        return ModeChangeRequest(
+        token_data = ModeChangeRequest(
             target_mode=target_mode,
             requested_by=requested_by,
             requested_at=datetime.now(timezone.utc),
             confirmation_token=token,
         )
+
+        # Store token in Supabase with manually-checked expiry (no native
+        # TTL like Redis had — confirm_mode_change checks requested_at).
+        token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{token}", org_id=org_id)
+        stored = await set_config(token_key, token_data.model_dump_json(), category="mode_token")
+        if not stored:
+            logger.error("ModeManager: Failed to store confirmation token")
+            raise RuntimeError("Failed to create mode change request")
+
+        logger.info(
+            f"ModeManager: Mode change requested "
+            f"{current.value} -> {target_mode.value} by {requested_by} "
+            f"(token expires in {self.TOKEN_TTL}s)"
+        )
+
+        return token_data
 
     async def confirm_mode_change(
         self,
@@ -255,23 +215,24 @@ class ModeManager:
         
         Before switching to LIVE, runs a health check on the target environment.
         """
-        # Validate token exists in Redis
-        client = await self._get_client()
-        if not client:
-            raise RuntimeError("Redis unavailable - cannot confirm mode change")
+        # Validate token exists in Supabase and hasn't expired. There's no
+        # native key TTL here (unlike Redis), so expiry is checked against
+        # the stored requested_at timestamp.
+        token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{confirmation_token}", org_id=org_id)
+        token_data = await get_config(token_key)
+        if not token_data:
+            raise ValueError("Invalid or expired confirmation token")
 
         try:
-            token_key = tenant_key(f"{self.TOKEN_BASE_KEY}:{confirmation_token}", org_id=org_id)
-            token_data = await client.get(token_key)
-            if not token_data:
-                raise ValueError("Invalid or expired confirmation token")
-
             request = ModeChangeRequest.model_validate_json(token_data)
-        except ValueError:
-            raise
         except Exception as e:
             logger.error(f"ModeManager: Token validation failed: {e}")
             raise RuntimeError("Token validation failed")
+
+        age_seconds = (datetime.now(timezone.utc) - request.requested_at).total_seconds()
+        if age_seconds > self.TOKEN_TTL:
+            await delete_config(token_key)
+            raise ValueError("Invalid or expired confirmation token")
 
         # For live mode, require exact acknowledgment
         if request.target_mode == TradingMode.LIVE:
@@ -299,41 +260,15 @@ class ModeManager:
         # Update AlpacaExecutor base URL
         await self._switch_executor_mode(request.target_mode)
 
-        # Save new state to Redis (no TTL - persistent, acts as L1 cache)
+        # Persist new state to Supabase (durable, authoritative)
         mode_key = tenant_key(self.MODE_BASE_KEY, org_id=org_id)
-        try:
-            await client.set(mode_key, new_state.model_dump_json())
-            # Delete used token
-            await client.delete(token_key)
-        except Exception as e:
-            logger.error(f"ModeManager: Failed to persist mode change to Redis: {e}")
+        if await set_config(mode_key, new_state.model_dump_json()):
+            logger.info("ModeManager: Mode state written to Supabase nt_system_config")
+        else:
+            logger.warning("ModeManager: Supabase mode-state write failed")
 
-        # v7.3: Write-through to Supabase nt_system_config (L2 - durable)
-        try:
-            from regime_platform.core.settings import settings as _settings
-            if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
-                import httpx
-                async with httpx.AsyncClient(timeout=5.0) as sb_client:
-                    resp = await sb_client.post(
-                        f"{_settings.SUPABASE_URL}/rest/v1/nt_system_config",
-                        headers={
-                            "apikey": _settings.SUPABASE_KEY,
-                            "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
-                            "Content-Type": "application/json",
-                            "Prefer": "resolution=merge-duplicates",
-                        },
-                        json={
-                            "key": "noble:trading:mode",
-                            "value": new_state.model_dump_json(),
-                            "category": "operational",
-                        },
-                    )
-                    if resp.status_code in (200, 201, 204):
-                        logger.info("ModeManager: Mode state written to Supabase nt_system_config")
-                    else:
-                        logger.warning(f"ModeManager: Supabase write failed: {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"ModeManager: Supabase write-through failed: {e}")
+        # Delete the used token
+        await delete_config(token_key)
 
         # Update in-memory cache
         self._cached_state = new_state

@@ -97,7 +97,8 @@ async def get_kill_switch_status(
 
     Note: Kill switch background refresh is deactivated in v7.4.
     The in-memory cache is empty, so is_halted will always be False.
-    Halt records may still exist in Redis from before deactivation.
+    Halt records may still exist in Supabase (nt_system_config) from
+    before deactivation.
     """
     try:
         halts = await kill_switch.get_all_active_halts()
@@ -227,53 +228,6 @@ async def close_all_positions(
         return result
     except Exception as e:
         raise_http_exception(e, "close_all_positions")
-
-
-@router.post(
-    "/kill-switch/clear-redis",
-    summary="Clear all halt keys from Redis (admin cleanup)",
-)
-@limiter.limit(RATE_LIMIT_WRITE)
-async def clear_redis_halts(
-    request: Request,
-    user: TokenData = Depends(require_admin),
-):
-    """Remove all noble:halt:* keys from Redis.
-
-    Use this after kill switch deactivation to ensure no stale halt
-    records remain in Redis that could block trading if reactivated.
-    """
-    try:
-        from regime_platform.services.redis_pool import redis_pool
-        client = await redis_pool.get_client()
-        cleared = 0
-        if client:
-            # Scan and delete all halt keys
-            for prefix in ["noble:halt:global", "noble:halt:user", "noble:halt:symbol"]:
-                cursor = 0
-                while True:
-                    cursor, keys = await client.scan(cursor, match=f"{prefix}*", count=100)
-                    for key in keys:
-                        await client.delete(key)
-                        cleared += 1
-                    if cursor == 0:
-                        break
-
-        # Also clear in-memory cache
-        kill_switch._cache.clear()
-
-        await audit_logger.log_event(
-            event_type=AuditEventType.HALT_DEACTIVATED,
-            user_id=user.sub,
-            metadata={"action": "clear_redis_halts", "cleared_keys": cleared},
-        )
-        return {
-            "status": "cleared",
-            "keys_removed": cleared,
-            "cache_cleared": True,
-        }
-    except Exception as e:
-        raise_http_exception(e, "clear_redis_halts")
 
 
 # ── Audit Log Endpoints ───────────────────────────────────────────────────

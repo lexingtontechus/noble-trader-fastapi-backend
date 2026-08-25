@@ -21,6 +21,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel
 
+from regime_platform.services.operational.system_config import get_config, set_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,9 +59,10 @@ class PositionReconciliationResult(BaseModel):
 class ReconciliationService:
     """
     Fill reconciliation service with configurable thresholds.
-    
-    Stores reconciliation results in Redis for fast access
-    and logs critical discrepancies to audit trail + Discord.
+
+    Stores reconciliation results in-memory (hot path) with a durable
+    last-run timestamp in Supabase, and logs critical discrepancies to
+    audit trail + Discord.
     """
 
     # Thresholds (can be overridden via constructor)
@@ -68,40 +71,23 @@ class ReconciliationService:
     PARTIAL_FILL_TIMEOUT_S = 300   # 5 minutes
     MISSED_FILL_TIMEOUT_S = 600    # 10 minutes
 
-    RESULTS_KEY = "noble:reconciliation:results"
     LAST_RUN_KEY = "noble:reconciliation:last_run"
-    RESULTS_TTL_SECONDS = 86400  # v7.3: 24h TTL for results (was no TTL)
 
     def __init__(
         self,
         slippage_warning_bps: int = 50,
         slippage_critical_bps: int = 200,
     ):
-        self._redis = None
         self.SLIPPAGE_WARNING_BPS = slippage_warning_bps
         self.SLIPPAGE_CRITICAL_BPS = slippage_critical_bps
         self._last_results: list[ReconciliationResult] = []
         self._last_position_reconciliation: Optional[PositionReconciliationResult] = None
-
-    async def _get_client(self):
-        """Get Redis client from the shared connection pool.
-
-        v7.3: Uses the shared RedisConnectionManager instead of creating
-        a per-service TCP connection.
-        """
-        if self._redis is None:
-            try:
-                from regime_platform.services.redis_pool import redis_pool
-                self._redis = await redis_pool.get_client()
-                if self._redis:
-                    logger.info("Reconciler: Using shared Redis pool")
-            except Exception as e:
-                logger.error(f"Reconciler: Redis pool connection failed: {e}")
-        return self._redis
+        self._last_run_at: Optional[str] = None
 
     async def close(self):
-        """Release Redis client reference (pool manages the connection)."""
-        self._redis = None
+        """No-op — kept for interface parity with the other operational
+        services main.py's shutdown block calls alongside this one."""
+        return None
 
     @property
     def is_simulation(self) -> bool:
@@ -306,39 +292,12 @@ class ReconciliationService:
                 )
                 results.append(result)
 
-            # Update last run timestamp (Redis + Supabase write-through)
+            # Update last-run timestamp: in-memory (hot path) + Supabase
+            # (durable, survives restarts)
             now_iso = datetime.now(timezone.utc).isoformat()
-            client = await self._get_client()
-            if client:
-                try:
-                    await client.set(self.LAST_RUN_KEY, now_iso)
-                except Exception:
-                    pass
-
-            # v7.3: Also persist last_run to Supabase nt_system_config (durable)
-            try:
-                from regime_platform.core.settings import settings as _settings
-                if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=5.0) as sb_client:
-                        resp = await sb_client.post(
-                            f"{_settings.SUPABASE_URL}/rest/v1/nt_system_config",
-                            headers={
-                                "apikey": _settings.SUPABASE_KEY,
-                                "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
-                                "Content-Type": "application/json",
-                                "Prefer": "resolution=merge-duplicates",
-                            },
-                            json={
-                                "key": "noble:reconciliation:last_run",
-                                "value": now_iso,
-                                "category": "operational",
-                            },
-                        )
-                        if resp.status_code not in (200, 201, 204):
-                            logger.debug(f"Reconciler: Supabase last_run write failed: {resp.status_code}")
-            except Exception as e:
-                logger.debug(f"Reconciler: Supabase write-through failed: {e}")
+            self._last_run_at = now_iso
+            if not await set_config(self.LAST_RUN_KEY, now_iso):
+                logger.debug("Reconciler: Supabase last_run write failed")
 
             self._last_results = results
             logger.info(f"Reconciler: Reconciled {len(results)} orders")
@@ -452,13 +411,12 @@ class ReconciliationService:
 
     async def get_status(self) -> dict:
         """Get reconciliation service status."""
-        last_run = None
-        client = await self._get_client()
-        if client:
-            try:
-                last_run = await client.get(self.LAST_RUN_KEY)
-            except Exception:
-                pass
+        # In-memory first (this process's most recent run); fall back to
+        # Supabase for the case where this process hasn't run a
+        # reconciliation yet since restart but a prior run did.
+        last_run = self._last_run_at
+        if last_run is None:
+            last_run = await get_config(self.LAST_RUN_KEY)
 
         # Count results by status
         status_counts = {}

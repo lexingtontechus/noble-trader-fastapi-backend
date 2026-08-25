@@ -6,7 +6,8 @@ Tiers:
 2. USER_HALT   - Stops trading for a specific user
 3. SYMBOL_HALT - Stops trading for a specific symbol
 
-State is stored in Redis for cross-process persistence:
+State is stored in Supabase (`nt_system_config`) for cross-process
+persistence:
 - noble:halt:global         -> JSON HaltRecord or None
 - noble:halt:user:{user_id} -> JSON HaltRecord or None
 - noble:halt:symbol:{sym}   -> JSON HaltRecord or None
@@ -22,25 +23,32 @@ v7.4: DEACTIVATED - Background refresh (pub/sub + polling) disabled.
       - start_refresh() is a no-op - no background tasks
       - stop_refresh() is a no-op - nothing to stop
       - is_halted() returns False (cache is always empty) - trading always allowed
-      - activate_halt()/deactivate_halt() still write to Redis for future use
+      - activate_halt()/deactivate_halt() still write to Supabase for future use
       - KillSwitchGateMiddleware is fail-open, so deactivation = trading allowed
 
-      To reactivate with a safer design, replace start_refresh() with one of:
-      1. Supabase Realtime (push, no persistent TCP connection to Redis)
-      2. On-demand Redis read (read on every check, no background tasks)
-      3. HTTP-based health checks from pg_cron (pull model, no listener)
+2026-08-25: Redis retired — on-demand reads/writes now go to Supabase
+`nt_system_config` instead (same fail-open semantics: a read/write
+failure never raises, it just leaves the in-memory cache as the only
+source of truth for this process). This is a single-process deployment,
+so the in-memory cache alone already covers same-process checks; the
+Supabase persistence is for surviving a restart, not cross-process
+sharing.
 """
 
 from __future__ import annotations
 import json
 import logging
-import asyncio
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel
 
 from regime_platform.core.tenant import tenant_key
+from regime_platform.services.operational.system_config import (
+    get_config,
+    set_config,
+    delete_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +78,7 @@ class HaltRecord(BaseModel):
 
 
 class KillSwitchService:
-    """Redis-backed kill switch with in-memory cache for hot-path checks.
+    """Supabase-backed kill switch with in-memory cache for hot-path checks.
 
     v7.4: DEACTIVATED - All background refresh tasks disabled.
     See module docstring for reactivation options.
@@ -82,7 +90,6 @@ class KillSwitchService:
     PUBSUB_CHANNEL = "noble:halt:updates"
 
     def __init__(self):
-        self._redis = None
         self._cache: dict[str, Optional[HaltRecord]] = {}
         self._running = False
 
@@ -114,41 +121,18 @@ class KillSwitchService:
         self._running = False
         logger.info("KillSwitch: Stopped (was already deactivated)")
 
-    # ── Redis client ──────────────────────────────────────────────────────
-
-    async def _get_client(self):
-        """Get Redis client from the shared connection pool."""
-        if self._redis is None:
-            try:
-                from regime_platform.services.redis_pool import redis_pool
-                self._redis = await redis_pool.get_client()
-                if self._redis:
-                    logger.info("KillSwitch: Using shared Redis pool")
-                else:
-                    logger.warning("KillSwitch: No Redis available, using in-memory only")
-            except Exception as e:
-                logger.error(f"KillSwitch: Redis pool connection failed: {e}")
-        return self._redis
-
-    # ── On-demand Redis read (M5 reactivation) ─────────────────────────
+    # ── On-demand Supabase read ──────────────────────────────────────────
     # The v7.4 deactivation killed the BACKGROUND pub/sub refresh (crash
     # loop on Render). The safe reactivation per the module docstring is
-    # option #2: read Redis ON DEMAND on every check — no background
-    # tasks, no persistent pub/sub connection. Cache is still consulted
-    # first (sub-millisecond hot path); when it is empty we fall through
-    # to Redis. Fail-open on Redis errors: the kill switch is a safety
+    # option #2: read ON DEMAND on every check — no background tasks, no
+    # persistent connection to maintain. Cache is still consulted first
+    # (sub-millisecond hot path); when it is empty we fall through to
+    # Supabase. Fail-open on read errors: the kill switch is a safety
     # net, not a primary control.
 
-    async def _redis_get_record(self, key: str) -> Optional[HaltRecord]:
-        """Read one halt key from Redis and return a HaltRecord (or None)."""
-        client = await self._get_client()
-        if not client:
-            return None
-        try:
-            raw = await client.get(key)
-        except Exception as exc:
-            logger.warning("KillSwitch: on-demand Redis read failed for %s: %s", key, exc)
-            return None
+    async def _stored_get_record(self, key: str) -> Optional[HaltRecord]:
+        """Read one halt key from Supabase and return a HaltRecord (or None)."""
+        raw = await get_config(key)
         if not raw:
             return None
         try:
@@ -166,8 +150,8 @@ class KillSwitchService:
     ) -> bool:
         """
         Check if trading is halted. O(1) from in-memory cache, falling
-        through to an on-demand Redis read when the cache is empty (so a
-        halt activated in ANOTHER process is honored without background
+        through to an on-demand Supabase read when the cache is empty (so
+        a halt activated in ANOTHER process is honored without background
         refresh).
 
         Checks in order: global > user > symbol.
@@ -177,7 +161,7 @@ class KillSwitchService:
         global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
         if self._cache.get(global_key) is not None:
             return True
-        global_record = await self._redis_get_record(global_key)
+        global_record = await self._stored_get_record(global_key)
         if global_record is not None:
             self._cache[global_key] = global_record
             return True
@@ -187,7 +171,7 @@ class KillSwitchService:
             user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
             if self._cache.get(user_key) is not None:
                 return True
-            user_record = await self._redis_get_record(user_key)
+            user_record = await self._stored_get_record(user_key)
             if user_record is not None:
                 self._cache[user_key] = user_record
                 return True
@@ -197,7 +181,7 @@ class KillSwitchService:
             sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
             if self._cache.get(sym_key) is not None:
                 return True
-            sym_record = await self._redis_get_record(sym_key)
+            sym_record = await self._stored_get_record(sym_key)
             if sym_record is not None:
                 self._cache[sym_key] = sym_record
                 return True
@@ -217,21 +201,21 @@ class KillSwitchService:
         """
         # Check in priority order: global > user > symbol
         global_key = tenant_key(self.GLOBAL_BASE_KEY, org_id=org_id)
-        global_halt = self._cache.get(global_key) or await self._redis_get_record(global_key)
+        global_halt = self._cache.get(global_key) or await self._stored_get_record(global_key)
         if global_halt:
             self._cache[global_key] = global_halt
             return global_halt
 
         if user_id:
             user_key = tenant_key(f"{self.USER_BASE_KEY}:{user_id}", org_id=org_id, user_id=user_id if not org_id else None)
-            user_halt = self._cache.get(user_key) or await self._redis_get_record(user_key)
+            user_halt = self._cache.get(user_key) or await self._stored_get_record(user_key)
             if user_halt:
                 self._cache[user_key] = user_halt
                 return user_halt
 
         if symbol:
             sym_key = tenant_key(f"{self.SYMBOL_BASE_KEY}:{symbol.upper()}", org_id=org_id)
-            sym_halt = self._cache.get(sym_key) or await self._redis_get_record(sym_key)
+            sym_halt = self._cache.get(sym_key) or await self._stored_get_record(sym_key)
             if sym_halt:
                 self._cache[sym_key] = sym_halt
                 return sym_halt
@@ -251,7 +235,7 @@ class KillSwitchService:
     ) -> HaltRecord:
         """Activate a halt at the specified level.
 
-        Writes to Redis for persistence and updates in-memory cache.
+        Writes to Supabase for persistence and updates in-memory cache.
         Note: Without background refresh, this only affects the current
         process. Other processes won't see the halt until reactivation.
         """
@@ -267,14 +251,11 @@ class KillSwitchService:
         key = self._get_key(level, scope, org_id=org_id)
         record_json = record.model_dump_json()
 
-        # Write to Redis
-        client = await self._get_client()
-        if client:
-            try:
-                await client.set(key, record_json)
-                logger.warning(f"KillSwitch: HALT ACTIVATED - {level.value} scope={scope} reason={reason.value} by={triggered_by} org={org_id}")
-            except Exception as e:
-                logger.error(f"KillSwitch: Failed to write halt to Redis: {e}")
+        # Write to Supabase
+        if await set_config(key, record_json, category="kill_switch"):
+            logger.warning(f"KillSwitch: HALT ACTIVATED - {level.value} scope={scope} reason={reason.value} by={triggered_by} org={org_id}")
+        else:
+            logger.error("KillSwitch: Failed to write halt to Supabase")
 
         # Update in-memory cache immediately
         self._cache[key] = record
@@ -291,14 +272,11 @@ class KillSwitchService:
         """Deactivate a halt at the specified level."""
         key = self._get_key(level, scope, org_id=org_id)
 
-        # Remove from Redis
-        client = await self._get_client()
-        if client:
-            try:
-                await client.delete(key)
-                logger.info(f"KillSwitch: HALT DEACTIVATED - {level.value} scope={scope} by={deactivated_by} org={org_id}")
-            except Exception as e:
-                logger.error(f"KillSwitch: Failed to remove halt from Redis: {e}")
+        # Remove from Supabase
+        if await delete_config(key):
+            logger.info(f"KillSwitch: HALT DEACTIVATED - {level.value} scope={scope} by={deactivated_by} org={org_id}")
+        else:
+            logger.error("KillSwitch: Failed to remove halt from Supabase")
 
         # Update in-memory cache
         self._cache[key] = None
