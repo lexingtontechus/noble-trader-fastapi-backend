@@ -79,7 +79,6 @@ noble-trader-fastapi-backend/
 │   │   ├── stream_session.py         Per-symbol stateful streaming engine
 │   │   ├── registry.py               Singleton session store
 │   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
-│   │   ├── redis_persistence.py      Optional Redis Streams price buffer persistence
 │   │   └── backtest_store.py      Supabase persistence for backtest results
 │   ├── services/statistics/
 │   │   ├── ev_engine.py              EV Engine v4 — 4-source P_win log-odds blend + public set_weights()/temp_weights()/restore_default_weights() API + calibration_bias shrink
@@ -102,7 +101,7 @@ noble-trader-fastapi-backend/
 │   └── TimeFM/                       TimesFM integration requirements & architecture docs (6 documents)
 │
 ├── regime_platform/
-│   └── sweep_orchestrator/           Sweep Orchestrator — active signal generation (Python, APScheduler, Redis)
+│   └── sweep_orchestrator/           Sweep Orchestrator — active signal generation (Python, APScheduler, Supabase)
 │       ├── orchestrator.py           Core signal gen with TimesFM, EV gates, qualification
 │       ├── __main__.py               Entry point for orchestrator service
 │       ├── market_hours.py           Market hours validation
@@ -119,15 +118,7 @@ noble-trader-fastapi-backend/
 │   ├── test_position_sizer.py        95-assertion Masaniello+Kelly suite
 │   ├── test_obs_builder.py           24-feature observation builder (7 tests)
 │   ├── test_streaming.py             StreamSession: asyncio ticks + alerts
-│   ├── test_v21.py                   Simulation, portfolio, Redis, JWT
-│   ├── test_v30.py                   GPU, feeds, correlation, optimiser
 │   └── test_backtest.py             25-test backtest suite (unit + integration)
-│
-└── tools/
-    ├── curl_test.sh                  bash: health + full-pipeline + edge cases
-    ├── stream_spy_ticks.py           Python: seed + 50 live ticks via REST
-    ├── sse_alert_monitor.html        Browser: EventSource regime-change monitor
-    └── payload_spy_200bars.json      Ready-made 200-bar SPY payload for curl
 ```
 
 ---
@@ -182,28 +173,20 @@ Client → proxy:8000
 
 ### Signal pipeline (system topology)
 
-This service is the **signal producer**. It qualifies signals and publishes them
-to Redis; the proxy and agent are downstream consumers (fan-out), and the agent
-executes via the MT4/MT5 bridge.
+This service is the **signal producer**. It qualifies signals (EV/Kelly/regime
+gates) and delivers them directly to Discord — no intermediate broker.
+Redis, the proxy, and the per-plan StreamSplitter fan-out were all retired
+2026-08-25; Discord delivery (`discord_delivery.py`) is now the sole
+delivery path, gated by `NOBLE_TRADER_DISCORD_SIGNALS_ENABLED`.
 
 ```
 noble-trader-fastapi-backend (LightningAI sweep orchestrator)
-   │  XADD "signal.raw.noble_trader"  (QUALIFIED signals; gated by EV/kelly/regime)
+   │  qualification gates (EV / Kelly / regime confidence / TimesFM)
    ▼
-Redis Stream: signal.raw.noble_trader
-   ├─► noble-trader-proxy   (consumer group "proxy")            → /quotes /history /api/ta /sse/alerts (HTTP+SSE to agents)
-   │        └─► re-publishes each qualified signal to signal.proxy.noble_trader
-   │             (via its write-capable REDIS_FANOUT_URL / pub_<32hex> ACL user)
-   └─► noble-trader-agent   (consumer group "noble-1")          → ingest → loops → mt4/5 bridge execution
-            reads signal.proxy.noble_trader (falls back to signal.raw.noble_trader
-            if the proxy stream is absent), consumer "noble-l0-worker"
-
-# Per-plan fan-out (backend-side, optional):
-StreamSplitter also republishes signal.raw.noble_trader →
-   signals:signal_scout  and  signals:precision_pro   (by nt_symbol.plan_ids)
+Discord webhook delivery (direct, per-asset-class or per-plan channel routing)
 ```
 
-- **Version:** `v7.7.2` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
+- **Version:** `v7.8.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
 - **CORS:** live middleware (`main.py`) reads **`CORS_ALLOWED_ORIGINS`** (default
   `http://localhost:3000`). The legacy `CORS_ORIGINS` var was removed — do not use it.
 - **License validation:** the proxy validates subscriber `X-License-Key` via the
@@ -240,7 +223,6 @@ pip install ".[gpu]"
 | **pydantic v2** | ≥2.7 | Request/response validation |
 | **uvicorn** | ≥0.29 | ASGI server |
 | **python-jose** | ≥3.3 | JWT signing/verification |
-| **redis** | ≥5.0 | Optional price buffer persistence |
 | **pomegranate** | ≥1.0 *(optional)* | GPU-accelerated HMM (PyTorch) |
 | **clerk-backend-api** | ≥0.1.0 | Clerk JWT authentication |
 | **httpx** | ≥0.28.1 | Clerk JWKS fetching + proxy routing |
@@ -544,7 +526,6 @@ python test_obs_builder.py        # 7 checks  - 24-feature builder, Markov guard
 # Integration (no server required)
 python test_streaming.py          # asyncio: 160 ticks, alerts, subscriber queue
 export JWT_SECRET_KEY=test-secret
-python test_v21.py                # simulation, portfolio, Redis no-op, JWT
 python test_v30.py                # GPU, feed adapters, correlation, optimiser
 
 # Live API (server must be running)
@@ -764,33 +745,16 @@ This provides maximum flexibility for different deployment scenarios while maint
 
 ---
 
-## Redis Persistence
+## Signal Delivery (2026-08-25+)
 
-```bash
-export REDIS_URL=redis://localhost:6379
-uvicorn main:app --port 8000
-# On restart: price buffers restored, HMMs re-fitted automatically
-```
-
-Without `REDIS_URL`, all state is in-memory with zero overhead.
-
----
-
-## Redis Signal Delivery — Push Model (v9.0+)
-
-The platform has moved from a **poll model** (trading bots read `trading:config:{symbol}` every 15s) to a **push model** (qualified signals are pushed via Redis Streams).
-
-### What changed
-
-| Old (poll) | New (push) |
-|---|---|
-| `HSET trading:config:{symbol}` | **Deprecated** (commented out) |
-| `SET trading:heartbeat:{symbol}` | **Deprecated** (commented out) |
-| `PUBLISH agent:{symbol}` | **Deprecated** (commented out) |
-| `PUBLISH signal.raw.noble_trader` | ✅ Active — for in-process SignalAggregator |
-| `XADD signal.raw.noble_trader` | ✅ Active — for downstream consumers (persistent) |
-
-Downstream consumers now read from the Redis Stream `signal.raw.noble_trader` using `XREAD` or `XREADGROUP`, not from per-symbol config hashes.
+Redis — and the poll-model (`trading:config:{symbol}` hash) and push-model
+(`signal.raw.noble_trader` pub/sub + Streams) architectures that preceded
+it — has been fully retired. `StreamSession` price buffers are in-memory
+only (no restart-survival layer); qualified signals are delivered
+directly to Discord (`regime_platform/sweep_orchestrator/discord_delivery.py`)
+with no intermediate broker, gated by `NOBLE_TRADER_DISCORD_SIGNALS_ENABLED`.
+Operational state (trading mode, kill-switch halts, reconciliation
+last-run) persists to Supabase (`nt_system_config`) instead of Redis.
 
 ### Signal Generation Architecture
 
@@ -813,17 +777,10 @@ Downstream consumers now read from the Redis Stream `signal.raw.noble_trader` us
 | 7 | Blended p_win ≥ threshold | `MIN_P_WIN` | 0.55 |
 | + | Cooldown (don't repeat same symbol+dir for N min) | `SIGNAL_COOLDOWN_MINUTES` | 60 |
 
-**Signal types**:
-- `heartbeat` (sweep_orchestrator) → **only qualified signals published to** `signal.raw.noble_trader`
-- `renko_signal` (renko pipeline) → Always published
-
-**Redis publish targets**:
-```
-PUBLISH signal.raw.noble_trader  → for in-process SignalAggregator (Discord/Telegram)
-XADD   signal.raw.noble_trader   → for downstream consumers (persistent, consumer groups)
-  ↳ Stream maxlen: 10000 (auto-trimmed)
-  ↳ Field: 'payload' = JSON string of the qualified signal
-```
+**Signal delivery**: only qualified signals reach Discord — sent directly
+from both the light-sweep (`_process_symbol`) and heavy-sweep
+(`_push_heavy_signal`) paths via `discord_delivery.py`. There is no
+intermediate broker, aggregate channel, or per-plan fan-out.
 
 ### Core Fields (sweep_orchestrator)
 
@@ -1032,7 +989,7 @@ As of v7.6.0, the FastAPI backend is a **sweep orchestrator only** — it does N
 
 | Concern | Backend (this repo) | Agent (Talaria) |
 |---|---|---|
-| Sweep signal generation | ✓ canonical | consumes via Redis stream |
+| Sweep signal generation | ✓ canonical | delivered to Discord (human-facing); agent execution is independent |
 | EV Engine (4-source blend) | ✓ canonical (orchestrator) | consumes synthesized P_win |
 | Trade execution | ✗ disabled (P5) | ✓ canonical (MT4/MT5 bridge, Alpaca, Hyperliquid) |
 | Live trade journal | ✗ gated behind `assert_execution_enabled()` | ✓ canonical (DuckDB `trade_journal`) |

@@ -5,9 +5,9 @@ Execution Deprecation Gate
 P5 (2026-07-20) — noble-trader-fastapi-backend is no longer a trade executor.
 
 The noble server's role is now strictly **sweep orchestration**: compute
-signals, publish to Redis. Actual trade execution lives in the hermes agent
-(noble-trader-agent), which routes via env vars and connects to MT4/MT5,
-Hyperliquid, etc. directly.
+signals, deliver qualified ones directly to Discord. Actual trade
+execution lives in the hermes agent (noble-trader-agent), which routes
+via env vars and connects to MT4/MT5, Hyperliquid, etc. directly.
 
 This module provides a single gate (`assert_execution_enabled`) that every
 legacy execution codepath must call before doing anything that places,

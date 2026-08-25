@@ -14,7 +14,6 @@ Key differences from the old Deno edge functions:
     refresh — no hardcoded lists, no code changes to add/remove symbols
   • Stale-symbol tracking built into the orchestrator loop — no separate
     retry-stale-symbols cron job needed
-  • Native Redis protocol via redis-py instead of Upstash REST API
 
 Lazy import: ``SweepOrchestrator`` is only imported on first access, so
 standalone tools in this package (e.g. ``paper_retroclose``) don't need

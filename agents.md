@@ -21,8 +21,7 @@ PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cache
 ## Signal Pipeline
 ```
 TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → TimesFM forecast → EV Engine v5 → 7 gates → QUALIFIED
-   ──► XADD signal.raw.noble_trader ──► Redis StreamSplitter (per-plan: signal_scout / precision_pro)
-        ──► noble-trader-proxy (group "proxy") ──► re-publish → signal.proxy.noble_trader ──► noble-trader-agent (group "noble-1")
+   ──► Discord (direct delivery, discord_delivery.py — Redis/proxy/agent-stream fan-out retired 2026-08-25)
 ```
 
 ## EOD Recalibration Loop (v7.8.0)
@@ -74,5 +73,5 @@ Backend fixes are authorized in severity batches: `critical` → `high` → `m1,
 ## Related
 - **Talaria** → `noble-trader-talaria` (client plugin, tools, cron notifiers)
 - **Agent** → `noble-trader-hermes-agent-profile` (profile distribution; `NOBLE_STACK_ROOT` points here)
-- **Proxy** → `noble-trader-proxy` (retired via `NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false`)
+- **Proxy** → `noble-trader-proxy` (retired 2026-08-25 alongside Redis — no replacement needed)
 - **Portal** → `nobletradingapp` (Clerk + Helio checkout, claim tokens, Edge Functions)

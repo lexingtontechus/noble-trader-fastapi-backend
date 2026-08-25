@@ -6,7 +6,7 @@ Adapters stream bars directly into seeded StreamSessions.
 
 Note: Adapter tasks run as background asyncio tasks tied to the
 app lifespan. They are not persisted across restarts - reconfigure
-on each startup (or use the lifespan hook in main_v4.py).
+on each startup.
 """
 
 from __future__ import annotations

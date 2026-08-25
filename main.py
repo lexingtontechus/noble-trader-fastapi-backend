@@ -288,14 +288,6 @@ async def lifespan(app: FastAPI):
     except ImportError:
         pass
 
-    # v7.3: Close shared Redis connection pool
-    try:
-        from regime_platform.services.redis_pool import redis_pool
-        await redis_pool.close()
-        log.info("Shared Redis connection pool closed")
-    except Exception as e:
-        log.warning(f"Redis pool shutdown error: {e}")
-
     # Close runtime config HTTP client
     try:
         from regime_platform.core.runtime_config import runtime_config
@@ -461,7 +453,7 @@ def create_app() -> FastAPI:
 
     # Kill-switch gate middleware (M5): blocks /renko/tick* when a halt is
     # active. Previously imported but never registered — the advertised
-    # admin risk control did nothing. On-demand Redis read (no background
+    # admin risk control did nothing. On-demand Supabase read (no background
     # pub/sub), fail-open on errors.
     app.add_middleware(KillSwitchGateMiddleware)
 

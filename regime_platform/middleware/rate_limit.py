@@ -21,5 +21,5 @@ RATE_LIMIT_WRITE = settings.RATE_LIMIT_WRITE
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=[RATE_LIMIT_DEFAULT],
-    storage_uri="memory://",  # In-memory storage; use Redis for distributed
+    storage_uri="memory://",  # In-memory storage — single-process deployment
 )

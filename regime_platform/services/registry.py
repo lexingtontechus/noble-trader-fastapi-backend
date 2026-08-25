@@ -46,8 +46,8 @@ class SessionRegistry:
         via StreamSession.from_runtime_config() which resolves all params
         from the runtime configuration system (DB -> env -> hardcoded default).
 
-        When explicit params are given, creates with those overrides (backward
-        compatible for Redis restore and other callers that provide params).
+        When explicit params are given, creates with those overrides
+        (backward compatible for callers that provide params directly).
         """
         async with self._lock:
             if symbol not in self._sessions:

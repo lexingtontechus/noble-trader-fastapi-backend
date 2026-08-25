@@ -56,9 +56,9 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
     # '0 20 * * sun' (Sunday 20:00 UTC, migration 026) when NULL.
     # NOTE: APScheduler uses PYTHON weekday convention (0=Monday); use the
     # 'sun' name (or '6') for Sunday, NOT '0'.
-    # plan_ids (UUID[]) added in migration 032 — needed so downstream consumers
-    # (sweep orchestrator, future Railway Redis fan-out) can route signals per
-    # subscription plan (Signal Scout / Precision Pro).
+    # plan_ids (UUID[]) added in migration 032 — needed so the orchestrator's
+    # Discord plan-routing can route signals per subscription plan
+    # (Signal Scout / Precision Pro).
     params = {
         "select": "symbol,asset_class,exchange,regime_cron,sweep_cron,heartbeat_ttl_seconds,"
                   "tradingview_symbol,plan_ids",

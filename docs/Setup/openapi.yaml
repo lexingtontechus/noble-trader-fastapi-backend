@@ -125,9 +125,6 @@ paths:
                   sessions:
                     type: integer
                     description: Number of active streaming sessions
-                  redis:
-                    type: boolean
-                    description: Whether Redis persistence is enabled
                   discord:
                     type: object
                     properties:
@@ -568,13 +565,6 @@ paths:
                       ok: { type: boolean }
                       status_code: { type: integer }
                       note: { type: string }
-                  redis_l1_cache:
-                    type: object
-                    properties:
-                      enabled: { type: boolean, description: Whether Redis L1 cache is configured }
-                      cached_symbols: { type: integer, description: Number of symbols with cached snapshots }
-                      symbols: { type: array, items: { type: string }, description: Cached symbol list (first 5) }
-                      error: { type: string }
                   pipeline_async:
                     type: object
                     properties:
@@ -830,7 +820,7 @@ paths:
           3. Create a fresh pipeline with runtime config
           4. Set regime to `low_vol_bull` (enables signal generation during warmup)
           5. Feed prices through the pipeline via backtest (warmup mode)
-          6. Save snapshot to Redis L1 + Supabase L2 (dual-write)
+          6. Save snapshot to Supabase
           7. Prune stale snapshots older than 24h (housekeeping)
 
         **Write access** - requires `admin` or `trader` role.
@@ -874,13 +864,13 @@ paths:
   /renko/snapshot/save:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Save pipeline state to Redis L1 + Supabase L2 (confirmed)
+      summary: Save pipeline state to Supabase (confirmed)
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
       description: |
-        Explicitly saves the current pipeline state to Redis L1 + Supabase L2
-        (awaited, confirmed dual-write). Unlike automatic periodic saves
+        Explicitly saves the current pipeline state to Supabase
+        (awaited, confirmed write). Unlike automatic periodic saves
         (fire-and-forget), this endpoint awaits the upsert and returns
         confirmation including snapshot version, brick/trade counts,
         active position status, and pipeline readiness.
@@ -921,18 +911,14 @@ paths:
   /renko/snapshot/restore:
     post:
       tags: [Renko HFT Pipeline]
-      summary: Restore pipeline from Redis L1 / Supabase L2 snapshot (write access)
+      summary: Restore pipeline from Supabase snapshot (write access)
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
       description: |
-        Attempts to restore a pipeline from the best available cache tier.
+        Attempts to restore a pipeline from Supabase (~100ms).
 
-        Restore hierarchy (MCP agent perspective):
-          1. Redis L1 hit -> sub-5ms, instant hydration
-          2. Supabase L2 hit -> ~100ms, backfill Redis L1 for next time
-
-        If no snapshot exists in either tier, returns restored=false.
+        If no snapshot exists, returns restored=false.
         v3 snapshots include full brick history, classified bricks, trade
         journal, active position with trailing stop state, and signal filter
         state - enabling complete pipeline hydration without warmup.

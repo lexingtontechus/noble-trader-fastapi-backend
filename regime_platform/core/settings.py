@@ -57,8 +57,9 @@ class Settings(BaseSettings):
 
     # ── Noble Trader Multi-Tenant Architecture ─────────────────────────────
     # P5 (2026-07-20): noble-trader-fastapi-backend is the SWEEP ORCHESTRATOR.
-    # It computes signals and publishes them to Redis. It is NOT a trade
-    # executor anymore — execution lives in the hermes agent (noble-trader-agent).
+    # It computes signals and delivers qualified ones directly to Discord.
+    # It is NOT a trade executor anymore — execution lives in the hermes
+    # agent (noble-trader-agent).
     # The flags below enforce that contract and wire in multi-tenant routing.
     #
     # NOBLE_TRADER_DISABLE_EXECUTION (default True):
@@ -127,11 +128,6 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_SIGNALS: str = ""
     DISCORD_WEBHOOK_EXECUTIONS: str = ""
     DISCORD_WEBHOOK_STATUS: str = ""
-    # Debug webhook — used by scripts/debug_signal_subscriber.py to forward
-    # ALL signals (qualified AND rejected) to a debug Discord channel.
-    # Must also set DEBUG_SIGNALS=1 on the orchestrator to publish to the
-    # "signal.debug.noble_trader" Redis channel.
-    DISCORD_WEBHOOK_DEBUG: str = ""
     # ── Per-asset-class signal webhooks (optional) ───────────────────────
     # If set, trade signals are routed to these channels by asset class
     # instead of all going to DISCORD_WEBHOOK_SIGNALS. This splits signals
@@ -160,28 +156,6 @@ class Settings(BaseSettings):
     # ── Telegram ────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
-
-    # ── Redis ───────────────────────────────────────────────────────────────
-    REDIS_URL: str = ""
-    UPSTASH_REDIS_REST_URL: str = ""
-    UPSTASH_REDIS_REST_TOKEN: str = ""
-    
-    @property
-    def redis_url_effective(self) -> str:
-        """Return REDIS_URL — the single source of truth for the Redis connection.
-
-        The legacy UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN fallback has
-        been removed deliberately: a missing or misconfigured REDIS_URL must
-        surface clearly (no Redis configured) instead of silently connecting to
-        a stale Upstash instance. If REDIS_URL is empty, callers that still
-        require Redis (redis_pool and its remaining consumers) will raise/log
-        "no Redis configured" rather than hang on a dead host.
-
-        Set REDIS_URL in the deployment environment (e.g. the new Railway Redis)
-        and ensure it is present on every fresh instance — env vars are
-        per-instance and are NOT carried over when a Studio is re-created.
-        """
-        return self.REDIS_URL
 
     # ── Rate Limiting ───────────────────────────────────────────────────────
     RATE_LIMIT_DEFAULT: str = "60/minute"

@@ -880,8 +880,8 @@ if FASTAPI_AVAILABLE:
         # ── Auto-save on critical events (MCP agent safety) ────────
         # Save immediately when a position was opened or closed
         # (avoids orphaned trades on restart). v8.0: removed the
-        # periodic 100th-tick checkpoint — L1 snapshots only on
-        # meaningful state changes to reduce Redis write volume.
+        # periodic 100th-tick checkpoint — snapshots only on
+        # meaningful state changes to reduce write volume.
         has_position_event = (
             result.get("filtered") is not None
             or result.get("trade_result") is not None
@@ -1621,10 +1621,10 @@ if FASTAPI_AVAILABLE:
         eliminating the need for separate GET /bricks, /classified, /trades, etc.
 
         Flow (auto mode):
-          1. Try Redis L1 → Supabase L2 snapshot restore (instant if fresh <4h)
+          1. Try Supabase snapshot restore (instant if fresh <4h)
           2. If pipeline is warm → incremental: fetch recent prices, append
           3. If pipeline is cold → full: fetch 6mo Yahoo, rebuild from scratch
-          4. Save snapshot to Redis L1 + Supabase L2
+          4. Save snapshot to Supabase
           5. Return full pipeline data (bricks, classified, trades, signals, stats)
         """
         import time as _time
@@ -2224,18 +2224,15 @@ def _notify_reset(symbol: str) -> None:
 
 
 async def _save_pipeline_snapshot_confirmed(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> bool:
-    """Save pipeline state snapshot to Redis L1 + Supabase L2 - awaited, returns success boolean.
+    """Save pipeline state snapshot to Supabase - awaited, returns success boolean.
 
     v7.3: Delegates to the unified _save_snapshot() with confirmed=True.
-    This ensures the same snapshot data is never written to Redis twice
-    (the previous fire-and-forget + confirmed dual paths could cause
-    duplicate writes when both were called in sequence).
     """
     return await _save_snapshot(symbol, pipeline, user_id=user_id, confirmed=True)
 
 
 async def _save_pipeline_snapshot(symbol: str, pipeline: RenkoPipeline, user_id: Optional[str] = None) -> None:
-    """Save pipeline state snapshot to Redis L1 + Supabase L2 (fire-and-forget).
+    """Save pipeline state snapshot to Supabase (fire-and-forget).
 
     v7.3: Delegates to the unified _save_snapshot() with confirmed=False.
     """
@@ -2248,22 +2245,19 @@ async def _save_snapshot(
     user_id: Optional[str] = None,
     confirmed: bool = False,
 ) -> bool:
-    """Unified pipeline snapshot save - eliminates duplicate Redis writes.
+    """Unified pipeline snapshot save to Supabase.
 
     v7.3: Consolidates the previous _save_pipeline_snapshot() and
     _save_pipeline_snapshot_confirmed() into a single function with a
-    `confirmed` parameter. This prevents the same snapshot from being
-    written to Redis twice when both code paths execute in sequence.
+    `confirmed` parameter.
 
     When confirmed=False (fire-and-forget):
-      - Redis L1 write is a background task
-      - Supabase L2 write is a background task
+      - Supabase write is a background task
       - Returns True always (caller ignores result)
 
     When confirmed=True (awaited):
-      - Redis L1 write is a background task (still fast, non-blocking)
-      - Supabase L2 write is awaited
-      - Returns True/False based on Supabase write success
+      - Supabase write is awaited
+      - Returns True/False based on write success
     """
     try:
         snap = pipeline.snapshot()

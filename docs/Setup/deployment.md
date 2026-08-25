@@ -14,7 +14,7 @@ uvicorn main:app --reload --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-> **Note on multiple workers:** Each uvicorn worker process has its own `SessionRegistry`. Live streaming sessions are not shared across workers. For multi-worker deployments with streaming, use a single worker or add Redis-backed session storage (see Extending below).
+> **Note on multiple workers:** Each uvicorn worker process has its own `SessionRegistry`. Live streaming sessions are not shared across workers. For multi-worker deployments with streaming, use a single worker.
 
 ---
 
@@ -109,7 +109,6 @@ docker run -p 8000:8000 regime-platform
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `""` | Redis URL for pipeline state persistence |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins (read by main.py middleware) |
 
 ---
@@ -141,25 +140,6 @@ curl http://localhost:8000/renko/health
 ---
 
 ## Extending
-
-### Redis-backed session persistence
-
-Replace the in-memory `deque` in `StreamSession` with a Redis list:
-
-```python
-import redis.asyncio as redis
-
-r = redis.from_url("redis://localhost:6379")
-
-async def _append_price(self, price: float):
-    key = f"prices:{self.symbol}"
-    await r.rpush(key, price)
-    await r.ltrim(key, -self.window, -1)  # keep last N
-
-async def _load_prices(self) -> list[float]:
-    raw = await r.lrange(f"prices:{self.symbol}", 0, -1)
-    return [float(x) for x in raw]
-```
 
 ### GPU-accelerated HMM
 

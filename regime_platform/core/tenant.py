@@ -2,12 +2,13 @@
 Multi-Tenant Key Helper
 ═══════════════════════
 
-Provides a simple utility for namespacing Redis keys by organisation (org_id)
+Provides a simple utility for namespacing storage keys (Supabase
+`nt_system_config` rows, formerly Redis keys) by organisation (org_id)
 or, as a fallback, by user_id.
 
 When Clerk Organisations are enabled the JWT carries an `org_id` claim.
-We use that to scope data so that different orgs sharing the same Redis
-instance never collide.
+We use that to scope data so that different orgs sharing the same store
+never collide.
 
 Key conventions:
   - org_id present  -> ``org:<org_id>:<base_key>``
@@ -39,12 +40,12 @@ def tenant_key(
     user_id: Optional[str] = None,
 ) -> str:
     """
-    Namespace a Redis key with org_id (or user_id as fallback).
+    Namespace a storage key with org_id (or user_id as fallback).
 
     Parameters
     ──────────
     base_key : str
-        The original Redis key (e.g. ``"noble:halt:global"``).
+        The original key (e.g. ``"noble:halt:global"``).
     org_id : str, optional
         Clerk Organisation ID. Takes precedence when present.
     user_id : str, optional
