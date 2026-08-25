@@ -9,6 +9,46 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 00:50 UTC 2026-08-25: the 00:30 UTC run happened — batching fix alone was enough
+
+The daily `eod-lookback` run fired on schedule and resolved cleanly:
+```
+eod_resolver: resolved 590 pending in 6 batch(es) ({'expired': 148, 'sl_hit': 442}), errors=0
+```
+Zero 429s, zero errors — **the batching fix (`ef64aa7`) alone was sufficient**,
+even though it ran at the *original* `00:30` tick, still colliding head-on
+with the light sweep's own batch call at the same minute.
+
+**Deployment gap found**: the Studio's deployed `git log -1` is still
+`ef64aa7` — the retry-with-backoff + cron-offset commit (`62f54d7`) was
+never pushed out to production. It exists on `origin/main`, tested, but
+not live. This run's success shows it wasn't *strictly* required tonight,
+but it's still the extra safety margin (a busier symbol roster, an API
+having a worse night, etc. could still trip 429s that batching alone
+doesn't fully rule out) and should be deployed at the next restart.
+
+**Bias movement for the three kill-switched symbols — mixed, with a
+formula caveat**:
+
+| Symbol | n before→after | bias before→after | Read |
+|---|---|---|---|
+| AAPL | 427→545 (+118) | 0.4466→0.4714 | Fresh calibration evidence arrived |
+| US500 | 63→63 (+0) | 0.6771→0.7565 | **No new evidence.** All of US500's resolved signals tonight landed as `expired` (excluded from calibration by design — a timeout is neither win nor loss). The bias number still changed because tonight's write comes from the daily lookback's correction pass, which computes bias via `avg_pred` (enforced), while the 4h intraday cycles use `avg_pred_raw` (pre-enforcement) — same 63 records, different formula, not real movement. **New candidate finding**: why do 100% of US500's resolved signals expire rather than hit TP/SL? Possibly its SL/TP distances are miscalibrated relative to its typical 1h move size. Not investigated — flagging only. |
+| XAGUSD | 711→764 (+53) | 0.3739→0.3714 | Fresh evidence arrived, bias barely moved (0.0025) — leans toward genuinely persistent miscalibration for this symbol specifically, not just stale/frozen data |
+
+**Kill switch status: unchanged.** Stagnation streak/tier tracking only
+runs in the 4h intraday correction cycles (`raw_bias_mode=True`) — the
+daily lookback's correction pass doesn't touch it. AAPL/US500/XAGUSD
+remain at tier 2 / kelly=0.0 right now. **The real test is the next
+intraday cycle at 04:30 UTC** (~3h40m out from 00:50 UTC): it will read
+tonight's newly-written `bayesian_penalty` row (source=`eod_correction`)
+as the most recent history entry for the streak calculation — since that
+row's bias value differs from the frozen streak value (different formula,
+see table above), the streak may reset rather than cleanly extend to 6.
+Genuinely unpredictable from here; needs a live check at/after 04:30 UTC.
+
+---
+
 ## UPDATE — 20:34 UTC 2026-08-24: kill switch fired for AAPL/US500/XAGUSD
 
 12h calibration analysis (08:34→20:34 UTC) found the situation escalated
