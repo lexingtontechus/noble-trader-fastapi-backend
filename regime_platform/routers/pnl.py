@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.api_key import require_api_key, DEFAULT_ACTOR
 from ..services.pnl_service import pnl_service, AlertThresholdCreate
 from ..middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT
 from ..models.schemas import RiskDashboardResponse
@@ -108,7 +108,7 @@ async def get_intraday_pnl(
     request: Request,
     timeframe: str = Query(default="15Min", description="Time bucket: 5Min, 15Min, 1Hour, 1Day"),
     period: str = Query(default="1D", description="Lookback period: 1D, 1W, 1M, 3M, 6M, 1A, all"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Fetch intraday P&L with fine-grained time buckets from Alpaca portfolio history.
@@ -117,10 +117,10 @@ async def get_intraday_pnl(
     Timeframes: 5Min (granular), 15Min (default), 1Hour (summary), 1Day (daily).
     """
     buckets = await pnl_service.get_intraday_pnl(
-        user_id=user.sub,
+        user_id=DEFAULT_ACTOR,
         timeframe=timeframe,
         period=period,
-        org_id=user.org_id,
+        org_id=None,
     )
 
     return IntradayPnlResponse(
@@ -149,7 +149,7 @@ async def get_intraday_pnl(
 async def get_historical_pnl(
     request: Request,
     period: str = Query(default="1M", description="Lookback period: 1W, 1M, 3M, 6M, 1A, all"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Fetch historical daily P&L with equity curve, cumulative P&L, and drawdown.
@@ -158,9 +158,9 @@ async def get_historical_pnl(
     The equity curve data can be used for risk metrics computation.
     """
     hist = await pnl_service.get_historical_pnl(
-        user_id=user.sub,
+        user_id=DEFAULT_ACTOR,
         period=period,
-        org_id=user.org_id,
+        org_id=None,
     )
 
     return HistoricalPnlResponse(
@@ -188,7 +188,7 @@ async def export_pnl_csv(
     request: Request,
     period: str = Query(default="1M", description="Lookback period for equity curve."),
     sections: str = Query(default="all", description="Comma-separated sections: positions, trades, equity_curve, risk_metrics, all"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Export P&L data as a CSV file download.
@@ -203,13 +203,13 @@ async def export_pnl_csv(
     section_list = [s.strip() for s in sections.split(",")]
 
     csv_content = await pnl_service.export_pnl_csv(
-        user_id=user.sub,
+        user_id=DEFAULT_ACTOR,
         period=period,
         sections=section_list,
-        org_id=user.org_id,
+        org_id=None,
     )
 
-    filename = f"pnl_export_{period}_{user.sub[:8]}.csv"
+    filename = f"pnl_export_{period}_{DEFAULT_ACTOR[:8]}.csv"
     return StreamingResponse(
         iter([csv_content]),
         media_type="text/csv",
@@ -227,10 +227,10 @@ async def export_pnl_csv(
 )
 async def list_alert_thresholds(
     request: Request,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get all configured P&L alert thresholds for the authenticated user."""
-    thresholds = await pnl_service.list_alert_thresholds(user.sub)
+    thresholds = await pnl_service.list_alert_thresholds(DEFAULT_ACTOR)
     return [
         AlertThresholdResponse(
             id=t.id,
@@ -257,7 +257,7 @@ async def list_alert_thresholds(
 async def create_alert_threshold(
     request: Request,
     req: AlertThresholdRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Create a new P&L alert threshold.
@@ -270,7 +270,7 @@ async def create_alert_threshold(
     """
     try:
         threshold = await pnl_service.create_alert_threshold(
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             req=AlertThresholdCreate(
                 metric=req.metric,
                 operator=req.operator,
@@ -304,10 +304,10 @@ async def create_alert_threshold(
 async def delete_alert_threshold(
     request: Request,
     threshold_id: str,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Delete a P&L alert threshold by ID."""
-    deleted = await pnl_service.delete_alert_threshold(user.sub, threshold_id)
+    deleted = await pnl_service.delete_alert_threshold(DEFAULT_ACTOR, threshold_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Alert threshold '{threshold_id}' not found")
     return {"status": "deleted", "id": threshold_id}
@@ -321,7 +321,7 @@ async def delete_alert_threshold(
 async def check_alerts(
     request: Request,
     req: AlertCheckRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Manually evaluate all alert thresholds against provided current values.
@@ -329,5 +329,5 @@ async def check_alerts(
     Returns a list of triggered alerts with details.
     This is useful for testing threshold configurations.
     """
-    triggered = await pnl_service.check_alerts(user.sub, req.current_values)
+    triggered = await pnl_service.check_alerts(DEFAULT_ACTOR, req.current_values)
     return {"triggered": triggered, "count": len(triggered)}

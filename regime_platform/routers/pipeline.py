@@ -5,7 +5,7 @@ from ..models.schemas import FullAnalysisRequest, FullAnalysisResponse, RegimeRe
 from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.api_key import require_api_key
 from ..core.exceptions import raise_http_exception
 import numpy as np
 
@@ -15,7 +15,7 @@ riskman = RiskManager()
 
 
 @router.post("/full", response_model=FullAnalysisResponse, summary="One-shot: regime + Kelly sizing + risk metrics")
-async def full_analysis(req: FullAnalysisRequest, user: TokenData = Depends(get_authed_user)):
+async def full_analysis(req: FullAnalysisRequest, _: None = Depends(require_api_key)):
     """
     Runs the complete pipeline in a single request:
     1. Fit HMM regime model -> get vol/trend posteriors

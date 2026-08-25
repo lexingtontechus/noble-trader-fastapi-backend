@@ -20,7 +20,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 from ..core.settings import settings
 from ..middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_WRITE
 
@@ -117,7 +117,7 @@ class VenueStatusResponse(BaseModel):
 )
 async def list_venues(
     request: Request,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """List all configured trading venues with their current status."""
     if not await _db_available():
@@ -167,7 +167,7 @@ async def record_snapshot(
     request: Request,
     venue_id: str,
     req: SnapshotRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Record an account snapshot for a venue.
@@ -250,7 +250,7 @@ async def get_snapshots(
     venue_id: str,
     offset: int = Query(default=0, ge=0, description="Pagination offset"),
     limit: int = Query(default=20, ge=1, le=100, description="Page size"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get paginated account snapshot history for a venue."""
     if not await _db_available():
@@ -329,7 +329,7 @@ async def get_snapshots(
 async def get_venue_status(
     request: Request,
     venue_id: str,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get venue details along with the latest account snapshot."""
     if not await _db_available():

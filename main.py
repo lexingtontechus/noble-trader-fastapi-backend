@@ -86,8 +86,7 @@ try:
 except ImportError:
     MCP_AVAILABLE = False
 
-from regime_platform.auth.jwt_auth import get_authed_user
-from regime_platform.auth.jwt_auth import TokenData
+from regime_platform.auth.api_key import require_api_key
 from regime_platform.core.gpu_engine import gpu_capabilities
 from regime_platform.core.settings import settings
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_COMPUTE, RATE_LIMIT_WRITE
@@ -95,7 +94,6 @@ from regime_platform.middleware.input_validation import InputValidationMiddlewar
 
 # v2.x routers
 from regime_platform.routers import (
-    auth_router,
     pipeline,
     portfolio,
     regime,
@@ -418,7 +416,6 @@ def create_app() -> FastAPI:
     )
 
     for r in [
-            auth_router,
             regime,
             sizing,
             risk,
@@ -468,13 +465,13 @@ def create_app() -> FastAPI:
     @app.post("/forecast", include_in_schema=False)
     async def forecast_proxy(
         request: Request,
-        _user: TokenData = Depends(get_authed_user),
+        _: None = Depends(require_api_key),
     ):
         """Pass-through to the TimesFM inference server on port 8002.
 
-        Authenticated (get_authed_user): the sweep orchestrator calls this
-        with X-API-Key (TIMESFM_API_KEYS). Blocking anonymous callers closes
-        the open-proxy (C2): no unauthenticated GPU burn / internal probing.
+        Authenticated (require_api_key): the sweep orchestrator calls this
+        with X-API-Key. Blocking anonymous callers closes the open-proxy
+        (C2): no unauthenticated GPU burn / internal probing.
         """
         log.info(f"TimesFM proxy: forwarding POST /forecast to port 8002")
         timesfm_url = "http://127.0.0.1:8002/forecast"
@@ -520,12 +517,6 @@ def create_app() -> FastAPI:
 
     if MCP_AVAILABLE:
         _mcp_excluded_ops = [
-            "clerk_config_auth_clerk_config_get",
-            "clerk_me_auth_clerk_me_get",
-            "verify_clerk_token_endpoint_auth_clerk_verify_post",
-            "me_auth_me_get",
-            "refresh_auth_refresh_post",
-            "login_auth_token_post",
             "start_feeds_feeds_start_post",
             "stop_feeds_feeds_stop_post",
             "process_tick_renko_tick_post",
@@ -538,15 +529,8 @@ def create_app() -> FastAPI:
             "delete_backtest_result_backtest__backtest_id__delete",
         ]
         
-        if settings.MCP_AUTH_ENABLED:
-            _mcp_auth_kwargs = dict(dependencies=[Depends(get_authed_user)])
-            _mcp_issuer = settings.MCP_ISSUER
-            if _mcp_issuer:
-                _mcp_auth_kwargs["issuer"] = _mcp_issuer
-            _mcp_auth = AuthConfig(**_mcp_auth_kwargs)
-        else:
-            _mcp_auth = None
-        
+        _mcp_auth = AuthConfig(dependencies=[Depends(require_api_key)])
+
         mcp = FastApiMCP(
             app,
             name="Noble Trader MCP",

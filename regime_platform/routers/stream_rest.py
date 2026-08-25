@@ -13,11 +13,10 @@ from __future__ import annotations
 import time
 from fastapi import APIRouter, HTTPException, Depends
 
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 from ..models.stream_schemas import SeedRequest, TickIngest, TickResponse, SessionStatus
 from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 
 router = APIRouter(prefix="/stream", tags=["Live Stream"])
 
@@ -56,7 +55,7 @@ def _tick_to_response(tick) -> TickResponse:
     summary="Seed a symbol session with historical prices",
     response_model=SessionStatus,
 )
-async def seed_session(req: SeedRequest, user: TokenData = Depends(require_write)):
+async def seed_session(req: SeedRequest, _: None = Depends(require_api_key)):
     """
     Creates (or resets) a streaming session for `symbol` and pre-loads
     historical prices so the HMM can be fitted immediately. Must be called
@@ -88,7 +87,7 @@ async def seed_session(req: SeedRequest, user: TokenData = Depends(require_write
     response_model=TickResponse | dict,
     summary="Ingest one price tick and receive regime snapshot",
 )
-async def ingest_tick(req: TickIngest, user: TokenData = Depends(require_write)):
+async def ingest_tick(req: TickIngest, _: None = Depends(require_api_key)):
     """
     Push a single price tick. Returns a full `TickResponse` once the session
     has enough bars; returns `{"status": "buffering", "n_bars": N}` while warming up.
@@ -114,7 +113,7 @@ async def ingest_tick(req: TickIngest, user: TokenData = Depends(require_write))
     response_model=list[TickResponse | dict],
     summary="Ingest a batch of price ticks",
 )
-async def ingest_ticks(symbol: str, prices: list[float], timestamps: list[float] | None = None, user: TokenData = Depends(require_write)):
+async def ingest_ticks(symbol: str, prices: list[float], timestamps: list[float] | None = None, _: None = Depends(require_api_key)):
     """
     Replay or batch-ingest multiple ticks. Returns a snapshot for each tick
     (or a buffering stub when warming up). Useful for backtesting / replay.
@@ -134,12 +133,12 @@ async def ingest_ticks(symbol: str, prices: list[float], timestamps: list[float]
 # ── Session management ────────────────────────────────────────────────────────
 
 @router.get("/sessions", summary="List all active streaming sessions")
-async def list_sessions(user: TokenData = Depends(get_authed_user)):
+async def list_sessions(_: None = Depends(require_api_key)):
     return await registry.stats()
 
 
 @router.get("/session/{symbol}", response_model=SessionStatus, summary="Get session status")
-async def get_session(symbol: str, user: TokenData = Depends(get_authed_user)):
+async def get_session(symbol: str, _: None = Depends(require_api_key)):
     session = await registry.get(symbol)
     if session is None:
         raise HTTPException(status_code=404, detail=f"No session for '{symbol}'.")
@@ -154,6 +153,6 @@ async def get_session(symbol: str, user: TokenData = Depends(get_authed_user)):
 
 
 @router.delete("/session/{symbol}", summary="Remove a streaming session")
-async def remove_session(symbol: str, user: TokenData = Depends(require_write)):
+async def remove_session(symbol: str, _: None = Depends(require_api_key)):
     await registry.remove(symbol)
     return {"status": "removed", "symbol": symbol}

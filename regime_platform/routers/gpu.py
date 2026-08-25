@@ -7,7 +7,7 @@ import numpy as np
 import time
 
 from ..core.gpu_engine import gpu_capabilities, create_regime_hmm
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 
 router = APIRouter(prefix="/gpu", tags=["GPU Engine"])
 
@@ -35,7 +35,7 @@ class BenchmarkResult(BaseModel):
     "/capabilities",
     summary="Report GPU availability and active HMM backend",
 )
-async def get_capabilities(user: TokenData = Depends(get_authed_user)):
+async def get_capabilities(_: None = Depends(require_api_key)):
     """
     Returns which HMM backend will be used and what hardware is available.
 
@@ -53,7 +53,7 @@ async def get_capabilities(user: TokenData = Depends(get_authed_user)):
 )
 async def benchmark(
     req: BenchmarkRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Runs `n_iterations` fit+predict cycles on synthetic price data of length `n_bars`.

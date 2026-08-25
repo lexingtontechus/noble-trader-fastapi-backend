@@ -8,8 +8,7 @@ type-safe Settings class powered by pydantic-settings.
 Usage:
     from regime_platform.core.settings import settings
 
-    secret = settings.JWT_SECRET_KEY
-    keys = settings.api_keys_set
+    key = settings.API_KEY
 
 Environment variables are loaded from a .env file (if present) and
 can be overridden by actual environment variables at runtime.
@@ -43,17 +42,11 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # ── Auth ────────────────────────────────────────────────────────────────
-    JWT_SECRET_KEY: str = ""
-    JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINS: int = 60
-    API_KEYS: str = ""
-    AUTH_ENABLED: bool = True
-    AUTH_USERS: str = ""
-
-    # ── Clerk ───────────────────────────────────────────────────────────────
-    CLERK_PUBLISHABLE_KEY: str = ""
-    CLERK_SECRET_KEY: str = ""
-    CLERK_JWKS_URL: str = ""
+    # 2026-08-25: single shared-secret gatekeeping (see
+    # regime_platform/auth/api_key.py). No live users, single Render
+    # fallback deployment — JWT/Clerk/per-user roles removed. Empty means
+    # the gate fails closed: no request will ever authenticate.
+    API_KEY: str = ""
 
     # ── Noble Trader Multi-Tenant Architecture ─────────────────────────────
     # P5 (2026-07-20): noble-trader-fastapi-backend is the SWEEP ORCHESTRATOR.
@@ -438,32 +431,7 @@ class Settings(BaseSettings):
     #   noise rows but changes what the sim measures — opt-in by design.
     NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY: bool = False
 
-    # ── MCP ─────────────────────────────────────────────────────────────────
-    MCP_AUTH_ENABLED: bool = True
-    MCP_ISSUER: str = ""
-
     # ── Computed properties ─────────────────────────────────────────────────
-
-    @property
-    def api_keys_set(self) -> set[str]:
-        """Split API_KEYS by comma, filter empty strings, return as set."""
-        return set(filter(None, self.API_KEYS.split(",")))
-
-    @property
-    def auth_users_dict(self) -> dict[str, dict]:
-        """Parse AUTH_USERS format "user:pass:role,user2:pass2:role2" into dict."""
-        users: dict[str, dict] = {}
-        for entry in self.AUTH_USERS.split(","):
-            parts = entry.strip().split(":")
-            if len(parts) == 3:
-                username, password, role = parts
-                users[username] = {"password": password, "role": role}
-        return users
-
-    @property
-    def clerk_auth_enabled(self) -> bool:
-        """True if CLERK_SECRET_KEY is configured."""
-        return bool(self.CLERK_SECRET_KEY)
 
     @property
     def discord_configured(self) -> bool:
@@ -483,13 +451,13 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: object) -> None:
         """Validate configuration and warn about missing settings."""
-        # Authentication warnings
-        if self.AUTH_ENABLED and not self.JWT_SECRET_KEY:
+        # Authentication warning
+        if not self.API_KEY:
             log.warning(
-                "JWT_SECRET_KEY is not set. Authentication will reject all JWT tokens. "
-                "Set JWT_SECRET_KEY env var or set AUTH_ENABLED=false for development."
+                "API_KEY is not set. All authenticated endpoints will reject "
+                "every request (the gate fails closed by design)."
             )
-        
+
         # Telegram configuration warning
         if self.TELEGRAM_BOT_TOKEN and not self.TELEGRAM_CHAT_ID:
             log.warning("Telegram bot token configured but no chat ID. Telegram signals will be disabled.")

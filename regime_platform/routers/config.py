@@ -2,9 +2,9 @@
 Admin Configuration Router
 ═══════════════════════════
 
-REST API for runtime configuration management. All mutations require
-admin role. Reads are available to any authenticated user (sensitive
-values are masked for non-admin readers).
+REST API for runtime configuration management, gated by the single
+shared API key (2026-08-25 — no more per-user roles; the key holder has
+full access, equivalent to the old "admin" role).
 
 Endpoints:
     GET    /config/                 - List all config entries (grouped by category)
@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from regime_platform.auth import TokenData, get_authed_user, require_admin
+from regime_platform.auth import require_api_key, DEFAULT_ACTOR
 from regime_platform.core.runtime_config import (
     ConfigEntry,
     ConfigError,
@@ -133,10 +133,10 @@ def _entry_to_response(entry: ConfigEntry, is_admin: bool = False) -> ConfigEntr
 
 @config_router.get("/", response_model=ConfigListResponse)
 async def list_config(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """List all configuration entries grouped by category."""
-    is_admin = user.role == "admin"
+    is_admin = True  # 2026-08-25: single shared API key, no roles left to distinguish
     try:
         all_entries = await runtime_config.get_all()
     except Exception as exc:
@@ -167,7 +167,7 @@ async def list_config(
 
 @config_router.get("/categories", response_model=List[str])
 async def list_categories(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """List all configuration categories."""
     try:
@@ -179,10 +179,10 @@ async def list_categories(
 
 @config_router.get("/schema", response_model=Dict[str, ConfigEntryResponse])
 async def get_schema(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get full schema with types, ranges, descriptions (values always shown for admin reference)."""
-    is_admin = user.role == "admin"
+    is_admin = True  # 2026-08-25: single shared API key, no roles left to distinguish
     try:
         all_entries = await runtime_config.get_all()
     except Exception as exc:
@@ -198,11 +198,9 @@ async def get_schema(
 async def get_audit_log(
     key: Optional[str] = Query(None, description="Filter by config key"),
     limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
-    """Get config change audit log. Admin only."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required for audit log.")
+    """Get config change audit log."""
     try:
         return await runtime_config.get_audit_log(key=key, limit=limit)
     except Exception as exc:
@@ -212,7 +210,7 @@ async def get_audit_log(
 
 @config_router.get("/reload", response_model=ConfigReloadResponse)
 async def reload_config(
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """Force reload of all config from DB. Admin only."""
     try:
@@ -229,10 +227,10 @@ async def reload_config(
 @config_router.get("/{category}", response_model=ConfigCategoryResponse)
 async def get_category(
     category: str,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get all config entries for a specific category."""
-    is_admin = user.role == "admin"
+    is_admin = True  # 2026-08-25: single shared API key, no roles left to distinguish
     try:
         entries = await runtime_config.get_category(category)
     except Exception as exc:
@@ -255,7 +253,7 @@ async def get_category(
 @config_router.get("/key/{key:path}", response_model=ConfigEntryResponse)
 async def get_config_key(
     key: str,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Get a single config entry by key.
 
@@ -263,7 +261,7 @@ async def get_config_key(
     so that known keys (like 'quality_floor') always resolve even when
     Supabase is unreachable.
     """
-    is_admin = user.role == "admin"
+    is_admin = True  # 2026-08-25: single shared API key, no roles left to distinguish
     try:
         all_entries = await runtime_config.get_all()
     except Exception as exc:
@@ -307,7 +305,7 @@ async def get_config_key(
 async def update_config_key(
     key: str,
     body: ConfigValueUpdate,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """
     Update a config value. Admin only.
@@ -319,7 +317,7 @@ async def update_config_key(
         entry = await runtime_config.set_value(
             key=key,
             value=body.value,
-            changed_by=user.sub,
+            changed_by=DEFAULT_ACTOR,
             reason=body.reason,
         )
         return _entry_to_response(entry, is_admin=True)
@@ -336,11 +334,11 @@ async def update_config_key(
 @config_router.post("/key/{key:path}/reset", response_model=ConfigEntryResponse)
 async def reset_config_key(
     key: str,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """Reset a config value to its hardcoded default. Admin only."""
     try:
-        entry = await runtime_config.reset_value(key=key, changed_by=user.sub)
+        entry = await runtime_config.reset_value(key=key, changed_by=DEFAULT_ACTOR)
         return _entry_to_response(entry, is_admin=True)
     except ConfigKeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

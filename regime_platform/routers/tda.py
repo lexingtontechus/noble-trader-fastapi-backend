@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import TDARequest, TDAResponse
 from ..core.tda_engine import TDAEngine
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.api_key import require_api_key
 from ..core.exceptions import raise_http_exception
 import numpy as np
 
@@ -16,7 +16,7 @@ tda_engine = TDAEngine()
     response_model=TDAResponse,
     summary="Extract TDA features from price series using persistent homology",
 )
-async def extract_tda_features(req: TDARequest, user: TokenData = Depends(get_authed_user)):
+async def extract_tda_features(req: TDARequest, _: None = Depends(require_api_key)):
     """
     Topological Data Analysis feature extraction:
     1. Compute log-returns from price series

@@ -10,11 +10,9 @@ Mount with::
     app.include_router(renko_router, prefix="/renko", tags=["renko"])
 
 Authentication:
-  All endpoints require authentication via the unified auth dependency
-  (Clerk JWT -> local JWT -> API key -> dev bypass). Auth levels:
-    - get_authed_user: Read-only endpoints - state, stats, bricks, etc. (any role)
-    - require_write: Mutations - tick ingestion, backtests, regime, equity (admin/trader)
-    - require_admin: Destructive - /config, /reset (admin only)
+  All endpoints require the single shared X-API-Key header
+  (`regime_platform.auth.api_key.require_api_key`) — no roles, no
+  per-user identity (2026-08-25 simplification, single-tenant deployment).
 
 Discord notifications:
   When a signal is detected or a trade is closed, the router
@@ -41,7 +39,7 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
-from regime_platform.auth import get_authed_user, require_write, require_admin, TokenData
+from regime_platform.auth import require_api_key, DEFAULT_ACTOR
 from regime_platform.middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from renko.config import RenkoConfig
 from renko.pipeline import RenkoPipeline
@@ -684,16 +682,12 @@ def _build_full_state(pipeline: RenkoPipeline) -> Dict[str, Any]:
 if FASTAPI_AVAILABLE:
     # Auth imports - conditional since regime_platform may not be on sys.path
     try:
-        from regime_platform.auth.jwt_auth import get_authed_user, require_write, require_admin, TokenData
+        from regime_platform.auth.api_key import require_api_key
         AUTH_AVAILABLE = True
     except ImportError:
-        # Fallback: define no-op dependencies for standalone mode
+        # Fallback: no-op dependency for standalone mode
         AUTH_AVAILABLE = False
-        async def _no_auth(): return None
-        get_authed_user = _no_auth
-        require_write = _no_auth
-        require_admin = _no_auth
-        TokenData = None
+        async def require_api_key(): return None
 
     renko_router = APIRouter(prefix="/renko", tags=["renko"])
 
@@ -821,7 +815,7 @@ if FASTAPI_AVAILABLE:
         }
 
     @renko_router.get("/heartbeat")
-    async def get_heartbeat(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_heartbeat(symbol: str = "SPY", _=Depends(require_api_key)) -> Dict[str, Any]:
         """Get instant pipeline state derived from the in-memory pipeline.
 
         Returns readiness level, brick count, last price, position state.
@@ -834,7 +828,7 @@ if FASTAPI_AVAILABLE:
         return _pipeline_heartbeat(symbol, pipeline)
 
     @renko_router.get("/heartbeat/all")
-    async def get_all_heartbeats(user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_all_heartbeats(_=Depends(require_api_key)) -> Dict[str, Any]:
         """Get heartbeat status for all currently in-memory pipelines.
 
         Useful for the auto-warmup scheduler and dashboard overview.
@@ -854,7 +848,7 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/tick")
     @limiter.limit(RATE_LIMIT_WRITE)
-    async def process_tick(request: Request, body: TickInput, user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def process_tick(request: Request, body: TickInput, _=Depends(require_api_key)) -> Dict[str, Any]:
         """Process a single tick through the Renko pipeline."""
         symbol = body.symbol or "SPY"
         pipeline = await _get_pipeline_with_restore(symbol)
@@ -865,13 +859,13 @@ if FASTAPI_AVAILABLE:
             # Check for pending position open
             pending_exec = pipeline.consume_pending_execution()
             if pending_exec:
-                order_result = await _execute_signal(pending_exec, user, symbol)
+                order_result = await _execute_signal(pending_exec, symbol)
                 result["order_result"] = order_result
 
             # Check for pending position close
             pending_close = pipeline.consume_pending_close()
             if pending_close:
-                close_result = await _close_pipeline_position(pending_close, user)
+                close_result = await _close_pipeline_position(pending_close)
                 result["close_result"] = close_result
 
         # ── Fire Discord notifications (non-blocking) ────────────
@@ -893,7 +887,7 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/tick/batch")
     @limiter.limit(RATE_LIMIT_WRITE)
-    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", user=Depends(require_write)) -> Dict[str, Any]:
+    async def process_batch(request: Request, body: BatchTickInput, symbol: str = "SPY", _=Depends(require_api_key)) -> Dict[str, Any]:
         """Process a batch of ticks (backtest / warm-up).
 
         Atomic Commit: uses confirmed save (awaited) instead of
@@ -902,7 +896,7 @@ if FASTAPI_AVAILABLE:
         """
         # Body symbol takes precedence over query param
         active_symbol = body.symbol or symbol
-        user_id = getattr(user, 'sub', None) if user else None
+        user_id = None  # 2026-08-25: no live users, single-admin mode
         pipeline = await _get_pipeline_with_restore(active_symbol, user_id=user_id)
         result = pipeline.backtest(
             prices=body.prices,
@@ -924,7 +918,7 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.get("/state")
-    async def get_state(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_state(symbol: str = "SPY", _=Depends(require_api_key)) -> Dict[str, Any]:
         """Get current pipeline state with readiness assessment.
 
         MCP agents should check ``readiness.level`` before trading:
@@ -944,7 +938,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/stats")
-    async def get_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_stats(symbol: str = "SPY", _=Depends(require_api_key)) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -954,7 +948,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/bricks")
-    async def get_bricks(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
+    async def get_bricks(symbol: str = "SPY", last_n: int = 100, _=Depends(require_api_key)) -> List[Dict]:
         """Get recent bricks."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -965,7 +959,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/classified")
-    async def get_classified(symbol: str = "SPY", last_n: int = 100, user=Depends(get_authed_user)) -> List[Dict]:
+    async def get_classified(symbol: str = "SPY", last_n: int = 100, _=Depends(require_api_key)) -> List[Dict]:
         """Get recent classified bricks."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -976,7 +970,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/signals")
-    async def get_signals(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
+    async def get_signals(symbol: str = "SPY", last_n: int = 50, _=Depends(require_api_key)) -> List[Dict]:
         """Get recent pattern signals."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -987,7 +981,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/trades")
-    async def get_trades(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
+    async def get_trades(symbol: str = "SPY", last_n: int = 50, _=Depends(require_api_key)) -> List[Dict]:
         """Get recent trade records."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -998,7 +992,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.get("/swing-points")
-    async def get_swing_points(symbol: str = "SPY", last_n: int = 50, user=Depends(get_authed_user)) -> List[Dict]:
+    async def get_swing_points(symbol: str = "SPY", last_n: int = 50, _=Depends(require_api_key)) -> List[Dict]:
         """Get detected swing points."""
         try:
             pipeline = await _get_pipeline_async(symbol)
@@ -1009,7 +1003,7 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=500, detail=f"Pipeline init failed: {e}")
 
     @renko_router.post("/regime")
-    async def set_regime(body: RegimeInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
+    async def set_regime(body: RegimeInput, symbol: str = "SPY", _=Depends(require_api_key)) -> Dict:
         """Update the current HMM regime."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.set_regime(body.regime)
@@ -1018,7 +1012,7 @@ if FASTAPI_AVAILABLE:
         return {"status": "ok", "regime": body.regime}
 
     @renko_router.post("/equity")
-    async def set_equity(body: EquityInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
+    async def set_equity(body: EquityInput, symbol: str = "SPY", _=Depends(require_api_key)) -> Dict:
         """Update the current account equity."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.set_equity(body.equity)
@@ -1027,7 +1021,7 @@ if FASTAPI_AVAILABLE:
         return {"status": "ok", "equity": body.equity}
 
     @renko_router.post("/config")
-    async def update_config(body: ConfigInput, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
+    async def update_config(body: ConfigInput, symbol: str = "SPY", _=Depends(require_api_key)) -> Dict:
         """Update pipeline configuration (resets the pipeline).
 
         Uses runtime config as the base, then applies the explicit overrides
@@ -1061,7 +1055,7 @@ if FASTAPI_AVAILABLE:
 
     @renko_router.post("/reset")
     @limiter.limit(RATE_LIMIT_WRITE)
-    async def reset_pipeline(request: Request, symbol: str = "SPY", user=Depends(require_admin)) -> Dict:
+    async def reset_pipeline(request: Request, symbol: str = "SPY", _=Depends(require_api_key)) -> Dict:
         """Reset the pipeline for a symbol."""
         pipeline = await _get_pipeline_async(symbol)
         pipeline.reset()
@@ -1072,13 +1066,13 @@ if FASTAPI_AVAILABLE:
         return {"status": "ok"}
 
     @renko_router.get("/backtest/stats")
-    async def backtest_stats(symbol: str = "SPY", user=Depends(get_authed_user)) -> Dict[str, Any]:
+    async def backtest_stats(symbol: str = "SPY", _=Depends(require_api_key)) -> Dict[str, Any]:
         """Get backtest/trading statistics from the journal."""
         pipeline = await _get_pipeline_async(symbol)
         return _sanitize_numpy(pipeline.journal.get_stats())
 
     @renko_router.post("/backtest/run")
-    async def run_backtest(request: Request, body: BacktestRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
+    async def run_backtest(request: Request, body: BacktestRequest, _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Run a full backtest with Phase 2-7 analytics.
 
         Uses runtime config as the base, then applies the explicit overrides
@@ -1090,7 +1084,7 @@ if FASTAPI_AVAILABLE:
         pipeline directly so bricks are committed and auto-saved.
         """
         symbol = body.symbol or "SPY"
-        user_id = getattr(user, 'sub', None) if user else None
+        user_id = None  # 2026-08-25: no live users, single-admin mode
         overrides = {
             "symbol": symbol,
             "brick_size": body.brick_size,
@@ -1146,7 +1140,7 @@ if FASTAPI_AVAILABLE:
         return _sanitize_numpy(result)
 
     @renko_router.post("/backtest/run/stream")
-    async def run_backtest_stream(request: Request, body: BacktestStreamRequest, user: TokenData = Depends(require_write)):
+    async def run_backtest_stream(request: Request, body: BacktestStreamRequest, _: None = Depends(require_api_key)):
         """Run a backtest with SSE streaming (Phase 1).
 
         Atomic Commit (MCP agent): when the persistent pipeline for this
@@ -1159,7 +1153,7 @@ if FASTAPI_AVAILABLE:
         import json
 
         symbol = body.symbol or "SPY"
-        user_id = getattr(user, 'sub', None) if user else None
+        user_id = None  # 2026-08-25: no live users, single-admin mode
         overrides = {
             "symbol": symbol,
             "brick_size": body.brick_size,
@@ -1215,7 +1209,7 @@ if FASTAPI_AVAILABLE:
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     @renko_router.post("/backtest/optimize")
-    async def optimize_backtest(request: Request, body: OptimizationRequest, user: TokenData = Depends(require_write)) -> Dict[str, Any]:
+    async def optimize_backtest(request: Request, body: OptimizationRequest, _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Run parameter sweep optimization with Phase 6 statistical rigor.
         
         Supports min_rr filter: combos where tp_bricks/sl_bricks < min_rr
@@ -1328,7 +1322,7 @@ if FASTAPI_AVAILABLE:
         return _sanitize_numpy(response)
 
     @renko_router.post("/statistics/rigor")
-    async def statistical_rigor(request: Request, body: StatisticalRigorRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def statistical_rigor(request: Request, body: StatisticalRigorRequest, _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Run statistical rigor tests (Phase 6) on trade results."""
         import numpy as np
         from regime_platform.services.statistics.deflated_sharpe import deflated_sharpe_ratio
@@ -1360,7 +1354,7 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.post("/execution/model")
-    async def execution_model(request: Request, body: ExecutionModelRequest, user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def execution_model(request: Request, body: ExecutionModelRequest, _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Compute execution modeling costs (Phase 7) for a trade.
 
         Uses runtime_config as the source of defaults for any param not
@@ -1418,7 +1412,7 @@ if FASTAPI_AVAILABLE:
     # ── Sizing Model Endpoints ────────────────────────────────────────
 
     @renko_router.get("/sizing/model")
-    async def get_sizing_model(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_sizing_model(symbol: str = "SPY", _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Get the current position sizing model and parameters for a pipeline.
 
         Returns the active sizing mode (kelly or masaniello) along with
@@ -1467,7 +1461,7 @@ if FASTAPI_AVAILABLE:
         return result
 
     @renko_router.post("/sizing/model")
-    async def set_sizing_model(request: Request, body: SizingModelRequest, symbol: str = "SPY", user: TokenData = Depends(require_admin)) -> Dict[str, Any]:
+    async def set_sizing_model(request: Request, body: SizingModelRequest, symbol: str = "SPY", _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Set the position sizing model for a pipeline (admin only).
 
         Switches between Kelly (simple equity fraction) and Masaniello
@@ -1522,10 +1516,10 @@ if FASTAPI_AVAILABLE:
         # Rebuild pipeline with new sizing config
         config = await RenkoConfig.from_runtime_config(overrides=overrides)
         new_pipeline = RenkoPipeline(config)
-        key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+        key = _pipeline_key(symbol, None)  # 2026-08-25: no live users, single-admin mode
         _pipelines[key] = new_pipeline
 
-        log.warning(f"Pipeline {symbol} sizing mode changed to {mode} by user {user.sub}")
+        log.warning(f"Pipeline {symbol} sizing mode changed to {mode} by {DEFAULT_ACTOR}")
 
         # Auto-save after critical config change (MCP agent safety)
         asyncio.create_task(_save_pipeline_snapshot(symbol, new_pipeline))
@@ -1538,7 +1532,7 @@ if FASTAPI_AVAILABLE:
         }
 
     @renko_router.get("/live/status")
-    async def get_live_status(symbol: str = "SPY", user: TokenData = Depends(get_authed_user)) -> Dict[str, Any]:
+    async def get_live_status(symbol: str = "SPY", _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Get the live execution status for a pipeline."""
         pipeline = await _get_pipeline_async(symbol)
         config = pipeline.config
@@ -1551,7 +1545,7 @@ if FASTAPI_AVAILABLE:
         }
 
     @renko_router.post("/live/toggle")
-    async def toggle_live_execution(request: Request, symbol: str = "SPY", enabled: bool = True, user: TokenData = Depends(require_admin)) -> Dict[str, Any]:
+    async def toggle_live_execution(request: Request, symbol: str = "SPY", enabled: bool = True, _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """
         Toggle live execution for a pipeline (admin only).
         When enabled=False, sets dry_run=True (safe mode).
@@ -1566,7 +1560,7 @@ if FASTAPI_AVAILABLE:
             pipeline.executor.paper = "paper-api" in pipeline.config.base_url
 
         mode = "LIVE" if enabled else "DRY_RUN"
-        log.warning(f"Pipeline {symbol} execution mode set to {mode} by user {user.sub}")
+        log.warning(f"Pipeline {symbol} execution mode set to {mode} by {DEFAULT_ACTOR}")
 
         # Auto-save after critical config change (MCP agent safety)
         asyncio.create_task(_save_pipeline_snapshot(symbol, pipeline))
@@ -1577,7 +1571,7 @@ if FASTAPI_AVAILABLE:
                 message=f"Pipeline {symbol} execution mode changed to {mode}",
                 symbol=symbol,
                 level=AlertLevel.WARNING if enabled else AlertLevel.INFO,
-                data={"enabled": enabled, "user": user.sub},
+                data={"enabled": enabled, "user": DEFAULT_ACTOR},
             ))
 
         return {
@@ -1588,11 +1582,11 @@ if FASTAPI_AVAILABLE:
         }
 
     @renko_router.post("/snapshot/restore")
-    async def restore_snapshot(request: Request, symbol: str = "SPY", user: TokenData = Depends(require_write)) -> Dict[str, Any]:
+    async def restore_snapshot(request: Request, symbol: str = "SPY", _: None = Depends(require_api_key)) -> Dict[str, Any]:
         """Restore a pipeline from a Supabase snapshot (if available)."""
         restored = await _restore_pipeline_snapshot(symbol)
         if restored:
-            key = _pipeline_key(symbol, getattr(user, 'sub', None) if user else None)
+            key = _pipeline_key(symbol, None)  # 2026-08-25: no live users, single-admin mode
             _pipelines[key] = restored
             return {"status": "ok", "symbol": symbol, "restored": True, "state": restored.get_state().to_dict()}
         return {"status": "ok", "symbol": symbol, "restored": False, "message": "No snapshot available"}
@@ -1604,7 +1598,7 @@ if FASTAPI_AVAILABLE:
     async def warmup_pipeline(
         request: Request,
         body: WarmupRequest = WarmupRequest(),
-        user: TokenData = Depends(require_write),
+        _: None = Depends(require_api_key),
     ) -> Dict[str, Any]:
         """
         Warm up a Renko pipeline with historical prices - backend-native warmup.
@@ -1634,7 +1628,7 @@ if FASTAPI_AVAILABLE:
         period = body.period
         mode = body.mode
         include_state = body.include_state
-        user_id = getattr(user, 'sub', None) if user else None
+        user_id = None  # 2026-08-25: no live users, single-admin mode
 
         warmup_start = _time.time()
 
@@ -1901,7 +1895,7 @@ if FASTAPI_AVAILABLE:
     async def save_snapshot(
         request: Request,
         symbol: str = "SPY",
-        user: TokenData = Depends(require_write),
+        _: None = Depends(require_api_key),
     ) -> Dict[str, Any]:
         """
         Explicitly save the current pipeline state to Supabase (awaited, confirmed).
@@ -1943,7 +1937,7 @@ if FASTAPI_AVAILABLE:
     async def compute_ev(
         request: Request,
         req: EVComputeRequest,
-        user: TokenData = Depends(get_authed_user),
+        _: None = Depends(require_api_key),
     ) -> EVComputeResponse:
         """
         Compute full Expected Value with 4-source logit-pooled P_win (v5):
@@ -2545,20 +2539,26 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
 # ── Execution Bridge (async - called from router) ────────────────────
 
 
-async def _execute_signal(pending: dict, user: TokenData, symbol: str) -> Optional[dict]:
+async def _execute_signal(pending: dict, symbol: str) -> Optional[dict]:
     """
     Execute a filtered signal as an Alpaca order.
-    Resolves user credentials, creates an executor, and submits the order.
+    Resolves Alpaca credentials, creates an executor, and submits the order.
     Returns the OrderResult as a dict, or None on failure.
+
+    2026-08-25: per-user/org credential resolution is deprecated — there
+    are no live users, so this now resolves via the global
+    ALPACA_API_KEY/ALPACA_SECRET_KEY env fallback that
+    resolve_alpaca_credentials() already supported. Kept reachable
+    (still behind NOBLE_TRADER_DISABLE_EXECUTION) rather than deleted,
+    in case execution is ever re-enabled for emergency use.
     """
     try:
         from regime_platform.services.alpaca_stream import resolve_alpaca_credentials
         from renko.executor import AlpacaExecutor
 
-        # Resolve user's Alpaca credentials
-        creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
+        creds = await resolve_alpaca_credentials(DEFAULT_ACTOR)
         if not creds:
-            log.warning(f"No Alpaca credentials for user {user.sub} - order not submitted")
+            log.warning("No Alpaca credentials configured - order not submitted")
             return {"status": "skipped", "error": "No Alpaca credentials configured"}
 
         api_key, secret_key, base_url = creds
@@ -2611,17 +2611,20 @@ async def _execute_signal(pending: dict, user: TokenData, symbol: str) -> Option
         return {"status": "error", "error": str(e)}
 
 
-async def _close_pipeline_position(pending: dict, user: TokenData) -> Optional[dict]:
+async def _close_pipeline_position(pending: dict) -> Optional[dict]:
     """
     Close an Alpaca position when the pipeline's risk manager closes.
+
+    2026-08-25: see _execute_signal's docstring — per-user/org credential
+    resolution is deprecated in favor of the global env fallback.
     """
     try:
         from regime_platform.services.alpaca_stream import resolve_alpaca_credentials
         from renko.executor import AlpacaExecutor
 
-        creds = await resolve_alpaca_credentials(user.sub, org_id=user.org_id)
+        creds = await resolve_alpaca_credentials(DEFAULT_ACTOR)
         if not creds:
-            log.warning(f"No Alpaca credentials for user {user.sub} - position close not submitted")
+            log.warning("No Alpaca credentials configured - position close not submitted")
             return {"status": "skipped", "error": "No Alpaca credentials configured"}
 
         api_key, secret_key, base_url = creds

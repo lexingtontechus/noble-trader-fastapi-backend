@@ -51,8 +51,7 @@ noble-trader-fastapi-backend/
 │   ├── adapters/
 │   │   └── feed_adapters.py          Alpaca / Binance / IB live OHLCV adapters
 │   ├── auth/
-│   │   ├── jwt_auth.py               JWT + API-key auth, role-based access
-│   │   └── clerk_auth.py             Clerk JWT verification, JWKS, webhooks
+│   │   └── api_key.py                Single shared X-API-Key gatekeeping
 │   ├── models/
 │   │   ├── schemas.py                Pydantic v2 batch I/O models
 │   │   └── stream_schemas.py         Pydantic v2 streaming models
@@ -65,7 +64,6 @@ noble-trader-fastapi-backend/
 │   │   ├── stream_ws.py            WS /ws/{symbol} | GET /sse/{symbol|alerts}
 │   │   ├── simulate.py               POST /simulate/{symbol}
 │   │   ├── portfolio.py              GET /portfolio
-│   │   ├── auth_router.py            POST /auth/token | GET /auth/me | Clerk endpoints
 │   │   ├── gpu.py                    GET /gpu/capabilities | POST /gpu/benchmark
 │   │   ├── feeds.py                  POST /feeds/start | /stop | GET /feeds/status
 │   │   ├── multi_asset.py            POST /correlation/detect | /optimise | /optimise/full
@@ -132,7 +130,7 @@ pip install -e ".[dev]"     # includes torch + timesfm
 
 # 2. Set environment
 export TIMESFM_API_KEYS="your-key-here"
-export JWT_SECRET_KEY="your-secret"    # or AUTH_ENABLED=false
+export API_KEY="your-shared-secret"
 
 # 3. Start (three-layer stack)
 ./start.sh
@@ -222,11 +220,8 @@ pip install ".[gpu]"
 | **numpy** | ≥2.0 | Vectorised return/vol calculations |
 | **pydantic v2** | ≥2.7 | Request/response validation |
 | **uvicorn** | ≥0.29 | ASGI server |
-| **python-jose** | ≥3.3 | JWT signing/verification |
 | **pomegranate** | ≥1.0 *(optional)* | GPU-accelerated HMM (PyTorch) |
-| **clerk-backend-api** | ≥0.1.0 | Clerk JWT authentication |
-| **httpx** | ≥0.28.1 | Clerk JWKS fetching + proxy routing |
-| **PyJWT** | ≥2.9.0,<3.0.0 | JWT token handling |
+| **httpx** | ≥0.28.1 | Async HTTP client (Supabase/proxy routing) |
 | **timesfm** | ≥2.0.1 | Google TimesFM 2.5 foundation model |
 | **torch** | ≥2.4 | PyTorch (TimesFM inference) |
 | **huggingface-hub** | ≥1.0 | HF model download/caching |
@@ -309,11 +304,6 @@ Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elaps
 | `POST` | `/gpu/benchmark` | Fit/predict latency benchmark |
 | `POST` | `/feeds/start` | Start Alpaca/Binance/IB live feed |
 | `GET` | `/feeds/status` | Adapter health + bar counts |
-| `POST` | `/auth/token` | Issue JWT access token |
-| `GET` | `/auth/me` | Current user info |
-| `GET` | `/auth/clerk/config` | Clerk auth configuration |
-| `GET` | `/auth/clerk/me` | Clerk user info from JWT |
-| `POST` | `/auth/clerk/verify` | Verify Clerk JWT token |
 | `GET` | `/health` | Service health check |
 
 ### Calibration Loop (v3)
@@ -525,7 +515,7 @@ python test_obs_builder.py        # 7 checks  - 24-feature builder, Markov guard
 
 # Integration (no server required)
 python test_streaming.py          # asyncio: 160 ticks, alerts, subscriber queue
-export JWT_SECRET_KEY=test-secret
+export API_KEY=test-secret
 python test_v30.py                # GPU, feed adapters, correlation, optimiser
 
 # Live API (server must be running)
@@ -561,187 +551,41 @@ POST /optimise/full
 
 ## Authentication
 
-### Authentication Modes (Enhanced)
-
-Choose the authentication mode that best fits your deployment:
-
-```bash
-# LightningAI / Push Architecture (Recommended)
-AUTH_MODE=api_key_only
-API_KEYS=your_service_key
-
-# Multi-Layer (Default)
-AUTH_MODE=full
-JWT_SECRET_KEY=your_jwt_secret
-API_KEYS=your_service_key
-
-# Development Only
-AUTH_MODE=disabled
-```
-
-**Authentication Mode Options:**
-- `full`: JWT + API Keys + Clerk (default)
-- `api_key_only`: Only API keys (recommended for LightningAI)
-- `disabled`: No authentication (development only)
-
-### API Key Only Mode (Recommended for LightningAI)
-
-Perfect for push-based architectures:
+**2026-08-25 — simplified to a single shared API key.** There are no
+live users and the only deployment target is a single Render fallback
+instance, so JWT, Clerk, and per-user/role auth were retired in favor of
+one gatekeeping secret: `regime_platform/auth/api_key.py`'s
+`require_api_key` dependency, checked against the `API_KEY` setting.
 
 ```bash
 # Configure
-export AUTH_MODE=api_key_only
-export API_KEYS="lightningai_key_1,lightningai_key_2"
+export API_KEY="your-shared-secret"
 
-# Usage
-curl -H "X-API-Key: lightningai_key_1" http://localhost:8000/portfolio
+# Usage — every protected endpoint takes the same header
+curl -H "X-API-Key: your-shared-secret" http://localhost:8000/portfolio
+
+# WebSocket
+ws://localhost:8000/ws/SPY?api_key=your-shared-secret
 ```
 
-### JWT Authentication (Legacy)
-
-```bash
-# Configure
-export AUTH_MODE=full
-export JWT_SECRET_KEY="your-signing-secret"
-export AUTH_USERS="admin:pass:admin,trader:pass123:trader"
-export API_KEYS="svc-key-1"
-
-# Issue token
-curl -X POST http://localhost:8000/auth/token \
-  -d "username=trader&password=pass123"
-
-# Use token
-curl -H "Authorization: Bearer <jwt>" http://localhost:8000/portfolio
-
-# WebSocket with token
-ws://localhost:8000/ws/SPY?token=<jwt>
-```
-
-Roles: `admin` (full) · `trader` (read + write) · `viewer` (read-only)
-
-### Clerk Authentication (New)
-
-Clerk JWT authentication is now fully integrated. Configure Clerk keys in `.env.local`:
-
-```bash
-# .env.local
-CLERK_PUBLISHABLE_KEY=pk_test_your_publishable_key
-CLERK_SECRET_KEY=sk_test_your_secret_key
-```
-
-#### Clerk Endpoints
-
-```bash
-# Get Clerk configuration
-curl https://your-domain.com/auth/clerk/config
-
-# Verify a Clerk JWT token
-curl -X POST https://your-domain.com/auth/clerk/verify \
-  -H "Content-Type: application/json" \
-  -d '{"token": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..."}'
-
-# Get current Clerk user info (requires valid Clerk JWT)
-curl -H "Authorization: Bearer <clerk_jwt>" \
-  https://your-domain.com/auth/clerk/me
-```
-
-#### Protecting Endpoints with Clerk
+No roles, no per-key plans, no login/token endpoints (`/auth/*` no
+longer exists) — a request either has the correct key or it doesn't.
+If `API_KEY` is unset, the gate fails closed: nothing authenticates,
+matching the prior system's "no key configured" posture rather than
+opening up.
 
 ```python
-from regime_platform.auth import get_current_clerk_user, require_clerk_admin
-
-@router.get("/protected")
-async def protected_route(user = Depends(get_current_clerk_user)):
-    return {"user_id": user.sub, "email": user.email}
-
-@router.post("/admin-only")
-async def admin_only(user = Depends(require_clerk_admin)):
-    return {"message": "Admin access granted"}
-```
-
-#### Clerk Features
-
-- ✅ **JWT Verification**: Verify Clerk-issued JWT tokens using Clerk's JWKS
-- ✅ **JWKS Fetching**: Automatic key rotation support
-- ✅ **Role-based Access**: Admin/trader/viewer roles from token claims
-- ✅ **Webhook Verification**: Secure Clerk webhook signature validation
-- ✅ **FastAPI Integration**: Ready-to-use dependency injectors
-- ✅ **Configuration Endpoints**: `/auth/clerk/config` for client setup
-
-#### Clerk Token Data
-
-Verified Clerk tokens provide rich user data:
-- `sub`: Clerk user ID
-- `email`: User email address
-- `first_name`, `last_name`: User's name
-- `username`: User's username
-- `role`: User role (admin/trader/viewer)
-- Full token claims available via `user.claims`
-
-#### Webhook Security
-
-```python
-from regime_platform.auth import verify_clerk_webhook
-
-@router.post("/webhooks/clerk")
-async def clerk_webhook(request: Request):
-    payload = await verify_clerk_webhook(request)
-    # Process verified webhook payload
-    return {"status": "processed"}
-```
-
-Clerk authentication works alongside the existing JWT system, allowing flexible migration paths.
-
-### Unified Authentication System
-
-All endpoints automatically adapt to your authentication mode:
-
-```python
-# Single dependency works across all authentication modes
-from regime_platform.auth import get_authed_user, TokenData
+# Every protected endpoint uses the same dependency
+from regime_platform.auth import require_api_key
 
 @router.post("/simulate/{symbol}")
 async def simulate_symbol(
     symbol: str,
     req: SimulateRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
-    # Works with all authentication modes
-    pass
+    ...
 ```
-
-**Usage examples by mode:**
-
-**API Key Only Mode (LightningAI):**
-```bash
-# Only API keys are required
-curl -H "X-API-Key: your_service_key" \
-  https://your-domain.com/portfolio
-```
-
-**Full Mode (JWT + API + Clerk):**
-```bash
-# JWT token
-curl -H "Authorization: Bearer <jwt_token>" \
-  https://your-domain.com/simulate/SPY
-
-# Clerk JWT token  
-curl -H "Authorization: Bearer <clerk_jwt_token>" \
-  https://your-domain.com/simulate/SPY
-
-# API key (service-to-service)
-curl -H "X-API-Key: your-api-key" \
-  https://your-domain.com/portfolio
-```
-
-All modes support:
-- ✅ **API Key Only mode** (recommended for LightningAI)
-- ✅ **JWT tokens** (built-in system)
-- ✅ **Clerk JWT tokens** (new Clerk integration)  
-- ✅ **API keys** (service-to-service)
-- ✅ **Development mode** (AUTH_MODE=disabled)
-
-This provides maximum flexibility for different deployment scenarios while maintaining backward compatibility.
 
 ---
 
@@ -1024,11 +868,11 @@ The v4 weight keys are non-negotiable: legacy v3 keys like `p_ext_signal` are ex
 The platform exposes an MCP server at `/mcp` via `fastapi-mcp`, enabling AI agents to invoke read-only and analysis endpoints as tools.
 
 ### Configuration
-- `MCP_AUTH_ENABLED` - Enable/disable MCP authentication (default: false)
-- `MCP_ISSUER` - JWT issuer for MCP tokens
+The MCP mount is always gated behind the same `X-API-Key` header as every
+other endpoint (`require_api_key`) — no separate MCP-specific auth toggle.
 
-### Excluded Operations (19)
-Auth endpoints, feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
+### Excluded Operations
+Feed start/stop, Renko write operations, stream injection, and backtest delete are excluded from MCP exposure for security.
 
 ### Available Tools
 All read-only and analysis endpoints are automatically exposed as MCP tools with proper request/response schemas.

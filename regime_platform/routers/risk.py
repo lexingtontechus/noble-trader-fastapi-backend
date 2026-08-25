@@ -9,7 +9,7 @@ from ..core.regime_engine import RegimeHMM
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
 from ..core.exceptions import raise_http_exception
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.api_key import require_api_key, DEFAULT_ACTOR
 from ..core.runtime_config import runtime_config
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE, RATE_LIMIT_DEFAULT
 import numpy as np
@@ -21,7 +21,7 @@ riskman  = RiskManager()
 
 @router.post("/analyse", response_model=RiskResponse, summary="Full risk analysis: VaR, CVaR, drawdown, stop/TP suggestions")
 @limiter.limit(RATE_LIMIT_COMPUTE)
-async def risk_analyse(request: Request, req: RiskRequest, user: TokenData = Depends(get_authed_user)):
+async def risk_analyse(request: Request, req: RiskRequest, _: None = Depends(require_api_key)):
     """
     Computes comprehensive risk metrics including parametric + historical VaR/CVaR,
     max drawdown, Sortino & Calmar ratios, and regime-adjusted stop-loss/take-profit.
@@ -82,7 +82,7 @@ async def risk_analyse(request: Request, req: RiskRequest, user: TokenData = Dep
     summary="Enhanced risk analysis with VaR/CVaR, stress tests, and regime context",
 )
 @limiter.limit(RATE_LIMIT_COMPUTE)
-async def risk_analyze(request: Request, req: RiskAnalyzeRequest, user: TokenData = Depends(get_authed_user)):
+async def risk_analyze(request: Request, req: RiskAnalyzeRequest, _: None = Depends(require_api_key)):
     """
     Enhanced risk analysis (US spelling endpoint):
     1. Full VaR/CVaR computation (parametric + historical)
@@ -251,7 +251,7 @@ async def risk_analyze(request: Request, req: RiskAnalyzeRequest, user: TokenDat
 async def risk_dashboard(
     request: Request,
     period: str = Query(default="1M", description="Lookback period: 1W, 1M, 3M, 6M, 1A, all"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Compute live portfolio risk metrics from the equity curve.
@@ -269,9 +269,9 @@ async def risk_dashboard(
     from ..services.pnl_service import pnl_service
 
     metrics = await pnl_service.get_risk_dashboard(
-        user_id=user.sub,
+        user_id=DEFAULT_ACTOR,
         period=period,
-        org_id=user.org_id,
+        org_id=None,
     )
 
     return RiskDashboardResponse(

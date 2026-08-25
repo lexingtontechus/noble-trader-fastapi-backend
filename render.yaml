@@ -24,17 +24,11 @@ services:
         sync: false
       - key: DISCORD_WEBHOOK_STATUS
         sync: false
-      # ── Auth (Clerk) ─────────────────────────────────────────────
-      - key: CLERK_SECRET_KEY
-        sync: false
       # ── CORS ──────────────────────────────────────────────────────
       - key: CORS_ORIGINS
         value: https://noble-trader-agent-frontend.vercel.app
-      # ── MCP Auth ──────────────────────────────────────────────────
-      - key: MCP_AUTH_ENABLED
-        value: "true"
-      # ── JWT ───────────────────────────────────────────────────────
-      - key: JWT_SECRET_KEY
+      # ── Auth ──────────────────────────────────────────────────────
+      - key: API_KEY
         sync: false
 	      # ═════════════════════════════════════════════════════════════
 	      # TimesFM env vars are NOT needed here.

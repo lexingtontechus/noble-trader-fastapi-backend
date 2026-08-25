@@ -1,7 +1,6 @@
 """Router module - all FastAPI routers for the regime platform."""
 
 from . import (
-    auth_router,
     backtest,
     calibration,
     config,

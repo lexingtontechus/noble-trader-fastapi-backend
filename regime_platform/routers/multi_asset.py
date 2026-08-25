@@ -26,7 +26,7 @@ from ..services.masaniello_bridge import MasanielloBridge
 from ..models.schemas import (
     PortfolioMasanielloRequest, PortfolioMasanielloResponse, AssetMasanielloResult,
 )
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 
 router = APIRouter(tags=["Multi-Asset"])
@@ -142,7 +142,7 @@ def _snap_to_dict(ar: AssetRegime) -> dict:
 )
 async def detect_correlation_regime(
     req: CorrDetectRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Fits a 4-state Gaussian HMM on rolling correlation features across all assets.
@@ -193,7 +193,7 @@ async def detect_correlation_regime(
 async def optimise_portfolio(
     request: Request,
     req: OptimiseRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Solves a regime-adjusted maximum Sharpe portfolio subject to a drawdown constraint.
@@ -250,7 +250,7 @@ async def optimise_portfolio(
 async def full_optimise(
     request: Request,
     req: FullOptimiseRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Runs the complete multi-asset pipeline in one request:
@@ -321,7 +321,7 @@ async def full_optimise(
 async def optimise_with_masaniello(
     request: Request,
     req: PortfolioMasanielloRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Full two-stage pipeline in one request:

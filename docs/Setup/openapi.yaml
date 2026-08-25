@@ -22,16 +22,9 @@ info:
     acceleration, and real-time streaming over SSE and WebSocket.
 
     ### Authentication
-    All endpoints support **unified authentication** via one of:
-    1. **Clerk JWT** - `Authorization: Bearer <clerk_jwt>` (preferred)
-    2. **Local JWT** - `Authorization: Bearer <local_jwt>`
-    3. **SaaS API Key** - `X-API-Key: nt_live_*` (looked up in Supabase `api_keys`)
-    4. **Static API Key** - `X-API-Key: <key>` (matched against `API_KEYS` env var)
-
-    Auth levels:
-    - **Read** (`get_authed_user`): Any authenticated user - state, stats, bricks, signals, trades
-    - **Write** (`require_write`): `admin` or `trader` role - tick ingestion, backtests, regime/equity updates, snapshot restore
-    - **Admin** (`require_admin`): `admin` role only - config changes, reset, live toggle
+    Single shared-secret gatekeeping (2026-08-25): every endpoint checks
+    the same `X-API-Key` header against one configured `API_KEY` value.
+    No roles, no per-user identity, no login/token endpoints.
 
     SSE endpoints also require auth. The `/health` and `/renko/health` endpoints are public.
   contact:
@@ -96,7 +89,6 @@ tags:
 
 # ─────────────────────────────────────────────────────────────────────────────
 security:
-  - BearerAuth: []
   - ApiKeyAuth: []
 
 paths:
@@ -155,7 +147,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Process single tick through 6-layer pipeline
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Pushes a single price tick through the full Renko HFT pipeline:
@@ -183,7 +174,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Batch tick processing (backtest/warmup)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Processes a batch of ticks through the Renko pipeline for backtesting
@@ -213,7 +203,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Current pipeline state with readiness assessment
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -240,7 +229,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Comprehensive pipeline statistics
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -260,7 +248,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Recent Renko bricks
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -286,7 +273,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Bricks with swing labels
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Returns recent bricks with swing classification labels (HH, HL, LH, LL)
@@ -314,7 +300,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Pattern signals history
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -339,7 +324,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Trade journal records
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -364,7 +348,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Detected swing points
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -389,12 +372,11 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Update HMM regime for gate filter (admin only)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Updates the current HMM regime label used by the Signal Filter's
         regime gate. Only trades aligned with the current regime are allowed.
-        **Admin-only endpoint** - requires the `admin` role.
+        Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -417,7 +399,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden - admin role required
+          description: Unauthorized - invalid or missing API key
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -426,12 +408,11 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Update account equity (admin only)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Updates the current account equity used for position sizing
         calculations in the Risk Manager layer.
-        **Admin-only endpoint** - requires the `admin` role.
+        Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -454,7 +435,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden - admin role required
+          description: Unauthorized - invalid or missing API key
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -463,11 +444,10 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Update pipeline configuration (resets pipeline)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Replaces the entire pipeline configuration and resets the pipeline
-        for the symbol. **Admin-only endpoint.**
+        for the symbol. Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -497,11 +477,10 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Reset pipeline for a symbol
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Resets the pipeline state (bricks, trades, signals) for a symbol
-        without changing configuration. **Admin-only endpoint.**
+        without changing configuration. Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -577,7 +556,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Backtest statistics from journal
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -597,7 +575,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Run full backtest with Phase 2-7 analytics
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Runs a complete Renko backtest with transaction cost modeling (Phase 2),
@@ -625,7 +602,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: SSE streaming backtest
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Runs a Renko backtest with Server-Sent Events streaming. Emits chunk
@@ -649,7 +625,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Parameter sweep optimization with statistical rigor
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Runs a grid-search parameter sweep over brick_sizes × sl_bricks × tp_bricks
@@ -690,7 +665,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Statistical rigor tests (Phase 6)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Runs bootstrap confidence intervals, Deflated Sharpe Ratio, and
@@ -718,7 +692,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Execution modeling costs (Phase 7)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Computes execution modeling costs including market impact (Almgren-Chriss),
@@ -746,7 +719,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Live execution status
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Returns the current live execution status for a pipeline, including
@@ -775,12 +747,11 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Toggle live execution (admin only)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Toggle live execution for a pipeline. When enabled=False, sets
         dry_run=True (safe mode). When enabled=True, sets dry_run=False
-        and live_enabled=True. **Admin-only endpoint.**
+        and live_enabled=True. Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -807,7 +778,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Backend-native pipeline warmup (Yahoo fetch + snapshot save)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Warm up a Renko pipeline with historical prices from Yahoo Finance.
@@ -823,7 +793,7 @@ paths:
           6. Save snapshot to Supabase
           7. Prune stale snapshots older than 24h (housekeeping)
 
-        **Write access** - requires `admin` or `trader` role.
+        Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -866,7 +836,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Save pipeline state to Supabase (confirmed)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Explicitly saves the current pipeline state to Supabase
@@ -879,7 +848,7 @@ paths:
         equity, position open) where persistence must be guaranteed before
         proceeding.
 
-        **Write access** - requires `admin` or `trader` role.
+        Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -913,7 +882,6 @@ paths:
       tags: [Renko HFT Pipeline]
       summary: Restore pipeline from Supabase snapshot (write access)
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       description: |
         Attempts to restore a pipeline from Supabase (~100ms).
@@ -923,7 +891,7 @@ paths:
         journal, active position with trailing stop state, and signal filter
         state - enabling complete pipeline hydration without warmup.
 
-        **Write access** - requires `admin` or `trader` role.
+        Requires the shared API key.
       parameters:
         - name: symbol
           in: query
@@ -957,9 +925,8 @@ paths:
         parameters for a given symbol. Includes Kelly parameters always, and
         Masaniello parameters when the sizing mode is `masaniello`.
         Also returns the current batch state for Masaniello tracking.
-        **Any authenticated user** - requires `get_authed_user`.
+        Requires the shared API key.
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -1016,9 +983,8 @@ paths:
         Sets the position sizing model and its parameters for a given symbol.
         Switches between Kelly Criterion and Masaniello sizing modes, and
         updates all associated parameters.
-        **Admin-only endpoint** - requires the `admin` role.
+        Requires the shared API key.
       security:
-        - BearerAuth: []
         - ApiKeyAuth: []
       parameters:
         - name: symbol
@@ -1046,7 +1012,7 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Forbidden - admin role required
+          description: Unauthorized - invalid or missing API key
         "422":
           $ref: '#/components/responses/ValidationError'
 
@@ -1971,7 +1937,7 @@ paths:
       summary: Get all config entries
       description: |
         Returns all runtime configuration entries across every category.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: All config entries
@@ -1987,7 +1953,7 @@ paths:
       summary: List config categories
       description: |
         Returns a list of all available configuration categories.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: Category list
@@ -2003,7 +1969,7 @@ paths:
       summary: Get config by category
       description: |
         Returns all configuration entries for a specific category.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       parameters:
         - name: category
           in: path
@@ -2028,7 +1994,7 @@ paths:
       description: |
         Returns the complete configuration schema including all keys, types,
         defaults, descriptions, and validation rules.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: Full configuration schema
@@ -2045,7 +2011,7 @@ paths:
       description: |
         Returns the audit trail of all configuration changes including who
         changed what, when, and the previous value.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: Audit log entries
@@ -2069,7 +2035,7 @@ paths:
       summary: Get single config key
       description: |
         Returns the current value and metadata for a single configuration key.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       parameters:
         - name: key
           in: path
@@ -2097,7 +2063,7 @@ paths:
       summary: Update a config value
       description: |
         Updates a single configuration key. The change is audited.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       parameters:
         - name: key
           in: path
@@ -2136,7 +2102,7 @@ paths:
       summary: Reset a config key to default
       description: |
         Resets a configuration key to its default value. The change is audited.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       parameters:
         - name: key
           in: path
@@ -2163,7 +2129,7 @@ paths:
       summary: Force reload config from DB
       description: |
         Forces a reload of all configuration from the database, discarding
-        any in-memory cache. **Admin-only endpoint.**
+        any in-memory cache. Requires the shared API key.
       responses:
         "200":
           description: Config reloaded
@@ -2313,7 +2279,7 @@ paths:
       summary: Activate kill switch
       description: |
         Activates the kill switch. Immediately halts all new order submissions
-        and optionally cancels existing orders. **Admin-only endpoint.**
+        and optionally cancels existing orders. Requires the shared API key.
       requestBody:
         required: false
         content:
@@ -2346,7 +2312,7 @@ paths:
       summary: Deactivate kill switch
       description: |
         Deactivates the kill switch, allowing order submission to resume.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: Kill switch deactivated
@@ -2364,7 +2330,7 @@ paths:
       summary: Cancel all orders
       description: |
         Cancels all open orders across all symbols without activating the
-        kill switch. **Admin-only endpoint.**
+        kill switch. Requires the shared API key.
       responses:
         "200":
           description: Orders cancelled
@@ -2383,7 +2349,7 @@ paths:
       summary: Close all positions
       description: |
         Closes all open positions via market orders. Optionally activates
-        kill switch first. **Admin-only endpoint.**
+        kill switch first. Requires the shared API key.
       requestBody:
         required: false
         content:
@@ -2526,7 +2492,7 @@ paths:
       summary: Export audit log
       description: |
         Exports the full audit log as a downloadable file (JSON or CSV).
-        **Admin-only endpoint.**
+        Requires the shared API key.
       parameters:
         - name: format
           in: query
@@ -2556,7 +2522,7 @@ paths:
       description: |
         Triggers a full position and order reconciliation against the
         execution venue. Compares local state with broker state.
-        **Admin-only endpoint.**
+        Requires the shared API key.
       responses:
         "200":
           description: Reconciliation started
@@ -2910,32 +2876,6 @@ paths:
 
   # ── AUTH DEBUG ─────────────────────────────────────────────────────────────
 
-  /auth/debug/clerk-flow:
-    get:
-      tags: [Health]
-      summary: Debug Clerk auth flow
-      description: |
-        Returns diagnostic information about the Clerk JWT authentication
-        flow, including token validation status, claims, and role extraction.
-        Intended for development debugging only.
-      responses:
-        "200":
-          description: Clerk auth debug info
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  token_valid: { type: boolean }
-                  claims:
-                    type: object
-                    nullable: true
-                    description: Decoded JWT claims
-                  role: { type: string, nullable: true }
-                  user_id: { type: string, nullable: true }
-                  session_id: { type: string, nullable: true }
-                  error: { type: string, nullable: true }
-
   # ── SSE PNL STREAMING ─────────────────────────────────────────────────────
 
   /sse/pnl:
@@ -2987,7 +2927,7 @@ paths:
       summary: Log a calibration record
       description: Record a trade outcome paired with its predicted P_win for calibration bias analysis.
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -3032,7 +2972,7 @@ paths:
           required: true
           schema: { type: string }
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Calibration bias result
@@ -3053,7 +2993,7 @@ paths:
       tags: [Calibration]
       summary: Get daily calibration status for all symbols
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Aggregated calibration status
@@ -3082,7 +3022,7 @@ paths:
       tags: [Venue Management]
       summary: List all trading venues
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         "200":
           description: List of configured venues
@@ -3114,7 +3054,7 @@ paths:
           required: true
           schema: { type: string }
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -3160,7 +3100,7 @@ paths:
           in: query
           schema: { type: integer, default: 20 }
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Paginated snapshot history
@@ -3194,7 +3134,7 @@ paths:
           required: true
           schema: { type: string }
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Venue health status
@@ -3228,22 +3168,14 @@ paths:
 components:
 
   securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: |
-        Unified JWT authentication. Supports:
-        - Clerk JWT (preferred, RS256, verified via JWKS from issuer)
-        - Local JWT (HS256, issued by /auth/token)
     ApiKeyAuth:
       type: apiKey
       in: header
       name: X-API-Key
       description: |
-        API key authentication. Supports:
-        - SaaS API keys (`nt_live_*` prefix, looked up in Supabase `api_keys` via SHA-256 hash)
-        - Static API keys (matched against `API_KEYS` env var, comma-separated)
+        Single shared-secret gatekeeping (2026-08-25). Every protected
+        endpoint checks this header against the single configured
+        API_KEY setting — no roles, no per-user identity.
 
   responses:
     ValidationError:

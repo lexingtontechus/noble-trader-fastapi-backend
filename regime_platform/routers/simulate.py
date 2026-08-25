@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from ..core.exceptions import raise_http_exception
 from pydantic import BaseModel, Field
 
-from ..auth.jwt_auth import TokenData, get_authed_user, require_write
+from ..auth.api_key import require_api_key
 from ..core.simulator import RegimeSimulator, SimulationResult
 
 router = APIRouter(prefix="/simulate", tags=["Simulation"])
@@ -63,7 +63,7 @@ class SimulateResponse(BaseModel):
 async def simulate_symbol(
     symbol: str,
     req: SimulateRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Fits a 4-state HMM on the supplied price series, then simulates

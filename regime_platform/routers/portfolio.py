@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from ..auth.jwt_auth import TokenData, get_authed_user
+from ..auth.api_key import require_api_key
 from ..core.exceptions import raise_http_exception
 from ..services.portfolio_service import SymbolSummary, portfolio_service
 
@@ -59,7 +59,7 @@ async def get_portfolio(
     kelly_fraction: float = Query(default=0.5, ge=0.1, le=1.0),
     target_vol: float = Query(default=0.15, gt=0, le=1.0),
     base_risk_limit: float = Query(default=0.02, gt=0, le=0.5),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Returns a portfolio-level view aggregating all (or specified) active
@@ -128,7 +128,7 @@ async def get_portfolio(
     summary="List symbols with active sessions",
 )
 async def list_portfolio_symbols(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns all symbols currently registered in the session registry."""
     from ..services.registry import registry

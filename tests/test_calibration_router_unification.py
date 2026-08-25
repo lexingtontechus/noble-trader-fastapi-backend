@@ -126,7 +126,7 @@ async def test_get_calibration_bias_calls_shared_fetch_functions(monkeypatch):
     monkeypatch.setattr(supabase_client, "fetch_calibration_bias_raw", fake_fetch_calibration_bias_raw)
 
     resp = await calibration_router.get_calibration_bias(
-        request=None, symbol="AAPL", venue=None, window_days=3, user=None,
+        request=None, symbol="AAPL", venue=None, window_days=3,
     )
 
     assert calls["enforced_window_days"] == 3
@@ -154,7 +154,7 @@ async def test_get_calibration_bias_defaults_window_to_settings(monkeypatch):
     monkeypatch.setattr(supabase_client, "fetch_calibration_bias_raw", fake_fetch)
 
     await calibration_router.get_calibration_bias(
-        request=None, symbol="AAPL", venue=None, window_days=None, user=None,
+        request=None, symbol="AAPL", venue=None, window_days=None,
     )
 
     assert seen["window_days"] == settings.EOD_BIAS_WINDOW_DAYS
@@ -179,7 +179,7 @@ async def test_get_calibration_status_iterates_active_symbols(monkeypatch):
     monkeypatch.setattr(supabase_client, "fetch_calibration_bias", fake_fetch_calibration_bias)
     monkeypatch.setattr(supabase_client, "fetch_calibration_bias_raw", fake_fetch_calibration_bias_raw)
 
-    resp = await calibration_router.get_calibration_status(request=None, window_days=None, user=None)
+    resp = await calibration_router.get_calibration_status(request=None, window_days=None)
 
     assert resp.total_symbols == 2
     symbols = {r.symbol for r in resp.results}

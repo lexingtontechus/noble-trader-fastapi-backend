@@ -43,8 +43,7 @@ from ..services.registry import registry
 from ..core.regime_engine import RegimeHMM
 from ..services.stream_session import RegimeAlert
 from ..models.stream_schemas import WsMessage
-from ..auth.jwt_auth import ws_auth, get_authed_user, require_write, TokenData
-from typing import Optional
+from ..auth.api_key import ws_auth, require_api_key, DEFAULT_ACTOR
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
@@ -57,30 +56,28 @@ _alert_broadcast: asyncio.Queue = asyncio.Queue(maxsize=1000)
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{symbol}")
-async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[str] = Query(None), api_key: Optional[str] = Query(None)):
+async def websocket_stream(websocket: WebSocket, symbol: str, api_key: Optional[str] = Query(None)):
     """
     Full-duplex WebSocket for a single symbol.
 
     Authentication is required before the connection is accepted.
-    Pass a Clerk/local JWT as ?token=<jwt> or an API key as ?api_key=<key>.
-    Unauthenticated connections are closed with code 4001.
+    Pass the shared API key as ?api_key=<key>. Unauthenticated
+    connections are closed with code 4001.
 
     Connect, then send JSON messages to seed / push ticks.
     The server pushes back a regime snapshot after every tick
     and an alert message on regime transitions.
 
-    Authentication: Provide ?token=<jwt> or ?api_key=<key> query param.
-
     Example client flow:
-      1. Connect with auth: ws://host/ws/SPY?token=eyJhbG...
+      1. Connect with auth: ws://host/ws/SPY?api_key=<key>
       2. {"type":"seed",  "symbol":"SPY", "prices":[...]}
       3. {"type":"tick",  "symbol":"SPY", "price":512.34}
       4. ... receive tick snapshots ...
     """
     # Authenticate the WebSocket connection before accepting
-    user = await ws_auth(websocket, token, api_key)
+    await ws_auth(websocket, api_key)
     await websocket.accept()
-    _log.info(f"WS connected: /ws/{symbol} user={user.sub} role={user.role}")
+    _log.info(f"WS connected: /ws/{symbol}")
 
     async def _send(data: dict):
         try:
@@ -186,9 +183,9 @@ async def websocket_stream(websocket: WebSocket, symbol: str, token: Optional[st
     summary="Real-time P&L SSE stream - positions, fills, quotes, snapshots",
     response_class=StreamingResponse,
 )
-async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
+async def sse_symbol(symbol: str, _: None = Depends(require_api_key)):
     """
-    SSE stream that pushes real-time P&L updates for the authenticated user.
+    SSE stream that pushes real-time P&L updates.
 
     Event types:
       position_update  - triggered by fill or position change
@@ -197,11 +194,10 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
       account_update   - equity/cash/buying_power change
 
     Flow:
-      1. Authenticates user via JWT
-      2. Resolves user's Alpaca credentials (Supabase -> global fallback)
-      3. Starts Alpaca trade + data WebSocket connections if not running
-      4. Pushes events via SSE until client disconnects
-      5. Cleans up connections after 30s grace period if no consumers
+      1. Resolves Alpaca credentials (Supabase -> global fallback)
+      2. Starts Alpaca trade + data WebSocket connections if not running
+      3. Pushes events via SSE until client disconnects
+      4. Cleans up connections after 30s grace period if no consumers
 
     Frontend usage:
       const es = new EventSource('/sse/pnl');
@@ -212,8 +208,8 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
     """
     from ..services.alpaca_stream import alpaca_stream_manager
 
-    # Subscribe to the user's P&L event stream
-    q = await alpaca_stream_manager.subscribe(user.sub)
+    # 2026-08-25: no live users, single shared P&L event stream
+    q = await alpaca_stream_manager.subscribe(DEFAULT_ACTOR)
     if q is None:
         raise HTTPException(
             status_code=403,
@@ -221,7 +217,7 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
         )
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        yield f"data: {json.dumps({'event': 'connected', 'scope': 'pnl', 'user_id': user.sub})}\n\n"
+        yield f"data: {json.dumps({'event': 'connected', 'scope': 'pnl', 'user_id': DEFAULT_ACTOR})}\n\n"
         try:
             while True:
                 try:
@@ -233,7 +229,7 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
             pass
         finally:
             # Unsubscribe - stream stops after grace period if no more consumers
-            await alpaca_stream_manager.unsubscribe(user.sub, q)
+            await alpaca_stream_manager.unsubscribe(DEFAULT_ACTOR, q)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -244,7 +240,7 @@ async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
     "/sse/pnl/status",
     summary="Status of the Alpaca stream manager (admin/debug)",
 )
-async def sse_pnl_status(user: TokenData = Depends(get_authed_user)):
+async def sse_pnl_status(_: None = Depends(require_api_key)):
     """Return the current status of the Alpaca stream manager."""
     from ..services.alpaca_stream import alpaca_stream_manager
     return alpaca_stream_manager.status()
@@ -257,7 +253,7 @@ async def sse_pnl_status(user: TokenData = Depends(get_authed_user)):
     summary="Global SSE stream for all regime-change alerts across all symbols",
     response_class=StreamingResponse,
 )
-async def sse_alerts(user: TokenData = Depends(get_authed_user)):
+async def sse_alerts(_: None = Depends(require_api_key)):
     """
     Broadcasts regime-change alerts for all symbols to connected listeners.
     Only fires on regime state transitions (not every tick).
@@ -301,7 +297,7 @@ async def sse_alerts(user: TokenData = Depends(get_authed_user)):
     summary="Server-Sent Events stream for a symbol",
     response_class=StreamingResponse,
 )
-async def sse_symbol(symbol: str, user: TokenData = Depends(get_authed_user)):
+async def sse_symbol(symbol: str, _: None = Depends(require_api_key)):
     """
     SSE stream that pushes a JSON regime snapshot on every tick received
     by the server for `symbol`. Subscribe from any browser with EventSource.

@@ -37,7 +37,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
 
-from ..auth.jwt_auth import get_authed_user, require_admin, require_write, TokenData
+from ..auth.api_key import require_api_key, DEFAULT_ACTOR
 from ..core.exceptions import raise_http_exception
 from ..middleware.rate_limit import limiter, RATE_LIMIT_WRITE
 from ..services.operational.kill_switch import (
@@ -91,7 +91,7 @@ class ReconcileOrderRequest(BaseModel):
     summary="Get all active trading halts",
 )
 async def get_kill_switch_status(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns all currently active halts (global, user, symbol).
 
@@ -102,7 +102,7 @@ async def get_kill_switch_status(
     """
     try:
         halts = await kill_switch.get_all_active_halts()
-        is_halted = await kill_switch.is_halted(user_id=user.sub)
+        is_halted = await kill_switch.is_halted(user_id=DEFAULT_ACTOR)
         return {
             "is_halted": is_halted,
             "active_halts": [h.model_dump(mode="json") for h in halts],
@@ -122,7 +122,7 @@ async def get_kill_switch_status(
 async def activate_halt(
     request: Request,
     req: HaltActivateRequest,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """
     Activate a halt at the specified level.
@@ -136,14 +136,14 @@ async def activate_halt(
         record = await kill_switch.activate_halt(
             level=req.level,
             reason=req.reason,
-            triggered_by=user.sub,
+            triggered_by=DEFAULT_ACTOR,
             scope=req.scope,
             notes=req.notes,
         )
         # Audit log
         await audit_logger.log_event(
             event_type=AuditEventType.HALT_ACTIVATED,
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             metadata={
                 "level": req.level.value,
                 "reason": req.reason.value,
@@ -163,19 +163,19 @@ async def activate_halt(
 async def deactivate_halt(
     request: Request,
     req: HaltDeactivateRequest,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """Deactivate a halt at the specified level."""
     try:
         success = await kill_switch.deactivate_halt(
             level=req.level,
             scope=req.scope,
-            deactivated_by=user.sub,
+            deactivated_by=DEFAULT_ACTOR,
         )
         # Audit log
         await audit_logger.log_event(
             event_type=AuditEventType.HALT_DEACTIVATED,
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             metadata={
                 "level": req.level.value,
                 "scope": req.scope,
@@ -193,14 +193,14 @@ async def deactivate_halt(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def cancel_all_orders(
     request: Request,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """Cancel ALL open orders across all symbols. Use in emergencies only."""
     try:
-        result = await kill_switch.cancel_all_orders(user_id=user.sub)
+        result = await kill_switch.cancel_all_orders(user_id=DEFAULT_ACTOR)
         await audit_logger.log_event(
             event_type=AuditEventType.KILL_SWITCH_CANCEL_ALL,
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             metadata=result,
         )
         return result
@@ -215,14 +215,14 @@ async def cancel_all_orders(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def close_all_positions(
     request: Request,
-    user: TokenData = Depends(require_admin),
+    _: None = Depends(require_api_key),
 ):
     """Close ALL open positions. Use in emergencies only."""
     try:
-        result = await kill_switch.close_all_positions(user_id=user.sub)
+        result = await kill_switch.close_all_positions(user_id=DEFAULT_ACTOR)
         await audit_logger.log_event(
             event_type=AuditEventType.KILL_SWITCH_CLOSE_ALL,
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             metadata=result,
         )
         return result
@@ -243,12 +243,12 @@ async def query_audit_log(
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
     limit: int = Query(50, ge=1, le=500, description="Page size"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Query the append-only audit trail with filters."""
     try:
         result = await audit_logger.query_events(
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             event_type=event_type,
             symbol=symbol,
             limit=limit,
@@ -266,11 +266,11 @@ async def query_audit_log(
     summary="Get audit event count summary for 24h/7d/30d",
 )
 async def get_audit_summary(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns event counts by type for 24h, 7d, and 30d windows."""
     try:
-        return await audit_logger.get_summary(user_id=user.sub)
+        return await audit_logger.get_summary(user_id=DEFAULT_ACTOR)
     except Exception as e:
         raise_http_exception(e, "audit_summary")
 
@@ -284,12 +284,12 @@ async def export_audit_log(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     limit: int = Query(1000, ge=1, le=10000),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Export audit events as CSV file download."""
     try:
         result = await audit_logger.query_events(
-            user_id=user.sub,
+            user_id=DEFAULT_ACTOR,
             event_type=event_type,
             start_date=start_date,
             end_date=end_date,
@@ -342,7 +342,7 @@ async def export_audit_log(
     summary="Get current trading mode (simulation/paper/live)",
 )
 async def get_trading_mode(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns the current trading mode and last change details."""
     try:
@@ -360,7 +360,7 @@ async def get_trading_mode(
 async def request_mode_change(
     request: Request,
     req: ModeChangeRequestModel,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Request a mode change. Returns a confirmation token that must be
@@ -371,7 +371,7 @@ async def request_mode_change(
     try:
         change_request = await mode_manager.request_mode_change(
             target_mode=req.target_mode,
-            requested_by=user.sub,
+            requested_by=DEFAULT_ACTOR,
         )
         return {
             "confirmation_token": change_request.confirmation_token,
@@ -398,7 +398,7 @@ async def request_mode_change(
 async def confirm_mode_change(
     request: Request,
     req: ModeConfirmRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Confirm a mode change. For LIVE mode, acknowledgment_text must be
@@ -407,7 +407,7 @@ async def confirm_mode_change(
     try:
         new_state = await mode_manager.confirm_mode_change(
             confirmation_token=req.confirmation_token,
-            acknowledged_by=user.sub,
+            acknowledged_by=DEFAULT_ACTOR,
             acknowledgment_text=req.acknowledgment_text,
         )
         return new_state.model_dump(mode="json")
@@ -426,7 +426,7 @@ async def confirm_mode_change(
     summary="Get last reconciliation status and results",
 )
 async def get_reconciliation_status(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns the last reconciliation run timestamp and results summary."""
     try:
@@ -442,7 +442,7 @@ async def get_reconciliation_status(
 @limiter.limit(RATE_LIMIT_WRITE)
 async def run_reconciliation(
     request: Request,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Trigger a reconciliation of all orders from the last 24 hours.
@@ -473,7 +473,7 @@ async def run_reconciliation(
 )
 async def reconcile_single_order(
     req: ReconcileOrderRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Reconcile a specific order by checking its fill status against expectations."""
     try:
@@ -494,11 +494,11 @@ async def reconcile_single_order(
     summary="Compare DB positions against Alpaca's reported positions",
 )
 async def reconcile_positions(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns position count comparison between our DB and Alpaca."""
     try:
-        result = await reconciler.reconcile_positions(user_id=user.sub)
+        result = await reconciler.reconcile_positions(user_id=DEFAULT_ACTOR)
         return result.model_dump(mode="json")
     except Exception as e:
         raise_http_exception(e, "reconcile_positions")
@@ -511,7 +511,7 @@ async def reconcile_positions(
     summary="Health check the current Alpaca trading environment",
 )
 async def check_mode_health(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Runs a health check against the current Alpaca API environment.
@@ -530,7 +530,7 @@ async def check_mode_health(
     summary="Get executor mode and health status",
 )
 async def get_executor_status(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """Returns the current executor mode, simulation status, and Alpaca connectivity."""
     try:
@@ -553,7 +553,7 @@ async def get_executor_status(
     summary="Get Alpaca API rate throttle status",
 )
 async def get_throttle_status(
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Returns the current Alpaca rate throttle status including:

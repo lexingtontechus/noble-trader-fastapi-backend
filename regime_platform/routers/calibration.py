@@ -23,7 +23,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 from ..core.exceptions import raise_http_exception
 from ..core.settings import settings
 from ..middleware.rate_limit import limiter, RATE_LIMIT_DEFAULT, RATE_LIMIT_WRITE
@@ -201,7 +201,7 @@ def _build_bias_response(
 async def log_calibration(
     request: Request,
     req: CalibrationLogRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Insert a calibration record linking a predicted P_win to its actual outcome.
@@ -290,7 +290,7 @@ async def get_calibration_bias(
     symbol: str,
     venue: Optional[str] = None,
     window_days: Optional[int] = None,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Compute calibration bias for a single symbol — using the SAME rolling
@@ -339,7 +339,7 @@ async def get_calibration_bias(
 async def get_calibration_status(
     request: Request,
     window_days: Optional[int] = None,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Calibration status for every active symbol — same windowed query and

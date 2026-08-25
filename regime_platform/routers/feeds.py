@@ -22,7 +22,7 @@ from ..core.exceptions import raise_http_exception
 from ..adapters.feed_adapters import (
     FeedManager, AlpacaFeedAdapter, BinanceFeedAdapter, IBFeedAdapter
 )
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key
 
 router  = APIRouter(prefix="/feeds", tags=["Feed Adapters"])
 log     = logging.getLogger("regime.feeds")
@@ -66,7 +66,7 @@ def _build_adapter(cfg: FeedConfig):
     response_model=FeedStatusResponse,
     summary="Get feed adapter status",
 )
-async def feed_status(user: TokenData = Depends(get_authed_user)):
+async def feed_status(_: None = Depends(require_api_key)):
     """Returns running state and per-symbol bar counts for all active feed adapters."""
     global _manager, _manager_task
     if _manager is None:
@@ -87,7 +87,7 @@ async def feed_status(user: TokenData = Depends(get_authed_user)):
 async def start_feeds(
     feeds:      list[FeedConfig],
     background: BackgroundTasks,
-    user:       TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Start one or more live feed adapters.
@@ -127,7 +127,7 @@ async def start_feeds(
     "/stop",
     summary="Stop all running feed adapters",
 )
-async def stop_feeds(user: TokenData = Depends(require_write)):
+async def stop_feeds(_: None = Depends(require_api_key)):
     """Gracefully stops all feed adapter tasks."""
     global _manager, _manager_task
     if _manager is None or (_manager_task and _manager_task.done()):

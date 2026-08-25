@@ -21,7 +21,7 @@ from ..models.schemas import (
     BacktestExportRequest,
 )
 from ..core.backtester import Backtester, BacktestConfig
-from ..auth.jwt_auth import get_authed_user, require_write, TokenData
+from ..auth.api_key import require_api_key, DEFAULT_ACTOR
 from ..core.exceptions import raise_http_exception
 from ..services.backtest_store import (
     save_backtest_result,
@@ -86,7 +86,7 @@ def _result_to_response(result, record_id: Optional[str] = None, created_at: Opt
     response_model=BacktestResponse,
     summary="Run walk-forward backtest with regime-aware strategy (30+ metrics)",
 )
-async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authed_user)):
+async def run_backtest(req: BacktestRequest, _: None = Depends(require_api_key)):
     """
     Walk-forward backtest pipeline:
     1. Rolling HMM fit on trailing window
@@ -163,7 +163,7 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
                 "trade_log": result.trade_log,
             }
             record_id, created_at = await save_backtest_result(
-                user_id=user.sub,
+                user_id=DEFAULT_ACTOR,
                 result_dict=result_dict,
                 config_used=result.config_used,
                 symbol=req.symbol,
@@ -183,7 +183,7 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
 async def list_backtest_history(
     offset: int = Query(default=0, ge=0, description="Pagination offset."),
     limit: int = Query(default=20, ge=1, le=100, description="Page size."),
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Returns a paginated list of the user's saved backtest results,
@@ -191,7 +191,7 @@ async def list_backtest_history(
     (equity curves and trade logs are omitted for performance).
     """
     try:
-        data = await get_backtest_history(user_id=user.sub, offset=offset, limit=limit)
+        data = await get_backtest_history(user_id=DEFAULT_ACTOR, offset=offset, limit=limit)
         summaries = [
             BacktestSummary(
                 id=row["id"],
@@ -225,7 +225,7 @@ async def list_backtest_history(
 )
 async def get_backtest_by_id(
     backtest_id: str,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Retrieve the full backtest result (including equity curve, trade log,
@@ -233,7 +233,7 @@ async def get_backtest_by_id(
     Scoped to the authenticated user.
     """
     try:
-        row = await get_backtest_detail(backtest_id=backtest_id, user_id=user.sub)
+        row = await get_backtest_detail(backtest_id=backtest_id, user_id=DEFAULT_ACTOR)
         if row is None:
             raise HTTPException(status_code=404, detail="Backtest result not found.")
         # Reconstruct BacktestResponse from the stored row
@@ -289,7 +289,7 @@ async def get_backtest_by_id(
 )
 async def compare_backtests(
     req: BacktestCompareRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Side-by-side comparison of saved backtest results.
@@ -299,7 +299,7 @@ async def compare_backtests(
     try:
         comparisons = []
         for bid in req.ids:
-            row = await get_backtest_detail(backtest_id=bid, user_id=user.sub)
+            row = await get_backtest_detail(backtest_id=bid, user_id=DEFAULT_ACTOR)
             if row is None:
                 raise HTTPException(status_code=404, detail=f"Backtest {bid} not found.")
             comparisons.append(BacktestResponse(
@@ -376,14 +376,14 @@ async def compare_backtests(
 )
 async def delete_backtest_result(
     backtest_id: str,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Delete a saved backtest result by ID.
     Scoped to the authenticated user.
     """
     try:
-        deleted = await db_delete_backtest(backtest_id=backtest_id, user_id=user.sub)
+        deleted = await db_delete_backtest(backtest_id=backtest_id, user_id=DEFAULT_ACTOR)
         if not deleted:
             raise HTTPException(status_code=404, detail="Backtest result not found.")
     except HTTPException:
@@ -401,7 +401,7 @@ async def delete_backtest_result(
 async def optimize_backtest(
     request: Request,
     req: BacktestOptimizeRequest,
-    user: TokenData = Depends(require_write),
+    _: None = Depends(require_api_key),
 ):
     """
     Grid-search parameter sweep for backtest optimization.
@@ -480,7 +480,7 @@ async def optimize_backtest(
                     "max_drawdown": result.max_drawdown, "profit_factor": result.profit_factor,
                 }
                 await save_backtest_result(
-                    user_id=user.sub, result_dict=result_dict,
+                    user_id=DEFAULT_ACTOR, result_dict=result_dict,
                     config_used=result.config_used, symbol=req.symbol,
                 )
 
@@ -593,7 +593,7 @@ async def optimize_backtest(
 )
 async def export_backtest(
     req: BacktestExportRequest,
-    user: TokenData = Depends(get_authed_user),
+    _: None = Depends(require_api_key),
 ):
     """
     Export a saved backtest result in CSV or JSON format for
@@ -604,7 +604,7 @@ async def export_backtest(
     Returns a file download with appropriate content-type header.
     """
     try:
-        row = await get_backtest_detail(backtest_id=req.id, user_id=user.sub)
+        row = await get_backtest_detail(backtest_id=req.id, user_id=DEFAULT_ACTOR)
         if row is None:
             raise HTTPException(status_code=404, detail="Backtest result not found.")
 

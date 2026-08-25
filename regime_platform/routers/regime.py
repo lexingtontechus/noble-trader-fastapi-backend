@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from ..models.schemas import RegimeRequest, RegimeResponse, RegimeV2Request, RegimeV2Response
 from ..core.regime_engine import RegimeHMM
 from ..core.exceptions import raise_http_exception
-from ..auth.jwt_auth import get_authed_user, TokenData
+from ..auth.api_key import require_api_key
 from ..middleware.rate_limit import limiter, RATE_LIMIT_COMPUTE
 import numpy as np
 
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/regime", tags=["Regime Detection"])
 
 @router.post("/detect", response_model=RegimeResponse, summary="Detect market regime from price series")
 @limiter.limit(RATE_LIMIT_COMPUTE)
-async def detect_regime(request: Request, req: RegimeRequest, user: TokenData = Depends(get_authed_user)):
+async def detect_regime(request: Request, req: RegimeRequest, _: None = Depends(require_api_key)):
     """
     Fits dual Gaussian HMMs (volatility + trend) on the supplied price series
     and returns posterior regime probabilities plus a risk multiplier.
@@ -48,7 +48,7 @@ async def detect_regime(request: Request, req: RegimeRequest, user: TokenData = 
     summary="Enhanced regime detection with configurable 2-4 states, auto-labeled",
 )
 @limiter.limit(RATE_LIMIT_COMPUTE)
-async def detect_regime_v2(request: Request, req: RegimeV2Request, user: TokenData = Depends(get_authed_user)):
+async def detect_regime_v2(request: Request, req: RegimeV2Request, _: None = Depends(require_api_key)):
     """
     Enhanced HMM regime detection (v2):
     - Configurable 2-4 states per dimension (volatility + trend)
