@@ -15,7 +15,7 @@ PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cache
 - **3-layer stack** (Launched via `start.sh`): `main.py` (port 8001 — HMM/Renko/auth), `server.py` (port 8002 — TimesFM), `proxy.py` (port 8000 — gateway).
 - **Sweep Orchestrator** (`regime_platform/sweep_orchestrator/`) — the live signal generator. Light sweep every 5 min × 14 symbols; heavy sweep Sunday 20:00 UTC.
 - **EV Engine v5** — 4-source P_win blend: `p_pattern 0.30 / p_regime 0.25 / p_markov_hold_n 0.20 / p_timesfm 0.25`. Public weight API: `set_weights()` / `temp_weights()` / `restore_default_weights()`.
-- **HMM** — 4-state dual GaussianHMM (volatility × trend) replaced by 5-state multivariate Gaussian HMM (2026-08-13, v7.7.0) for `p_markov`.
+- **HMM** — 4-state dual GaussianHMM (volatility × trend, `regime_engine.py`) drives `p_regime`. `p_markov_hold_n` currently comes from a separate 5-state multivariate Gaussian HMM (`regime_platform/services/hmm/model.py`, 2026-08-13, v7.7.0) — confirmed numerically unstable (9 unscaled features) and being retired via `MARKOV_SOURCE_MODE` (Part 1 Change B, 2026-08-25; see Key Conventions below).
 - **7-gate qualification chain** in `_process_symbol`: signal_qualifiable, regime_conf_ok, kelly_min_ok, timesfm_available, timesfm_confidence_ok, ev_allowed, p_win_ok.
 
 ## Signal Pipeline
@@ -58,6 +58,8 @@ hermes verify --json --skip-start   # test phase OK: true; runtime boot proven v
 |- **Supabase functions deprecated**: Debug the active `regime_platform` Python engine; do NOT modify `supabase/functions/` (TypeScript edge functions — "leave as is").
 |- **MIN_RR is shared**: `MIN_RR` (env, default 2.0) controls BOTH the orchestrator's Gate 6b qualification threshold AND the heavy sweep grid-search pre-filter in `heavy_sweep.py:737` + `pick_best_combo()`. Set once, applies everywhere.
 |- **TimesFM probability tuning**: `TIMESFM_SIGMOID_K` (default 20.0), `TIMESFM_CLAMP_MIN/MAX` (default 0.001/0.999) control how aggressively the TimesFM price forecast maps to p_timesfm. Recommended production: k=10.0, clamp=[0.05, 0.95].
+|- **`API_KEY`** (2026-08-25): single shared-secret gatekeeping for every protected endpoint (`regime_platform/auth/api_key.py`'s `require_api_key`) — JWT/Clerk/per-user roles retired, no live users. Empty means every request fails closed with 401. Set as a Studio Secret, never committed.
+|- **`MARKOV_SOURCE_MODE`** (default `legacy_hmm`, Part 1 Change B, 2026-08-25): which source feeds `p_markov_hold_n`'s 3x3 transition matrix — `legacy_hmm` (unchanged, the numerically-unstable 5-state `HmmModel`), `trend_hmm_shadow` (compute both, log a comparison, legacy still feeds the blend — zero behavior change), `trend_hmm_live` (the new `RegimeHMM.trend_transition_matrix_3state()` derivation feeds the blend). See `worklog/20260825_CHANGE_B_MARKOV_SHADOW_MODE.md`.
 
 ## Known Pitfalls
 1. **TDVA price ordering** (FIXED 2026-08-11): `/api/price/batch` returns `history` DESCENDING (newest first). `prices.reverse()` in `price_fetcher.py` fixes this. The stale-price window (Aug 6–11T14:00Z) contaminated calibration records — purged (14,248 deleted, 2,953 clean retained).
