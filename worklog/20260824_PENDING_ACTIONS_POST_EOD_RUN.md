@@ -9,6 +9,48 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 04:42 UTC 2026-08-25: kill switch resolved for AAPL/XAGUSD, cleared for US500
+
+The 04:30 UTC intraday correction cycle (the checkpoint this whole
+checklist was waiting for) ran and mostly resolved the situation:
+
+| Symbol | Before (20:30 UTC) | Now (04:30 UTC) |
+|---|---|---|
+| AAPL | kill switch, kelly=0.0 | **CALIBRATED** — `_clear_stagnation_history AAPL: cleared bayesian_penalty history (bias recovered to CALIBRATED)`. No action needed. |
+| XAGUSD | kill switch, kelly=0.0 | **CALIBRATED** — same clear-and-recover log line. No action needed. |
+| US500 | kill switch, kelly=0.0 | Still OVERCONFIDENT (bias=0.6771, **unchanged** from before — n still 63, still zero fresh non-`expired` evidence), but streak reset to 1, tier=0, kelly×0.5 (standard penalty, no longer blocked). |
+| USDCAD | (not flagged before) | New: OVERCONFIDENT bias=0.8163, streak=2, tier=1, kelly×0.25 (mild, not blocked). |
+
+`[eod:correction] complete: 14 symbols, 6 actions, 0 errors` (2 symbols ×
+3 actions each — US500 and USDCAD only).
+
+**AAPL and XAGUSD's recoveries are real** — both had genuine fresh
+calibration evidence (`n` growth from the 00:30 resolver run) push bias
+back into normal range on their own, no manual intervention. **US500's
+kill-switch clearance is NOT evidence of recovery** — its bias is the
+exact same frozen 0.6771 it's had all along, still zero real evidence.
+The streak reset because the daily lookback's differently-formula'd bias
+write (0.7565, logged in the 00:50 UTC update below) broke the
+consecutive-match comparison against the historical 0.6771 streak,
+resetting the counter to 1 rather than continuing to 6 — exactly the
+outcome flagged as "genuinely unpredictable" in the prior update. US500's
+underlying "why does it resolve 100% as `expired`, never `tp_hit`/`sl_hit`"
+question (flagged in the 00:50 UTC update) remains open and is now the
+single most important unanswered item in this whole thread — it will
+keep re-entering stagnation on a ~4-cycle cadence until that's addressed,
+kill-switch-reset-quirk notwithstanding.
+
+**This closes the immediate crisis** (3 symbols blocked → 0 blocked).
+Remaining open items, in priority order:
+1. US500: why 100% `expired` resolution — candidate root cause for its
+   persistent frozen bias, not yet investigated.
+2. USDCAD: new tier-1 flag, worth a light watch next cycle (08:30 UTC)
+   but not urgent.
+3. Legacy Markov HMM NaN bug (7+ symbols) — unrelated, still open.
+4. Change B stability window — still gated, no change.
+
+---
+
 ## UPDATE — 00:56 UTC 2026-08-25: deployment gap closed, both items confirmed live
 
 Studio restarted; deployed HEAD is now `fe6c598` (includes `62f54d7`).
