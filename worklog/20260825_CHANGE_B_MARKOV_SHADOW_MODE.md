@@ -110,16 +110,68 @@ Studio's environment and restart. Once running, verify via
 appear and that the legacy value is still the one flowing into
 `nt_sweep_result`'s `markov_p_up`/`markov_p_dn` columns (unchanged).
 
+## B3 — Historical sanity check (2026-08-25, follow-up)
+
+Built the join `nt_sweep_result.markov_p_up/markov_p_dn` (107,627 rows
+with non-null markov data, 2026-05-31 through today) → nearest-timestamp
+`nt_signal_sim.outcome` (restricted to `tp_hit`/`sl_hit` only — `expired`
+excluded as neither a win nor a loss), same symbol, tolerance ±2 min
+(actual matches landed at ~0.5s average — the two tables are written
+moments apart in the same tick, so the join is effectively exact, not
+approximate).
+
+**Per-signal-direction breakdown** (22,838 matched rows with a clean
+tp/sl outcome):
+
+| signal | outcome | n | avg markov_p_up | avg markov_p_dn |
+|---|---|---|---|---|
+| buy | tp_hit | 8,440 | 0.0786 | 0.0112 |
+| buy | sl_hit | 3,753 | 0.1209 | 0.0704 |
+| sell | tp_hit | 3,238 | 0.0582 | 0.0668 |
+| sell | sl_hit | 7,407 | 0.1107 | 0.0423 |
+
+**Single-number check**: defined `directional_edge` = `p_up - p_dn` for
+buy signals, `p_dn - p_up` for sell signals (i.e. "how much probability
+mass did the legacy model put on the direction that was actually taken,
+net of the opposing direction"), and `win` = 1 for `tp_hit`, 0 for
+`sl_hit`.
+
+- Pearson correlation between `directional_edge` and `win`: **r = 0.1467**
+  (n = 22,838 — large enough that this is not noise, but the effect size
+  itself is small).
+- Mean edge on wins: **+0.0511**. Mean edge on losses: **-0.0284**. The
+  relationship points the right way (winners had, on average, more of the
+  model's probability mass on the correct side) but it's a weak signal —
+  most of the model's mass sits on FLAT (both p_up and p_dn are under
+  0.13 in every bucket above), consistent with the state-collapse/NaN
+  instability already confirmed live.
+
+**Conclusion**: the legacy model is not pure noise and not actively
+inverted — a real, small, statistically-detectable positive correlation
+exists (r≈0.15). This sets the bar B4 needs to clear: the new
+`trend_hmm`-derived value doesn't need to be excellent, it needs to not
+be worse than r≈0.15 on the same kind of check. **This check can only
+characterize the OLD model** — it says nothing about how the NEW
+derivation performs, because the new derivation has never run against a
+single live tick. See "Cutover timing" below.
+
+## B4 — Cutover timing (open question, surfaced 2026-08-25)
+
+The user's instruction was "build B3 and let's cutover." B3 is done
+(above). Before flipping `MARKOV_SOURCE_MODE=trend_hmm_live`: the
+original plan gates B4 on a 3-7 day *live* shadow-mode window (comparing
+the new derivation's real output against the legacy model's, tick by
+tick) specifically because B3-style historical analysis cannot validate
+a derivation that has never executed. `MARKOV_SOURCE_MODE` has sat at its
+default `legacy_hmm` the entire time since it shipped — shadow mode was
+never actually turned on. This tension was surfaced back to the user
+directly (not resolved unilaterally in either direction) — see the
+`AskUserQuestion` in this same work session for the decision and
+reasoning.
+
 ## Not done in this pass (by design, staged per the plan)
 
-- **B3** (historical sanity check — join `nt_sweep_result.markov_p_up/
-  markov_p_dn` to `nt_signal_sim.outcome`, confirm the old model's
-  implied confidence wasn't actually correlated with realized win/loss)
-  — deferred until there's a shadow-mode window to also compare the NEW
-  derivation's own historical correlation against, not just build in
-  isolation right after the flag ships.
-- **B4** (cutover to `trend_hmm_live`) — gated on a 3-7 day shadow window
-  showing the new derivation isn't worse than the legacy one.
+- **B4** (cutover to `trend_hmm_live`) — timing decision above.
 - **B5** (delete `regime_platform/services/hmm/model.py`,
   `feature_buffer.py`, the `hmm_quote_fetcher` call, `SweepOrchestrator`'s
   `_hmm_buffer`/`_hmm_model` construction, `MARKOV_SOURCE_MODE` itself,
