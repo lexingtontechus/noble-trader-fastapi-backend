@@ -9,6 +9,23 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 00:56 UTC 2026-08-25: deployment gap closed, both items confirmed live
+
+Studio restarted; deployed HEAD is now `fe6c598` (includes `62f54d7`).
+Verified directly against the deployed source on disk, not just git log:
+- `orchestrator.py`: `eod-lookback` trigger is `CronTrigger.from_crontab("32 0 * * *")`.
+- `price_fetcher.py`: `MAX_429_RETRIES=1`, `RETRY_AFTER_CAP_SECONDS=10.0` present
+  and wired into the retry loop.
+
+Clean restart, no startup errors. **Both the 429-retry and cron-offset
+items are done — nothing left to build.** Neither gets a real live
+exercise until tomorrow's 00:32 UTC resolver run (today's already ran at
+the old 00:30 tick, before this restart, and succeeded on batching alone
+— see the update below). Next actionable checkpoint remains the 04:30 UTC
+intraday correction cycle for the kill-switch question.
+
+---
+
 ## UPDATE — 00:50 UTC 2026-08-25: the 00:30 UTC run happened — batching fix alone was enough
 
 The daily `eod-lookback` run fired on schedule and resolved cleanly:
