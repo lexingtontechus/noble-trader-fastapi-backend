@@ -9,6 +9,60 @@ Nothing below can be checked before then.
 
 ---
 
+## UPDATE — 05:xx UTC 2026-08-25: US500 root cause found — backtest/live time-horizon mismatch
+
+Traced why US500 resolves ~78% `expired` (2657/3394 historically resolved),
+confirmed with real data + code, not just hypothesis:
+
+**Root cause**: the heavy sweep's grid search (`_renko_grid_search_sync` in
+`heavy_sweep.py`) selects the brick/SL/TP combo that maximizes backtested
+Sharpe over 90 days, using `RenkoConfig`'s default `time_stop_bricks=10` as
+its only give-up mechanism (`risk_manager.py`). Two facts make this
+structurally mismatched with live:
+
+1. `force_close` (a true wall-clock/data-end force-exit) exists in
+   `risk_manager.py` but is **never called anywhere in the codebase** —
+   confirmed via a repo-wide grep. Dead code, not the mechanism in play.
+2. `time_stop_bricks=10` counts **brick formations**, not elapsed time. A
+   brick only forms once price moves a full `brick_size` — so "10 bricks"
+   takes as long as it takes, scaling inversely with current volatility.
+   Live's resolver enforces a **hard 48 real-hour** cutoff
+   (`EXPIRY_BARS=48`, `eod_resolver.py`), completely independent of brick
+   formation speed.
+
+The 90-day backtest that picked US500's combo saw a mix of volatility
+regimes and scored well on average. US500 is *currently* unusually quiet
+(~11 points of movement across 4.5h observed live) — at that pace, even a
+handful of bricks (let alone 10, let alone the wider SL/TP distance) takes
+far longer than 48 real hours to form. Live's 48-hour cutoff fires first
+every time, **regardless of which combo is selected**, because the
+selection criterion has never been asked "would this resolve within a
+fixed 48-hour window" — only "did this eventually resolve, however long
+that took, across a 90-day sample." This is why today's two emergency
+re-tunes (brick_size 28.7→14.37) didn't fix the pattern — shrinking the
+brick reduces the gap but can't close it structurally.
+
+**Not yet decided**: what a fix looks like. Candidates not yet scoped or
+compared: (a) give the backtest a genuine wall-clock max-hold matching
+live's `EXPIRY_BARS`, so combo selection is optimized against the same
+horizon live actually enforces; (b) during unusually low-realized-vol
+stretches, temporarily bias combo selection toward smaller bricks
+specifically for time-to-resolution rather than pure Sharpe; (c) leave
+selection as-is but make live's resolver's 48h window itself
+symbol/volatility-adaptive instead of a fixed constant. Needs a proper
+scope-and-plan pass before building anything — flagging findings only for
+now, per standing process.
+
+**Follow-up flagged, not investigated**: USDCAD does NOT show the same
+expiry-dominant pattern (58% expired vs US500's 78%) — it has a different,
+arguably worse problem: of its resolved trades, 1,745 `sl_hit` vs only 17
+`tp_hit` (~1% win rate on resolved trades). This is a directional/
+predictive-accuracy problem, not a brick-sizing/time-horizon one, and
+deserves its own separate investigation — noted here so it isn't lost,
+not started.
+
+---
+
 ## UPDATE — 04:42 UTC 2026-08-25: kill switch resolved for AAPL/XAGUSD, cleared for US500
 
 The 04:30 UTC intraday correction cycle (the checkpoint this whole
