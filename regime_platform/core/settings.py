@@ -83,15 +83,8 @@ class Settings(BaseSettings):
     #   L2FeedManager code is preserved (not deleted) for that path.
     NOBLE_TRADER_DISABLE_L2_FEED: bool = True
 
-    # NOBLE_TRADER_STREAM_SPLIT_ENABLED (default True):
-    #   When True, the StreamSplitter background task republishes signals from
-    #   `signal.raw.noble_trader` to per-plan streams `signals:signal_scout`
-    #   and `signals:precision_pro` based on nt_symbol.plan_ids membership.
-    #   The raw stream is preserved — proxy + agent can still subscribe to it.
-    NOBLE_TRADER_STREAM_SPLIT_ENABLED: bool = True
-
     # Plan UUIDs — resolved at startup from nobletradingapp's `plans` table.
-    # Used by StreamSplitter and Discord plan-routing to bucket signals.
+    # Used by Discord plan-routing to bucket signals.
     # If left empty, plan routing is skipped (signals go to both streams).
     NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID: str = ""
     NOBLE_TRADER_PLAN_PRECISION_PRO_ID: str = ""
@@ -173,9 +166,6 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_REST_URL: str = ""
     UPSTASH_REDIS_REST_TOKEN: str = ""
     
-    # ── Signal Aggregator Configuration ───────────────────────────────────────
-    EXTERNAL_SIGNAL_WEBHOOK_URL: str = ""  # Webhook URL for external signal forwarding
-    
     @property
     def redis_url_effective(self) -> str:
         """Return REDIS_URL — the single source of truth for the Redis connection.
@@ -183,9 +173,9 @@ class Settings(BaseSettings):
         The legacy UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN fallback has
         been removed deliberately: a missing or misconfigured REDIS_URL must
         surface clearly (no Redis configured) instead of silently connecting to
-        a stale Upstash instance. If REDIS_URL is empty, callers that require
-        Redis (stream_splitter, redis_pool, signal_aggregator, webhook service)
-        will raise/log "no Redis configured" rather than hang on a dead host.
+        a stale Upstash instance. If REDIS_URL is empty, callers that still
+        require Redis (redis_pool and its remaining consumers) will raise/log
+        "no Redis configured" rather than hang on a dead host.
 
         Set REDIS_URL in the deployment environment (e.g. the new Railway Redis)
         and ensure it is present on every fresh instance — env vars are
@@ -208,27 +198,13 @@ class Settings(BaseSettings):
     # events (realtime:paper). Set to "0" to disable publishing entirely.
     NOBLE_REALTIME_BROADCAST: str = "1"
 
-    # NOBLE_TRADER_REDIS_PUBLISH_ENABLED (default True):
-    #   When False, the sweep skips ALL Redis writes for qualified signals
-    #   (PUBLISH + XADD signal.raw.noble_trader, plus the signal.debug
-    #   channel) — i.e. the proxy/agent feed is off. The sweep itself,
-    #   Supabase persistence, signal-sim capture, and the Supabase Realtime
-    #   broadcast all continue unaffected. Use when retiring the proxy /
-    #   Redis delivery layer (Talaria replaces the agent).
-    NOBLE_TRADER_REDIS_PUBLISH_ENABLED: bool = True
-
     # NOBLE_TRADER_DISCORD_SIGNALS_ENABLED (default True):
     #   When True, qualified buy/sell signals are sent DIRECTLY to the
     #   Discord notifier from BOTH sweep paths (light _process_symbol +
-    #   heavy _push_heavy_signal), INDEPENDENT of the Redis publish gate.
-    #   This decouples Discord delivery from the proxy/Redis feed: the
-    #   operator can retire the proxy (NOBLE_TRADER_REDIS_PUBLISH_ENABLED=false)
-    #   while Discord signal alerts keep flowing (the old path — Redis
-    #   signal.raw.noble_trader → in-process SignalAggregator → Discord —
-    #   dies with the Redis feed). When the Redis feed IS enabled, the
-    #   direct send is skipped to avoid duplicate alerts (the aggregator
-    #   already delivers Discord). Set "0" to disable direct Discord
-    #   delivery entirely. (2026-08-10 — incident fix, Option 2)
+    #   heavy _push_heavy_signal) — the only Discord delivery path since
+    #   Redis (and the SignalAggregator that used to relay to Discord from
+    #   it) was fully retired. Set "0" to disable direct Discord delivery
+    #   entirely. (2026-08-10 — incident fix, Option 2)
     NOBLE_TRADER_DISCORD_SIGNALS_ENABLED: bool = True
 
     # EOD_CALIBRATION_ENFORCE (default True):
@@ -528,16 +504,6 @@ class Settings(BaseSettings):
     def telegram_configured(self) -> bool:
         """True if Telegram bot token and chat ID are configured."""
         return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHAT_ID)
-    
-    @property
-    def signal_aggregator_configured(self) -> bool:
-        """True if signal aggregator services are configured."""
-        return bool(self.REDIS_URL or self.UPSTASH_REDIS_REST_URL)
-    
-    @property
-    def external_webhook_configured(self) -> bool:
-        """True if external webhook URL is configured."""
-        return bool(self.EXTERNAL_SIGNAL_WEBHOOK_URL)
 
     # ── Validation ──────────────────────────────────────────────────────────
 
@@ -550,14 +516,6 @@ class Settings(BaseSettings):
                 "Set JWT_SECRET_KEY env var or set AUTH_ENABLED=false for development."
             )
         
-        # Redis configuration warnings
-        if not self.REDIS_URL and not self.UPSTASH_REDIS_REST_URL:
-            log.warning("No Redis URL configured. Signal aggregator services will be disabled.")
-        
-        # External webhook warning
-        if self.EXTERNAL_SIGNAL_WEBHOOK_URL and not self.REDIS_URL and not self.UPSTASH_REDIS_REST_URL:
-            log.warning("External webhook URL configured but no Redis connection. Webhook service will be disabled.")
-            
         # Telegram configuration warning
         if self.TELEGRAM_BOT_TOKEN and not self.TELEGRAM_CHAT_ID:
             log.warning("Telegram bot token configured but no chat ID. Telegram signals will be disabled.")

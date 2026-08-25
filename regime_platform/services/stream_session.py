@@ -7,7 +7,6 @@ Responsibilities:
   • On each new price tick: runs incremental predict() and returns a StreamTick
   • Tracks regime transitions and emits alerts on state changes
   • Thread-safe via asyncio.Lock for concurrent WebSocket clients
-  • Persists prices to Redis for recovery across restarts (v7.3)
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import numpy as np
 from ..core.regime_engine import RegimeHMM, RegimeSnapshot
 from ..core.position_sizer import PositionSizer, PositionRequest
 from ..core.risk_manager import RiskManager
-from ..services.redis_persistence import persistence
 
 
 # ─── Tick output ─────────────────────────────────────────────────────────────
@@ -163,8 +161,6 @@ class StreamSession:
         async with self._lock:
             for p in prices[-self.window:]:
                 self._prices.append(p)
-                # Persist to Redis (batched, so only writes every 10 ticks)
-                await persistence.append_price(self.symbol, p, window=self.window)
             if len(self._prices) >= self.min_prices_for_fit:
                 await asyncio.get_event_loop().run_in_executor(None, self._refit)
 
@@ -177,9 +173,6 @@ class StreamSession:
             self._prices.append(price)
             self._tick_count += 1
             self._bars_since_refit += 1
-
-            # Persist to Redis (batched, so only writes every 10 ticks)
-            await persistence.append_price(self.symbol, price, window=self.window)
 
             n = len(self._prices)
             if n < self.min_prices_for_fit:

@@ -23,7 +23,6 @@ from ..models.schemas import (
 from ..core.backtester import Backtester, BacktestConfig
 from ..auth.jwt_auth import get_authed_user, require_write, TokenData
 from ..core.exceptions import raise_http_exception
-from ..services.backtest_cache import backtest_cache
 from ..services.backtest_store import (
     save_backtest_result,
     get_backtest_history,
@@ -97,22 +96,9 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
     5. Trade execution with commission/slippage
     6. Comprehensive performance metrics (30+)
 
-    Results are cached in Redis (1h TTL) for identical configs - repeated
-    requests with the same parameters return instantly from cache.
-    The response includes a `cached` field indicating cache HIT/MISS.
-
     Results are persisted to the database by default (set save=false to skip).
     """
     try:
-        # ── Check cache first ──────────────────────────────────────────
-        cache_key_body = req.model_dump()
-        cached = await backtest_cache.get("hmm", cache_key_body)
-        if cached is not None:
-            # Cache HIT - reconstruct response from cached data
-            cached["cached"] = True
-            return BacktestResponse(**cached)
-
-        # ── Cache MISS - run the backtest ──────────────────────────────
         prices = np.array(req.prices, dtype=float)
         config = BacktestConfig(
             window=req.window,
@@ -183,14 +169,7 @@ async def run_backtest(req: BacktestRequest, user: TokenData = Depends(get_authe
                 symbol=req.symbol,
             )
 
-        # ── Store in cache (1h TTL) ────────────────────────────────────
-        response_obj = _result_to_response(result, record_id, created_at)
-        cache_payload = response_obj.model_dump()
-        cache_payload["cached"] = False
-        await backtest_cache.set("hmm", cache_key_body, cache_payload)
-
-        response_obj.cached = False
-        return response_obj
+        return _result_to_response(result, record_id, created_at)
 
     except Exception as e:
         raise_http_exception(e, "backtest")

@@ -303,10 +303,10 @@ class EVComputeResponse(BaseModel):
 # request/response models to `BacktestRequest` / `OptimizationRequest` /
 # `StatisticalRigorRequest` etc. and removed the walk-forward / Monte-Carlo
 # pipeline helpers. Several legacy tests (test_renko_backtest.py,
-# test_data_quality.py::TestRouterDataQuality, test_backtest_cache.py::
-# TestCachedField) still import the OLD `Renko*` names. These deprecated
-# aliases keep that surface importable so the suite collects. New code must
-# use the current models — do NOT extend these.
+# test_data_quality.py::TestRouterDataQuality) still import the OLD
+# `Renko*` names. These deprecated aliases keep that surface importable so
+# the suite collects. New code must use the current models — do NOT extend
+# these.
 
 class RenkoBacktestRequest(BaseModel):
     """DEPRECATED (v7.3) — use `BacktestRequest`. Kept for legacy tests.

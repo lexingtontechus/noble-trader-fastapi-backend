@@ -131,7 +131,6 @@ from regime_platform.routers import prices as prices_router_module
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
-from regime_platform.services.redis_persistence import persistence
 
 log = logging.getLogger("regime.app")
 
@@ -141,45 +140,11 @@ async def lifespan(app: FastAPI):
     log.info("Starting up v7.7.2 ...")
     log.info(f"GPU: {gpu_capabilities()}")
 
-    if persistence.enabled:
-        # Start batched XADD flush loop (v7.3: reduces Redis commands ~90%)
-        await persistence.start_flush_loop()
-
-        symbols = await persistence.list_persisted_symbols()
-        log.info(f"Redis: restoring {len(symbols)} symbol(s)")
-        from regime_platform.services.registry import registry
-
-        for symbol in symbols:
-            meta = await persistence.load_meta(symbol)
-            session = await registry.get_or_create(symbol=symbol, **meta)
-            n = await persistence.restore(session)
-            if n >= 81:
-                import asyncio
-
-                await asyncio.get_event_loop().run_in_executor(None, session._refit)
-                log.info(f"  ✓ {symbol}: restored {n} bars")
-
     # Phase 8: Start operational services
     try:
         from regime_platform.services.operational import kill_switch, audit_logger, reconciler
         await kill_switch.start_refresh()
         log.info("Kill switch service started")
-        
-        # Start Signal Aggregator service
-        try:
-            from regime_platform.services.signal_aggregator import get_signal_aggregator
-            await get_signal_aggregator()
-            log.info("Signal Aggregator service started")
-        except Exception as e:
-            log.warning(f"Signal Aggregator start failed: {e}")
-        
-        # Start External Webhook Service
-        try:
-            from regime_platform.services.external_webhook_service import get_external_webhook_service
-            await get_external_webhook_service()
-            log.info("External Webhook Service started")
-        except Exception as e:
-            log.warning(f"External Webhook Service start failed: {e}")
         
         # Start enhanced Telegram notifications if configured
         if settings.telegram_configured:
@@ -198,25 +163,6 @@ async def lifespan(app: FastAPI):
                 log.warning("Telegram notifications module not available")
             except Exception as e:
                 log.error(f"Failed to initialize Telegram notifications: {e}")
-
-        # Audit 2026-07-22: Wire StreamSplitter into lifespan.
-        # Without this, signals:signal_scout and signals:precision_pro streams
-        # stay empty (the splitter is the only writer). Downstream consumers
-        # that subscribe to those per-plan streams (per docs/Setup/REDIS_ACL_SETUP.md)
-        # receive nothing. Gated by NOBLE_TRADER_STREAM_SPLIT_ENABLED env var
-        # (default True per settings.py:76) so operators can disable if needed.
-        try:
-            from regime_platform.core.settings import settings as _settings
-            if getattr(_settings, "NOBLE_TRADER_STREAM_SPLIT_ENABLED", True):
-                from regime_platform.services.stream_splitter import get_stream_splitter
-                await get_stream_splitter()
-                log.info("StreamSplitter service started (signals:signal_scout + signals:precision_pro)")
-            else:
-                log.info("StreamSplitter disabled via NOBLE_TRADER_STREAM_SPLIT_ENABLED=false")
-        except Exception as e:
-            log.warning(f"StreamSplitter start failed: {e}")
-
-        # Start periodic reconciliation (every 15 minutes)
 
         # Start periodic reconciliation (every 15 minutes)
         import asyncio
@@ -334,24 +280,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f"L2 feed manager stop error: {e}")
 
-            # Close Signal Aggregator service
-    try:
-        from regime_platform.services.signal_aggregator import signal_aggregator
-        if signal_aggregator:
-            await signal_aggregator.stop()
-            log.info("Signal Aggregator service stopped")
-    except Exception as e:
-        log.warning(f"Signal Aggregator shutdown error: {e}")
-    
-    # Close External Webhook Service
-    try:
-        from regime_platform.services.external_webhook_service import external_webhook_service
-        if external_webhook_service:
-            await external_webhook_service.stop()
-            log.info("External Webhook Service stopped")
-    except Exception as e:
-        log.warning(f"External Webhook Service shutdown error: {e}")
-    
     # Close Discord notifier HTTP client
     try:
         from notifications.discord import discord_notifier
@@ -367,9 +295,6 @@ async def lifespan(app: FastAPI):
         log.info("Shared Redis connection pool closed")
     except Exception as e:
         log.warning(f"Redis pool shutdown error: {e}")
-
-    # v7.3: persistence.close() now also flushes remaining buffered prices
-    await persistence.close()
 
     # Close runtime config HTTP client
     try:
