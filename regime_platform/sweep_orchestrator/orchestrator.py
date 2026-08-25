@@ -837,7 +837,8 @@ class SweepOrchestrator(HeavySweepMixin):
             f"MIN_P_WIN={MIN_P_WIN}, "
             f"SIGNAL_COOLDOWN_MINUTES={SIGNAL_COOLDOWN_MINUTES}, "
             f"TIMESFM_SIGMOID_K={TIMESFM_SIGMOID_K}, "
-            f"TIMESFM_CLAMP=[{TIMESFM_CLAMP_MIN}, {TIMESFM_CLAMP_MAX}]"
+            f"TIMESFM_CLAMP=[{TIMESFM_CLAMP_MIN}, {TIMESFM_CLAMP_MAX}], "
+            f"MARKOV_SOURCE_MODE={MARKOV_SOURCE_MODE}"
         )
 
     # ── Public lifecycle ──────────────────────────────────────────
