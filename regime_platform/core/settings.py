@@ -409,6 +409,22 @@ class Settings(BaseSettings):
     EOD_DRIFT_MIN_SAMPLE: int = 20
     EOD_DRIFT_THRESHOLD: float = 0.15
 
+    # BRACKET_REACHABILITY_ENABLED (default True, 2026-08-25, Phase 1 of
+    # worklog/20260825_CALIBRATION_REFRAME_SCOPE.md): kill switch for the
+    # weekly bracket-reachability diagnostic job (bracket_reachability.py).
+    # Read-only — computes and upserts nt_bracket_reachability from
+    # resolved nt_signal_sim rows; nothing downstream reads it yet.
+    BRACKET_REACHABILITY_ENABLED: bool = True
+
+    # CALIBRATION_BIAS_BY_BUCKET_ENABLED (default True, 2026-08-25, Phase 2
+    # of worklog/20260825_CALIBRATION_REFRAME_SCOPE.md): kill switch for
+    # the calibration-bias-by-bucket + entry-drift diagnostics
+    # (calibration_bias_bucket.py), which run right after the weekly
+    # bracket-reachability job. Read-only — upserts
+    # nt_calibration_bias_by_bucket / nt_entry_drift; nothing downstream
+    # reads either yet.
+    CALIBRATION_BIAS_BY_BUCKET_ENABLED: bool = True
+
     # Emergency heavy-sweep cooldown for the intraday correction passes:
     # a symbol gets at most one re-optimization per this window (bounds
     # backtest cost; the nightly pass is unaffected).

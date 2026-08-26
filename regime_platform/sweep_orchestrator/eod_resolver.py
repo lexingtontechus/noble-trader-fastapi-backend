@@ -88,6 +88,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "p_win", "ev", "regime", "regime_conf", "source", "qualified",
     "outcome", "exit_price", "exit_ts", "hold_bars", "mfe", "mae",
     "pnl_bricks", "pnl_dollars", "resolved_at",
+    # drift_*_pct (migration 121, Phase 2): direction-relative post-entry
+    # price drift at fixed horizons, independent of trade outcome.
+    "drift_1h_pct", "drift_4h_pct", "drift_24h_pct",
 })
 
 # Columns of nt_calibration_records we write (mirrors renko/trade_journal.py
@@ -99,6 +102,11 @@ CALIBRATION_RECORD_COLUMNS: frozenset[str] = frozenset({
     # 2026-08-13: pre-enforcement p_win (carried from the sim capture, nullable)
     # + Brier score (predicted-vs-outcome MSE). Both columns exist in the table.
     "predicted_p_win_raw", "calibration_brier",
+    # signal_id (migration 121, Phase 2): FK back to the nt_signal_sim row
+    # this record was written from — closes the join gap that blocked
+    # bracket-reachability-aware calibration analysis. Nullable; rows
+    # written before 2026-08-25 predate this column and stay unlinked.
+    "signal_id",
 })
 
 
@@ -190,7 +198,14 @@ def resolve_signal_outcome(
     close, ``None`` when expired), ``exit_idx`` (0-based bar index,
     ``None`` when expired), ``hold_bars`` (bars held: exit_idx+1, or the
     walked window length when expired), ``mfe`` / ``mae`` (max favorable
-    / max adverse close excursion in price units, >= 0).
+    / max adverse close excursion in price units, >= 0), and
+    ``drift_1h_pct``/``drift_4h_pct``/``drift_24h_pct`` (direction-
+    relative price drift at fixed post-entry horizons, as % of
+    entry_price — positive means the market moved in the signal's
+    favor. Computed over the FULL fetched window, not the outcome-
+    truncated walk, since this measures post-entry market behavior
+    independent of when/whether the trade itself exited. ``None`` when
+    fewer than that many post-entry bars were available.
     """
     is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
     window = list(closes or [])[: max(int(expiry_bars or 0), 0)]
@@ -225,6 +240,15 @@ def resolve_signal_outcome(
         mfe = max((entry_price - float(c) for c in walked), default=0.0)
         mae = max((float(c) - entry_price for c in walked), default=0.0)
 
+    def _drift_at(bar_offset: int) -> float | None:
+        # window[0] is the entry bar's own close (anchor_post_entry_closes
+        # includes it); window[bar_offset] is `bar_offset` hours later.
+        if bar_offset >= len(window) or entry_price == 0:
+            return None
+        close = float(window[bar_offset])
+        signed = (close - entry_price) if is_buy else (entry_price - close)
+        return round(signed / entry_price * 100.0, 4)
+
     return {
         "outcome": outcome,
         "exit_price": exit_price,
@@ -232,6 +256,9 @@ def resolve_signal_outcome(
         "hold_bars": (exit_idx + 1) if exit_idx is not None else len(window),
         "mfe": round(mfe, 6),
         "mae": round(mae, 6),
+        "drift_1h_pct": _drift_at(1),
+        "drift_4h_pct": _drift_at(4),
+        "drift_24h_pct": _drift_at(24),
     }
 
 
@@ -382,6 +409,7 @@ async def _write_calibration_record(
     brier = round((1.0 - pred_for_brier) ** 2 if outcome == "win" else pred_for_brier ** 2, 6)
     payload = _filter_payload({
         "id": str(uuid.uuid4()),
+        "signal_id": sig.get("signal_id"),
         "symbol": symbol,
         "venue": sig.get("venue"),
         "predicted_p_win": _as_float(sig.get("p_win")),
@@ -458,6 +486,9 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
         "pnl_bricks": pnl["pnl_bricks"],
         "pnl_dollars": pnl["pnl_dollars"],
         "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "drift_1h_pct": resolved.get("drift_1h_pct"),
+        "drift_4h_pct": resolved.get("drift_4h_pct"),
+        "drift_24h_pct": resolved.get("drift_24h_pct"),
     }, NT_SIGNAL_SIM_COLUMNS)
 
     if not await _patch_signal(sig.get("signal_id"), patch):

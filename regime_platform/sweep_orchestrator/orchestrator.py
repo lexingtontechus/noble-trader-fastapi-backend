@@ -48,7 +48,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     log_error,
     fetch_calibration_bias,
 )
-from regime_platform.sweep_orchestrator.heavy_sweep import HeavySweepMixin
+from regime_platform.sweep_orchestrator.heavy_sweep import HeavySweepMixin, compute_atr
 
 logger = logging.getLogger("regime.sweep.orch")
 
@@ -142,11 +142,30 @@ TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
 #       still feed the LEGACY value to the live blend. No behavior
 #       change — observation only.
 #   "trend_hmm_live": feed the new RegimeHMM-derived value to the live
-#       blend instead of the legacy model's.
+#       blend instead of the legacy model's. Also RETIRES the legacy
+#       HmmModel's per-tick refit (heaviest part of its cost) — since
+#       nothing reads its emit_markov() output in this mode, the fit()
+#       loop is skipped entirely (see the light-sweep fit loop and
+#       heavy_sweep.py's mirrored branch). TA/microstructure features
+#       still work: they're read directly from the FeatureBuffer
+#       (populated by the quote/TA fetchers independently of fit()),
+#       not from the fitted model.
 # The new derivation reuses RegimeHMM's trend model — already stabilized
 # by the 2026-08-24 feature-standardization fix (Change A) — instead of
 # fitting a second, separate, numerically-unstable HMM.
-MARKOV_SOURCE_MODE = os.getenv("MARKOV_SOURCE_MODE", "legacy_hmm").lower()
+#
+# Default changed to "trend_hmm_shadow" (2026-08-26, HMM consolidation —
+# worklog/20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): a live 12h
+# check found 165 regime_shift_alert firings in one 12h window (a dead-
+# end diagnostic, but the volume itself evidences real instability) and
+# the shadow comparison was log-line only — this environment can't even
+# reach studio logs to read it. Shadow mode is zero live-behavior change
+# (never substitutes into the blend); flipping the default here just
+# means real comparison data (now persisted to nt_markov_source_shadow,
+# not log lines) starts accumulating immediately. "trend_hmm_live" is
+# NOT the default — that's a separate decision once shadow data is
+# reviewed.
+MARKOV_SOURCE_MODE = os.getenv("MARKOV_SOURCE_MODE", "trend_hmm_shadow").lower()
 
 # When True, sweep ALL symbols regardless of market hours. Useful for:
 #   - Regime tracking outside market hours (you still want to know the
@@ -671,6 +690,7 @@ def _build_signal_sim_payload(
     kelly_f: float | None = None,
     effective_kelly: float | None = None,
     predicted_p_win_raw: float | None = None,
+    atr: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -690,6 +710,11 @@ def _build_signal_sim_payload(
     is included in the payload only when
     ``settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW`` is enabled (the DB
     column must exist first — see supabase/migrations/114_add_predicted_p_win_raw.sql).
+
+    ``atr`` (2026-08-25, migration 120) is the symbol's ATR(14) at capture
+    time (absolute price units, see ``heavy_sweep.compute_atr``) — feeds
+    the bracket-reachability diagnostic (bracket_reachability.py).
+    Nullable so legacy callers are unaffected.
     """
     payload = {
         "symbol": symbol,
@@ -710,6 +735,7 @@ def _build_signal_sim_payload(
         "qualified": qualified,
         "kelly_f": round(float(kelly_f), 6) if kelly_f is not None else None,
         "effective_kelly": round(float(effective_kelly), 6) if effective_kelly is not None else None,
+        "atr": round(float(atr), 6) if atr is not None else None,
     }
     if (
         settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW
@@ -952,6 +978,21 @@ class SweepOrchestrator(HeavySweepMixin):
                 trigger=CronTrigger.from_crontab("30 1 * * *"),
                 id="auto-tuner-daily",
                 name="Layer 1 auto-tuner (daily)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
+        # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
+        # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
+        # after the 05:00 UTC weekend heavy-sweep window so that week's
+        # sweeps have landed. Read-only: computes nt_bracket_reachability
+        # from resolved nt_signal_sim rows, nothing downstream reads it yet.
+        if getattr(settings, "BRACKET_REACHABILITY_ENABLED", True):
+            self._scheduler.add_job(
+                self._run_bracket_reachability,
+                trigger=CronTrigger.from_crontab("0 7 * * sun"),
+                id="bracket-reachability-weekly",
+                name="Bracket reachability table (weekly)",
                 misfire_grace_time=3600,
                 coalesce=True,
             )
@@ -1380,6 +1421,58 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[auto-tuner] failed: %s", exc)
 
+    async def _run_bracket_reachability(self) -> None:
+        """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then
+        the Phase 2 calibration-bias-by-bucket + entry-drift diagnostics.
+
+        See ``regime_platform/sweep_orchestrator/bracket_reachability.py``
+        and worklog/20260825_CALIBRATION_REFRAME_SCOPE.md (Phase 1/2).
+        Phase 1 computes distance/ATR hit-rate + time-to-resolution
+        buckets from resolved nt_signal_sim rows and upserts
+        nt_bracket_reachability. Phase 2 (gated separately, runs after
+        Phase 1 in the same job so its pct_expired join reads a fresh
+        table) computes calibration bias/expectancy per bucket and
+        post-entry drift per symbol. Both are read-only diagnostics —
+        neither changes calibration bias enforcement, live qualification,
+        or bracket selection. Best-effort: failures are logged, never
+        raised.
+        """
+        from regime_platform.sweep_orchestrator.bracket_reachability import (
+            build_reachability_table,
+        )
+
+        try:
+            rows = await build_reachability_table()
+            logger.info(
+                "[bracket-reachability] done: %d bucket row(s) across %d symbol(s)",
+                len(rows), len({r["symbol"] for r in rows}),
+            )
+        except Exception as exc:
+            logger.error("[bracket-reachability] failed: %s", exc)
+
+        if getattr(settings, "CALIBRATION_BIAS_BY_BUCKET_ENABLED", True):
+            from regime_platform.sweep_orchestrator.calibration_bias_bucket import (
+                build_calibration_bias_by_bucket,
+                build_entry_drift,
+            )
+
+            try:
+                bias_rows = await build_calibration_bias_by_bucket()
+                logger.info(
+                    "[calibration-bias-bucket] done: %d bucket row(s) across %d symbol(s)",
+                    len(bias_rows), len({r["symbol"] for r in bias_rows}),
+                )
+            except Exception as exc:
+                logger.error("[calibration-bias-bucket] failed: %s", exc)
+
+            try:
+                drift_rows = await build_entry_drift()
+                logger.info(
+                    "[entry-drift] done: %d symbol row(s)", len(drift_rows),
+                )
+            except Exception as exc:
+                logger.error("[entry-drift] failed: %s", exc)
+
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,
         2026-08-23 — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3, migration 118).
@@ -1575,8 +1668,14 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.warning("HMM TA fetch failed: %s", exc)
 
         # Refit HMM for each symbol (cheap: Baum-Welch on 300 bars × 9 features)
-        for sym in hmm_symbols:
-            self._hmm_model.fit(sym["symbol"])
+        # Skipped entirely in trend_hmm_live mode — the retired legacy
+        # model's emit_markov() output is never read in that mode (see
+        # MARKOV_SOURCE_MODE docstring above), and TA/microstructure
+        # features are read directly from the FeatureBuffer independently
+        # of fit(), not from the fitted model.
+        if MARKOV_SOURCE_MODE != "trend_hmm_live":
+            for sym in hmm_symbols:
+                self._hmm_model.fit(sym["symbol"])
 
         # Sequential processing with stagger
         symbols_to_process = [s for s in active if s["symbol"] in valid_prices]
@@ -1823,23 +1922,31 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── 3. HMM markov emit (replaces discrete MarkovChain) ──────────
         # The multivariate Gaussian HMM was refit earlier in this sweep
-        # tick (in _sweep_group). Here we emit the 3-state transition matrix
-        # + current state — a drop-in replacement for the old
-        # _build_markov_chain() return shape.
+        # tick (in _sweep_group) — UNLESS MARKOV_SOURCE_MODE=trend_hmm_live,
+        # which skips that fit() entirely (see the fit loop above), since
+        # nothing reads the legacy model's output in that mode. Here we
+        # emit the 3-state transition matrix + current state — a drop-in
+        # replacement for the old _build_markov_chain() return shape.
         #
         # p_up / p_dn are kept for backward-compat with the Supabase
         # nt_sweep_result schema (legacy columns). They are read directly
         # from the transition matrix: P(UP|current_state) and P(DOWN|current_state).
-        _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
+        _markov_T: dict[str, dict[str, float]] | None = None
+        _markov_current_state: str | None = None
+        if MARKOV_SOURCE_MODE != "trend_hmm_live":
+            _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
         p_up, p_dn = 0.5, 0.5  # neutral defaults; replaced if HMM emits
 
         # Part 1 Change B (2026-08-25): optionally derive the same matrix
         # shape from RegimeHMM's own (Change-A-stabilized) trend model
         # instead of the separate, numerically-unstable legacy HmmModel
         # above. See MARKOV_SOURCE_MODE's docstring near the top of this
-        # file. Errors here never affect the live blend — they only skip
-        # the shadow comparison / live substitution, falling back to
-        # whatever the legacy model already produced above.
+        # file. In shadow mode, an error here only skips the comparison,
+        # falling back to whatever the legacy model already produced. In
+        # live mode there is no legacy value to fall back to (its fit()
+        # was skipped above) — fall back to a neutral uniform matrix
+        # instead, the same convention trend_transition_matrix_3state()
+        # itself uses internally for an unmapped row.
         if MARKOV_SOURCE_MODE in ("trend_hmm_shadow", "trend_hmm_live"):
             try:
                 _trend_hmm_T, _trend_hmm_current_state = model.trend_transition_matrix_3state(
@@ -1852,13 +1959,37 @@ class SweepOrchestrator(HeavySweepMixin):
                         symbol, _markov_current_state, _markov_T,
                         _trend_hmm_current_state, _trend_hmm_T,
                     )
+                    # HMM consolidation (2026-08-26): persist the running
+                    # comparison so a live-mode decision can be made from
+                    # real data instead of grep'ing logs this environment
+                    # can't even reach (see MARKOV_SOURCE_MODE docstring).
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        record_markov_shadow_compare,
+                    )
+                    _legacy_p_up = (_markov_T or {}).get(_markov_current_state or "", {}).get("UP", 0.5)
+                    _trend_p_up = _trend_hmm_T.get(_trend_hmm_current_state, {}).get("UP", 0.5)
+                    asyncio.create_task(record_markov_shadow_compare(
+                        symbol,
+                        state_agree=(_markov_current_state == _trend_hmm_current_state),
+                        p_up_diff=_legacy_p_up - _trend_p_up,
+                        legacy_state=_markov_current_state,
+                        trend_hmm_state=_trend_hmm_current_state,
+                    ))
                 elif MARKOV_SOURCE_MODE == "trend_hmm_live":
                     _markov_T, _markov_current_state = _trend_hmm_T, _trend_hmm_current_state
             except Exception as exc:
                 logger.warning(
-                    "%s: trend_hmm markov derivation failed (%s: %s), "
-                    "using legacy_hmm value", symbol, type(exc).__name__, exc,
+                    "%s: trend_hmm markov derivation failed (%s: %s), using %s",
+                    symbol, type(exc).__name__, exc,
+                    "legacy_hmm value" if MARKOV_SOURCE_MODE == "trend_hmm_shadow"
+                    else "neutral uniform-matrix fallback",
                 )
+                if MARKOV_SOURCE_MODE == "trend_hmm_live" and _markov_T is None:
+                    _markov_T = {
+                        s: {t: 1.0 / 3.0 for t in ("UP", "DOWN", "FLAT")}
+                        for s in ("UP", "DOWN", "FLAT")
+                    }
+                    _markov_current_state = "FLAT"
 
         # ── 3a. TA indicator snapshot (migration 036) ──────────────────
         # Pull the latest 5 TA values (ADX, AO, BB Power, MACD, RSI) from
@@ -1871,6 +2002,12 @@ class SweepOrchestrator(HeavySweepMixin):
         # ── 4. Direction & trade signal ──
         current_price = float(np_prices[-1])
         direction = "short" if "bear" in regime_label.lower() else "long"
+
+        # ATR(14) for the bracket-reachability diagnostic (migration 120,
+        # worklog 20260825_CALIBRATION_REFRAME_SCOPE.md). Reuses np_prices
+        # already in memory for the regime fit — no new fetch. Same
+        # definition as the heavy sweep's own ATR (compute_atr).
+        atr = compute_atr(np_prices.tolist(), period=14)
 
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
 
@@ -2579,6 +2716,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     kelly_f=kelly_f,
                     effective_kelly=effective_kelly,
                     predicted_p_win_raw=p_win_raw,
+                    atr=atr,
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

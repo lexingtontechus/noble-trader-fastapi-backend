@@ -1,0 +1,644 @@
+# 2026-08-25 — Full pipeline helicopter view: price fetch → EV → signal →
+# analysis → feedback into EV (scope only, nothing built)
+
+**Status: SCOPED.** Companion to `worklog/20260825_CALIBRATION_REFRAME_SCOPE.md`
+(Phases 1-3: bracket reachability, calibration-bias-by-bucket, heavy-sweep
+combo selection). That thread found the EV formula itself has no concept
+of a trade expiring (`ev_engine.py:670`: `ev = p_win*profit - (1-p_win)*stake`,
+a pure two-outcome model), and that `p_win`'s four blended sources are
+mostly directional-confidence estimates with little-to-no awareness of
+whether the chosen bracket is geometrically reachable at all. This
+document maps the **entire** pipeline end to end — price fetch through
+every feedback path that currently reaches back into live decisions — so
+that decision sits in context, not in isolation.
+
+Built from three parallel investigations (two completed in full, one hit
+a session limit partway through signal-generation/qualification and was
+finished directly by re-reading `orchestrator.py` — the two full reports
+are the depth level throughout).
+
+---
+
+## The pipeline, stage by stage
+
+### 1. Price fetch — `price_fetcher.py`
+
+- Sole source: TradingView Data API via RapidAPI (`fetch_tradingview_batch`).
+- **Close-only** — no OHLC, no volume, timestamps dropped downstream. Every
+  "ATR"/"true range" computation in this codebase (Phase 1's `compute_atr`,
+  the legacy HMM's ADX approximation) is a close-to-close proxy for lack
+  of real high/low data.
+- Light sweep: 200 bars, 1h interval. Heavy sweep: 2160 bars (90d), 1h
+  interval. 10-symbols-per-request TV limit, auto-chunked.
+- One bounded 429 retry per chunk (capped 10s); a chunk that still fails
+  just **drops those symbols for the tick** — no fallback price, silent
+  gap self-healing on the next 5-15min tick.
+- Historical bug (fixed): TDVA returns newest-first; every consumer
+  assumes oldest→newest. A missed reversal here would have silently fed
+  an 8-12-day-old close in as "current price" — worth remembering as the
+  class of bug this pipeline is generally exposed to (silent staleness,
+  not a loud failure).
+
+### 2. Regime / feature detection — **two independent HMMs**, both refit every tick
+
+- **`RegimeHMM`** (`core/regime_engine.py`) — produces `trend_probs` fed
+  straight into `compute_ev`. Fit from scratch every ~5min tick on the
+  200-bar window, no persisted state across ticks (docstring is explicit
+  about this). Cross-tick label continuity is preserved only by matching
+  new component means against the previous tick's label means, not by
+  keeping any model state. Features are pure log-return statistics
+  (rolling std, cumulative sum) — no TA indicators.
+- **`HmmModel`** (`services/hmm/model.py`) — the transition-matrix source.
+  Reads a rolling 300-bar `FeatureBuffer` (persists across ticks) built
+  from log-return + microstructure (spread/imbalance, quote-API-dependent)
+  + 5 locally-computed TA indicators (ADX/AO/BB-Power/MACD/RSI, all
+  close-only approximations, ADX explicitly documented as "rough"). Also
+  refit every tick, from the rolling window.
+- Both models needed anti-degeneracy patches after going live: `RegimeHMM`
+  needed feature z-scoring (2026-fix #3); `HmmModel` needed an `lr_std`
+  floor raised from `1e-8`→`1e-4` after compressed-FX-pair state collapse,
+  plus a uniform-prior fallback on transition-matrix collapse.
+
+### 3. Markov transition matrix + `current_state`
+
+- Live path: `HmmModel.emit_markov(symbol)` — matrix re-estimated every
+  tick from the 300-bar buffer; `current_state` re-classified every tick
+  from the buffer's single latest bar.
+- **Confirmed noisy at tick granularity**: near-deterministic transition
+  rows + a `current_state` that flips at the UP/FLAT classification
+  boundary produced a documented live case (AAPL, 2026-08-22) where the
+  raw `T^N` hold-probability swung between near-0 and near-1 tick to
+  tick with no actual price move. **Deliberately addressed** by
+  EMA-smoothing the output (`p_markov_hold_n`, α=0.30) rather than the
+  re-estimation itself — confirmed (2026-08-26) this was the intended
+  fix, not a stopgap; see "Candidate intervention points" below, which
+  originally mis-flagged this as still-open.
+- `_build_markov_chain` (the "obvious" markov function name) is dead
+  code — kept only for a legacy `/ev/compute` REST endpoint, not on the
+  live sweep path. Easy to mis-trace if you go looking for "the" markov
+  function without checking call sites.
+- An alternate source (`RegimeHMM`'s own transition matrix,
+  `MARKOV_SOURCE_MODE=trend_hmm_shadow/live`) exists specifically because
+  the legacy `HmmModel` was producing live `NaN`/state-collapse warnings
+  — currently shadow-logged only, not the default.
+
+### 4. EV computation — `services/statistics/ev_engine.py::compute_ev`
+
+4-source logit-pool blend (`p_historical`, `p_regime`, `p_markov_hold_n`,
+`p_timesfm`), missing sources renormalized out rather than defaulted to
+0.5. Refresh cadence per source (this is the piece that most needed
+mapping — none of the 4 are pinned to the weekly heavy-sweep cycle):
+
+| Source | Refresh | Notes |
+|---|---|---|
+| `trend_probs` (→p_regime) | Every tick, EMA-smoothed (α=0.30) before use | Fresh-in-name, damped-in-practice |
+| `p_markov_hold_n` | Every tick, EMA-smoothed (α=0.30) | Same — the smoothing exists because the raw signal is too noisy to use directly |
+| `p_historical` | 15min TTL cache over `fetch_historical_p_win` | Per-**symbol** pooled realized win rate, Bayesian-shrunk. Not geometry-aware — see §Core finding. |
+| `p_timesfm` | 15min TTL cache, external HTTP forecast | Not a native probability — a 1-bar-ahead price forecast run through a manual sigmoid (`k=20` tunable); fails open (`None`) on any of 5 distinct error paths. Each call is per-symbol, but the model is a foundation model pretrained across a broad pool of series — this is the pipeline's intended source of broader-than-one-symbol robustness in the probability forecast, not something absent (corrected 2026-08-26, see "Candidate intervention points") |
+
+Then: `ev = (p_win * profit) - ((1.0 - p_win) * stake)`, `profit =
+tp_bricks*brick_size`, `stake = sl_bricks*brick_size`. **No expire
+branch.** Whenever a trade doesn't win, this formula assumes the full
+stake was lost — but Phase 1/2's data shows the dominant "didn't win"
+outcome for many symbol/bucket combinations is a zero-P&L expiry, not a
+stop-out. `p_markov_hold_n` is the only one of the 4 sources with any
+notion of time/geometry at all, and it uses `n_steps = tp_bricks` under
+a hard-coded "1 brick = 1 bar" velocity assumption — Phase 1 showed real
+time-to-resolve for wide brackets is 40-130+ hours, not `tp_bricks` hours.
+
+### 5. Signal generation + qualification gates — `orchestrator.py`
+
+- `_compute_trade_signal`: `regime_label` (does it contain "bear"?) +
+  `current_price` + `brick_size`/`sl_bricks`/`tp_bricks` → buy/sell/neutral
+  + entry/stop/take-profit prices. Purely geometric — no EV/confidence
+  input at this stage.
+- Brick geometry itself reaches the light sweep via a **pure YAML
+  round-trip**: heavy sweep (weekly) writes `config/brick_params.yaml`;
+  light sweep (every 5-15min) reads it via `_load_brick_params` — no DB,
+  no cache invalidation signal. A symbol can run for up to a week on
+  brick geometry chosen against last week's volatility regime.
+- Light-sweep qualification (`orchestrator.py` gate_results dict) is an
+  **all-of** over: `signal_qualifiable` (non-neutral), `regime_conf_ok`
+  (≥`MIN_REGIME_CONF`), `kelly_min_ok` (≥`MIN_KELLY`, checked on the
+  **post-enforcement** effective kelly, not raw), `timesfm_confidence_ok`,
+  `ev_allowed` (`ev>min_ev and rr>=min_rr`, post-enforcement), and a
+  **soft `p_win` gate** (hard floor 0.50 = never publish; 0.50-`MIN_P_WIN`
+  = publish at linearly-shrunk kelly; above `MIN_P_WIN` = full kelly).
+  `timesfm_available` is informational unless `TIMESFM_GATE_MODE=hard`.
+  Heavy-sweep qualification (`_evaluate_heavy_qualification`) is the same
+  shape, simpler: non-neutral + `ev_result.allowed` + `p_win≥MIN_P_WIN` +
+  `regime_conf≥MIN_REGIME_CONF` + `kelly_f≥MIN_KELLY`.
+- **None of these gates reference bracket-width/ATR/reachability at
+  all** — confirmed by reading the full gate list. A signal with a
+  4+-ATR bracket and one with a 0.5-ATR bracket pass through exactly the
+  same qualification checks.
+
+### 6. Delivery + outcome tracking
+
+- Both light- and heavy-sweep **qualified** signals open a kelly-sized
+  paper position (`paper_book.open_position`, fire-and-forget) — confirmed
+  both paths call it, not just heavy.
+- Every non-neutral signal (qualified or not) is captured to
+  `nt_signal_sim` regardless — this is the population Phase 1/2 build
+  their diagnostics from.
+- `eod_resolver.py` (nightly) forward-resolves pending signals via a
+  close-walk against post-entry candles, writes `outcome`/`mfe`/`mae`/
+  `pnl_*`/(now, Phase 2) `drift_*_pct`, and inserts a `win`/`loss`
+  calibration record for `tp_hit`/`sl_hit` only — `expired` never
+  produces a calibration record at all (by design, not a bug: "a timeout
+  is neither a win nor a loss").
+
+### 7. Analysis layer — Phases 1-3 (this session)
+
+`nt_bracket_reachability` (hit-rate/expiry per symbol×ATR-bucket),
+`nt_calibration_bias_by_bucket` (bias/expectancy-in-R/daily-expectancy
+per bucket, joined with reachability), `nt_entry_drift` (post-entry
+price drift). All read-only, weekly refresh, **nothing downstream reads
+any of them yet** — confirmed via grep across `regime_platform/routers/`
+and everywhere else.
+
+### 8. Feedback into EV — what's alive vs. dead-end
+
+This is the part worth mapping precisely, because "does anything feed
+back" turned out to have a more nuanced answer than expected.
+
+**Alive** (measured outcome → real live-behavior change, with a traced
+mechanism):
+
+| Measurement | Path | Live effect |
+|---|---|---|
+| Calibration bias (per-symbol, pooled across all buckets) | `eod_correction.py` (4h/nightly) or `drift_monitor.py` (per-tick, overconfident-only) → `nt_eod_actions` → `calibration_enforcement.apply_calibration_adjustment` (every tick, qualifiable signals only) | Mutates `p_win` (Bayesian shrink toward 0.5) and `effective_kelly` (×0.5, or ×0.25 under Tier-1 stagnation, or ×0.0 hard kill under Tier-2) in place; `ev`/`rr`/`allowed`/`aggression` recomputed from the shrunk `p_win` |
+| Realized win rate (per-symbol) | `calibration_enforcement.fetch_historical_p_win` → `p_historical` | Feeds `compute_ev`'s blend **directly**, independent of the post-hoc shrink above — a second, separate measured→p_win path |
+| `degeneracy_breaker`/`emergency_heavy_sweep` recommendation | → `_execute_emergency_heavy_sweeps` | Re-runs the actual brick-geometry optimization for that symbol — the one feedback path that changes *inputs* rather than just correcting `p_win` after the fact |
+| Mean \|raw bias\| system health | `auto_tuner.py` (daily) → `tuning_registry` | **Contradicts its own docstring** ("nothing downstream reads these yet") — confirmed live via `eod_correction.py`/`calibration_enforcement.py`/`drift_monitor.py`'s `_settings_number` helper, which checks the registry FIRST. An explicit end-to-end test suite (`tests/test_e2e_registry_wiring.py`) proves all 11 tuned params reach live behavior. The comment is stale, not the mechanism. |
+
+**Dead-end** (written, nothing live reads it): `parameter_decay_check`,
+`regime_shift_alert` ("Layer 2," explicitly documented as
+detection-only, never built), and this session's three new tables.
+
+**Magnitude check on the Bayesian shrink** (from the feedback-layer
+investigation): at the minimum qualifying sample (`n=20`,
+`BAYES_PRIOR_COUNT=10`), the shrink moves `p_win` by ~5 points — a real
+effect. By `n=100`, the same shrink moves it by ~1.4 points — functionally
+a no-op. So the mechanism is strongest exactly when a symbol has *just*
+been flagged with a thin sample, and decays toward irrelevance for
+symbols that have been chronically miscalibrated with a large accumulated
+record count — arguably backwards from where you'd want the strongest
+correction. `KELLY_REDUCTION` (a flat ×0.5/×0.25/×0.0 cut) doesn't decay
+this way and is the more decisive lever in practice.
+
+---
+
+## Cadence timeline
+
+| Cadence | What happens |
+|---|---|
+| Every 5-15 min (per-symbol `regime_cron`) | Light sweep: price fetch → both HMMs refit → EV computed → qualification gates → (if qualified) paper position + Discord + drift-monitor check |
+| Every 15 min (TTL) | `p_historical`/`p_timesfm` caches refresh |
+| Every 4h | Intraday EOD correction pass (raw-bias mode, wider thresholds) |
+| Nightly, 00:32 UTC | `eod_resolver` (forward-resolve pending signals) → `paper_book.reconcile` → `eod_correction` (enforced-bias mode) |
+| Daily, 01:30 UTC | Tier D auto-tuner (one parameter nudged, evaluated against previous cycle) |
+| Weekly, per-symbol `sweep_cron` | Heavy sweep: brick-geometry grid search → YAML write → (this session) bracket-reachability + calibration-bias-by-bucket + entry-drift refresh, Sun 07:00 UTC |
+
+---
+
+## The core finding: the existing feedback loop is symbol-level, not bracket-level
+
+Section 8 shows real feedback already exists and is genuinely live — this
+isn't a system with no learning loop. But every alive path shares the
+same shape: it measures and corrects **`p_win` pooled per symbol**
+(`fetch_calibration_bias`, `fetch_historical_p_win`), then applies a
+uniform shrink/reduction to whatever signal that symbol generates next —
+completely independent of which bracket-width bucket that specific
+signal falls into.
+
+That's exactly the blind spot Phase 2 found and had to build around: a
+symbol's pooled calibration bias is dominated by whatever bucket has the
+most volume (usually the widest, least-reachable one, per Phase 1's own
+numbers), so the "correction" the existing enforcement layer applies is
+tuned to the wrong population most of the time. A symbol like XAUUSD
+gets the *same* Bayesian shrink and Kelly reduction whether the specific
+signal about to be qualified sits in its well-calibrated 0.5-1 ATR bucket
+(+1.58 expectancy) or its poorly-calibrated 4+ ATR bucket (-0.21
+expectancy) — the enforcement layer has no way to tell the two apart,
+because it was never given bucket-level data to work with.
+
+So the honest framing: Phases 1-3 didn't discover a system with *no*
+feedback — they discovered that the one feedback axis that exists
+(per-symbol `p_win` correction) is orthogonal to the one that actually
+matters most for a large share of the miscalibration (per-bracket-width
+reachability/expectancy). Both axes are real; only one is closed today.
+
+---
+
+## Candidate intervention points — corrected 2026-08-26 after user review
+
+The original four-item list below was reviewed and corrected. Two items
+were wrong or incomplete as first framed; recorded here rather than
+silently edited, since the correction is itself worth remembering.
+
+**#4 (Markov/regime re-estimation stability) was not an open gap.** The
+EMA smoothing on `p_markov_hold_n`/`trend_probs` (α=0.30) is the
+deliberate, considered fix for the tick-to-tick noise this document
+described — not a patch standing in for a real fix still owed. Removed
+from the candidate list.
+
+**TimesFM's role is broader than "one more blended source."** It's
+intended to guide the probability forecast using signal from the wider
+symbol pool, not just the one symbol's own price history — the
+robustness a cross-sectional/market-wide view provides comes from
+TimesFM's pretraining breadth, even though each call is per-symbol. This
+document previously implied that kind of broader-than-one-symbol
+awareness was entirely absent from the pipeline; it isn't — it's TimesFM's
+job, by design.
+
+**`compute_ev`'s formula (old #3) is off the table, not just high-risk —
+and there's a direct precedent.** `docs/mse-implementation-plan.md`
+(2026-08-08, status PLANNED — not built) scoped exactly this kind of
+EV-engine change: a Market Sync Engine producing a 6-theme-basket
+correlation score, with two integration options — **Method A**, a Gate 8
+qualification check (doesn't touch `compute_ev` at all), and **Method
+B**, a 5th blended EV source (`p_mse`, does touch the formula). MSE was
+never built, and reworking the EV engine is the reason — the same
+conclusion reached independently here. Not re-opening this.
+
+**Enforcement-layer bucket-awareness (old #2) has a real risk this
+document missed**: per-(symbol, bucket) historical stats are backward-
+looking and uncorrelated across symbols. If the *entire market* shifts
+character (a broad vol regime change, not a single symbol drifting), a
+bucket-level correction has no way to notice — it would keep applying a
+now-stale historical pattern with more granular, and therefore more
+confidently wrong, precision than today's per-symbol pooled correction
+does. This is precisely the gap MSE's basket-correlation signal was
+designed to cover (Method A specifically — a qualification gate, not an
+EV-formula change, so it doesn't conflict with the point above). Without
+some market-wide-shift detector in place first, making the enforcement
+layer bucket-aware trades one blind spot (bracket-width) for exposure to
+another (systemic regime shift) that nothing currently guards against.
+
+### Where this leaves the list
+
+1. **Heavy sweep's grid search (Phase 3, already scoped)** — unaffected
+   by any of the above; still the lowest-risk, already-detailed option.
+2. **Enforcement-layer bucket-awareness** — real value, but per the
+   correction above should not ship without a market-wide-shift
+   safeguard alongside it. MSE Gate 8 (Method A, never built, no EV
+   engine involvement) is the previously-scoped candidate for exactly
+   that safeguard — worth treating as a prerequisite or companion, not
+   a separate unrelated idea.
+3. **`compute_ev` formula rework** — closed. Same conclusion the MSE
+   review already reached; not revisiting.
+
+## Explicitly not decided here
+
+Whether to scope #2 (and/or dust off MSE Method A as its companion
+safeguard) is an open question for review, not a recommendation made
+here.
+
+## New section: long-range macro-regime filter (scoped 2026-08-26)
+
+Prompted by a direct question: what in this pipeline would notice a
+sustained, multi-week-to-multi-month bear market, as opposed to
+tick-level noise? Answer, checked against the code rather than assumed:
+**nothing does, anywhere, including MSE if it were built.**
+
+### Why nothing catches this today
+
+Every regime-sensing component operates on a short window and is refit
+from scratch each cycle — none persist a belief across cycles:
+
+| Component | Window | Persists across cycles? |
+|---|---|---|
+| `RegimeHMM` (trend_probs → EV) | 200 bars ≈ 8 days | No — refit from scratch every 5-min tick |
+| `HmmModel` (Markov matrix) | 300-bar buffer ≈ 12.5 days | No — refit every tick from the rolling buffer |
+| MSE's theme-correlation window (unbuilt) | 200 bars ≈ 8 days | Would be the same order of magnitude as the above — **MSE would not close this gap even if built** |
+| TimesFM | 1 bar ahead | No trend memory at all |
+| Heavy sweep's backtest window | 2160 bars = 90 days (the longest lookback anywhere) | Used only to grid-search brick geometry for Sharpe — never classifies or persists a regime label, and re-runs from scratch weekly |
+
+Everything in this pipeline fetches **1h bars, always** — confirmed
+`price_fetcher.py`'s `fetch_tradingview_batch` is hardcoded `interval="1h"`
+at every call site. A genuine multi-month filter needs a much longer
+calendar span than hourly resolution can cheaply provide (a year in 1h
+bars is ~8760 bars vs. today's 2160-bar max).
+
+**Good news found while checking feasibility**: `fetch_tradingview_batch`
+already supports a daily interval — `interval_map` includes `"1D"/"1d" →
+"D"` (`price_fetcher.py:98-101`), just never called with it anywhere in
+the sweep path. Fetching a year of daily bars (~250-365 bars) is cheap —
+no new API integration, no new rate-limit exposure, just a new call site
+using an interval the fetcher already understands.
+
+### Proposed filter (simple and interpretable, matching this codebase's
+own stated preference — see `auto_tuner.py`'s docstring on deliberately
+avoiding black-box optimizers)
+
+- New daily-cadence fetch (`interval="1D"`, ~250-365 bars) per symbol —
+  separate from both the light-sweep (1h/200) and heavy-sweep (1h/2160)
+  paths.
+- A slow, persisted scalar: e.g. `(price - SMA_200d) / SMA_200d`,
+  EMA-smoothed with a long half-life, classified into
+  `bear|neutral|bull` via fixed thresholds plus a `macro_strength` in
+  [0,1]. Deliberately not a fresh HMM re-fit each cycle — the whole
+  point is a state that changes slowly and remembers, unlike everything
+  else in this pipeline.
+- Refreshed daily (matches its own data resolution) and persisted (new
+  small table, e.g. `nt_macro_regime`, one row per symbol) — same shape
+  as this session's other diagnostic tables.
+
+### How it reaches the EV engine — without reworking it
+
+This is the part that has to be gotten right given the standing
+constraint (see [[ev_engine_no_rework]]): the mechanism must use the EV
+engine's *existing*, already-live extension points, not add new ones.
+Confirmed two such points exist and are already proven in production:
+
+1. **`temp_weights()`** (`ev_engine.py:351-...`) — a context manager that
+   temporarily overrides the blend weights for one `compute_ev()` call,
+   guaranteed to restore afterward. **Only accepts the four existing
+   source keys** (`p_historical`, `p_regime`, `p_markov_hold_n`,
+   `p_timesfm`) — there is no path through this API to add a 5th source,
+   which is exactly the boundary that keeps this from becoming MSE's
+   rejected Method B under a different name. Already used live today for
+   the TimesFM soft gate and the R4 trend-HMM non-convergence discount
+   (`heavy_sweep.py`: `with self._ev_engine.temp_weights(_regime_weight_override):
+   ev_result = self._ev_engine.compute_ev(...)`). A macro-bear reading
+   could discount `p_timesfm`/`p_markov_hold_n` (the noisier, faster
+   sources) toward `p_historical`, proportional to `macro_strength`,
+   right before `compute_ev()` runs — "the EV engine reads it before it
+   computes," as asked for, with zero changes to `compute_ev` itself.
+2. **`recompute_ev_fields(p_win, profit, stake)`** (`ev_engine.py:719-...`)
+   — the sanctioned post-hoc path, already used by
+   `calibration_enforcement.apply_calibration_adjustment` for the
+   Bayesian p_win shrink and Kelly reduction. A macro-bear reading could
+   damp `p_win` toward 0.5 and/or multiply `kelly_f` when the trade's
+   direction fights the macro trend, then call this to keep
+   `ev`/`rr`/`allowed`/`aggression` consistent — exactly the same shape
+   as the calibration-enforcement step that already runs on every
+   qualifiable tick today.
+
+Both are non-negotiable boundaries, not a style choice: neither touches
+`compute_ev`'s formula, the `EVFullResult`/`ComboResult` dataclasses, or
+`P_WIN_WEIGHTS_FULL`'s key set. **Recommendation: option 2**, since it's
+the more direct match for "tempers or heightens p_win, kelly" as stated,
+and it reuses the identical pattern already proven safe in production
+(`calibration_enforcement.py`) rather than introducing a new use of
+`temp_weights()` for a different purpose than its two existing callers.
+Open for review, not decided here.
+
+### Relationship to MSE
+
+This is a sibling to MSE, not a piece of it — MSE's correlation window
+(~8 days) and this filter's window (~1 year) sit at genuinely different
+timescales, addressing different questions (moment-of-entry
+synchronization vs. sustained trend). It doesn't need MSE to exist first,
+and arguably addresses a bigger risk than MSE's own gate does (a
+multi-month mispriced bear market is a larger exposure than a single
+desynchronized week) — worth weighing which to prioritize if only one
+gets built.
+
+### Mode gate (same ladder discipline as everything else this session)
+
+Propose `MACRO_REGIME_MODE = off | shadow | live` (default `off`),
+matching `TIMESFM_GATE_MODE`/`MARKOV_SOURCE_MODE`'s existing naming
+convention. Shadow mode: compute and log what the adjustment would have
+been, change nothing. This touches every live tick's `p_win`/`kelly` the
+same way `calibration_enforcement` already does — same blast-radius
+tier as that mechanism, so it earns the same shadow-first staging, not
+Phase 3's lighter weekly-cadence treatment.
+
+### Explicitly not in this scope
+
+No change to `compute_ev`'s formula or dataclasses. No new
+`P_WIN_WEIGHTS_FULL` key. No change to MSE's own (unbuilt) design. No
+decision yet on temp_weights vs. recompute_ev_fields, or on the exact
+SMA window/thresholds — those are implementation-detail decisions for
+when/if this gets built.
+
+## Live 12h check (2026-08-26) + path-forward assessment
+
+Studio logs were not reachable from this environment (no local `logs/`
+directory — `lightningstudio/logs.sh` expects a locally-running service;
+the live instance runs on Lightning AI's cloud). Database checked
+directly instead, window = trailing 12h from ~21:20 UTC 2026-08-26:
+
+- **`nt_calibration_records` (new win/loss): 0.** Expected, not a fault —
+  the nightly EOD resolver (00:32 UTC) was the last batch to add any,
+  ~21h before the check; the next is ~3h out. A 12h window will almost
+  always straddle zero resolution batches unless timed around 00:32 UTC.
+- **`nt_signal_sim` resolved: 0`** — same reason.
+- **`nt_eod_actions`: 184 rows, 165 of them `regime_shift_alert`.** That's
+  a lot of "large regime-posterior shift" detections for 12 hours across
+  ~14 symbols — and every one is a dead-end (§8 above: nothing reads
+  this action type). Confirmed the `bias` field on these rows is actually
+  shift *magnitude*, not calibration bias (`orchestrator.py:1475`,
+  `shift_info["magnitude"]`) — XAUUSD's 0.97 reading is a near-maximal
+  posterior swing, not a miscalibration score; don't conflate the two.
+  This volume is concrete, live evidence for the "reading data without
+  understanding it" diagnosis — `regime_shift_alert` watches `RegimeHMM`'s
+  `trend_probs`/`regime_label` specifically (set right after the alert
+  write, `orchestrator.py:2391-2392`), so this points at `RegimeHMM`'s
+  tick-to-tick instability in particular, not `HmmModel`.
+- The 4h correction pass fired on schedule (20:30 UTC) and re-penalized
+  USDCAD/AAPL/US500 with `bias` values matching numbers already seen
+  earlier this session (US500 still exactly `0.6752`) — concrete
+  confirmation these symbols are being re-corrected on the same stale
+  evidence cycle after cycle, exactly the risk this document already
+  described in the abstract.
+
+### Path forward: HMM consolidation vs. the macro filter — not either/or, but a sequencing call
+
+They fix different problems and aren't in competition, but if choosing
+what to build first: **consolidate the HMMs first.** Reasoning:
+- The regime-shift noise just measured is real, current, and free to fix
+  in the sense that a fix already exists half-built: `MARKOV_SOURCE_MODE
+  = trend_hmm_shadow/live` (`orchestrator.py:149`) was added specifically
+  because the legacy `HmmModel` was producing live NaN/state-collapse
+  warnings — it lets `RegimeHMM`'s own transition matrix
+  (`trend_transition_matrix_3state()`) replace `HmmModel`'s as the markov
+  source. Promoting this from shadow to live (after reviewing the shadow
+  log) consolidates two refit-every-tick models into one, directly
+  addressing a real, currently-firing instability — without new
+  engineering.
+- This does **not** fix `RegimeHMM`'s own instability (the 165
+  shift-alerts are driven by `RegimeHMM`, not `HmmModel`) — that's a
+  separate, harder problem (still an ~8-day refit-from-scratch window).
+  Consolidating removes one noise source and duplicate compute, not all
+  of it.
+- The macro filter solves a different problem entirely (multi-month
+  blindness) that HMM consolidation does not touch — even one clean HMM
+  is still only looking at ~8-12 days. Building it against a more
+  stable, single-engine foundation is cleaner than building it on top of
+  today's dual-engine setup.
+
+### Does the macro filter consider qualified-signal win/loss + PnL?
+
+**No, as scoped.** The macro filter (previous section) is purely
+price-based — a long moving-average/trend-slope read on daily bars, with
+zero input from `nt_signal_sim`/`nt_calibration_records`/`paper_book`
+outcomes. That's by design, not an oversight: it's answering a different
+question than the calibration-bias work.
+
+### Confirmed: this is two separate parts, not one metric
+
+- **Part 1 — macro**: is the broad market trend bullish/bearish/neutral,
+  independent of any specific trade. Price-only. The filter scoped above.
+- **Part 2 — signal quality**: given this symbol's own history, is *this
+  specific bracket* (its distance/ATR bucket) one that actually wins,
+  and by how much. Outcome-only (win/loss/PnL via `expectancy_r`,
+  `pct_expired`). Phases 1-3's `nt_calibration_bias_by_bucket`.
+
+Both are real and both matter, but they answer different questions and
+should stay separate signals — not blended into one number — reaching
+`compute_ev`/Kelly via their own paths (temp_weights/recompute_ev_fields
+for macro; a bucket-aware read in `calibration_enforcement.py` for
+signal quality, per candidate #2 above), same non-EV-rework boundary for
+both.
+
+## HMM consolidation — build notes (2026-08-26)
+
+Built the "retire HMM + shadow mode" half of the path-forward decision.
+Files:
+
+- `orchestrator.py:149` — `MARKOV_SOURCE_MODE` default changed
+  `legacy_hmm` → `trend_hmm_shadow`. Zero live-behavior change (shadow
+  never substitutes into the blend) — just starts real comparison data
+  accumulating immediately instead of sitting off.
+- `orchestrator.py` (light-sweep fit loop, ~1651) — the legacy
+  `HmmModel.fit()` loop is now skipped entirely when
+  `MARKOV_SOURCE_MODE == "trend_hmm_live"` (confirmed safe: TA/
+  microstructure features are read directly from the `FeatureBuffer`,
+  populated independently by the quote/TA fetchers, not from the fitted
+  model — so retiring `fit()` doesn't break TA persistence to
+  `nt_sweep_result`/`nt_signal_sim`).
+- `orchestrator.py` (markov derivation block, ~1923) — only calls
+  `self._hmm_model.emit_markov(symbol)` when NOT in live mode; live mode
+  computes straight from `RegimeHMM.trend_transition_matrix_3state()`
+  with a neutral uniform-matrix + FLAT fallback if that raises (there's
+  no legacy value left to fall back to once its fit() is skipped). Shadow
+  mode now also fire-and-forgets a call to the new
+  `record_markov_shadow_compare()`.
+- **Found and fixed heavy_sweep.py's missing branch** — it previously
+  used the legacy `HmmModel` unconditionally, completely ignoring
+  `MARKOV_SOURCE_MODE`, exactly the "gate added to one path, missed on
+  the other" bug the MSE doc explicitly warns about (§7 risk #3).
+  `_regime_sync` now returns `(model, regime)` instead of just `regime`
+  so the caller can call `trend_transition_matrix_3state()`; the same
+  branch (shadow log + persist, live substitute + fallback) is mirrored
+  in `heavy_sweep.py`.
+- New `supabase_client.record_markov_shadow_compare()` + migration `122_
+  nt_markov_source_shadow.sql` — persists a running per-symbol
+  disagreement-rate/avg-diff aggregate (fetch-then-upsert, best-effort)
+  instead of the previous log-line-only comparison, specifically because
+  this session found studio logs aren't reachable from this environment.
+
+**Verified**: all 616 existing tests pass (`pytest tests/ -p
+no:cacheprovider`, per the MSE doc's noted flag), both modules import
+cleanly with no circular-import issue from the lazy
+`MARKOV_SOURCE_MODE` import in `heavy_sweep.py`, and the shadow-compare
+running-total arithmetic was dry-run against a stubbed httpx client
+(3 synthetic observations → exactly 3 compared / 2 disagreed / 0.35
+summed diff, matching hand calculation).
+
+**Not done**: `MARKOV_SOURCE_MODE=trend_hmm_live` is not the default —
+that's the follow-up decision once real shadow data has accumulated
+(query `nt_markov_source_shadow`, same review-before-flip discipline as
+everything else this session). Migration 122 not yet applied.
+
+## Requirements scope: macro filter + signal quality (2026-08-26)
+
+Formalizing both halves of the "2 parts" model from the previous
+exchange into build-ready requirements. Still scope only.
+
+### Part 1 — Macro filter requirements
+
+**Data**: daily-interval bars (`fetch_tradingview_batch(interval="1D")`,
+confirmed already supported, see earlier section), ~250-365 bars per
+symbol, fetched on its own daily cadence — separate from both existing
+sweep paths.
+
+**Computation**:
+- `macro_score = (last_close - SMA_200d) / SMA_200d`.
+- EMA-smoothed with a multi-day half-life (daily bars still carry
+  single-day noise; the whole point is a state that doesn't flip on one
+  bad print).
+- `macro_label = bear if macro_score < -threshold, bull if > +threshold,
+  else neutral` (threshold TBD, candidate 0.05-0.10, env-tunable —
+  matches this codebase's convention of hardcoded-but-tunable gates,
+  e.g. `MIN_RR`, `EOD_DRIFT_THRESHOLD`).
+- `macro_strength = min(1.0, abs(macro_score) / normalization_factor)`
+  — a 0-1 magnitude, not just a label.
+
+**Storage**: new table, one row per symbol (`symbol` PK) — e.g.
+`nt_macro_regime(symbol, macro_score, macro_label, macro_strength,
+sma_window_days, computed_at)`. Refreshed daily.
+
+**Integration**: mirrored in *both* sweep paths (learned that lesson
+today) — read right before `compute_ev()`, applied via
+`recompute_ev_fields()` (recommended per the earlier scope) as a Kelly
+multiplier: dampened when the trade's direction opposes `macro_label`
+(proportional to `macro_strength`), and — since the ask was explicitly
+"tempers **or heightens**" — a symmetric boost when direction agrees,
+e.g. `kelly_macro_mult = 1.0 ± (macro_strength * MACRO_ADJUST_SCALE)`,
+sign depending on agree/disagree, clamped to a sane range (e.g.
+`[0.25, 1.5]`) so this can't alone zero out or double a position.
+
+**Mode gate**: `MACRO_REGIME_MODE = off | shadow | live`, default `off`.
+
+### Part 2 — Signal-quality requirements (formalizing what's already built)
+
+**Data**: already exists — `nt_calibration_bias_by_bucket`
+(`expectancy_r`, `pct_expired`, `daily_expectancy_r` per symbol ×
+distance/ATR bucket, Phases 1-2). No new migration needed.
+
+**New requirement — bucket lookup at signal time**: at the point
+`compute_ev` is about to run, the specific signal's own `distance/ATR`
+ratio is already computable (`atr`, `brick_size`, `tp_bricks` are all in
+scope before `compute_ev` is called, per Phase 1's own capture). Bucket
+it the same way `bracket_reachability.py` does, and look up *that*
+bucket's row — not a pooled per-symbol number — mirrored in both sweep
+paths.
+
+**Consumption**: same shape as Part 1 — a `recompute_ev_fields()`-based
+Kelly multiplier, this time driven by `expectancy_r`/`daily_expectancy_r`
+for the matched bucket: strongly discount (or gate to zero) when
+`expectancy_r <= 0` with `n` above a minimum sample threshold (matches
+`EOD_BIAS_MIN_RECORDS`'s existing convention — don't act on a thin
+bucket); a mild boost when strongly positive. Below the minimum sample
+threshold: no adjustment (insufficient evidence, not evidence of
+mediocrity).
+
+**Mode gate**: a second, independent gate — e.g.
+`SIGNAL_QUALITY_GATE_MODE = off | shadow | live`, default `off`.
+
+### How the two parts combine — kept separate, composed multiplicatively
+
+Per the prior conclusion (two dials, not one blended metric): apply each
+as its own independent Kelly multiplier, then compose by multiplication
+— `kelly_final = kelly_base * kelly_macro_mult * kelly_quality_mult *
+(existing calibration-enforcement shrink) * (existing p_win soft-gate
+shrink)`. This preserves the "macro says X, signal quality says Y" as
+two legible, separately-inspectable numbers (both worth exposing in the
+`gate_results`/`passed_gates` telemetry dict, same as every other factor
+already surfaced there) rather than collapsing them into one score that
+hides which axis is actually driving the outcome.
+
+**Named risk, not new**: the MSE doc's own §7 risk list already flagged
+"Kelly double-counting... stacking an MSS risk-scaler needs care to
+avoid triple-penalising (pattern → EV → MSE)" for exactly this
+multiplicative-stacking pattern. We're now up to *four* multiplicative
+Kelly dampers if both parts ship (calibration-enforcement shrink,
+p_win soft-gate shrink, macro, signal-quality) — worth a combined-effect
+sanity check (e.g. worst-case product across all four) before flipping
+any of them live, not just each in isolation.
+
+### Explicitly not decided here
+
+Exact thresholds (`macro` bear/bull cutoff, `MACRO_ADJUST_SCALE`, the
+minimum-sample gate for signal-quality bucket lookups), and whether both
+parts ship together or staged one at a time. Scope only — awaiting a
+build instruction, same discipline as everything else this session.
+
+## Still not built
+
+Everything above is investigation + synthesis, same discipline as the
+rest of this session. No code or migration changes for this document.

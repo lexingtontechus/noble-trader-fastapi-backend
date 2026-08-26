@@ -216,6 +216,16 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # Part II paper-portfolio sizing inputs (migration 105). Nullable;
     # filled at capture when kelly is available.
     "kelly_f", "effective_kelly",
+    # atr (migration 120): ATR(14) at signal-capture time, absolute price
+    # units — feeds the bracket-reachability diagnostic
+    # (bracket_reachability.py). Nullable; rows captured before 2026-08-25
+    # have no value.
+    "atr",
+    # drift_*_pct (migration 121, Phase 2): direction-relative post-entry
+    # price drift at fixed horizons, written by eod_resolver.py's PATCH
+    # (this constant governs capture-time inserts; eod_resolver.py keeps
+    # its own local copy in sync for the outcome patch).
+    "drift_1h_pct", "drift_4h_pct", "drift_24h_pct",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.
@@ -403,6 +413,203 @@ async def log_renko_bricks(
                 )
     except Exception as exc:
         logger.error("log_renko_bricks: insert failed: %s", exc)
+
+
+NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "distance_atr_bucket", "n",
+    "pct_hit_tp", "pct_hit_sl", "pct_expired",
+    "median_hours_to_resolve", "p75_hours", "p90_hours",
+    "atr_source",
+})
+
+
+async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
+    """Upsert bucket rows into ``nt_bracket_reachability`` (best-effort).
+
+    Keyed on ``(symbol, distance_atr_bucket)`` — a weekly refresh REPLACES
+    each bucket's stats rather than accumulating duplicates, same
+    ``on_conflict`` + ``Prefer: resolution=merge-duplicates`` pattern as
+    ``log_renko_bricks``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_BRACKET_REACHABILITY_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_bracket_reachability: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_bracket_reachability')}?on_conflict=symbol,distance_atr_bucket",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_bracket_reachability: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_bracket_reachability: insert failed: %s", exc)
+
+
+NT_CALIBRATION_BIAS_BY_BUCKET_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "distance_atr_bucket", "n",
+    "avg_p_win", "win_rate", "bias", "pct_expired",
+    "avg_rr_winners", "expectancy_r",
+    "median_hours_to_resolve", "daily_expectancy_r",
+    "atr_source",
+})
+
+
+async def upsert_calibration_bias_by_bucket(rows: list[dict[str, Any]]) -> None:
+    """Upsert bucket rows into ``nt_calibration_bias_by_bucket`` (best-effort).
+
+    Keyed on ``(symbol, distance_atr_bucket)`` — same upsert-on-conflict
+    shape as ``upsert_bracket_reachability``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_CALIBRATION_BIAS_BY_BUCKET_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_calibration_bias_by_bucket: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_calibration_bias_by_bucket')}?on_conflict=symbol,distance_atr_bucket",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_calibration_bias_by_bucket: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_calibration_bias_by_bucket: insert failed: %s", exc)
+
+
+NT_ENTRY_DRIFT_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n",
+    "avg_drift_1h_pct", "stdev_drift_1h_pct",
+    "avg_drift_4h_pct", "stdev_drift_4h_pct",
+    "avg_drift_24h_pct", "stdev_drift_24h_pct",
+})
+
+
+async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
+    """Upsert per-symbol rows into ``nt_entry_drift`` (best-effort).
+
+    Keyed on ``symbol`` (the table's PK) — same upsert-on-conflict shape
+    as ``upsert_bracket_reachability``/``upsert_calibration_bias_by_bucket``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_ENTRY_DRIFT_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_entry_drift: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_entry_drift')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_entry_drift: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_entry_drift: insert failed: %s", exc)
+
+
+NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "n_state_disagree", "sum_abs_p_up_diff",
+    "last_legacy_state", "last_trend_hmm_state",
+})
+
+
+async def record_markov_shadow_compare(
+    symbol: str,
+    state_agree: bool,
+    p_up_diff: float,
+    legacy_state: str | None,
+    trend_hmm_state: str | None,
+) -> None:
+    """Accumulate one tick's legacy-vs-trend_hmm markov comparison into the
+    running per-symbol row in ``nt_markov_source_shadow`` (best-effort).
+
+    Fetch-then-upsert rather than a DB-side atomic increment — this is a
+    diagnostic counter (informs a future MARKOV_SOURCE_MODE=live decision,
+    not a live trading value), so an occasional missed increment from a
+    race between concurrent updates to the SAME symbol is an acceptable
+    trade-off for not needing a Postgres RPC function.
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_markov_source_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,n_state_disagree,sum_abs_p_up_diff",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "n_state_disagree": int(prev.get("n_state_disagree", 0)) + (0 if state_agree else 1),
+                "sum_abs_p_up_diff": round(
+                    float(prev.get("sum_abs_p_up_diff", 0.0)) + abs(float(p_up_diff)), 6,
+                ),
+                "last_legacy_state": legacy_state,
+                "last_trend_hmm_state": trend_hmm_state,
+            }, NT_MARKOV_SOURCE_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_markov_source_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_markov_shadow_compare: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_markov_shadow_compare: failed for %s: %s", symbol, exc)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:

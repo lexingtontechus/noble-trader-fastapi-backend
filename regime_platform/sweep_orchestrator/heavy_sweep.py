@@ -452,7 +452,7 @@ class HeavySweepMixin:
             kelly_task = asyncio.to_thread(
                 self._kelly_sync, prices, sym.get("asset_class", ""),
             )
-            grid_results, regime_snapshot, kelly_result = await asyncio.gather(
+            grid_results, (regime_model, regime_snapshot), kelly_result = await asyncio.gather(
                 grid_task, regime_task, kelly_task,
             )
 
@@ -512,7 +512,61 @@ class HeavySweepMixin:
 
             # ── 8. EV compute with HMM markov (replaces discrete chain) ─
             direction = "short" if "bear" in result.regime_label.lower() else "long"
-            markov_T, markov_current = self._hmm_model.emit_markov(symbol)
+
+            # Mirror of the light sweep's MARKOV_SOURCE_MODE branch
+            # (orchestrator.py::_process_symbol) — heavy sweep previously
+            # always used the legacy HmmModel unconditionally regardless
+            # of the mode, exactly the "gate added to one path, missed on
+            # the other" bug the MSE doc warns about (2026-08-26 HMM
+            # consolidation). Lazy import avoids a circular import
+            # (orchestrator.py imports this module at load time).
+            from regime_platform.sweep_orchestrator.orchestrator import (
+                MARKOV_SOURCE_MODE,
+            )
+            markov_T: dict[str, dict[str, float]] | None = None
+            markov_current: str | None = None
+            if MARKOV_SOURCE_MODE != "trend_hmm_live":
+                markov_T, markov_current = self._hmm_model.emit_markov(symbol)
+
+            if MARKOV_SOURCE_MODE in ("trend_hmm_shadow", "trend_hmm_live"):
+                try:
+                    trend_hmm_T, trend_hmm_current = regime_model.trend_transition_matrix_3state(
+                        regime_snapshot.trend_state
+                    )
+                    if MARKOV_SOURCE_MODE == "trend_hmm_shadow":
+                        logger.info(
+                            "[sweep:heavy] %s: markov shadow — legacy current_state=%s "
+                            "row=%s | trend_hmm current_state=%s row=%s",
+                            symbol, markov_current, markov_T,
+                            trend_hmm_current, trend_hmm_T,
+                        )
+                        from regime_platform.sweep_orchestrator.supabase_client import (
+                            record_markov_shadow_compare,
+                        )
+                        legacy_p_up = (markov_T or {}).get(markov_current or "", {}).get("UP", 0.5)
+                        trend_p_up = trend_hmm_T.get(trend_hmm_current, {}).get("UP", 0.5)
+                        asyncio.create_task(record_markov_shadow_compare(
+                            symbol,
+                            state_agree=(markov_current == trend_hmm_current),
+                            p_up_diff=legacy_p_up - trend_p_up,
+                            legacy_state=markov_current,
+                            trend_hmm_state=trend_hmm_current,
+                        ))
+                    elif MARKOV_SOURCE_MODE == "trend_hmm_live":
+                        markov_T, markov_current = trend_hmm_T, trend_hmm_current
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: trend_hmm markov derivation failed (%s: %s), using %s",
+                        symbol, type(exc).__name__, exc,
+                        "legacy_hmm value" if MARKOV_SOURCE_MODE == "trend_hmm_shadow"
+                        else "neutral uniform-matrix fallback",
+                    )
+                    if MARKOV_SOURCE_MODE == "trend_hmm_live" and markov_T is None:
+                        markov_T = {
+                            s: {t: 1.0 / 3.0 for t in ("UP", "DOWN", "FLAT")}
+                            for s in ("UP", "DOWN", "FLAT")
+                        }
+                        markov_current = "FLAT"
 
             # ── 8a. TA indicator snapshot (migration 036) ──────────────
             # Pull the latest 5 TA values from the HMM feature buffer for
@@ -669,6 +723,7 @@ class HeavySweepMixin:
                         qualified=qualified,
                         kelly_f=result.kelly_f,
                         effective_kelly=result.kelly_f * ev_result.ev_scale,
+                        atr=atr,
                     )
                     if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                         logger.debug(
@@ -795,7 +850,17 @@ class HeavySweepMixin:
         return results
 
     def _regime_sync(self, prices: list[float]):
-        """CPU-bound HMM regime detection. Runs in asyncio.to_thread."""
+        """CPU-bound HMM regime detection. Runs in asyncio.to_thread.
+
+        Returns ``(model, regime)`` — the fitted model is returned
+        alongside the snapshot (not just the snapshot) so the caller can
+        also call ``model.trend_transition_matrix_3state()`` for the
+        MARKOV_SOURCE_MODE=trend_hmm_shadow/live branch (2026-08-26 HMM
+        consolidation — mirrors the light sweep's `_process_symbol`,
+        which already had this branch; heavy sweep did not, the exact
+        "gate added to one path, missed on the other" bug the MSE
+        integration doc warns about).
+        """
         from regime_platform.core.regime_engine import RegimeHMM
         np_prices = np.array(prices, dtype=float)
         model = RegimeHMM.from_runtime_config_sync() if hasattr(
@@ -808,7 +873,7 @@ class HeavySweepMixin:
             # old `if False else RegimeHMM()` dead branch hid that fact.
             model = RegimeHMM()
         model.fit(np_prices)
-        return model.predict(np_prices)
+        return model, model.predict(np_prices)
 
     def _kelly_sync(self, prices: list[float], asset_class: str):
         """CPU-bound Kelly sizing. Runs in asyncio.to_thread."""

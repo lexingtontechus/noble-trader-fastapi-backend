@@ -1,0 +1,292 @@
+"""
+Bracket Reachability — per-symbol, per-distance/ATR-bucket diagnostic
+═══════════════════════════════════════════════════════════════════
+
+Phase 1 of the calibration reframe
+(worklog/20260825_CALIBRATION_REFRAME_SCOPE.md). Root cause 3 of that
+investigation found that most "expired" outcomes in ``nt_signal_sim`` are
+not a directional-calibration failure — they're a bracket placed wider
+than the symbol reliably moves within the live 48h deadline. Raw
+%-distance is meaningless across symbols (a 4% target is trivial for
+XAGUSD, essentially unreachable for XAUUSD in the same window), so
+reachability has to be measured as ``distance / ATR``, per symbol.
+
+This module is a READ-ONLY DIAGNOSTIC (Phase 1 scope only): it reads
+resolved ``nt_signal_sim`` rows — qualified and unqualified both, since
+this stage only answers "does this bracket width get reached", which
+unqualified rows can answer just as honestly as qualified ones, unlike
+calibration bias itself — computes ``distance / atr`` per row, buckets
+per symbol, and upserts hit-rate + time-to-resolution percentiles per
+bucket into ``nt_bracket_reachability`` (migration 120). Nothing
+downstream reads this table yet; wiring it into calibration bias
+(Phase 2) and heavy-sweep combo selection (Phase 3) is separate,
+not-yet-done work.
+
+Historical rows predate ``nt_signal_sim.atr`` (added by this same
+migration), so they have no stored value. Those are backfilled with each
+symbol's CURRENT ATR(14) as a proxy — not point-in-time accurate, but
+volatility regimes change slowly enough that this is an honest
+approximation, consistent with the worklog's own rejection of a more
+"precise" but biased velocity metric (see the worklog's methodology
+note). Rows are tagged ``atr_source`` = ``stored`` or ``proxy_current``
+so the distinction stays visible downstream.
+
+Usage (standalone):
+  cd noble-trader-fastapi-backend
+  PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m regime_platform.sweep_orchestrator.bracket_reachability
+
+Design rules: best-effort only, matching ``eod_resolver.py`` /
+``auto_tuner.py`` — a failure here is logged and never raised into the
+sweep tick.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections import defaultdict
+from datetime import datetime
+from typing import Any
+
+import httpx
+import numpy as np
+
+from regime_platform.core.settings import settings
+from regime_platform.sweep_orchestrator.heavy_sweep import compute_atr
+from regime_platform.sweep_orchestrator.price_fetcher import (
+    SWEEP_CANDLE_HOURS,
+    fetch_candles_for_symbols,
+)
+from regime_platform.sweep_orchestrator.supabase_client import (
+    _headers,
+    _url,
+    fetch_active_symbols,
+    upsert_bracket_reachability,
+)
+
+logger = logging.getLogger("regime.sweep.bracket_reachability")
+
+# (lo, hi, label) — hi=None means open-ended ("4+"). Same shape as the
+# worklog's ad-hoc tables, generalized from raw %-distance to distance/ATR.
+ATR_BUCKETS: tuple[tuple[float, float | None, str], ...] = (
+    (0.0, 0.5, "<0.5"),
+    (0.5, 1.0, "0.5-1"),
+    (1.0, 2.0, "1-2"),
+    (2.0, 4.0, "2-4"),
+    (4.0, None, "4+"),
+)
+
+_PAGE_SIZE = 1000
+
+
+def _bucket_for(ratio: float) -> str | None:
+    for lo, hi, label in ATR_BUCKETS:
+        if ratio >= lo and (hi is None or ratio < hi):
+            return label
+    return None
+
+
+async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[str, Any]]:
+    """Paginate resolved ``nt_signal_sim`` rows (any outcome).
+
+    Mirrors ``eod_resolver._fetch_pending`` / ``noble_calibration.py``'s
+    offset-loop pagination, but the mirror-image filter: ``outcome`` NOT
+    null (resolved), instead of IS null (pending).
+    """
+    if not settings.SUPABASE_URL:
+        return []
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    params: dict[str, str] = {
+        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at",
+        "outcome": "not.is.null",
+        "order": "ts.asc",
+        "limit": str(_PAGE_SIZE),
+    }
+    if symbols:
+        params["symbol"] = f"in.({','.join(symbols)})"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(
+                _url("nt_signal_sim"),
+                headers=_headers(),
+                params={**params, "offset": str(offset)},
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            rows.extend(batch)
+            if len(batch) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+    return rows
+
+
+async def _current_atr_by_symbol(symbols: list[str]) -> dict[str, float]:
+    """Proxy ATR(14) per symbol from current price history.
+
+    Backfill for historical rows captured before migration 120 added
+    ``nt_signal_sim.atr``. Same fetch + compute_atr call heavy_sweep makes
+    at sweep time (90-day hourly closes, period=14).
+    """
+    if not symbols:
+        return {}
+    active = await fetch_active_symbols()
+    by_symbol = {s["symbol"]: s for s in active if s.get("symbol")}
+    wanted = [by_symbol[s] for s in symbols if s in by_symbol]
+    if not wanted:
+        return {}
+    batch = await fetch_candles_for_symbols(wanted, n_bars=SWEEP_CANDLE_HOURS)
+    proxies: dict[str, float] = {}
+    for sym in symbols:
+        prices = batch.get(sym, [])
+        atr = compute_atr(prices, period=14) if len(prices) >= 15 else 0.0
+        if atr > 0:
+            proxies[sym] = atr
+    return proxies
+
+
+def _hours_between(start: str | None, end: str | None) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        return max(0.0, (t1 - t0).total_seconds() / 3600.0)
+    except Exception:
+        return None
+
+
+async def build_reachability_table(symbols: list[str] | None = None) -> list[dict[str, Any]]:
+    """Compute + upsert the reachability table.
+
+    Returns the computed rows (used by the CLI report / verification).
+    Best-effort: logs and returns an empty list on failure, never raises.
+    """
+    try:
+        rows = await _fetch_resolved_rows(symbols)
+    except Exception as exc:
+        logger.error("bracket_reachability: fetch failed: %s", exc)
+        return []
+    if not rows:
+        logger.info("bracket_reachability: no resolved nt_signal_sim rows found")
+        return []
+
+    missing_atr_symbols = sorted({
+        r["symbol"] for r in rows if not r.get("atr") and r.get("symbol")
+    })
+    try:
+        proxy_atr = await _current_atr_by_symbol(missing_atr_symbols)
+    except Exception as exc:
+        logger.warning("bracket_reachability: ATR proxy fetch failed: %s", exc)
+        proxy_atr = {}
+
+    bucket_data: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "n": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0,
+            "hours": [], "atr_source": "stored",
+        }
+    )
+
+    for row in rows:
+        symbol = row.get("symbol")
+        entry = row.get("entry_price")
+        tp = row.get("take_profit")
+        outcome = row.get("outcome")
+        if (
+            symbol is None or entry is None or tp is None
+            or outcome not in ("tp_hit", "sl_hit", "expired")
+        ):
+            continue
+
+        atr = row.get("atr")
+        atr_source = "stored"
+        if not atr:
+            atr = proxy_atr.get(symbol)
+            atr_source = "proxy_current"
+        if not atr:
+            continue
+
+        distance = abs(float(tp) - float(entry))
+        ratio = distance / atr
+        bucket = _bucket_for(ratio)
+        if bucket is None:
+            continue
+
+        d = bucket_data[(symbol, bucket)]
+        d["n"] += 1
+        d[outcome] += 1
+        d["atr_source"] = atr_source
+        if outcome in ("tp_hit", "sl_hit"):
+            hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
+            if hrs is not None:
+                d["hours"].append(hrs)
+
+    output_rows: list[dict[str, Any]] = []
+    for (symbol, bucket), d in bucket_data.items():
+        n = d["n"]
+        hours = d["hours"]
+        output_rows.append({
+            "symbol": symbol,
+            "distance_atr_bucket": bucket,
+            "n": n,
+            "pct_hit_tp": round(d["tp_hit"] / n, 4),
+            "pct_hit_sl": round(d["sl_hit"] / n, 4),
+            "pct_expired": round(d["expired"] / n, 4),
+            "median_hours_to_resolve": (
+                round(float(np.percentile(hours, 50)), 2) if hours else None
+            ),
+            "p75_hours": round(float(np.percentile(hours, 75)), 2) if hours else None,
+            "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
+            "atr_source": d["atr_source"],
+        })
+
+    try:
+        await upsert_bracket_reachability(output_rows)
+    except Exception as exc:
+        logger.error("bracket_reachability: upsert failed: %s", exc)
+
+    logger.info(
+        "bracket_reachability: computed %d bucket row(s) across %d symbol(s)",
+        len(output_rows), len({r["symbol"] for r in output_rows}),
+    )
+    return output_rows
+
+
+def _print_report(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        print("No reachability rows computed.")
+        return
+    print(
+        f"{'Symbol':<10} {'Bucket':<8} {'n':>6} {'%TP':>7} {'%SL':>7} "
+        f"{'%Exp':>7} {'medHr':>7} {'p75':>7} {'p90':>7} {'src':<14}"
+    )
+    print("-" * 90)
+    for row in sorted(rows, key=lambda r: (r["symbol"], r["distance_atr_bucket"])):
+        med = row["median_hours_to_resolve"]
+        p75 = row["p75_hours"]
+        p90 = row["p90_hours"]
+        print(
+            f"{row['symbol']:<10} {row['distance_atr_bucket']:<8} {row['n']:>6} "
+            f"{row['pct_hit_tp'] * 100:>6.1f}% {row['pct_hit_sl'] * 100:>6.1f}% "
+            f"{row['pct_expired'] * 100:>6.1f}% "
+            f"{med if med is not None else '-':>7} "
+            f"{p75 if p75 is not None else '-':>7} "
+            f"{p90 if p90 is not None else '-':>7} "
+            f"{row['atr_source']:<14}"
+        )
+
+
+async def main() -> None:
+    """CLI entry: build the reachability table and print a text report."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    rows = await build_reachability_table()
+    _print_report(rows)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
