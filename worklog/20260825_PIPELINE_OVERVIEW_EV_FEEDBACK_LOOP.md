@@ -638,6 +638,300 @@ minimum-sample gate for signal-quality bucket lookups), and whether both
 parts ship together or staged one at a time. Scope only — awaiting a
 build instruction, same discipline as everything else this session.
 
+## Shadow-mode verification (2026-08-26) — corrected after review
+
+First pass on this (below the line) stopped at one symptom (FLAT never
+appearing) and treated it as the explanation. That was an incomplete
+review, called out directly and correctly. Redone properly with real
+data before scoping anything.
+
+**Mechanism check**: 873 real comparisons accumulated within ~15 minutes
+across all 14 symbols, correct arithmetic, no errors — the shadow
+pipeline itself works. Overall disagreement rate: **83.2%** (54.0% to
+96.9% by symbol) — worse than the ~66.7% two independent random
+3-state classifiers would produce by chance, meaning the two engines
+aren't just noisy relative to each other, something structural is wrong.
+
+**Root cause, found by actually fitting `RegimeHMM` on real recent price
+data (200 bars) and inspecting the raw component means, not just the
+final collapsed label** — `regime_engine.py::_label_states` assigns
+`strong_bear/bear/bull/strong_bull` by **pure rank order** among whichever
+4 components got fit that tick (`_label_states:668-685`, rank-sort with
+no previous-fit continuity; the continuity path just nearest-matches to
+a previous label's mean — neither path has an absolute magnitude or sign
+check anywhere). Real output, `feature std` = the trend feature's own
+noise level that tick:
+
+| Symbol | strong_bear | bear | bull | strong_bull | feature std |
+|---|---|---|---|---|---|
+| AAPL | -2.30sd | -2.09sd | **-2.09sd** | +0.14sd | 0.0433 |
+| US500 | -2.01sd | -0.62sd | **-0.23sd** | +0.07sd | 0.0046 |
+| AUDUSD | -0.88sd | **+0.54sd** | +1.11sd | +1.30sd | 0.0036 |
+| EURUSD | -0.46sd | **+0.11sd** | +0.43sd | +2.42sd | 0.0033 |
+| XAUUSD | -0.36sd | +0.49sd | +1.53sd | +2.04sd | 0.0143 |
+
+AAPL's component labeled **"bull" is 2.09 standard deviations *below*
+zero** — a strongly bearish reading, called bullish purely because it
+ranks 3rd-lowest of 4. AUDUSD's "bear" is **positive** (+0.54sd). This is
+not a missing-FLAT edge case — the labeling scheme always forces a full
+bear→bull spread onto whatever 4 components got fit, real trend or not,
+with zero check on whether any of them are actually near zero or even on
+the correct side of it. Legacy's 5-state model does the opposite:
+`threshold = STATE_MAP_THRESHOLD_STDS * lr_std`
+(`model.py:198`) — a component only gets UP/DOWN if its mean *clears* an
+absolute, noise-scaled threshold; otherwise it's FLAT. `RegimeHMM`'s
+trend labeling has no equivalent anywhere. (Also checked: the 3-label
+variant, `["bear","neutral","bull"]` for `n_components=3`, uses the exact
+same rank-sort function — switching to it would not fix this; "neutral"
+would just become "whichever component ranks in the middle," with the
+same blindness to actual magnitude.)
+
+**This is bigger than the markov shadow comparison.** The same label map
+built by `_label_states` is what produces `trend_probs`, which feeds
+`p_regime` directly into `compute_ev` — **already live**, unrelated to
+anything built this session. If a symbol's 4 trend components cluster on
+one side of zero (AAPL, US500, AUDUSD, EURUSD above all show this
+pattern in real, current data), `p_regime`'s directional read may
+already be corrupted in production, independent of which
+`MARKOV_SOURCE_MODE` is active. This deserves its own explicit attention
+— flagged here, not fixed here, and not bundled into the narrower fix
+below.
+
+### Fix scope — two tiers, deliberately separated by risk
+
+**Tier 1 (narrower, lower risk) — fix the 3-state markov derivation only.**
+Add a magnitude gate to `trend_transition_matrix_3state()`
+(`regime_engine.py:427`) itself: before mapping a labeled component to
+UP/DOWN via `_TREND_TO_3STATE`, check `abs(mean) / feature_std` against a
+threshold (same shape as legacy's `STATE_MAP_THRESHOLD_STDS`); below
+threshold, map to FLAT regardless of the component's rank-assigned label.
+This fixes the markov-comparison/emission path specifically (what
+`MARKOV_SOURCE_MODE=trend_hmm_shadow/live` actually uses) **without**
+touching `_label_states`, `TREND_LABELS`, or `trend_probs` — i.e. without
+touching the EV blend's already-live `p_regime` input at all. Threshold
+goes on the git-tracked config file (see below), not a bare constant.
+Re-run the shadow comparison after this ships and check whether the
+disagreement rate drops toward something explicable (ideally well under
+the ~67% random-chance baseline) before revisiting `trend_hmm_live`.
+
+**Tier 2 (broader, higher risk, flagged not fixed) — `_label_states`
+itself.** The rank-only assignment feeding `trend_probs`/`p_regime` is
+the more consequential bug, since it's already live. A real fix means
+giving components an absolute magnitude/sign gate at the source, which
+changes what `trend_probs` means for every symbol whose components
+cluster on one side of zero — a change to an EV-blend input that's been
+running in production, not a shadow-mode addition. This needs its own
+deliberate review before touching it, separate from Tier 1 and from
+everything else in this document — not something to fix as a drive-by
+alongside the markov-shadow work.
+
+## Tier 1 fix + config file migration — build notes (2026-08-26)
+
+Built both in one pass since the fix's own threshold needed a config
+home anyway. Files:
+
+- **New `config/feature_flags.yaml`** (git-tracked) + **new
+  `regime_platform/core/feature_flags.py`** — holds `markov_source_mode`
+  and `markov_flat_gate_threshold_stds`. Hot-reloads on the file's mtime
+  (verified: edited the file on disk, the very next call picked up the
+  new value with no process restart, then reverted). Deliberately
+  consults no environment variable — a leftover Studio Secret now has
+  zero effect on these two values.
+- **`regime_engine.py::trend_transition_matrix_3state`** — the Tier 1
+  gate. Computes the labeled component's mean against
+  `markov_flat_gate_threshold_stds * sigma` (`sigma` from `self._trend_scale`,
+  the same fit-time noise scale already computed for feature
+  standardization — no new computation, reused what was already there).
+  A component only keeps its rank-assigned UP/DOWN label if it clears
+  the threshold in that direction; otherwise FLAT. Applied to both the
+  full `T3` matrix and `current_state` (previously `current_state` was
+  derived by mapping the label directly, which would have bypassed the
+  gate for the one reading that matters most).
+- **`orchestrator.py` + `heavy_sweep.py`** — `MARKOV_SOURCE_MODE` no
+  longer read from `os.getenv()`; both now call
+  `feature_flags.get_markov_source_mode()` fresh each tick (cheap,
+  mtime-cached). `heavy_sweep.py`'s lazy import changed from
+  `orchestrator.MARKOV_SOURCE_MODE` to `feature_flags.get_markov_source_mode`
+  directly — simpler, and removes a dependency on `orchestrator.py`
+  entirely for this value.
+- **`tests/test_regime_stability.py`** — `_make_fitted_stub` extended to
+  accept `means`/`sigma` (previously the stub didn't set `means_` at
+  all, since the pre-fix code never read it). Default means are set
+  comfortably beyond the gate threshold so the 3 existing tests that
+  predate the fix keep exercising the aggregation math unchanged. Added
+  two new regression tests reproducing the exact real-data failures
+  found: a component on the wrong side of zero (AUDUSD's "bear" at
+  +0.54std) and a near-zero component regardless of sign (AAPL's "bull"
+  pattern) — both now correctly gate to FLAT.
+
+**Verified against the real data that exposed the bug**: re-ran the
+gated derivation live for AAPL/US500/AUDUSD/EURUSD/XAUUSD. AAPL, US500,
+AUDUSD, and EURUSD all still produce confident directional readings
+(their components genuinely clear the threshold). **XAUUSD's
+current rank-label is "strong_bear," but the gate correctly downgrades
+it to FLAT** — its component doesn't clear the noise threshold right
+now, exactly the kind of overconfident misclassification this fix
+exists to catch. Not over-suppressing everything to FLAT, just the
+genuinely weak cases.
+
+All 618 tests pass (`pytest tests/ -p no:cacheprovider`), including the
+2 new regression tests.
+
+**Not done**: Tier 2 (the `_label_states`/`trend_probs`/live `p_regime`
+issue) — flagged above, deliberately not touched. `MARKOV_SOURCE_MODE`
+in `config/feature_flags.yaml` ships at `trend_hmm_shadow` (unchanged
+from where it already stood) — this build does not flip it to live.
+
+## Macro filter — full build scope (2026-08-26)
+
+Confirmed as the right next build regardless of the HMM finding above —
+different problem, doesn't depend on resolving it. Full scope, superseding
+the earlier requirements sketch with build-ready detail.
+
+### Data
+
+- `fetch_tradingview_batch(symbols, hours=300, interval="1D")` — already
+  supported, confirmed earlier. 300 daily bars (~14 months) gives a full
+  200-day SMA plus buffer, per symbol.
+- New fetch, own cadence: **once daily**, not on the light/heavy sweep
+  ticks. Time TBD but should land before both the light-sweep day starts
+  and the existing 07:00 UTC Sunday reachability job — candidate `06:00
+  UTC daily`.
+
+### Computation
+
+```
+macro_score          = (last_close - SMA_200d) / SMA_200d
+macro_score_smoothed = EMA(macro_score, half_life_days=10)
+macro_label           = "bear" if macro_score_smoothed < -BEAR_BULL_THRESHOLD
+                         "bull" if macro_score_smoothed > +BEAR_BULL_THRESHOLD
+                         else "neutral"
+macro_strength        = min(1.0, abs(macro_score_smoothed) / STRENGTH_SATURATION)
+```
+Candidate defaults: `BEAR_BULL_THRESHOLD = 0.05` (5% off the 200d SMA),
+`STRENGTH_SATURATION = 0.15` (full strength at 15%+ off). Both tunable,
+not hardcoded — see Config below. EMA-smoothing `macro_score` (not the
+SMA itself) matters because a single day's close is noisy relative to a
+200-day average; the whole point of this filter is a state that doesn't
+flip on one print.
+
+### Storage
+
+New table, one row per symbol (`symbol` PK): `nt_macro_regime(symbol,
+macro_score, macro_score_smoothed, macro_label, macro_strength,
+sma_window_days, computed_at)`. Refreshed daily, upsert-on-conflict, same
+shape as every other diagnostic table this session.
+
+### Config — corrected 2026-08-26: config params belong in git, not a runtime-only file
+
+The previous version of this section proposed `tuning_registry.py`'s
+YAML rail — but that file is deliberately `.gitignore`d, for a specific,
+different reason (its own comment, `.gitignore:115-121`): it's
+**live-mutated runtime state** written by the auto-tuner, and the repo
+already learned the hard way that a *tracked* file which something else
+keeps rewriting just goes stale (`config/brick_params.yaml` "is tracked
+in git but drifts... the tracked file just goes stale"). That's the
+right call for values the *app* writes automatically. It is the wrong
+model for `MACRO_REGIME_MODE` and its thresholds, which are values a
+*person* sets deliberately — exactly the same category as
+`MARKOV_SOURCE_MODE` is today, just on a Studio Secret instead of a file.
+Corrected position: **a real secret (API keys, credentials) belongs in
+Studio Secrets. A config parameter — mode flags, thresholds, anything a
+person deliberately sets — belongs in the repo,** reviewable in a diff,
+with no separate platform UI required to know what's actually running.
+
+**Proposed**: a new, git-tracked file — e.g. `config/feature_flags.yaml`
+— holding exactly this class of setting:
+```yaml
+markov_source_mode: trend_hmm_shadow   # off | legacy_hmm | trend_hmm_shadow | trend_hmm_live
+markov_flat_gate_threshold_stds: 0.5   # Tier 1 HMM fix, above
+
+macro_regime_mode: off                 # off | shadow | live
+macro:
+  bear_bull_threshold: 0.05
+  strength_saturation: 0.15
+  boost_scale: 0.3
+  penalty_scale: 0.5
+```
+Loaded via a small, dedicated reader (sync file read, safe to call from
+hot per-tick paths, same performance shape as `tuning_registry.read_param`
+but without its float-only/auto-tune machinery) — no Supabase fallback
+needed here since nothing but a human commit ever changes these values,
+unlike the auto-tuner's registry. `MARKOV_SOURCE_MODE` itself should
+migrate onto this same file rather than staying on the env-var/Studio-
+Secret path that caused this session's incident — one file, one
+mechanism, for every deliberately-set flag in this family, not two
+different systems depending on which feature added the flag first.
+
+This directly targets the actual problem: a Studio Secret is invisible
+outside the platform UI and can silently diverge from what the code
+appears to default to. A committed YAML file has neither property — its
+current value is exactly what's in the last commit, visible to anyone
+with repo access, changed the same way every other code change is
+changed.
+about rather than overselling the fix.
+
+### Integration
+
+Mirrored in **both** sweep paths (the exact lesson from the heavy_sweep.py
+gap found this session) — read `nt_macro_regime` for the symbol right
+before `compute_ev()` runs in `orchestrator.py::_process_symbol` and
+`heavy_sweep.py::run_heavy_sweep_for_symbol`. Applied via
+`recompute_ev_fields()` (the existing, already-live post-hoc mechanism —
+see the earlier scope note on why this over `temp_weights()`) as a Kelly
+multiplier:
+
+```
+if macro_label == "neutral":
+    kelly_macro_mult = 1.0
+elif direction agrees with macro_label:
+    kelly_macro_mult = 1.0 + macro_strength * MACRO_BOOST_SCALE   # heightens
+else:
+    kelly_macro_mult = 1.0 - macro_strength * MACRO_PENALTY_SCALE  # tempers
+kelly_macro_mult = clamp(kelly_macro_mult, 0.25, 1.5)
+```
+Candidate defaults: `MACRO_BOOST_SCALE = 0.3` (max +30% at full strength),
+`MACRO_PENALTY_SCALE = 0.5` (max -50% at full strength) — both on the
+same YAML rail as the thresholds above. The `[0.25, 1.5]` clamp is a hard
+safety band independent of the formula — this mechanism alone can never
+zero out or double a position; that's reserved for the more decisive
+existing kill-switch-style mechanisms (`stagnation_kill_switch`, the
+`p_win` hard floor).
+
+**Telemetry**: surface `macro_label`, `macro_strength`, and
+`kelly_macro_mult` in the `gate_results`/`passed_gates` dict alongside
+every other qualification factor already exposed there — keeps the "two
+separate dials" principle visible in the actual signal payload, not just
+in an internal variable.
+
+**Mode gate**: `MACRO_REGIME_MODE = off | shadow | live`, default `off`.
+Shadow: compute and log/persist what `kelly_macro_mult` would have been,
+apply nothing. Same blast-radius tier as `calibration_enforcement` (runs
+every qualifiable tick) — earns the same shadow-first staging as
+everything else, not Phase 3's lighter weekly-cadence treatment.
+
+### Verification plan
+
+1. Compute the filter over historical daily data for all 14 symbols and
+   spot-check `macro_label`/`macro_strength` against known periods (e.g.
+   does it correctly read "bear" through a symbol's own historically
+   worst drawdown window) before wiring it to anything live.
+2. Shadow mode: run for at least 1-2 weeks, then pull
+   `nt_macro_regime` history and check `kelly_macro_mult`'s distribution
+   — is it mostly near 1.0 (rare, meaningful signal) or constantly
+   swinging (threshold too tight, needs retuning before going live)?
+3. Confirm both sweep paths read the same table/row consistently (the
+   heavy_sweep.py mirroring lesson, checked explicitly this time before
+   shipping, not found after the fact).
+
+### Explicitly not in this scope
+
+No change to `compute_ev`'s formula/dataclasses (uses the same
+`recompute_ev_fields()` boundary as everything else). No decision yet on
+extending `tuning_registry.py` for string values beyond what's described
+above. Exact threshold/scale defaults are candidates, not final — tune
+during the shadow-mode observation window, not before.
+
 ## Still not built
 
 Everything above is investigation + synthesis, same discipline as the

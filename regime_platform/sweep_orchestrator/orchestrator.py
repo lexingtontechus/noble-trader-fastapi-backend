@@ -29,6 +29,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
+from regime_platform.core.feature_flags import get_markov_source_mode
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
 from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
@@ -154,18 +155,20 @@ TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
 # by the 2026-08-24 feature-standardization fix (Change A) — instead of
 # fitting a second, separate, numerically-unstable HMM.
 #
-# Default changed to "trend_hmm_shadow" (2026-08-26, HMM consolidation —
-# worklog/20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): a live 12h
-# check found 165 regime_shift_alert firings in one 12h window (a dead-
-# end diagnostic, but the volume itself evidences real instability) and
-# the shadow comparison was log-line only — this environment can't even
-# reach studio logs to read it. Shadow mode is zero live-behavior change
-# (never substitutes into the blend); flipping the default here just
-# means real comparison data (now persisted to nt_markov_source_shadow,
-# not log lines) starts accumulating immediately. "trend_hmm_live" is
-# NOT the default — that's a separate decision once shadow data is
-# reviewed.
-MARKOV_SOURCE_MODE = os.getenv("MARKOV_SOURCE_MODE", "trend_hmm_shadow").lower()
+# Config source changed 2026-08-26 (config-centralization correction,
+# worklog/20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): this is no
+# longer read from an env var / Studio Secret. An earlier attempt to
+# flip the default here (legacy_hmm -> trend_hmm_shadow) had ZERO live
+# effect because the Studio had MARKOV_SOURCE_MODE=legacy_hmm set as an
+# explicit Secret — invisible outside the platform UI, silently
+# overriding any code-level default. Now read from the git-tracked
+# config/feature_flags.yaml (regime_platform/core/feature_flags.py) —
+# a real secret belongs in Studio Secrets, but a deliberately-set mode
+# flag belongs in a file that's visible in a diff. See that module for
+# the hot-reload behavior (no restart needed to pick up an edit).
+# Call get_markov_source_mode() fresh in each function that needs it
+# (cheap — mtime-cached) rather than a module-level constant, so an edit
+# to the YAML takes effect on the next tick, not the next deploy.
 
 # When True, sweep ALL symbols regardless of market hours. Useful for:
 #   - Regime tracking outside market hours (you still want to know the
@@ -864,7 +867,7 @@ class SweepOrchestrator(HeavySweepMixin):
             f"SIGNAL_COOLDOWN_MINUTES={SIGNAL_COOLDOWN_MINUTES}, "
             f"TIMESFM_SIGMOID_K={TIMESFM_SIGMOID_K}, "
             f"TIMESFM_CLAMP=[{TIMESFM_CLAMP_MIN}, {TIMESFM_CLAMP_MAX}], "
-            f"MARKOV_SOURCE_MODE={MARKOV_SOURCE_MODE}"
+            f"MARKOV_SOURCE_MODE={get_markov_source_mode()} (config/feature_flags.yaml)"
         )
 
     # ── Public lifecycle ──────────────────────────────────────────
@@ -1673,7 +1676,7 @@ class SweepOrchestrator(HeavySweepMixin):
         # MARKOV_SOURCE_MODE docstring above), and TA/microstructure
         # features are read directly from the FeatureBuffer independently
         # of fit(), not from the fitted model.
-        if MARKOV_SOURCE_MODE != "trend_hmm_live":
+        if get_markov_source_mode() != "trend_hmm_live":
             for sym in hmm_symbols:
                 self._hmm_model.fit(sym["symbol"])
 
@@ -1931,9 +1934,10 @@ class SweepOrchestrator(HeavySweepMixin):
         # p_up / p_dn are kept for backward-compat with the Supabase
         # nt_sweep_result schema (legacy columns). They are read directly
         # from the transition matrix: P(UP|current_state) and P(DOWN|current_state).
+        markov_source_mode = get_markov_source_mode()
         _markov_T: dict[str, dict[str, float]] | None = None
         _markov_current_state: str | None = None
-        if MARKOV_SOURCE_MODE != "trend_hmm_live":
+        if markov_source_mode != "trend_hmm_live":
             _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
         p_up, p_dn = 0.5, 0.5  # neutral defaults; replaced if HMM emits
 
@@ -1947,12 +1951,12 @@ class SweepOrchestrator(HeavySweepMixin):
         # was skipped above) — fall back to a neutral uniform matrix
         # instead, the same convention trend_transition_matrix_3state()
         # itself uses internally for an unmapped row.
-        if MARKOV_SOURCE_MODE in ("trend_hmm_shadow", "trend_hmm_live"):
+        if markov_source_mode in ("trend_hmm_shadow", "trend_hmm_live"):
             try:
                 _trend_hmm_T, _trend_hmm_current_state = model.trend_transition_matrix_3state(
                     regime.trend_state
                 )
-                if MARKOV_SOURCE_MODE == "trend_hmm_shadow":
+                if markov_source_mode == "trend_hmm_shadow":
                     logger.info(
                         "%s: markov shadow — legacy current_state=%s row=%s | "
                         "trend_hmm current_state=%s row=%s",
@@ -1975,16 +1979,16 @@ class SweepOrchestrator(HeavySweepMixin):
                         legacy_state=_markov_current_state,
                         trend_hmm_state=_trend_hmm_current_state,
                     ))
-                elif MARKOV_SOURCE_MODE == "trend_hmm_live":
+                elif markov_source_mode == "trend_hmm_live":
                     _markov_T, _markov_current_state = _trend_hmm_T, _trend_hmm_current_state
             except Exception as exc:
                 logger.warning(
                     "%s: trend_hmm markov derivation failed (%s: %s), using %s",
                     symbol, type(exc).__name__, exc,
-                    "legacy_hmm value" if MARKOV_SOURCE_MODE == "trend_hmm_shadow"
+                    "legacy_hmm value" if markov_source_mode == "trend_hmm_shadow"
                     else "neutral uniform-matrix fallback",
                 )
-                if MARKOV_SOURCE_MODE == "trend_hmm_live" and _markov_T is None:
+                if markov_source_mode == "trend_hmm_live" and _markov_T is None:
                     _markov_T = {
                         s: {t: 1.0 / 3.0 for t in ("UP", "DOWN", "FLAT")}
                         for s in ("UP", "DOWN", "FLAT")

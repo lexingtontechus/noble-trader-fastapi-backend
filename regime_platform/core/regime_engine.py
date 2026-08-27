@@ -450,12 +450,53 @@ class RegimeHMM:
                 "Call .fit() before .trend_transition_matrix_3state()"
             )
 
+        # Tier 1 HMM fix (2026-08-26, worklog
+        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): _label_states()
+        # assigns strong_bear/bear/bull/strong_bull by RANK ORDER among
+        # whichever components got fit this tick, with no check on
+        # whether any of them are actually meaningfully different from
+        # zero. Confirmed on real data: components with means on the
+        # WRONG SIDE of zero (e.g. a "bear" component with a mean +0.54
+        # standard deviations of the trend feature's own noise) were
+        # still mapped straight through to a directional 3-state label.
+        # Gate here: a labeled component only keeps its directional
+        # (UP/DOWN) 3-state mapping if its own mean clears an absolute,
+        # noise-scaled threshold in that direction; otherwise it's FLAT
+        # regardless of its rank-assigned label. Deliberately scoped to
+        # THIS method only — does not touch _label_states/TREND_LABELS/
+        # trend_probs, i.e. does not touch the already-live p_regime EV
+        # input (see the worklog's Tier 2, flagged separately, not fixed
+        # here).
+        from regime_platform.core.feature_flags import (
+            get_markov_flat_gate_threshold_stds,
+        )
+
+        feature_idx = (
+            2 if len(self._trend_labels) > 2
+            and self._trend_labels[0] in ("strong_bear", "bear", "neutral")
+            else 0
+        )
+        means = self._trend_model.means_[:, feature_idx]
+        sigma = 1.0
+        if self._trend_scale is not None:
+            sigma = float(self._trend_scale[1][feature_idx]) or 1.0
+        threshold = get_markov_flat_gate_threshold_stds() * sigma
+
+        def _gated_3state(component_idx: int) -> str:
+            label = self._trend_label_map.get(component_idx, "FLAT")
+            base = self._TREND_TO_3STATE.get(label, "FLAT")
+            if base == "FLAT":
+                return "FLAT"
+            mean_i = float(means[component_idx])
+            if base == "UP" and mean_i <= threshold:
+                return "FLAT"
+            if base == "DOWN" and mean_i >= -threshold:
+                return "FLAT"
+            return base
+
         n = self._trend_model.n_components
         transmat = self._trend_model.transmat_
-        component_to_3state = {
-            i: self._TREND_TO_3STATE.get(label, "FLAT")
-            for i, label in self._trend_label_map.items()
-        }
+        component_to_3state = {i: _gated_3state(i) for i in range(n)}
 
         states3 = ("UP", "DOWN", "FLAT")
         T3: dict[str, dict[str, float]] = {s: {t: 0.0 for t in states3} for s in states3}
@@ -477,7 +518,16 @@ class RegimeHMM:
                 for t in states3:
                     T3[s][t] = 1.0 / 3.0
 
-        current_state = self._TREND_TO_3STATE.get(trend_state, "FLAT")
+        # current_state: find the component that produced `trend_state`
+        # and apply the SAME gate, rather than mapping the label directly
+        # — a direct label mapping would bypass the gate for the one
+        # reading that matters most (it's what feeds the EV blend's
+        # current-row lookup).
+        current_idx = next(
+            (i for i, lbl in self._trend_label_map.items() if lbl == trend_state),
+            None,
+        )
+        current_state = _gated_3state(current_idx) if current_idx is not None else "FLAT"
         return T3, current_state
 
     # ── Convergence diagnostic (R4) ─────────────────────────────────────

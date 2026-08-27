@@ -368,16 +368,42 @@ def test_discounted_p_regime_reduces_its_blend_influence():
 # ─── 5. trend_transition_matrix_3state (Part 1 Change B) ────────────────
 
 
-def _make_fitted_stub(transmat: np.ndarray, label_map: dict[int, str]) -> RegimeHMM:
+def _make_fitted_stub(
+    transmat: np.ndarray,
+    label_map: dict[int, str],
+    means: dict[int, float] | None = None,
+    sigma: float = 1.0,
+) -> RegimeHMM:
     """A RegimeHMM instance with a hand-crafted trend model, bypassing a
     real fit — lets the aggregation math be checked against hand-computed
-    expected values instead of whatever a real EM fit happens to produce."""
-    model = RegimeHMM(n_components=len(label_map))
+    expected values instead of whatever a real EM fit happens to produce.
+
+    ``means``/``sigma`` feed the Tier 1 flat-gate (2026-08-26, worklog
+    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — a component's mean
+    must clear ``markov_flat_gate_threshold_stds * sigma`` before keeping
+    a directional label. Default: every component at +/-10.0 (10 std at
+    the default 0.5-std threshold), i.e. comfortably clears the gate in
+    whichever direction its rank-assigned label implies, so tests that
+    predate the gate keep exercising the aggregation math unaffected by
+    it unless they explicitly pass thinner means to test the gate itself.
+    """
+    n = len(label_map)
+    if means is None:
+        means = {
+            i: (10.0 if RegimeHMM._TREND_TO_3STATE.get(lbl) == "UP" else -10.0)
+            for i, lbl in label_map.items()
+        }
+    means_arr = np.zeros((n, 3))
+    for i in range(n):
+        means_arr[i, 2] = means.get(i, 0.0)
+
+    model = RegimeHMM(n_components=n)
     model.fitted = True
     model._trend_model = SimpleNamespace(
-        n_components=len(label_map), transmat_=transmat,
+        n_components=n, transmat_=transmat, means_=means_arr,
     )
     model._trend_label_map = label_map
+    model._trend_scale = (np.zeros(3), np.array([1.0, 1.0, sigma]))
     return model
 
 
@@ -454,6 +480,52 @@ def test_trend_transition_matrix_3state_current_state_matches_grouping():
     assert model.trend_transition_matrix_3state("strong_bear")[1] == "DOWN"
     assert model.trend_transition_matrix_3state("neutral")[1] == "FLAT"
     assert model.trend_transition_matrix_3state("unknown_label")[1] == "FLAT"
+
+
+def test_trend_transition_matrix_3state_gates_component_on_wrong_side_of_zero():
+    """Tier 1 HMM fix (2026-08-26, worklog
+    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md). Real data (AUDUSD)
+    showed a "bear"-labeled component (assigned purely by rank order
+    among 4 components) with a mean of +0.54 standard deviations — i.e.
+    actually positive, on the wrong side of zero for its label. The old
+    rank-only mapping passed this straight through to DOWN. Confirm the
+    gate now gives it FLAT instead."""
+    transmat = np.array([
+        [0.4, 0.2, 0.2, 0.2],
+        [0.2, 0.4, 0.2, 0.2],
+        [0.2, 0.2, 0.4, 0.2],
+        [0.2, 0.2, 0.2, 0.4],
+    ])
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    # sigma=1.0, default threshold 0.5 std -> component 1 ("bear") at
+    # +0.54std is ON THE WRONG SIDE of zero and must gate to FLAT;
+    # component 0 ("strong_bear") at -0.88std clears the threshold and
+    # keeps DOWN, matching the real AUDUSD reading from the worklog.
+    means = {0: -0.88, 1: +0.54, 2: +1.11, 3: +1.30}
+    model = _make_fitted_stub(transmat, label_map, means=means, sigma=1.0)
+
+    T3, current_state = model.trend_transition_matrix_3state("bear")
+
+    assert current_state == "FLAT"
+    for row in T3.values():
+        assert sum(row.values()) == pytest_approx(1.0)
+
+
+def test_trend_transition_matrix_3state_gates_near_zero_component_to_flat():
+    """A component whose mean is within the noise band (regardless of
+    sign) must gate to FLAT even though its rank-assigned label is
+    directional — the "AAPL 'bull' component was actually -2.09std"
+    case from the worklog, simplified to a clean near-zero example."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    # threshold = 0.5 * sigma(2.0) = 1.0 — component 2 ("bull") at +0.3
+    # is well within the noise band and must gate to FLAT.
+    means = {0: -10.0, 1: -5.0, 2: +0.3, 3: +10.0}
+    model = _make_fitted_stub(transmat, label_map, means=means, sigma=2.0)
+
+    assert model.trend_transition_matrix_3state("bull")[1] == "FLAT"
+    # strong_bull at +10.0 (5 std) clears the threshold comfortably.
+    assert model.trend_transition_matrix_3state("strong_bull")[1] == "UP"
 
 
 def test_trend_transition_matrix_3state_on_real_fit_returns_valid_matrix():

@@ -518,22 +518,24 @@ class HeavySweepMixin:
             # always used the legacy HmmModel unconditionally regardless
             # of the mode, exactly the "gate added to one path, missed on
             # the other" bug the MSE doc warns about (2026-08-26 HMM
-            # consolidation). Lazy import avoids a circular import
-            # (orchestrator.py imports this module at load time).
-            from regime_platform.sweep_orchestrator.orchestrator import (
-                MARKOV_SOURCE_MODE,
-            )
+            # consolidation). Read from the git-tracked
+            # config/feature_flags.yaml (2026-08-26 config-centralization
+            # correction) — no env var / Studio Secret involved, no
+            # circular-import concern importing this directly.
+            from regime_platform.core.feature_flags import get_markov_source_mode
+
+            markov_source_mode = get_markov_source_mode()
             markov_T: dict[str, dict[str, float]] | None = None
             markov_current: str | None = None
-            if MARKOV_SOURCE_MODE != "trend_hmm_live":
+            if markov_source_mode != "trend_hmm_live":
                 markov_T, markov_current = self._hmm_model.emit_markov(symbol)
 
-            if MARKOV_SOURCE_MODE in ("trend_hmm_shadow", "trend_hmm_live"):
+            if markov_source_mode in ("trend_hmm_shadow", "trend_hmm_live"):
                 try:
                     trend_hmm_T, trend_hmm_current = regime_model.trend_transition_matrix_3state(
                         regime_snapshot.trend_state
                     )
-                    if MARKOV_SOURCE_MODE == "trend_hmm_shadow":
+                    if markov_source_mode == "trend_hmm_shadow":
                         logger.info(
                             "[sweep:heavy] %s: markov shadow — legacy current_state=%s "
                             "row=%s | trend_hmm current_state=%s row=%s",
@@ -552,16 +554,16 @@ class HeavySweepMixin:
                             legacy_state=markov_current,
                             trend_hmm_state=trend_hmm_current,
                         ))
-                    elif MARKOV_SOURCE_MODE == "trend_hmm_live":
+                    elif markov_source_mode == "trend_hmm_live":
                         markov_T, markov_current = trend_hmm_T, trend_hmm_current
                 except Exception as exc:
                     logger.warning(
                         "[sweep:heavy] %s: trend_hmm markov derivation failed (%s: %s), using %s",
                         symbol, type(exc).__name__, exc,
-                        "legacy_hmm value" if MARKOV_SOURCE_MODE == "trend_hmm_shadow"
+                        "legacy_hmm value" if markov_source_mode == "trend_hmm_shadow"
                         else "neutral uniform-matrix fallback",
                     )
-                    if MARKOV_SOURCE_MODE == "trend_hmm_live" and markov_T is None:
+                    if markov_source_mode == "trend_hmm_live" and markov_T is None:
                         markov_T = {
                             s: {t: 1.0 / 3.0 for t in ("UP", "DOWN", "FLAT")}
                             for s in ("UP", "DOWN", "FLAT")

@@ -1,0 +1,41 @@
+# Feature Flags — git-tracked config for deliberately-set mode flags and
+# thresholds (read by regime_platform/core/feature_flags.py).
+#
+# What belongs here vs. elsewhere (2026-08-26 config-centralization
+# correction, worklog/20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md):
+#   - Real secrets (API keys, credentials, tokens) -> Lightning AI Studio
+#     Secrets. Not this file.
+#   - Runtime state the app writes automatically (the Tier D auto-tuner)
+#     -> config/tuning_registry.yaml (gitignored on purpose — a tracked
+#     file that something else keeps rewriting just goes stale, see
+#     .gitignore's own note on config/brick_params.yaml). Not this file.
+#   - Config a person deliberately sets (mode flags, thresholds) -> HERE.
+#     Committed, reviewable in a diff, no platform UI required to know
+#     what's actually running.
+#
+# IMPORTANT: regime_platform/core/feature_flags.py does NOT consult any
+# environment variable for these keys. A leftover Studio Secret with a
+# matching name (e.g. MARKOV_SOURCE_MODE) has ZERO effect — this file is
+# the sole source of truth. Edits take effect on the next read (the
+# loader checks the file's mtime on every call) — no restart required.
+
+# MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,
+# FLAT} transition matrix. legacy_hmm (the separate, numerically-unstable
+# 5-state HmmModel) | trend_hmm_shadow (compute both, log+persist a
+# comparison to nt_markov_source_shadow, legacy still feeds the live
+# blend — zero behavior change) | trend_hmm_live (RegimeHMM's own
+# transition matrix feeds the blend instead, and the legacy model's
+# per-tick refit is skipped entirely). See orchestrator.py's docstring
+# near MARKOV_SOURCE_MODE usage for full detail.
+markov_source_mode: trend_hmm_shadow
+
+# Tier 1 HMM fix (2026-08-26, worklog same as above): magnitude/sign gate
+# on RegimeHMM.trend_transition_matrix_3state()'s UP/DOWN assignment — a
+# labeled component's own mean must clear this many standard deviations
+# of the trend feature's own noise level (computed at fit time) before
+# being treated as directional; below the threshold, it's mapped to FLAT
+# regardless of its rank-assigned label. Fixes cases found in real data
+# where a component's mean was on the WRONG SIDE of zero (e.g. a "bear"
+# component with a positive mean) but still got mapped straight through
+# to a directional state under the old rank-only logic.
+markov_flat_gate_threshold_stds: 0.5
