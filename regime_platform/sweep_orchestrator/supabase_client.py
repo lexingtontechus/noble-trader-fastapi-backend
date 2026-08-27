@@ -546,7 +546,7 @@ async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
 
 NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
     "symbol", "n_compared", "n_state_disagree", "sum_abs_p_up_diff",
-    "last_legacy_state", "last_trend_hmm_state",
+    "last_legacy_state", "last_trend_hmm_state", "updated_at",
 })
 
 
@@ -592,6 +592,15 @@ async def record_markov_shadow_compare(
                 ),
                 "last_legacy_state": legacy_state,
                 "last_trend_hmm_state": trend_hmm_state,
+                # updated_at (2026-08-27 fix): the column's DEFAULT now()
+                # only applies on INSERT — an upsert-on-conflict never
+                # touches a column absent from the payload, so without
+                # this the timestamp silently froze at first-insert time
+                # forever, undermining the exact "how fresh is this row"
+                # check this table exists to support. Confirmed live:
+                # n_compared kept incrementing for hours while
+                # updated_at stayed pinned to the very first write.
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             }, NT_MARKOV_SOURCE_SHADOW_COLUMNS)
 
             resp = await client.post(
