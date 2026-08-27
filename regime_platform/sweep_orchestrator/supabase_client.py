@@ -621,6 +621,71 @@ async def record_markov_shadow_compare(
         logger.error("record_markov_shadow_compare: failed for %s: %s", symbol, exc)
 
 
+NT_TREND_PROBS_GATE_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "sum_abs_p_regime_diff",
+    "last_raw_p_regime", "last_gated_p_regime", "updated_at",
+})
+
+
+async def record_trend_probs_gate_shadow(
+    symbol: str,
+    raw_p_regime: float,
+    gated_p_regime: float,
+) -> None:
+    """Accumulate one tick's raw-vs-gated p_regime comparison into the
+    running per-symbol row in ``nt_trend_probs_gate_shadow`` (best-effort).
+
+    Fetch-then-upsert, same shape as ``record_markov_shadow_compare`` —
+    ``updated_at`` included in the payload from the start this time (see
+    that function's own follow-up fix for why this matters).
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_trend_probs_gate_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,sum_abs_p_regime_diff",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "sum_abs_p_regime_diff": round(
+                    float(prev.get("sum_abs_p_regime_diff", 0.0))
+                    + abs(float(raw_p_regime) - float(gated_p_regime)), 6,
+                ),
+                "last_raw_p_regime": round(float(raw_p_regime), 4),
+                "last_gated_p_regime": round(float(gated_p_regime), 4),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, NT_TREND_PROBS_GATE_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_trend_probs_gate_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_trend_probs_gate_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_trend_probs_gate_shadow: failed for %s: %s", symbol, exc)
+
+
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
     """Insert a row into ``nt_errors``."""
     if not settings.SUPABASE_URL:

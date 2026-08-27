@@ -39,3 +39,16 @@ markov_source_mode: trend_hmm_shadow
 # component with a positive mean) but still got mapped straight through
 # to a directional state under the old rank-only logic.
 markov_flat_gate_threshold_stds: 0.5
+
+# Tier 2 HMM fix (2026-08-27, same worklog): off | shadow | live. Applies
+# the SAME magnitude/sign gate above (markov_flat_gate_threshold_stds) to
+# trend_probs itself (RegimeHMM.gated_trend_probs()), which feeds
+# p_regime directly into the live EV blend — a bigger, already-live
+# surface than Tier 1's markov-derivation-only fix. shadow: compute both
+# raw and gated p_regime, log + persist the comparison to
+# nt_trend_probs_gate_shadow, still feed the RAW value to compute_ev —
+# zero live-behavior change. live: feed the gated trend_probs to
+# compute_ev instead. NOT live by default — review shadow data
+# (nt_trend_probs_gate_shadow) first, same discipline as
+# markov_source_mode's trend_hmm_live.
+trend_probs_gate_mode: shadow

@@ -530,6 +530,81 @@ class RegimeHMM:
         current_state = _gated_3state(current_idx) if current_idx is not None else "FLAT"
         return T3, current_state
 
+    def gated_trend_probs(self, trend_probs: dict[str, float]) -> dict[str, float]:
+        """
+        Tier 2 HMM fix (2026-08-27, worklog
+        20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md). Same root cause
+        as Tier 1 (``trend_transition_matrix_3state``), applied to the
+        OTHER consumer of ``_label_states``' rank-only assignment:
+        ``trend_probs`` itself, which feeds ``p_regime`` directly into
+        the live EV blend via ``ev_engine.EVEngine.compute_p_regime``.
+
+        Real data showed components whose mean is near zero or on the
+        wrong side of it for their rank-assigned label (e.g. a "bull"
+        component at -2.09 standard deviations) still contributing their
+        full posterior mass to ``p_bullish``/``p_bearish``. This
+        redistributes any such component's mass into an explicit
+        ``"neutral"`` key instead of leaving it under a directional label
+        it doesn't deserve.
+
+        Deliberately does NOT touch ``ev_engine.py``:
+        ``compute_p_regime`` already handles a ``"neutral"`` key
+        correctly (``p = p_bullish + 0.5 * p_neutral``) — that's the
+        existing mechanism for the 3-state label variant
+        (``["bear","neutral","bull"]``), simply never populated by the
+        4-state config this system runs. Returning a dict with a
+        ``"neutral"`` key alongside the (possibly fewer than 4)
+        directional keys is a strict superset of what
+        ``compute_p_regime`` already expects — no changes needed there.
+
+        Args:
+            trend_probs: ``{label: probability}`` for this instance's
+                own ``_trend_labels`` (e.g. the output of
+                ``dict(zip(RegimeHMM.TREND_LABELS, regime.trend_probs))``,
+                post any EMA smoothing the caller applies — gate whatever
+                distribution is about to be used, not the raw per-tick
+                posterior).
+
+        Returns:
+            A new dict, same shape plus ``"neutral"``. Probabilities for
+            gated-out labels are folded into ``"neutral"`` rather than
+            dropped, so the total probability mass is unchanged.
+        """
+        if not self.fitted or self._trend_model is None:
+            raise RuntimeError("Call .fit() before .gated_trend_probs()")
+
+        from regime_platform.core.feature_flags import (
+            get_markov_flat_gate_threshold_stds,
+        )
+
+        feature_idx = (
+            2 if len(self._trend_labels) > 2
+            and self._trend_labels[0] in ("strong_bear", "bear", "neutral")
+            else 0
+        )
+        means = self._trend_model.means_[:, feature_idx]
+        sigma = 1.0
+        if self._trend_scale is not None:
+            sigma = float(self._trend_scale[1][feature_idx]) or 1.0
+        threshold = get_markov_flat_gate_threshold_stds() * sigma
+
+        gated: dict[str, float] = {}
+        neutral_mass = 0.0
+        for i, label in self._trend_label_map.items():
+            p = float(trend_probs.get(label, 0.0))
+            base = self._TREND_TO_3STATE.get(label, "FLAT")
+            mean_i = float(means[i])
+            clears = (
+                (base == "UP" and mean_i > threshold)
+                or (base == "DOWN" and mean_i < -threshold)
+            )
+            if clears:
+                gated[label] = gated.get(label, 0.0) + p
+            else:
+                neutral_mass += p
+        gated["neutral"] = neutral_mass
+        return gated
+
     # ── Convergence diagnostic (R4) ─────────────────────────────────────
 
     @staticmethod

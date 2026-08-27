@@ -29,7 +29,10 @@ from apscheduler.triggers.cron import CronTrigger
 
 from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
-from regime_platform.core.feature_flags import get_markov_source_mode
+from regime_platform.core.feature_flags import (
+    get_markov_source_mode,
+    get_trend_probs_gate_mode,
+)
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
 from regime_platform.services.hmm import FeatureBuffer, HmmModel, latest_ta
@@ -2068,6 +2071,44 @@ class SweepOrchestrator(HeavySweepMixin):
             symbol, _markov_T, _markov_current_state, direction, MARKOV_HOLD_STEPS,
         )
         _smoothed_trend_probs = self._smoothed_trend_probs(symbol, trend_probs)
+
+        # Tier 2 HMM fix (2026-08-27, worklog
+        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): same magnitude/
+        # sign gate as Tier 1 (trend_transition_matrix_3state), applied
+        # to trend_probs itself — which feeds p_regime directly into the
+        # live EV blend below. Gated AFTER smoothing, since that's the
+        # final distribution about to be used, not the raw per-tick
+        # posterior. shadow mode computes both and persists the
+        # comparison but does NOT change what compute_ev sees; only
+        # live mode substitutes the gated version.
+        trend_probs_gate_mode = get_trend_probs_gate_mode()
+        if trend_probs_gate_mode in ("shadow", "live"):
+            try:
+                _gated_trend_probs = model.gated_trend_probs(_smoothed_trend_probs)
+                if trend_probs_gate_mode == "shadow":
+                    from regime_platform.services.statistics.ev_engine import EVEngine
+                    _raw_p_regime = EVEngine.compute_p_regime(_smoothed_trend_probs, direction)
+                    _gated_p_regime = EVEngine.compute_p_regime(_gated_trend_probs, direction)
+                    logger.info(
+                        "%s: trend_probs gate shadow — raw p_regime=%.4f, "
+                        "gated p_regime=%.4f (diff=%+.4f)",
+                        symbol, _raw_p_regime, _gated_p_regime,
+                        _gated_p_regime - _raw_p_regime,
+                    )
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        record_trend_probs_gate_shadow,
+                    )
+                    asyncio.create_task(record_trend_probs_gate_shadow(
+                        symbol, raw_p_regime=_raw_p_regime, gated_p_regime=_gated_p_regime,
+                    ))
+                elif trend_probs_gate_mode == "live":
+                    _smoothed_trend_probs = _gated_trend_probs
+            except Exception as exc:
+                logger.warning(
+                    "%s: trend_probs gate failed (%s: %s), using ungated trend_probs",
+                    symbol, type(exc).__name__, exc,
+                )
+
         _p_historical = await self._fetch_p_historical_cached(symbol)
         # R4: apply the non-convergence discount (empty dict = no-op, exact
         # pre-R4 behaviour) around the compute_ev() call itself, not a

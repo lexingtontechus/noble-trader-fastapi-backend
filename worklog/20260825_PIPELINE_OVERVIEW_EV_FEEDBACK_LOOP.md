@@ -782,6 +782,110 @@ issue) — flagged above, deliberately not touched. `MARKOV_SOURCE_MODE`
 in `config/feature_flags.yaml` ships at `trend_hmm_shadow` (unchanged
 from where it already stood) — this build does not flip it to live.
 
+## 12h data assessment (2026-08-27, before Tier 2)
+
+Studio logs still unreachable from this environment (no local log
+access, no connection path to the Studio instance) — data only.
+1808 signals captured, 0 errors, 44 qualified (2.4%), all pending
+(expected — nightly-batch resolution, nothing in a 12h window should
+have resolved yet). Markov shadow (Tier 1) over a longer accumulation
+window: disagreement down to **67.9%** (from 82-83%) over 3491 compared,
+`trend_hmm` now showing FLAT on 8/14 symbols (up from 4/14) — converging
+toward the ~66.7% "just noise between two classifiers" baseline, real
+confirmation the Tier 1 fix keeps working as more data accumulates.
+`regime_shift_alert` volume also dropped (165→147 per 12h) but that
+alert is driven by `regime_label`/`trend_probs` continuity, a different
+code path than Tier 1 touched — noted as a correlation, not claimed as
+caused by it.
+
+## Tier 2 HMM fix — build (2026-08-27)
+
+Applies the identical magnitude/sign gate from Tier 1 to the OTHER
+consumer of `_label_states`' rank-only assignment: `trend_probs` itself,
+which feeds `p_regime` directly into the **already-live** EV blend via
+`ev_engine.EVEngine.compute_p_regime`. This is the bigger, higher-stakes
+half flagged and deliberately not touched in the Tier 1 build — built
+now with the same shadow-first discipline, not flipped live.
+
+### Design — stays entirely out of `ev_engine.py`
+
+`compute_p_regime(trend_probs, direction)` already handles a
+`"neutral"` key correctly: `p = p_bullish + 0.5 * p_neutral` — that
+mechanism exists for the 3-state label variant (`["bear","neutral","bull"]`)
+but is unused by the live 4-state config, which has no `"neutral"` label
+at all. New `RegimeHMM.gated_trend_probs()` (`regime_engine.py`) reuses
+this: for each of the 4 raw posterior probabilities, if the labeled
+component doesn't clear the same `markov_flat_gate_threshold_stds` gate
+Tier 1 uses, its mass moves into an explicit `"neutral"` key instead of
+staying under a directional label it doesn't deserve. Returns a strict
+superset of what `compute_p_regime` already expects — **zero changes to
+`ev_engine.py`**, respecting the standing "no EV engine rework"
+boundary the same way Tier 1 did.
+
+### Wiring — both sweep paths, shadow-gated
+
+- `orchestrator.py::_process_symbol` — gate applied to
+  `_smoothed_trend_probs` (the EMA-smoothed distribution, not the raw
+  per-tick posterior — gating the final distribution about to be used,
+  consistent with Tier 1's "gate at the point of consumption").
+  `shadow` mode computes both raw and gated `p_regime` via the
+  unchanged, pure `compute_p_regime` staticmethod and persists the
+  comparison; only `live` mode substitutes the gated `trend_probs` into
+  the real `compute_ev()` call (both call sites in this function share
+  the same `_smoothed_trend_probs` variable, so gating it once covers
+  both).
+- `heavy_sweep.py` — mirrored, same shape, using `regime_model`
+  (available since Tier 1's `_regime_sync` return-shape change).
+- New `trend_probs_gate_mode` in `config/feature_flags.yaml` (git-tracked,
+  same file as Tier 1's threshold) — defaults to `shadow`, same
+  reasoning as `markov_source_mode`'s default (shadow mode is provably
+  zero-live-impact, so defaulting to it just starts collecting real
+  comparison data immediately; `live` is a separate, deliberate decision).
+- New `nt_trend_probs_gate_shadow` table (migration 123) + `supabase_client.
+  record_trend_probs_gate_shadow()` — same running-aggregate shape as
+  `nt_markov_source_shadow`, **`updated_at` included in the payload from
+  the start this time** (learned from the follow-up fix needed on the
+  Tier 1 table).
+
+### Verified — and the real magnitude is bigger than expected
+
+3 new regression tests (pass-through when nothing needs gating, mass
+correctly moved to neutral for a mislabeled component, `RuntimeError`
+before fit) — all pass, plus the full suite (621 passed, 0 failed).
+
+Real data against the exact symbols that exposed the bug:
+
+| Symbol | direction | raw p_regime | gated p_regime | diff |
+|---|---|---|---|---|
+| AAPL | long | 0.9700 | 0.4998 | **-0.4702** |
+| US500 | short | 0.9700 | 0.5000 | **-0.4700** |
+| AUDUSD | short | 0.8947 | 0.8947 | -0.0000 |
+| EURUSD | long | 0.8313 | 0.9157 | +0.0843 |
+| XAUUSD | short | 0.8281 | 0.4140 | **-0.4140** |
+
+AAPL and US500's `p_regime` was pinned at the 0.97 cap — the blend
+essentially certain of a direction — purely because the model's
+posterior mass concentrated on a component that was mislabeled
+"strong_bull"/"bear" by rank while its actual mean sat within noise
+(AAPL) or not measured at all confidently enough to warrant that
+certainty. Gated, both correct to ~0.50 (genuinely neutral). XAUUSD
+drops from 0.83 to 0.41 for the same reason. AUDUSD is essentially
+unchanged — its dominant component's label was correct, confirming the
+gate isn't indiscriminately suppressing everything, only the genuinely
+mislabeled cases. EURUSD *increases* (0.83→0.92) — a "bear" component
+that didn't deserve the label was dragging the long-direction score
+down; removing it from the directional pool (into neutral, which
+contributes half-weight) raised the score. `p_regime` carries a 0.25
+weight in the 4-source blend — corrections of this size are not noise;
+they're the difference between "confidently one-sided" and "actually
+uncertain" for at least 3 of the 5 symbols checked.
+
+**Recommendation, not decided here**: let `nt_trend_probs_gate_shadow`
+accumulate for a period (same review-before-flip discipline as
+`markov_source_mode`) before considering `trend_probs_gate_mode=live`
+— but given the magnitude found, this is a strong candidate for
+prioritized review, not a low-urgency backlog item.
+
 ## Macro filter — full build scope (2026-08-26)
 
 Confirmed as the right next build regardless of the HMM finding above —

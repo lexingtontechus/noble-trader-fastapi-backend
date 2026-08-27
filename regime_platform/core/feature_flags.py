@@ -33,6 +33,7 @@ _YAML_PATH = Path(__file__).resolve().parents[2] / "config" / "feature_flags.yam
 _DEFAULTS: dict[str, Any] = {
     "markov_source_mode": "trend_hmm_shadow",
     "markov_flat_gate_threshold_stds": 0.5,
+    "trend_probs_gate_mode": "shadow",
 }
 
 _cache: dict[str, Any] | None = None
@@ -77,7 +78,7 @@ def get_markov_source_mode() -> str:
 
 def get_markov_flat_gate_threshold_stds() -> float:
     """Standard deviations of trend-feature noise a component's mean must
-    clear before being treated as directional (Tier 1 HMM fix)."""
+    clear before being treated as directional (Tier 1/2 HMM fix)."""
     try:
         return float(_load().get(
             "markov_flat_gate_threshold_stds",
@@ -85,3 +86,10 @@ def get_markov_flat_gate_threshold_stds() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["markov_flat_gate_threshold_stds"]
+
+
+def get_trend_probs_gate_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Tier 2 HMM fix)."""
+    return str(_load().get(
+        "trend_probs_gate_mode", _DEFAULTS["trend_probs_gate_mode"],
+    )).lower()

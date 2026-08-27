@@ -528,6 +528,63 @@ def test_trend_transition_matrix_3state_gates_near_zero_component_to_flat():
     assert model.trend_transition_matrix_3state("strong_bull")[1] == "UP"
 
 
+# ─── Tier 2 HMM fix: gated_trend_probs ──────────────────────────────────
+
+
+def test_gated_trend_probs_passes_through_when_all_components_clear_threshold():
+    """When every component clears the gate, gated_trend_probs must return
+    the same probabilities under their original labels plus an explicit
+    neutral=0.0 — pure pass-through, no mass moved."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    means = {0: -10.0, 1: -5.0, 2: +5.0, 3: +10.0}
+    model = _make_fitted_stub(transmat, label_map, means=means, sigma=1.0)
+
+    raw = {"strong_bear": 0.1, "bear": 0.2, "bull": 0.3, "strong_bull": 0.4}
+    gated = model.gated_trend_probs(raw)
+
+    assert gated["strong_bear"] == pytest_approx(0.1)
+    assert gated["bear"] == pytest_approx(0.2)
+    assert gated["bull"] == pytest_approx(0.3)
+    assert gated["strong_bull"] == pytest_approx(0.4)
+    assert gated["neutral"] == pytest_approx(0.0)
+
+
+def test_gated_trend_probs_moves_mass_to_neutral_for_gated_components():
+    """The real AAPL case: a 'bull' component whose mean is actually -2.09
+    std must have its probability mass moved into 'neutral', not left
+    under 'bull'. Total probability mass must be conserved."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    # Real AAPL reading (worklog): strong_bear/bear/bull all deeply
+    # negative, only strong_bull mildly positive and itself sub-threshold.
+    means = {0: -2.30, 1: -2.09, 2: -2.09, 3: +0.14}
+    model = _make_fitted_stub(transmat, label_map, means=means, sigma=1.0)
+
+    raw = {"strong_bear": 0.4, "bear": 0.3, "bull": 0.2, "strong_bull": 0.1}
+    gated = model.gated_trend_probs(raw)
+
+    # strong_bear/bear clear the DOWN threshold (means below -0.5std) and
+    # keep their mass; bull (mean -2.09, on the wrong side for "UP") and
+    # strong_bull (mean +0.14, below the +0.5std threshold) both gate to
+    # neutral.
+    assert gated["strong_bear"] == pytest_approx(0.4)
+    assert gated["bear"] == pytest_approx(0.3)
+    assert gated.get("bull", 0.0) == pytest_approx(0.0)
+    assert gated.get("strong_bull", 0.0) == pytest_approx(0.0)
+    assert gated["neutral"] == pytest_approx(0.3)  # 0.2 (bull) + 0.1 (strong_bull)
+    assert sum(v for k, v in gated.items() if k != "neutral") + gated["neutral"] == pytest_approx(1.0)
+
+
+def test_gated_trend_probs_raises_before_fit():
+    model = RegimeHMM(n_components=4)
+    try:
+        model.gated_trend_probs({"bull": 1.0})
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
 def test_trend_transition_matrix_3state_on_real_fit_returns_valid_matrix():
     """Integration-level: a real (tiny synthetic) fit + predict, then the
     new derivation — confirms the wiring against real hmmlearn output,

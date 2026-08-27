@@ -600,15 +600,52 @@ class HeavySweepMixin:
                     "discounting p_regime weight to %.4f",
                     symbol, _regime_weight_override["p_regime"],
                 )
+            _trend_probs = dict(zip(
+                # RegimeHMM.TREND_LABELS — accessed via the snapshot's
+                # internal arrays; the orchestrator's _process_symbol
+                # does the same zip.
+                self._regime_trend_labels(),
+                regime_snapshot.trend_probs,
+            ))
+
+            # Tier 2 HMM fix (2026-08-27, worklog
+            # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — mirror of
+            # the light sweep's gate (orchestrator.py::_process_symbol).
+            # Same magnitude/sign gate as Tier 1, applied to trend_probs
+            # itself. shadow mode persists the comparison but doesn't
+            # change what compute_ev sees below.
+            from regime_platform.core.feature_flags import get_trend_probs_gate_mode
+
+            trend_probs_gate_mode = get_trend_probs_gate_mode()
+            if trend_probs_gate_mode in ("shadow", "live"):
+                try:
+                    _gated_trend_probs = regime_model.gated_trend_probs(_trend_probs)
+                    if trend_probs_gate_mode == "shadow":
+                        raw_p_regime = self._ev_engine.compute_p_regime(_trend_probs, direction)
+                        gated_p_regime = self._ev_engine.compute_p_regime(_gated_trend_probs, direction)
+                        logger.info(
+                            "[sweep:heavy] %s: trend_probs gate shadow — raw "
+                            "p_regime=%.4f, gated p_regime=%.4f (diff=%+.4f)",
+                            symbol, raw_p_regime, gated_p_regime,
+                            gated_p_regime - raw_p_regime,
+                        )
+                        from regime_platform.sweep_orchestrator.supabase_client import (
+                            record_trend_probs_gate_shadow,
+                        )
+                        asyncio.create_task(record_trend_probs_gate_shadow(
+                            symbol, raw_p_regime=raw_p_regime, gated_p_regime=gated_p_regime,
+                        ))
+                    elif trend_probs_gate_mode == "live":
+                        _trend_probs = _gated_trend_probs
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: trend_probs gate failed (%s: %s), using ungated trend_probs",
+                        symbol, type(exc).__name__, exc,
+                    )
+
             with self._ev_engine.temp_weights(_regime_weight_override):
                 ev_result = self._ev_engine.compute_ev(
-                    trend_probs=dict(zip(
-                        # RegimeHMM.TREND_LABELS — accessed via the snapshot's
-                        # internal arrays; the orchestrator's _process_symbol
-                        # does the same zip.
-                        self._regime_trend_labels(),
-                        regime_snapshot.trend_probs,
-                    )),
+                    trend_probs=_trend_probs,
                     direction=direction,
                     p_historical=_p_historical,
                     transition_matrix=markov_T,
