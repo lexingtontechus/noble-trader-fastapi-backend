@@ -35,6 +35,15 @@ _DEFAULTS: dict[str, Any] = {
     "markov_flat_gate_threshold_stds": 0.5,
     "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
+    "macro_regime_mode": "shadow",
+    "macro": {
+        "sma_window_days": 200,
+        "ema_half_life_days": 10,
+        "bear_bull_threshold": 0.05,
+        "strength_saturation": 0.15,
+        "boost_scale": 0.3,
+        "penalty_scale": 0.5,
+    },
 }
 
 _cache: dict[str, Any] | None = None
@@ -105,3 +114,44 @@ def get_trend_probs_gate_mode() -> str:
     return str(_load().get(
         "trend_probs_gate_mode", _DEFAULTS["trend_probs_gate_mode"],
     )).lower()
+
+
+def get_macro_regime_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (long-range macro filter)."""
+    return str(_load().get(
+        "macro_regime_mode", _DEFAULTS["macro_regime_mode"],
+    )).lower()
+
+
+def _macro_number(key: str) -> float:
+    try:
+        macro_cfg = _load().get("macro", _DEFAULTS["macro"])
+        if not isinstance(macro_cfg, dict):
+            macro_cfg = _DEFAULTS["macro"]
+        return float(macro_cfg.get(key, _DEFAULTS["macro"][key]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["macro"][key]
+
+
+def get_macro_sma_window_days() -> int:
+    return int(_macro_number("sma_window_days"))
+
+
+def get_macro_ema_half_life_days() -> float:
+    return _macro_number("ema_half_life_days")
+
+
+def get_macro_bear_bull_threshold() -> float:
+    return _macro_number("bear_bull_threshold")
+
+
+def get_macro_strength_saturation() -> float:
+    return _macro_number("strength_saturation")
+
+
+def get_macro_boost_scale() -> float:
+    return _macro_number("boost_scale")
+
+
+def get_macro_penalty_scale() -> float:
+    return _macro_number("penalty_scale")

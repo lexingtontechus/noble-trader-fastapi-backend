@@ -221,6 +221,11 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # (bracket_reachability.py). Nullable; rows captured before 2026-08-25
     # have no value.
     "atr",
+    # macro_label/macro_strength (migration 124): the macro filter's read
+    # for this symbol at capture time — feeds the win/loss+PnL evidence
+    # diagnostic (macro_edge.py). Nullable; absent when macro_regime_mode
+    # is off or no nt_macro_regime row exists yet.
+    "macro_label", "macro_strength",
     # drift_*_pct (migration 121, Phase 2): direction-relative post-entry
     # price drift at fixed horizons, written by eod_resolver.py's PATCH
     # (this constant governs capture-time inserts; eod_resolver.py keeps
@@ -542,6 +547,113 @@ async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
                 )
     except Exception as exc:
         logger.error("upsert_entry_drift: insert failed: %s", exc)
+
+
+NT_MACRO_REGIME_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "macro_score", "macro_score_smoothed", "macro_label",
+    "macro_strength", "sma_window_days", "computed_at",
+})
+
+
+async def upsert_macro_regime(rows: list[dict[str, Any]]) -> None:
+    """Upsert per-symbol rows into ``nt_macro_regime`` (best-effort).
+
+    Keyed on ``symbol`` (the table's PK) — a daily refresh REPLACES the
+    row rather than accumulating duplicates, same shape as
+    ``upsert_bracket_reachability``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_MACRO_REGIME_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_macro_regime: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_macro_regime')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_macro_regime: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_macro_regime: insert failed: %s", exc)
+
+
+async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
+    """Single-row read of ``nt_macro_regime`` for one symbol — the live
+    per-tick read both sweep paths use right before applying the macro
+    Kelly multiplier. Returns ``None`` on any failure or missing row
+    (never raises — callers treat that as "no macro read yet, no-op").
+    """
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_macro_regime"),
+                headers=_headers(),
+                params={
+                    "select": "macro_label,macro_strength,macro_score_smoothed",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data[0] if isinstance(data, list) and data else None
+    except Exception as exc:
+        logger.warning("fetch_macro_regime: %s: read failed: %s", symbol, exc)
+        return None
+
+
+NT_MACRO_EDGE_BY_SYMBOL_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "alignment", "n", "win_rate", "avg_rr_winners", "expectancy_r",
+})
+
+
+async def upsert_macro_edge_by_symbol(rows: list[dict[str, Any]]) -> None:
+    """Upsert bucket rows into ``nt_macro_edge_by_symbol`` (best-effort).
+
+    Keyed on ``(symbol, alignment)`` — same upsert-on-conflict shape as
+    ``upsert_bracket_reachability``/``upsert_calibration_bias_by_bucket``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_MACRO_EDGE_BY_SYMBOL_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_macro_edge_by_symbol: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_macro_edge_by_symbol')}?on_conflict=symbol,alignment",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_macro_edge_by_symbol: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_macro_edge_by_symbol: insert failed: %s", exc)
 
 
 NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({

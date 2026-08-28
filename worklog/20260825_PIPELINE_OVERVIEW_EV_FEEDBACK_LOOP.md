@@ -1252,3 +1252,198 @@ live-mode change from this build — `markov_source_mode` stays
 changes what the shadow computation itself produces, so its effect will
 show up in the existing `nt_markov_source_shadow`/
 `nt_trend_probs_gate_shadow` comparisons going forward.
+
+## Shadow-table reset — clean baseline for the root-cause fix (2026-08-28)
+
+Studio was updated and restarted with the root-cause classifier above.
+Checking `nt_markov_source_shadow`/`nt_trend_probs_gate_shadow` post-
+restart confirmed it's running (fresh `updated_at`, and the latest tick
+per symbol showed the classifier visibly firing — AAPL raw 0.970 →
+gated 0.500, US500 raw 0.825 → gated 0.529, US30USD raw 0.969 → gated
+0.666, BTCUSD raw 0.970 → gated 0.745, everyone else unchanged that
+tick). But both tables are running lifetime accumulators (`n_compared`
+counts up, never resets) — every count and average logged since Tier
+1/2 first shipped, which pre-dates today's root-cause fix. Reading them
+now would blend pre-fix and post-fix ticks into one average, which
+isn't a clean read on what the fix actually changed.
+
+**Pre-reset snapshot (for the record — final blended lifetime totals,
+now superseded)**:
+
+`nt_markov_source_shadow` (Tier 1): 7113 comparisons across 14 symbols,
+61.5% overall disagreement. Per-symbol n ranged 505-517 (all started
+together, same cron cadence), disagreement 43.6% (AAPL) - 74.7%
+(XAUAUD).
+
+`nt_trend_probs_gate_shadow` (Tier 2): 3496 comparisons, avg |raw -
+gated| ranged 0.019 (USDCAD) - 0.470 (AAPL).
+
+**Action taken**: both tables' rows deleted entirely via Supabase REST
+(`DELETE ... WHERE symbol IS NOT NULL`) at **2026-08-28T23:19:51Z**.
+Confirmed safe before doing it: both tables are `symbol TEXT PRIMARY
+KEY` with no FK pointing at them from anywhere else, and both are
+already self-healing fetch-then-upsert accumulators (`record_markov_
+shadow_compare`/`record_trend_probs_gate_shadow` in
+`supabase_client.py` already handle "no existing row" as `n_compared =
+0 + 1`) — the next tick per symbol just re-creates a fresh row, no code
+change needed, no risk of the app erroring on a missing row.
+
+**Baseline marker**: any review from this point forward should treat
+**2026-08-28T23:19:51Z** as the start of the clean, post-root-cause-fix
+observation window — `n_compared` and the averages now reflect only
+ticks emitted by the fixed classifier. The 48-72h wait recommended in
+the "studio updated & restarted" review above should be measured from
+this timestamp, not the original Tier 1/2 ship date.
+
+## Macro filter — build, with a w/l+PnL evidence extension (2026-08-28)
+
+Built the macro filter scoped earlier (2026-08-26), plus a new
+win/loss+PnL evidence layer the user specifically asked to have detailed
+and factored in. One real correction surfaced while re-verifying the
+original scope against actual code before building it: the original
+text assumed `recompute_ev_fields()` would carry a Kelly multiplier —
+it doesn't (it only recomputes `p_win`-derived EV fields: ev/
+ev_per_dollar/rr/allowed/aggression/ev_scale; no `kelly_f` anywhere in
+its signature or return). The real, already-established pattern for a
+post-hoc Kelly adjustment is `calibration_enforcement.py`'s
+`apply_calibration_adjustment` → `effective_kelly = calib_adj["kelly_f"]`
+mutation in both sweep paths — the macro filter mirrors that exact
+pattern instead.
+
+**Why a w/l+PnL layer, given the earlier scope explicitly said "no, as
+scoped"?** That answer was about NOT blending macro (price-only) and
+signal-quality (`nt_calibration_bias_by_bucket`, outcome-only) into one
+number — a design decision that stands, unchanged. What's new here is
+using realized win/loss+PnL as EVIDENCE for whether the macro filter's
+own boost/penalty constants are pointed the right way, without touching
+the live formula's mechanism itself (still pure price, still a human
+sets `boost_scale`/`penalty_scale`, no auto-tuning added).
+
+### Exact calculations
+
+**Price/label (unchanged from the 2026-08-26 scope):**
+```
+macro_score          = (last_close - SMA_200d) / SMA_200d
+macro_score_smoothed = prev_smoothed + alpha * (macro_score - prev_smoothed)
+                        (alpha = 1 - 0.5**(1/ema_half_life_days); bootstraps
+                        to macro_score itself on a symbol's first-ever read)
+macro_label           = "bull" if macro_score_smoothed > +bear_bull_threshold
+                        "bear" if macro_score_smoothed < -bear_bull_threshold
+                        else "neutral"
+macro_strength        = min(1.0, abs(macro_score_smoothed) / strength_saturation)
+```
+
+**Kelly multiplier (corrected mechanism — mutates `effective_kelly`/
+`result.kelly_f` directly, not via `recompute_ev_fields()`):**
+```
+implied = "bull" if direction == "buy" else "bear"
+if macro_label is None or macro_label == "neutral": mult = 1.0
+elif macro_label == implied: mult = 1.0 + macro_strength * boost_scale
+else: mult = 1.0 - macro_strength * penalty_scale
+mult = clamp(mult, 0.25, 1.5)
+```
+Only APPLIED when `macro_regime_mode == "live"`; computed and captured
+(`macro_label`/`macro_strength` on `nt_signal_sim`, migration 124) in
+`shadow` mode too, so the evidence layer below can accumulate before any
+live decision.
+
+**Win/loss+PnL evidence — the new part, `macro_edge.py`:**
+```
+implied_direction(signal) = "bull" if signal == "buy" else "bear"
+alignment = "neutral" if macro_label == "neutral"
+            "aligned" if macro_label == implied_direction(signal)
+            "opposed" otherwise
+
+# per (symbol, alignment), over win/loss-resolved nt_signal_sim rows
+# (outcome IN tp_hit/sl_hit; expired excluded, same rule as everywhere
+# else this session):
+win_rate       = n_tp_hit / n
+avg_rr_winners = mean(tp_bricks / sl_bricks) over tp_hit rows
+expectancy_r   = win_rate * (avg_rr_winners or 0.0) - (1 - win_rate) * 1.0
+```
+`expectancy_r`'s formula is copy-identical to `calibration_bias_bucket.py`'s
+already-bug-fixed one (2026-08-25 fix: well-defined at zero wins, not
+gated on `avg_rr_winners`) — reused, not reinvented. Output:
+`nt_macro_edge_by_symbol(symbol, alignment, n, win_rate, avg_rr_winners,
+expectancy_r)` (migration 125). This is diagnostic evidence for a human
+to read before setting `boost_scale`/`penalty_scale` — it does not feed
+back into live sizing itself.
+
+### Files
+
+- **Migrations 124/125**: `nt_macro_regime` (symbol PK, daily-refreshed
+  score/label/strength) + `nt_signal_sim.macro_label`/`macro_strength`
+  (nullable capture columns, same precedent as `atr`, migration 120);
+  `nt_macro_edge_by_symbol` ((symbol, alignment) PK, the evidence table
+  above). Not yet applied — same convention as every other migration
+  this session, left for the user to run.
+- **`config/feature_flags.yaml` / `feature_flags.py`**: `macro_regime_mode`
+  (off|shadow|live, default `shadow` — same shadow-first default as
+  `markov_source_mode`/`trend_probs_gate_mode`, a deliberate deviation
+  from the original scope's "default off," since shadow costs nothing
+  and starts the evidence accumulating immediately) + `macro.{sma_window_days,
+  ema_half_life_days,bear_bull_threshold,strength_saturation,boost_scale,
+  penalty_scale}`.
+- **`macro_filter.py`** (new): `compute_macro_regime` (pure calc),
+  `refresh_macro_regime` (daily job — fetches ~300 daily bars/symbol via
+  `fetch_tradingview_batch(interval="1D")`, reads each symbol's previous
+  `macro_score_smoothed` for real EMA continuity, upserts), `get_macro_regime`
+  (per-tick read), `kelly_macro_multiplier` (pure fn). Dual module/CLI
+  shape, same as `bracket_reachability.py`.
+- **`macro_edge.py`** (new): the evidence table builder above. Same
+  dual module/CLI shape, own local `_fetch_all` pagination helper
+  (mirrors `calibration_bias_bucket.py`'s own local copy — existing
+  convention, not shared).
+- **`supabase_client.py`**: `upsert_macro_regime`, `fetch_macro_regime`,
+  `upsert_macro_edge_by_symbol` — mirror `upsert_bracket_reachability`'s
+  shape. `macro_label`/`macro_strength` added to `NT_SIGNAL_SIM_COLUMNS`.
+- **`orchestrator.py`**: `_build_signal_sim_payload` gains
+  `macro_label`/`macro_strength` kwargs (nullable, mirrors `atr`). Light
+  sweep reads `nt_macro_regime` right after the calibration-enforcement
+  block (same `signal_is_qualifiable` guard, avoids a round-trip on
+  neutral ticks), mutates `effective_kelly` in place when `live`.
+  Scheduler: new daily job (06:00 UTC) for `_run_macro_regime_refresh`;
+  `_run_bracket_reachability`'s existing weekly job now also calls
+  `macro_edge.build_macro_edge_table()` at the end — no new weekly cron
+  slot, same resolved-`nt_signal_sim` population and cadence as the two
+  diagnostics already chained there.
+- **`heavy_sweep.py`**: mirrors the light-sweep wiring exactly (the
+  "gate added to one path, missed on the other" bug this session already
+  found twice) — reads macro state right after `result.qualified` is
+  set, mutates `result.kelly_f` in place when live, which automatically
+  propagates to `_push_heavy_signal`, the `nt_sweep_result` payload, and
+  the sim-capture payload since all three already read from
+  `result.kelly_f`/derive from it.
+- **`settings.py`**: `MACRO_REGIME_ENABLED` (kill switch for both
+  background jobs; live-behavior gating is the separate
+  `macro_regime_mode`).
+
+### Tests + verification
+
+`tests/test_macro_filter.py` (new, 15 tests): hand-computed SMA/EMA/
+score/label/strength cases for `compute_macro_regime` (insufficient
+history, flat/bootstrap/continuity, bear threshold, strength saturation
+and linear scaling); `kelly_macro_multiplier` (neutral/missing-label
+no-op, aligned buy/sell boost, opposed buy/sell penalty, internal
+strength clamp, and — via `monkeypatch` on an artificially large boost/
+penalty scale, since the real 0.3/0.5 defaults never reach it on their
+own — confirmed the `[0.25, 1.5]` hard clamp actually engages). Full
+suite: 638 passed, 21 skipped (pre-existing/unrelated), 0 failed (up
+from 623 before this build).
+
+Real-data check: ran `macro_filter.py` standalone against live TDVA
+daily bars for all 14 active symbols. Labels look directionally sane —
+AAPL/BTCUSD/US500/US30USD read `bull` with real conviction (strength
+0.51-0.95), XAGUSD reads `bear` (0.38), FX pairs mostly `neutral`
+(strength 0.01-0.21, consistent with FX trading closer to fair value
+than equities/commodities do). The upsert itself 404'd, as expected —
+migrations 124/125 aren't applied yet.
+
+### Not done
+
+Migrations 124/125 not yet applied (user's step, as always). No live
+decision made — `macro_regime_mode` ships at `shadow`, computing and
+capturing but not touching Kelly sizing. `nt_macro_edge_by_symbol` needs
+real accumulation time (weeks, same as the original scope's own
+verification plan) before its evidence is meaningful for a
+`boost_scale`/`penalty_scale` review.

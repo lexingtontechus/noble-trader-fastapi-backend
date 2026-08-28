@@ -697,6 +697,8 @@ def _build_signal_sim_payload(
     effective_kelly: float | None = None,
     predicted_p_win_raw: float | None = None,
     atr: float | None = None,
+    macro_label: str | None = None,
+    macro_strength: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -721,6 +723,12 @@ def _build_signal_sim_payload(
     time (absolute price units, see ``heavy_sweep.compute_atr``) — feeds
     the bracket-reachability diagnostic (bracket_reachability.py).
     Nullable so legacy callers are unaffected.
+
+    ``macro_label``/``macro_strength`` (2026-08-28, migration 124) are
+    the macro filter's read for this symbol at capture time (see
+    ``macro_filter.py``) — feed the win/loss+PnL evidence diagnostic
+    (``macro_edge.py``). Nullable: absent when ``macro_regime_mode`` is
+    ``off`` or no ``nt_macro_regime`` row exists yet for the symbol.
     """
     payload = {
         "symbol": symbol,
@@ -742,6 +750,8 @@ def _build_signal_sim_payload(
         "kelly_f": round(float(kelly_f), 6) if kelly_f is not None else None,
         "effective_kelly": round(float(effective_kelly), 6) if effective_kelly is not None else None,
         "atr": round(float(atr), 6) if atr is not None else None,
+        "macro_label": macro_label,
+        "macro_strength": round(float(macro_strength), 4) if macro_strength is not None else None,
     }
     if (
         settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW
@@ -999,6 +1009,23 @@ class SweepOrchestrator(HeavySweepMixin):
                 trigger=CronTrigger.from_crontab("0 7 * * sun"),
                 id="bracket-reachability-weekly",
                 name="Bracket reachability table (weekly)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
+        # Macro filter daily refresh (2026-08-28, worklog/
+        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
+        # full build scope"): 06:00 UTC daily, own cadence (independent
+        # of both sweep paths) — before the light-sweep day starts and
+        # clear of the 07:00 UTC Sunday reachability job. Read-only price
+        # computation; nt_signal_sim capture / live Kelly application are
+        # gated separately by macro_regime_mode (config/feature_flags.yaml).
+        if getattr(settings, "MACRO_REGIME_ENABLED", True):
+            self._scheduler.add_job(
+                self._run_macro_regime_refresh,
+                trigger=CronTrigger.from_crontab("0 6 * * *"),
+                id="macro-regime-daily",
+                name="Macro regime refresh (daily)",
                 misfire_grace_time=3600,
                 coalesce=True,
             )
@@ -1478,6 +1505,44 @@ class SweepOrchestrator(HeavySweepMixin):
                 )
             except Exception as exc:
                 logger.error("[entry-drift] failed: %s", exc)
+
+        # Macro-edge-by-symbol (2026-08-28, worklog/
+        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): the win/loss+PnL
+        # evidence for the macro filter (macro_filter.py). Chained onto
+        # this same weekly job rather than a new cron slot — same
+        # resolved-nt_signal_sim population as the two diagnostics above,
+        # same cadence. Read-only: informs macro.boost_scale/penalty_scale
+        # (config/feature_flags.yaml) review, does not auto-tune them.
+        if getattr(settings, "MACRO_REGIME_ENABLED", True):
+            from regime_platform.sweep_orchestrator.macro_edge import (
+                build_macro_edge_table,
+            )
+
+            try:
+                edge_rows = await build_macro_edge_table()
+                logger.info(
+                    "[macro-edge] done: %d bucket row(s) across %d symbol(s)",
+                    len(edge_rows), len({r["symbol"] for r in edge_rows}),
+                )
+            except Exception as exc:
+                logger.error("[macro-edge] failed: %s", exc)
+
+    async def _run_macro_regime_refresh(self) -> None:
+        """Macro filter daily refresh (2026-08-28, worklog/
+        20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
+        full build scope"). Recomputes the 200-day-SMA-based macro
+        score/label/strength for every active symbol and upserts
+        nt_macro_regime. Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.sweep_orchestrator.macro_filter import (
+            refresh_macro_regime,
+        )
+
+        try:
+            rows = await refresh_macro_regime()
+            logger.info("[macro-regime] done: %d symbol(s) refreshed", len(rows))
+        except Exception as exc:
+            logger.error("[macro-regime] failed: %s", exc)
 
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,
@@ -2295,6 +2360,48 @@ class SweepOrchestrator(HeavySweepMixin):
                     ev_result.p_win, effective_kelly, ev_result.ev, ev_result.aggression,
                 )
 
+        # ── 5b1. Macro filter (2026-08-28, worklog
+        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) ──────────────
+        # Long-range (multi-month) price-only trend read — completely
+        # separate signal from calibration enforcement above (which is
+        # outcome-based). Only read when the signal is qualifiable (same
+        # guard as calibration enforcement, avoids a Supabase round-trip
+        # on neutral ticks). macro_label/macro_strength are captured on
+        # nt_signal_sim regardless of mode (feeds the win/loss+PnL
+        # evidence diagnostic, macro_edge.py); the Kelly multiplier is
+        # only APPLIED when macro_regime_mode=live.
+        macro_label: str | None = None
+        macro_strength: float | None = None
+        if signal_is_qualifiable:
+            from regime_platform.core.feature_flags import get_macro_regime_mode
+            macro_mode = get_macro_regime_mode()
+            if macro_mode != "off":
+                from regime_platform.sweep_orchestrator.macro_filter import (
+                    get_macro_regime,
+                    kelly_macro_multiplier,
+                )
+                try:
+                    macro_row = await get_macro_regime(symbol)
+                    if macro_row:
+                        macro_label = macro_row.get("macro_label")
+                        macro_strength = macro_row.get("macro_strength")
+                        if macro_mode == "live" and macro_label is not None:
+                            macro_mult = kelly_macro_multiplier(
+                                macro_label, macro_strength, trade_signal["signal"],
+                            )
+                            effective_kelly = effective_kelly * macro_mult
+                            logger.info(
+                                "[sweep:orch] %s: macro filter LIVE — label=%s "
+                                "strength=%.4f mult=%.4f, kelly→%.6f",
+                                symbol, macro_label, macro_strength or 0.0,
+                                macro_mult, effective_kelly,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:orch] %s: macro filter read failed (%s: %s), skipping",
+                        symbol, type(exc).__name__, exc,
+                    )
+
         # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────
         # Fast intraday bias-drift detection BETWEEN the scheduled passes:
         # when a symbol's short-window realized win rate lags its predicted
@@ -2762,6 +2869,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     effective_kelly=effective_kelly,
                     predicted_p_win_raw=p_win_raw,
                     atr=atr,
+                    macro_label=macro_label,
+                    macro_strength=macro_strength,
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

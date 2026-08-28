@@ -64,3 +64,23 @@ markov_min_occupancy: 0.10
 # shadow data first, same discipline as markov_source_mode's
 # trend_hmm_live.
 trend_probs_gate_mode: shadow
+
+# Macro filter (2026-08-26/28, worklog 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md,
+# "Macro filter — full build scope" + the w/l+PnL evidence extension).
+# Pure price-based multi-month trend read — (last_close - SMA_200d) /
+# SMA_200d, EMA-smoothed — deliberately separate from signal-quality/PnL
+# work (that's nt_calibration_bias_by_bucket); the two stay separate
+# signals, not blended into one number. off | shadow | live: shadow
+# computes macro_label/macro_strength and captures them on nt_signal_sim
+# (so the w/l+PnL evidence table, nt_macro_edge_by_symbol, can accumulate)
+# without touching live Kelly sizing. live additionally multiplies
+# effective_kelly by the boost/penalty formula below. Same shadow-first
+# discipline as markov_source_mode/trend_probs_gate_mode.
+macro_regime_mode: shadow
+macro:
+  sma_window_days: 200
+  ema_half_life_days: 10
+  bear_bull_threshold: 0.05      # |macro_score_smoothed| beyond this -> bear/bull, else neutral
+  strength_saturation: 0.15      # |macro_score_smoothed| at/beyond this -> macro_strength=1.0
+  boost_scale: 0.3               # max +30% kelly at full strength when direction agrees
+  penalty_scale: 0.5             # max -50% kelly at full strength when direction opposes

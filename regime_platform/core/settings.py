@@ -425,6 +425,17 @@ class Settings(BaseSettings):
     # reads either yet.
     CALIBRATION_BIAS_BY_BUCKET_ENABLED: bool = True
 
+    # MACRO_REGIME_ENABLED (default True, 2026-08-28, worklog/
+    # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter — full
+    # build scope"): kill switch for BOTH the daily macro-regime refresh
+    # (macro_filter.py, 06:00 UTC) and the weekly win/loss+PnL evidence
+    # diagnostic (macro_edge.py, chained onto the existing bracket-
+    # reachability weekly job). Live-behavior gating for the filter
+    # itself is the separate macro_regime_mode in
+    # config/feature_flags.yaml (off|shadow|live) — this flag only
+    # controls whether the two background jobs run at all.
+    MACRO_REGIME_ENABLED: bool = True
+
     # Emergency heavy-sweep cooldown for the intraday correction passes:
     # a symbol gets at most one re-optimization per this window (bounds
     # backtest cost; the nightly pass is unaffected).

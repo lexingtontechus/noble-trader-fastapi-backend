@@ -668,6 +668,50 @@ class HeavySweepMixin:
             )
             result.qualified = qualified
 
+            # ── 8b. Macro filter (2026-08-28, worklog
+            # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — mirror of
+            # the light sweep's macro read (orchestrator.py::
+            # _process_symbol). Same reasoning as the trend_probs gate
+            # mirroring fix earlier this session: a gate added to one
+            # sweep path and missed on the other is exactly the bug this
+            # session already found twice. macro_label/macro_strength are
+            # captured on nt_signal_sim regardless of mode; the Kelly
+            # multiplier is only APPLIED (mutating result.kelly_f, which
+            # feeds every downstream use — the qualified-signal push, the
+            # nt_sweep_result payload, and the sim-capture payload below)
+            # when macro_regime_mode=live.
+            macro_label: str | None = None
+            macro_strength: float | None = None
+            if trade_signal["signal"] not in ("neutral", "unknown"):
+                from regime_platform.core.feature_flags import get_macro_regime_mode
+                macro_mode = get_macro_regime_mode()
+                if macro_mode != "off":
+                    from regime_platform.sweep_orchestrator.macro_filter import (
+                        get_macro_regime,
+                        kelly_macro_multiplier,
+                    )
+                    try:
+                        macro_row = await get_macro_regime(symbol)
+                        if macro_row:
+                            macro_label = macro_row.get("macro_label")
+                            macro_strength = macro_row.get("macro_strength")
+                            if macro_mode == "live" and macro_label is not None:
+                                macro_mult = kelly_macro_multiplier(
+                                    macro_label, macro_strength, trade_signal["signal"],
+                                )
+                                result.kelly_f = result.kelly_f * macro_mult
+                                logger.info(
+                                    "[sweep:heavy] %s: macro filter LIVE — label=%s "
+                                    "strength=%.4f mult=%.4f, kelly_f→%.6f",
+                                    symbol, macro_label, macro_strength or 0.0,
+                                    macro_mult, result.kelly_f,
+                                )
+                    except Exception as exc:
+                        logger.warning(
+                            "[sweep:heavy] %s: macro filter read failed (%s: %s), skipping",
+                            symbol, type(exc).__name__, exc,
+                        )
+
             if qualified:
                 await self._push_heavy_signal(
                     sym=sym,
@@ -763,6 +807,8 @@ class HeavySweepMixin:
                         kelly_f=result.kelly_f,
                         effective_kelly=result.kelly_f * ev_result.ev_scale,
                         atr=atr,
+                        macro_label=macro_label,
+                        macro_strength=macro_strength,
                     )
                     if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                         logger.debug(
