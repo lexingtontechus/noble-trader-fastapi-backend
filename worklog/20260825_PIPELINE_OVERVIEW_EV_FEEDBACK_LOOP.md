@@ -1036,7 +1036,219 @@ extending `tuning_registry.py` for string values beyond what's described
 above. Exact threshold/scale defaults are candidates, not final — tune
 during the shadow-mode observation window, not before.
 
+## 48h data review + outcome-validation-layer scope (2026-08-28)
+
+Studio logs still unreachable from this environment — data only, same
+limitation noted throughout.
+
+### 48h findings
+
+6948 signals captured, 0 errors, 2.4% qualified. 6459 resolved: 71.8%
+expired, 16.8% sl_hit, 11.4% tp_hit — same expiry-dominated pattern the
+whole calibration-reframe thread addresses. First 48h window to catch
+real resolution data: BTCUSD (n=114, bias -0.016) and XAUAUD (n=68,
+bias +0.041) both read as genuinely well-calibrated right now; XAGUSD
+(n=26) and US500 (n=18) still show real bias (+0.28, +0.31) but on
+small samples. Nothing built this session is live yet, so this isn't
+evidence of anything we shipped helping — most likely just this
+window's market behavior.
+
+**Tier 1**: disagreement now **61.3%** over 6749 comparisons — continued
+dropping (82→68→61%) and has moved *below* the ~66.7% "two independent
+classifiers" baseline. **Tier 2**: with ~220+ observations per symbol,
+the correction is confirmed persistent, not a one-off — avg |diff|
+ranges 0.02 (USDCAD) to 0.47 (AAPL), most symbols in between.
+
+Both shadow tables now answer "how much do these differ" convincingly.
+Neither answers "which one is right" — that's what's scoped below.
+
+### Outcome-validation-layer — full scope
+
+**Goal**: join the existing shadow comparisons against REALIZED outcomes
+(already sitting in `nt_signal_sim`, filled in nightly by
+`eod_resolver.py`) so a live-mode decision is based on evidence of
+accuracy, not just evidence of disagreement.
+
+**Mechanism — link via `signal_id`, capture per-observation instead of
+only updating the running aggregate.**
+
+1. **New table `nt_hmm_shadow_outcomes`**: `signal_id` (PK, FK →
+   `nt_signal_sim.signal_id`), `symbol`, `legacy_markov_state`,
+   `trend_hmm_markov_state`, `raw_p_regime`, `gated_p_regime`,
+   `created_at`. One row per non-neutral signal tick — same population
+   as `nt_signal_sim` itself, since the shadow diagnostics are already
+   computed at that exact point in both sweep paths.
+
+2. **Threading a shared ID** (the one real code change this needs,
+   verified feasible against the actual code before writing this scope):
+   - `log_signal_sim(payload, signal_id: str | None = None)` gains an
+     optional override — uses it if given, generates its own otherwise.
+     100% backward compatible: confirmed via
+     `tests/test_signal_sim_capture.py::test_log_signal_sim_adds_signal_id`,
+     which only checks a valid UUID ends up in the row, not where it
+     came from.
+   - `_build_signal_sim_payload` itself stays **unchanged** —
+     `test_payload_has_no_signal_id` explicitly protects it from gaining
+     this field, so the ID threads around that function, not through
+     it: the caller (`_process_symbol`/`run_heavy_sweep_for_symbol`)
+     pre-generates `signal_id = str(uuid.uuid4())` (a trivial, synchronous
+     call, no async plumbing needed) before building the payload, passes
+     it to `log_signal_sim`, and reuses the exact same value for the new
+     `nt_hmm_shadow_outcomes` insert — both writes are fire-and-forget,
+     same as everything else in this capture path.
+   - The existing running-aggregate tables (`nt_markov_source_shadow`,
+     `nt_trend_probs_gate_shadow`) are unaffected — this adds a
+     per-observation record alongside them, doesn't replace them.
+
+3. **New analysis module `hmm_validation.py`** (same dual module/CLI
+   shape as `bracket_reachability.py`/`calibration_bias_bucket.py`):
+   fetches `nt_hmm_shadow_outcomes` JOIN `nt_signal_sim` on `signal_id`
+   WHERE `outcome IN ('tp_hit','sl_hit')` — expired excluded, same rule
+   as everywhere else this session (a timeout is neither a win nor a
+   loss).
+   - **Tier 1 scoring**: ground truth `realized_direction` = which way
+     price actually went relative to entry (derived from `signal`
+     buy/sell + `outcome` tp_hit/sl_hit). For each engine, compute
+     hit-rate against `realized_direction` **only on its own non-FLAT
+     calls** — FLAT is "no answer," not a wrong answer, so it's excluded
+     from the accuracy tally and reported separately as a coverage/
+     abstention rate instead.
+   - **Tier 2 scoring**: Brier score, `(p_regime - realized)^2` with
+     `realized ∈ {0,1}` (tp_hit=1, sl_hit=0), averaged separately for
+     raw vs. gated per symbol — reusing the exact scoring convention
+     `eod_resolver.py::_write_calibration_record` already uses for
+     `calibration_brier`, not a new metric invented for this.
+   - Output: per-symbol AND aggregate comparison, with a minimum-sample
+     gate (matching the `EOD_BIAS_MIN_RECORDS=20` convention already
+     used elsewhere) before a symbol's result is treated as meaningful.
+
+4. **Migration**: standard shape — new table, service-role-only RLS,
+   same convention as every other table this session.
+
+**Explicitly not in this phase**: no live-mode decision made here — this
+produces evidence, not a switch flip. Neither existing shadow table's
+behavior changes. No per-symbol override for `markov_source_mode`/
+`trend_probs_gate_mode` (currently global-only settings) — worth
+flagging since prior data (AAPL/US500 badly mislabeled, USDCAD/AUDUSD
+fine) suggests the right answer may end up being per-symbol, not
+global, but that's a bigger config-system change not scoped here.
+
+**Verification plan**: once shipped, let it accumulate (48h resolved
+count across all symbols was ~1822 in the review above, so a
+multi-day wait is likely needed for adequate per-symbol samples above
+the min-n gate), then re-run and sanity-check against what the earlier
+live simulations already suggested (e.g. expect AAPL/US500 to show
+`gated`/`trend_hmm` clearly outperforming `raw`/`legacy`; expect
+USDCAD/AUDUSD to show near-parity, consistent with those symbols'
+labels already being largely correct).
+
 ## Still not built
 
-Everything above is investigation + synthesis, same discipline as the
-rest of this session. No code or migration changes for this document.
+The outcome-validation-layer scope above is investigation + synthesis
+only, same discipline as the rest of this session — no code or migration
+changes for it. Superseded in practice by the root-cause build below,
+per the explicit instruction not to keep tacking on more gates/tables:
+dig into WHY the labels disagree instead of adding a third layer to
+adjudicate between two already-disagreeing ones.
+
+## Root-cause classifier — build (2026-08-28)
+
+**Why this replaces Tier 1 + Tier 2's internals rather than adding a
+third gate.** Digging into AAPL/US500 specifically (per instruction) to
+find where the platform's regime label and the "correct" label actually
+diverge turned up two distinct, previously-unaddressed root causes, not
+one:
+
+- **Root cause A**: `_label_states` ranks the 4 fitted trend components
+  using ONLY feature index 2 (30-bar cumulative return) — the other two
+  fitted features (1-bar return, 10-bar cumulative return) are computed
+  and fitted but never consulted for labeling. Real data showed several
+  symbols with a component whose 3 features actively disagree in sign
+  (e.g. a strongly-positive 30-bar return sitting on a component whose
+  1-bar/10-bar features are negative) — an internally contradictory
+  regime read that Tier 1/2's magnitude-only gates couldn't see, since
+  they also only looked at feature 2.
+- **Root cause B**: some fits show near-total single-component Viterbi
+  occupancy collapse (e.g. AAPL, one component absorbing ~100% of the
+  fit window's bars in the original investigation) — the other
+  components' means are fit on almost no real observations and are
+  statistical noise dressed up as a regime label, regardless of their
+  magnitude. Nothing before this checked occupancy at all.
+
+Confirmed (via `git grep` on `RegimeHMM.TREND_LABELS`) that `_label_states`
+and the `TREND_LABELS`/`TREND_LABELS_BY_N` constants have a wide blast
+radius — `gpu_engine.py`'s parallel GPU HMM, `simulator.py`,
+`backtester.py`, and multiple external-facing routers
+(`routers/regime.py`, `routers/pipeline.py`, `routers/stream_ws.py`,
+`routers/stream_rest.py`, `renko/router.py`) all depend on the current
+4-label shape. Widening the label set (a "true" 5th neutral state) would
+touch all of them for a rank-based scheme that still wouldn't fix A or
+B. Instead, the fix classifies components directly from the trend
+model's own fitted parameters — bypassing the rank-assigned label
+entirely — inside the two functions that already sit between the trend
+model and the live EV blend (`trend_transition_matrix_3state` for Tier
+1, `gated_trend_probs` for Tier 2). `_label_states`, `TREND_LABELS`, and
+every consumer above are untouched.
+
+**`RegimeHMM._classify_trend_components()`** (new, `regime_engine.py`) —
+called once per Tier 1/2 read, returns `{component_index: "UP"|"DOWN"|"FLAT"}`
+computed directly from the fit, in order:
+1. Viterbi occupancy (bars actually assigned to this component during
+   `.fit()`, via `.predict()` on the standardized features) must clear
+   `markov_min_occupancy` (default 0.10) — else FLAT (root cause B).
+2. All 3 raw fitted features must agree in sign — else FLAT (root cause
+   A).
+3. Feature 2's magnitude must clear `markov_flat_gate_threshold_stds *
+   sigma` (same threshold Tier 1/2 already used) in either direction —
+   UP if positive, DOWN if negative, else FLAT.
+
+This is a stronger read than the old gates: it doesn't just ask "does
+this component support ITS RANK-ASSIGNED label," it determines the
+component's real direction independent of that label. A component
+rank-labeled "bear" that's actually +0.54std now reports UP (not just
+"gated to FLAT") — real signal the old approach discarded.
+`gated_trend_probs` was updated to match: a component's probability mass
+stays under its rank-assigned label only if the classifier's direct
+verdict AGREES with what that label implies; a real UP/DOWN verdict that
+CONTRADICTS the rank label is treated the same as FLAT (moved to
+`neutral`) rather than being silently left under the wrong label.
+
+**New config** (`config/feature_flags.yaml`): `markov_min_occupancy:
+0.10` — the occupancy threshold from root cause B, same
+git-tracked/hot-reload convention as the existing `markov_source_mode`/
+`markov_flat_gate_threshold_stds`/`trend_probs_gate_mode` keys. No new
+tables, no new params beyond this one threshold — the fix is a logic
+change inside two existing functions plus one new classifier method.
+
+**Tests** (`tests/test_regime_stability.py`): `_make_fitted_stub` extended
+to accept per-component `feature_means` (all 3 features, defaulting to
+matching values so cross-feature consistency passes trivially unless a
+test wants to exercise it) and `occupancy` (defaulting to uniform `1/n`,
+clearing the default threshold unless a test wants to exercise it). Two
+new regression tests added directly for root causes A and B
+(`test_trend_transition_matrix_3state_flat_when_features_disagree_in_sign`,
+`test_trend_transition_matrix_3state_flat_when_occupancy_below_minimum`).
+The pre-existing "wrong side of zero" test's expectation changed from
+FLAT to UP, reflecting the classifier's stronger direct-reclassification
+behavior described above — not a weakened test, a corrected one. Full
+suite: 623 passed, 21 skipped (pre-existing/unrelated), 0 failed.
+
+**Real-data verification**: re-ran the same per-component diagnostic
+(occupancy + cross-feature sign check + classifier verdict) against a
+fresh fit on live TDVA data for all 14 active symbols (56 components
+total):
+- Root cause A (cross-feature inconsistency) present in 8 of 56
+  components, across 7 of 14 symbols (XAGUSD, XAUAUD, XAUUSD, AUDUSD ×2,
+  EURUSD, GBPUSD, US500) — all correctly forced to FLAT.
+- Root cause B (occupancy < 10%) present in 14 of 56 components (25%) —
+  including AAPL's comp3 at 9.96% occupancy, the same symbol flagged in
+  the original investigation — all correctly forced to FLAT regardless
+  of magnitude.
+
+Both root causes are real and current, not artifacts of the original
+investigation's specific market moment, and both are now caught. No
+live-mode change from this build — `markov_source_mode` stays
+`trend_hmm_shadow` and `trend_probs_gate_mode` stays `shadow`; this only
+changes what the shadow computation itself produces, so its effect will
+show up in the existing `nt_markov_source_shadow`/
+`nt_trend_probs_gate_shadow` comparisons going forward.

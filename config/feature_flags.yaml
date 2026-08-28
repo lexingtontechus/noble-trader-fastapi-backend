@@ -29,26 +29,38 @@
 # near MARKOV_SOURCE_MODE usage for full detail.
 markov_source_mode: trend_hmm_shadow
 
-# Tier 1 HMM fix (2026-08-26, worklog same as above): magnitude/sign gate
-# on RegimeHMM.trend_transition_matrix_3state()'s UP/DOWN assignment — a
-# labeled component's own mean must clear this many standard deviations
-# of the trend feature's own noise level (computed at fit time) before
-# being treated as directional; below the threshold, it's mapped to FLAT
-# regardless of its rank-assigned label. Fixes cases found in real data
-# where a component's mean was on the WRONG SIDE of zero (e.g. a "bear"
-# component with a positive mean) but still got mapped straight through
-# to a directional state under the old rank-only logic.
+# Root-cause classifier (2026-08-28, worklog same as above) — powers
+# BOTH RegimeHMM.trend_transition_matrix_3state() (Tier 1, gates
+# markov_source_mode) and RegimeHMM.gated_trend_probs() (Tier 2, gates
+# trend_probs_gate_mode below). Originally these gated the OLD rank-
+# assigned label with a single-feature magnitude check; real-data
+# analysis found that wasn't enough — 9 of 14 live symbols had a
+# component whose 3 fitted features (1-bar return, 10-bar cumulative,
+# 30-bar cumulative) actively contradicted each other, since the old
+# label only ever looked at one of the three, and some symbols showed
+# near-total single-Viterbi-state collapse (e.g. AAPL at 100% one
+# state), where the other components' "means" are fit on ~0 real data
+# and are meaningless regardless of magnitude. The classifier now works
+# directly from the model's own fitted parameters instead of the label:
+# a component only counts as directional if (1) its real Viterbi
+# occupancy clears markov_min_occupancy, (2) all 3 of its fitted
+# features agree in sign, and (3) the magnitude clears this threshold
+# (standard deviations of the trend feature's own fit-time noise scale).
+# Otherwise: FLAT. Replaces the old, incomplete single-feature check —
+# same two consumers, same threshold name, corrected logic.
 markov_flat_gate_threshold_stds: 0.5
 
-# Tier 2 HMM fix (2026-08-27, same worklog): off | shadow | live. Applies
-# the SAME magnitude/sign gate above (markov_flat_gate_threshold_stds) to
-# trend_probs itself (RegimeHMM.gated_trend_probs()), which feeds
-# p_regime directly into the live EV blend — a bigger, already-live
-# surface than Tier 1's markov-derivation-only fix. shadow: compute both
-# raw and gated p_regime, log + persist the comparison to
-# nt_trend_probs_gate_shadow, still feed the RAW value to compute_ev —
-# zero live-behavior change. live: feed the gated trend_probs to
-# compute_ev instead. NOT live by default — review shadow data
-# (nt_trend_probs_gate_shadow) first, same discipline as
-# markov_source_mode's trend_hmm_live.
+# Minimum share of the fit window's bars (Viterbi-assigned) a component
+# must actually occupy before its mean is trusted at all — see above.
+# 0.10 = a component fit on less than 10% of real observations is
+# treated as FLAT regardless of what its mean says.
+markov_min_occupancy: 0.10
+
+# Tier 2: off | shadow | live. shadow: compute both raw and gated
+# p_regime (via the root-cause classifier above), log + persist the
+# comparison to nt_trend_probs_gate_shadow, still feed the RAW value to
+# compute_ev — zero live-behavior change. live: feed the gated
+# trend_probs to compute_ev instead. NOT live by default — review
+# shadow data first, same discipline as markov_source_mode's
+# trend_hmm_live.
 trend_probs_gate_mode: shadow

@@ -373,19 +373,25 @@ def _make_fitted_stub(
     label_map: dict[int, str],
     means: dict[int, float] | None = None,
     sigma: float = 1.0,
+    feature_means: dict[int, tuple[float, float, float]] | None = None,
+    occupancy: dict[int, float] | None = None,
 ) -> RegimeHMM:
     """A RegimeHMM instance with a hand-crafted trend model, bypassing a
     real fit — lets the aggregation math be checked against hand-computed
     expected values instead of whatever a real EM fit happens to produce.
 
-    ``means``/``sigma`` feed the Tier 1 flat-gate (2026-08-26, worklog
-    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — a component's mean
-    must clear ``markov_flat_gate_threshold_stds * sigma`` before keeping
-    a directional label. Default: every component at +/-10.0 (10 std at
-    the default 0.5-std threshold), i.e. comfortably clears the gate in
-    whichever direction its rank-assigned label implies, so tests that
-    predate the gate keep exercising the aggregation math unaffected by
-    it unless they explicitly pass thinner means to test the gate itself.
+    ``means``/``sigma`` feed the magnitude leg of
+    ``_classify_trend_components()`` (2026-08-28, worklog
+    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — a component's
+    feature[2] mean must clear ``markov_flat_gate_threshold_stds * sigma``
+    before it can be classified directional. By default all 3 fitted
+    features are set to the SAME value per component (so the
+    classifier's cross-feature sign-consistency leg — root cause A —
+    trivially passes) and every component's Viterbi occupancy defaults to
+    a uniform ``1/n`` share (comfortably above ``markov_min_occupancy``,
+    so the occupancy leg — root cause B — trivially passes too). Tests
+    that want to exercise the consistency or occupancy legs directly pass
+    ``feature_means``/``occupancy`` to override specific components.
     """
     n = len(label_map)
     if means is None:
@@ -395,7 +401,11 @@ def _make_fitted_stub(
         }
     means_arr = np.zeros((n, 3))
     for i in range(n):
-        means_arr[i, 2] = means.get(i, 0.0)
+        if feature_means is not None and i in feature_means:
+            means_arr[i, :] = feature_means[i]
+        else:
+            v = means.get(i, 0.0)
+            means_arr[i, :] = [v, v, v]
 
     model = RegimeHMM(n_components=n)
     model.fitted = True
@@ -404,6 +414,9 @@ def _make_fitted_stub(
     )
     model._trend_label_map = label_map
     model._trend_scale = (np.zeros(3), np.array([1.0, 1.0, sigma]))
+    model._trend_occupancy = (
+        occupancy if occupancy is not None else {i: 1.0 / n for i in range(n)}
+    )
     return model
 
 
@@ -482,14 +495,17 @@ def test_trend_transition_matrix_3state_current_state_matches_grouping():
     assert model.trend_transition_matrix_3state("unknown_label")[1] == "FLAT"
 
 
-def test_trend_transition_matrix_3state_gates_component_on_wrong_side_of_zero():
-    """Tier 1 HMM fix (2026-08-26, worklog
-    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md). Real data (AUDUSD)
+def test_trend_transition_matrix_3state_reclassifies_component_on_wrong_side_of_zero():
+    """Real data (AUDUSD, worklog 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md)
     showed a "bear"-labeled component (assigned purely by rank order
     among 4 components) with a mean of +0.54 standard deviations — i.e.
-    actually positive, on the wrong side of zero for its label. The old
-    rank-only mapping passed this straight through to DOWN. Confirm the
-    gate now gives it FLAT instead."""
+    actually positive, on the wrong side of zero for its rank-assigned
+    label. The old rank-only mapping passed this straight through to
+    DOWN. The root-cause classifier (2026-08-28) reads the component's
+    OWN fitted parameters directly rather than trusting the rank label at
+    all, so a component that's really +0.54std reports UP — a stronger
+    correction than merely gating to FLAT, since we have real evidence of
+    its true direction."""
     transmat = np.array([
         [0.4, 0.2, 0.2, 0.2],
         [0.2, 0.4, 0.2, 0.2],
@@ -498,15 +514,16 @@ def test_trend_transition_matrix_3state_gates_component_on_wrong_side_of_zero():
     ])
     label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
     # sigma=1.0, default threshold 0.5 std -> component 1 ("bear") at
-    # +0.54std is ON THE WRONG SIDE of zero and must gate to FLAT;
-    # component 0 ("strong_bear") at -0.88std clears the threshold and
-    # keeps DOWN, matching the real AUDUSD reading from the worklog.
+    # +0.54std clears the UP threshold directly and is reclassified UP,
+    # not left under its rank-assigned "bear"/DOWN label; component 0
+    # ("strong_bear") at -0.88std clears DOWN and keeps that direction,
+    # matching the real AUDUSD reading from the worklog.
     means = {0: -0.88, 1: +0.54, 2: +1.11, 3: +1.30}
     model = _make_fitted_stub(transmat, label_map, means=means, sigma=1.0)
 
     T3, current_state = model.trend_transition_matrix_3state("bear")
 
-    assert current_state == "FLAT"
+    assert current_state == "UP"
     for row in T3.values():
         assert sum(row.values()) == pytest_approx(1.0)
 
@@ -565,15 +582,73 @@ def test_gated_trend_probs_moves_mass_to_neutral_for_gated_components():
     gated = model.gated_trend_probs(raw)
 
     # strong_bear/bear clear the DOWN threshold (means below -0.5std) and
-    # keep their mass; bull (mean -2.09, on the wrong side for "UP") and
-    # strong_bull (mean +0.14, below the +0.5std threshold) both gate to
-    # neutral.
+    # keep their mass, since their real classification (DOWN) matches
+    # what their rank-assigned label implies; bull (mean -2.09 -> the
+    # classifier reads this directly as DOWN, contradicting its "bull"
+    # label) and strong_bull (mean +0.14, below the +0.5std threshold ->
+    # FLAT) both gate to neutral rather than being misattributed.
     assert gated["strong_bear"] == pytest_approx(0.4)
     assert gated["bear"] == pytest_approx(0.3)
     assert gated.get("bull", 0.0) == pytest_approx(0.0)
     assert gated.get("strong_bull", 0.0) == pytest_approx(0.0)
     assert gated["neutral"] == pytest_approx(0.3)  # 0.2 (bull) + 0.1 (strong_bull)
     assert sum(v for k, v in gated.items() if k != "neutral") + gated["neutral"] == pytest_approx(1.0)
+
+
+def test_trend_transition_matrix_3state_flat_when_features_disagree_in_sign():
+    """Root cause A (2026-08-28, worklog
+    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): the old label only
+    ever looked at feature index 2 (30-bar cumulative return); real data
+    found 9 of 14 live symbols had a component whose OTHER two fitted
+    features (1-bar return, 10-bar cumulative return) actively
+    contradicted it. A component with a large, threshold-clearing
+    feature[2] but a disagreeing feature[0] sign must classify FLAT, not
+    directional."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    # component 2 ("bull"): feature[2]=+5.0 clears the UP threshold on
+    # its own, but feature[0]=-5.0 disagrees in sign -> must gate FLAT
+    # despite the strong, threshold-clearing feature[2] magnitude.
+    feature_means = {
+        0: (-10.0, -10.0, -10.0),
+        1: (-5.0, -5.0, -5.0),
+        2: (-5.0, +5.0, +5.0),
+        3: (10.0, 10.0, 10.0),
+    }
+    model = _make_fitted_stub(transmat, label_map, feature_means=feature_means)
+
+    T3, current_state = model.trend_transition_matrix_3state("bull")
+
+    assert current_state == "FLAT"
+    for row in T3.values():
+        assert sum(row.values()) == pytest_approx(1.0)
+
+
+def test_trend_transition_matrix_3state_flat_when_occupancy_below_minimum():
+    """Root cause B (2026-08-28, worklog
+    20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): some fits show
+    near-total single-component Viterbi occupancy collapse (e.g. AAPL at
+    100% one component) — a component fit on almost no real observations
+    has a meaningless mean regardless of its magnitude or internal
+    consistency. A component whose Viterbi occupancy falls below
+    markov_min_occupancy must classify FLAT even with a large,
+    internally-consistent mean."""
+    transmat = np.full((4, 4), 0.25)
+    label_map = {0: "strong_bear", 1: "bear", 2: "bull", 3: "strong_bull"}
+    means = {0: -10.0, 1: -10.0, 2: +10.0, 3: +10.0}
+    # component 2 ("bull") occupies only 2% of the fit window's
+    # Viterbi-assigned bars -- below the default markov_min_occupancy
+    # (0.10) -- despite a huge, perfectly sign-consistent mean.
+    occupancy = {0: 0.30, 1: 0.30, 2: 0.02, 3: 0.38}
+    model = _make_fitted_stub(
+        transmat, label_map, means=means, occupancy=occupancy,
+    )
+
+    T3, current_state = model.trend_transition_matrix_3state("bull")
+
+    assert current_state == "FLAT"
+    for row in T3.values():
+        assert sum(row.values()) == pytest_approx(1.0)
 
 
 def test_gated_trend_probs_raises_before_fit():

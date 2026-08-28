@@ -210,6 +210,10 @@ class RegimeHMM:
         # module docstring fix #3.
         self._vol_scale:   Optional[tuple[np.ndarray, np.ndarray]] = None
         self._trend_scale: Optional[tuple[np.ndarray, np.ndarray]] = None
+        # Real Viterbi-occupancy share per trend component over the fit
+        # window (2026-08-28 root-cause classifier — see
+        # _classify_trend_components). {component_idx: share in [0,1]}.
+        self._trend_occupancy: dict[int, float] = {}
         self.fitted = False
 
         # Active label sets for current n_components
@@ -319,6 +323,27 @@ class RegimeHMM:
         self._sanitize_model(self._vol_model)
         self._sanitize_model(self._trend_model)
 
+        # Real per-component occupancy over this fit window (2026-08-28
+        # root-cause classifier) — how many bars the Viterbi path
+        # actually assigns to each component, not just its fitted mean.
+        # A component can be numerically valid (no NaN, nothing
+        # _sanitize_model would touch) yet fit on almost no real data —
+        # confirmed live: AAPL's trend model assigned 199 of 199 bars to
+        # a single component, leaving the other 3 components' "means"
+        # as artifacts of near-zero effective weight. Computed once here
+        # (cheap — reuses the already-fit model and already-standardized
+        # features) and cached for _classify_trend_components() to use
+        # on every call, rather than re-decoding each time.
+        try:
+            trend_viterbi = self._trend_model.predict(trend_features_std)
+            n_bars = len(trend_viterbi)
+            self._trend_occupancy = {
+                i: float(np.sum(trend_viterbi == i)) / n_bars if n_bars else 0.0
+                for i in range(self._trend_model.n_components)
+            }
+        except Exception:
+            self._trend_occupancy = {}
+
         self._vol_label_map   = self._label_states(self._vol_model, self._vol_labels, prev_vol_means)
         self._trend_label_map = self._label_states(self._trend_model, self._trend_labels, prev_trend_means)
         self.fitted = True
@@ -424,6 +449,87 @@ class RegimeHMM:
         "strong_bear": "DOWN", "bear": "DOWN",
     }
 
+    def _classify_trend_components(self) -> dict[int, str]:
+        """
+        Root-cause classifier (2026-08-28, worklog
+        20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md), replacing the
+        two separate Tier 1/Tier 2 patches that used to gate the
+        rank-assigned label with a single-feature magnitude check. That
+        wasn't enough — real-data analysis across the live symbol
+        universe found two distinct problems the old gate never caught:
+
+          A. ``_label_states`` ranks/labels using ONLY feature index 2
+             (the 30-bar cumulative return) — but each component was fit
+             on THREE features (1-bar return, 10-bar cumulative, 30-bar
+             cumulative) that are only weakly correlated with each other
+             in real data (avg corr(feat0, feat2) = 0.185 across the
+             live universe). A component's short-term behavior can
+             flatly contradict the label its 30-bar figure implies. 9 of
+             14 live symbols had at least one such internally-
+             contradictory labeled component.
+          B. Some fits are near-total single-component collapse (e.g.
+             AAPL: 100% of the fit window's bars Viterbi-assigned to one
+             component) — the other components' means are fit on
+             ~0 real data and are numerically valid but meaningless,
+             regardless of magnitude. ``_sanitize_model`` doesn't catch
+             this (nothing is NaN or zero); it only catches hard
+             numerical breakage.
+
+        This classifies each trend component directly from the model's
+        own fitted parameters — occupancy and all 3 raw feature means —
+        instead of trusting the rank-assigned label at all. A component
+        is "UP"/"DOWN" only if:
+          1. Its real Viterbi occupancy (``self._trend_occupancy``,
+             computed once at fit time) clears
+             ``markov_min_occupancy`` (fixes B).
+          2. All 3 of its fitted features agree in sign (fixes A).
+          3. The consistent-direction magnitude (feature 2) clears
+             ``markov_flat_gate_threshold_stds`` standard deviations of
+             that feature's own fit-time noise scale.
+        Otherwise: "FLAT". Any number of the 4 components (0 to 4) can
+        end up FLAT in a given fit — this is what lets a genuinely flat
+        market resolve toward genuine neutrality instead of the old
+        scheme's forced, always-confident directional read.
+
+        Returns ``{component_idx: "UP"|"DOWN"|"FLAT"}`` for every
+        fitted trend component.
+        """
+        if not self.fitted or self._trend_model is None:
+            raise RuntimeError(
+                "Call .fit() before ._classify_trend_components()"
+            )
+
+        from regime_platform.core.feature_flags import (
+            get_markov_flat_gate_threshold_stds,
+            get_markov_min_occupancy,
+        )
+
+        min_occupancy = get_markov_min_occupancy()
+        sigma = 1.0
+        if self._trend_scale is not None:
+            sigma = float(self._trend_scale[1][2]) or 1.0
+        threshold = get_markov_flat_gate_threshold_stds() * sigma
+
+        means = self._trend_model.means_  # (n, 3), original units
+        n = self._trend_model.n_components
+        result: dict[int, str] = {}
+        for i in range(n):
+            if self._trend_occupancy.get(i, 0.0) < min_occupancy:
+                result[i] = "FLAT"
+                continue
+            signs = np.sign(means[i])
+            if not (signs[0] == signs[1] == signs[2]) or signs[2] == 0:
+                result[i] = "FLAT"
+                continue
+            mag = float(means[i, 2])
+            if mag > threshold:
+                result[i] = "UP"
+            elif mag < -threshold:
+                result[i] = "DOWN"
+            else:
+                result[i] = "FLAT"
+        return result
+
     def trend_transition_matrix_3state(
         self, trend_state: str,
     ) -> tuple[dict[str, dict[str, float]], str]:
@@ -432,14 +538,17 @@ class RegimeHMM:
         trend HMM's own ``transmat_`` — a drop-in replacement for
         ``HmmModel.emit_markov()``'s return shape, for use as an
         alternative source of ``p_markov_hold_n`` (see
-        ``settings.MARKOV_SOURCE_MODE``).
+        ``settings.MARKOV_SOURCE_MODE``). Component classification is
+        ``_classify_trend_components()`` (see its docstring) — direct
+        from the model's own fitted parameters, not the rank-assigned
+        label.
 
         Args:
             trend_state: The current tick's dominant trend label (e.g.
                 ``regime.trend_state`` from this instance's own
-                ``predict()`` call) — mapped through the same UP/DOWN
-                grouping used for the matrix itself, so "current state"
-                and "the matrix that describes it" always agree.
+                ``predict()`` call) — used only to look up which
+                component produced it, so "current state" reflects that
+                SAME component's real classification.
 
         Returns:
             (T3, current_state) — same shape as
@@ -450,54 +559,10 @@ class RegimeHMM:
                 "Call .fit() before .trend_transition_matrix_3state()"
             )
 
-        # Tier 1 HMM fix (2026-08-26, worklog
-        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): _label_states()
-        # assigns strong_bear/bear/bull/strong_bull by RANK ORDER among
-        # whichever components got fit this tick, with no check on
-        # whether any of them are actually meaningfully different from
-        # zero. Confirmed on real data: components with means on the
-        # WRONG SIDE of zero (e.g. a "bear" component with a mean +0.54
-        # standard deviations of the trend feature's own noise) were
-        # still mapped straight through to a directional 3-state label.
-        # Gate here: a labeled component only keeps its directional
-        # (UP/DOWN) 3-state mapping if its own mean clears an absolute,
-        # noise-scaled threshold in that direction; otherwise it's FLAT
-        # regardless of its rank-assigned label. Deliberately scoped to
-        # THIS method only — does not touch _label_states/TREND_LABELS/
-        # trend_probs, i.e. does not touch the already-live p_regime EV
-        # input (see the worklog's Tier 2, flagged separately, not fixed
-        # here).
-        from regime_platform.core.feature_flags import (
-            get_markov_flat_gate_threshold_stds,
-        )
-
-        feature_idx = (
-            2 if len(self._trend_labels) > 2
-            and self._trend_labels[0] in ("strong_bear", "bear", "neutral")
-            else 0
-        )
-        means = self._trend_model.means_[:, feature_idx]
-        sigma = 1.0
-        if self._trend_scale is not None:
-            sigma = float(self._trend_scale[1][feature_idx]) or 1.0
-        threshold = get_markov_flat_gate_threshold_stds() * sigma
-
-        def _gated_3state(component_idx: int) -> str:
-            label = self._trend_label_map.get(component_idx, "FLAT")
-            base = self._TREND_TO_3STATE.get(label, "FLAT")
-            if base == "FLAT":
-                return "FLAT"
-            mean_i = float(means[component_idx])
-            if base == "UP" and mean_i <= threshold:
-                return "FLAT"
-            if base == "DOWN" and mean_i >= -threshold:
-                return "FLAT"
-            return base
+        component_to_3state = self._classify_trend_components()
 
         n = self._trend_model.n_components
         transmat = self._trend_model.transmat_
-        component_to_3state = {i: _gated_3state(i) for i in range(n)}
-
         states3 = ("UP", "DOWN", "FLAT")
         T3: dict[str, dict[str, float]] = {s: {t: 0.0 for t in states3} for s in states3}
         for i in range(n):
@@ -519,33 +584,26 @@ class RegimeHMM:
                     T3[s][t] = 1.0 / 3.0
 
         # current_state: find the component that produced `trend_state`
-        # and apply the SAME gate, rather than mapping the label directly
-        # — a direct label mapping would bypass the gate for the one
-        # reading that matters most (it's what feeds the EV blend's
-        # current-row lookup).
+        # and use ITS real classification, rather than mapping the label
+        # directly — a direct label mapping would bypass the classifier
+        # for the one reading that matters most (it's what feeds the EV
+        # blend's current-row lookup).
         current_idx = next(
             (i for i, lbl in self._trend_label_map.items() if lbl == trend_state),
             None,
         )
-        current_state = _gated_3state(current_idx) if current_idx is not None else "FLAT"
+        current_state = component_to_3state.get(current_idx, "FLAT") if current_idx is not None else "FLAT"
         return T3, current_state
 
     def gated_trend_probs(self, trend_probs: dict[str, float]) -> dict[str, float]:
         """
-        Tier 2 HMM fix (2026-08-27, worklog
-        20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md). Same root cause
-        as Tier 1 (``trend_transition_matrix_3state``), applied to the
-        OTHER consumer of ``_label_states``' rank-only assignment:
-        ``trend_probs`` itself, which feeds ``p_regime`` directly into
-        the live EV blend via ``ev_engine.EVEngine.compute_p_regime``.
-
-        Real data showed components whose mean is near zero or on the
-        wrong side of it for their rank-assigned label (e.g. a "bull"
-        component at -2.09 standard deviations) still contributing their
-        full posterior mass to ``p_bullish``/``p_bearish``. This
-        redistributes any such component's mass into an explicit
-        ``"neutral"`` key instead of leaving it under a directional label
-        it doesn't deserve.
+        Redistributes probability mass for any trend component that
+        ``_classify_trend_components()`` (see its docstring for the
+        root-cause classifier this and ``trend_transition_matrix_3state``
+        share) doesn't classify as directional, into an explicit
+        ``"neutral"`` key — the OTHER consumer of that classification,
+        since ``trend_probs`` feeds ``p_regime`` directly into the live
+        EV blend via ``ev_engine.EVEngine.compute_p_regime``.
 
         Deliberately does NOT touch ``ev_engine.py``:
         ``compute_p_regime`` already handles a ``"neutral"`` key
@@ -573,32 +631,24 @@ class RegimeHMM:
         if not self.fitted or self._trend_model is None:
             raise RuntimeError("Call .fit() before .gated_trend_probs()")
 
-        from regime_platform.core.feature_flags import (
-            get_markov_flat_gate_threshold_stds,
-        )
-
-        feature_idx = (
-            2 if len(self._trend_labels) > 2
-            and self._trend_labels[0] in ("strong_bear", "bear", "neutral")
-            else 0
-        )
-        means = self._trend_model.means_[:, feature_idx]
-        sigma = 1.0
-        if self._trend_scale is not None:
-            sigma = float(self._trend_scale[1][feature_idx]) or 1.0
-        threshold = get_markov_flat_gate_threshold_stds() * sigma
+        component_to_3state = self._classify_trend_components()
 
         gated: dict[str, float] = {}
         neutral_mass = 0.0
         for i, label in self._trend_label_map.items():
             p = float(trend_probs.get(label, 0.0))
-            base = self._TREND_TO_3STATE.get(label, "FLAT")
-            mean_i = float(means[i])
-            clears = (
-                (base == "UP" and mean_i > threshold)
-                or (base == "DOWN" and mean_i < -threshold)
-            )
-            if clears:
+            implied = self._TREND_TO_3STATE.get(label, "FLAT")
+            real = component_to_3state.get(i, "FLAT")
+            # Keep mass under its rank-assigned label only if the
+            # classifier's own direct read of the component agrees with
+            # what that label implies. A component the classifier calls
+            # FLAT is uncertain; one it calls UP/DOWN but which
+            # contradicts its rank label (e.g. rank-labeled "bull" but
+            # actually DOWN) is evidence the label itself is wrong, not a
+            # reason to keep counting it as bullish — either way, the
+            # mass is untrustworthy under the original label and goes to
+            # neutral rather than being silently misattributed.
+            if real != "FLAT" and real == implied:
                 gated[label] = gated.get(label, 0.0) + p
             else:
                 neutral_mass += p

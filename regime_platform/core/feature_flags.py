@@ -33,6 +33,7 @@ _YAML_PATH = Path(__file__).resolve().parents[2] / "config" / "feature_flags.yam
 _DEFAULTS: dict[str, Any] = {
     "markov_source_mode": "trend_hmm_shadow",
     "markov_flat_gate_threshold_stds": 0.5,
+    "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
 }
 
@@ -86,6 +87,17 @@ def get_markov_flat_gate_threshold_stds() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["markov_flat_gate_threshold_stds"]
+
+
+def get_markov_min_occupancy() -> float:
+    """Minimum Viterbi-occupancy share a trend component must clear
+    before its mean is trusted at all (root-cause classifier)."""
+    try:
+        return float(_load().get(
+            "markov_min_occupancy", _DEFAULTS["markov_min_occupancy"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["markov_min_occupancy"]
 
 
 def get_trend_probs_gate_mode() -> str:
