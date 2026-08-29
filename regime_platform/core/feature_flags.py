@@ -44,6 +44,7 @@ _DEFAULTS: dict[str, Any] = {
         "boost_scale": 0.3,
         "penalty_scale": 0.5,
     },
+    "heavy_sweep_reachability_mode": "off",
 }
 
 _cache: dict[str, Any] | None = None
@@ -155,3 +156,11 @@ def get_macro_boost_scale() -> float:
 
 def get_macro_penalty_scale() -> float:
     return _macro_number("penalty_scale")
+
+
+def get_heavy_sweep_reachability_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Phase 3a of the calibration
+    reframe — reachability/expectancy-aware heavy-sweep combo pick)."""
+    return str(_load().get(
+        "heavy_sweep_reachability_mode", _DEFAULTS["heavy_sweep_reachability_mode"],
+    )).lower()

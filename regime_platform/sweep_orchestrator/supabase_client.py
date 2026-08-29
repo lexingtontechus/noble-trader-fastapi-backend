@@ -549,6 +549,80 @@ async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_entry_drift: insert failed: %s", exc)
 
 
+NT_HEAVY_SWEEP_REACHABILITY_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "n_nothing_survived", "n_pick_changed",
+    "last_baseline_bucket", "last_baseline_sharpe",
+    "last_filtered_bucket", "last_filtered_sharpe", "updated_at",
+})
+
+
+async def record_heavy_sweep_reachability_shadow(
+    symbol: str,
+    nothing_survived: bool,
+    pick_changed: bool,
+    baseline_bucket: str | None,
+    baseline_sharpe: float | None,
+    filtered_bucket: str | None,
+    filtered_sharpe: float | None,
+) -> None:
+    """Accumulate one heavy-sweep's reachability-aware-pick comparison
+    into the running per-symbol row in ``nt_heavy_sweep_reachability_shadow``
+    (best-effort). Phase 3a of the calibration reframe (worklog
+    20260825_CALIBRATION_REFRAME_SCOPE.md).
+
+    Fetch-then-upsert, same shape as ``record_markov_shadow_compare`` —
+    ``updated_at`` included in the payload from the start (that
+    function's own follow-up fix showed why this matters: an upsert-on-
+    conflict never touches a column absent from the payload, so without
+    this the timestamp silently freezes at first-insert time forever).
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_heavy_sweep_reachability_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,n_nothing_survived,n_pick_changed",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "n_nothing_survived": int(prev.get("n_nothing_survived", 0)) + (1 if nothing_survived else 0),
+                "n_pick_changed": int(prev.get("n_pick_changed", 0)) + (1 if pick_changed else 0),
+                "last_baseline_bucket": baseline_bucket,
+                "last_baseline_sharpe": round(float(baseline_sharpe), 4) if baseline_sharpe is not None else None,
+                "last_filtered_bucket": filtered_bucket,
+                "last_filtered_sharpe": round(float(filtered_sharpe), 4) if filtered_sharpe is not None else None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, NT_HEAVY_SWEEP_REACHABILITY_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_heavy_sweep_reachability_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_heavy_sweep_reachability_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_heavy_sweep_reachability_shadow: failed for %s: %s", symbol, exc)
+
+
 NT_MACRO_REGIME_COLUMNS: frozenset[str] = frozenset({
     "symbol", "macro_score", "macro_score_smoothed", "macro_label",
     "macro_strength", "sma_window_days", "computed_at",
@@ -619,6 +693,9 @@ async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
 
 NT_MACRO_EDGE_BY_SYMBOL_COLUMNS: frozenset[str] = frozenset({
     "symbol", "alignment", "n", "win_rate", "avg_rr_winners", "expectancy_r",
+    # median_hours_to_resolve/p75_hours/p90_hours (migration 126): does
+    # trading with the macro trend also resolve faster, not just win more.
+    "median_hours_to_resolve", "p75_hours", "p90_hours",
 })
 
 

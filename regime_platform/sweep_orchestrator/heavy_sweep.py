@@ -488,6 +488,78 @@ class HeavySweepMixin:
                 best.sharpe, best.total_trades, best.win_rate,
             )
 
+            # ── 5a. Reachability-aware combo pick — Phase 3a (2026-08-28,
+            # worklog 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3
+            # scope") ─────────────────────────────────────────────────
+            # A live simulation found the Sharpe-only pick above
+            # sometimes lands in a distance/ATR bucket with negative
+            # realized expectancy, and sometimes the grid never even
+            # generates a candidate in a good bucket at all. shadow mode
+            # (default) just measures how often that happens, over the
+            # SAME unfiltered grid_results — best stays exactly what
+            # pick_best_combo chose above.
+            from regime_platform.core.feature_flags import get_heavy_sweep_reachability_mode
+
+            reachability_mode = get_heavy_sweep_reachability_mode()
+            if reachability_mode != "off":
+                from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
+                    fetch_bias_by_bucket,
+                    reachability_aware_pick,
+                )
+                from regime_platform.sweep_orchestrator.supabase_client import (
+                    record_heavy_sweep_reachability_shadow,
+                )
+                try:
+                    bias_by_bucket = await fetch_bias_by_bucket(symbol)
+                    reach = reachability_aware_pick(grid_results, atr, bias_by_bucket)
+                    asyncio.create_task(record_heavy_sweep_reachability_shadow(
+                        symbol,
+                        nothing_survived=reach["nothing_survived"],
+                        pick_changed=reach["pick_changed"],
+                        baseline_bucket=reach["baseline_bucket"],
+                        baseline_sharpe=reach["baseline_sharpe"],
+                        filtered_bucket=reach["filtered_bucket"],
+                        filtered_sharpe=reach["filtered_sharpe"],
+                    ))
+                    logger.info(
+                        "[sweep:heavy] %s: reachability %s — baseline bucket=%s "
+                        "sharpe=%.4f | filtered bucket=%s sharpe=%s "
+                        "(nothing_survived=%s, pick_changed=%s)",
+                        symbol, reachability_mode,
+                        reach["baseline_bucket"], reach["baseline_sharpe"] or 0.0,
+                        reach["filtered_bucket"],
+                        f"{reach['filtered_sharpe']:.4f}" if reach["filtered_sharpe"] is not None else "-",
+                        reach["nothing_survived"], reach["pick_changed"],
+                    )
+                    if reachability_mode == "live":
+                        if reach["filtered_combo"] is not None:
+                            best = reach["filtered_combo"]
+                            result.best_combo = best
+                            logger.info(
+                                "[sweep:heavy] %s: LIVE reachability pick applied — "
+                                "brick=%.4f sl=%d tp=%d sharpe=%.4f",
+                                symbol, best.brick_size, best.sl_bricks,
+                                best.tp_bricks, best.sharpe,
+                            )
+                        else:
+                            # Provisional fallback (worklog's "live-mode
+                            # fallback" — left open pending real shadow
+                            # data): keep today's Sharpe-only pick rather
+                            # than skip the sweep outright. best/
+                            # result.best_combo are already the baseline
+                            # from pick_best_combo above — no-op here.
+                            logger.warning(
+                                "[sweep:heavy] %s: LIVE reachability found no "
+                                "candidate — falling back to baseline Sharpe-only pick",
+                                symbol,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: reachability check failed (%s: %s), "
+                        "using baseline pick",
+                        symbol, type(exc).__name__, exc,
+                    )
+
             # ── 6. Calibration bias → sweep_skip_until ────────────────
             from regime_platform.sweep_orchestrator.supabase_client import (
                 fetch_calibration_bias,

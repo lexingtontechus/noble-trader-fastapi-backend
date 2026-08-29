@@ -16,6 +16,11 @@ time (migration 124), buckets by whether the signal's direction agreed
 with that label, and computes win_rate / avg_rr_winners / expectancy_r
 per bucket — the exact same (bug-fixed) formula
 ``calibration_bias_bucket.py`` uses, reused rather than reinvented.
+Also computes median/p75/p90 hours-to-resolve per bucket (migration
+126) — same ``_hours_between`` helper and percentile approach
+``bracket_reachability.py`` already uses, keyed by alignment instead of
+distance/ATR bucket: does trading WITH the macro trend also resolve
+faster, not just win more.
 
 The output (``nt_macro_edge_by_symbol``) is evidence for a human to read
 before setting ``macro.boost_scale``/``macro.penalty_scale``
@@ -36,8 +41,10 @@ from collections import defaultdict
 from typing import Any
 
 import httpx
+import numpy as np
 
 from regime_platform.core.settings import settings
+from regime_platform.sweep_orchestrator.bracket_reachability import _hours_between
 from regime_platform.sweep_orchestrator.supabase_client import (
     _headers,
     _url,
@@ -101,7 +108,9 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
 
     try:
         rows = await _fetch_all(
-            "nt_signal_sim", "symbol,signal,outcome,macro_label,tp_bricks,sl_bricks", filters,
+            "nt_signal_sim",
+            "symbol,ts,signal,outcome,resolved_at,macro_label,tp_bricks,sl_bricks",
+            filters,
         )
     except Exception as exc:
         logger.error("macro_edge: fetch failed: %s", exc)
@@ -111,7 +120,7 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
         return []
 
     bucket_data: dict[tuple[str, str], dict[str, Any]] = defaultdict(
-        lambda: {"n": 0, "wins": 0, "rr_sum": 0.0}
+        lambda: {"n": 0, "wins": 0, "rr_sum": 0.0, "hours": []}
     )
 
     for row in rows:
@@ -133,6 +142,9 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
             sl_bricks = row.get("sl_bricks") or 0
             if sl_bricks:
                 d["rr_sum"] += float(tp_bricks) / float(sl_bricks)
+        hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
+        if hrs is not None:
+            d["hours"].append(hrs)
 
     output_rows: list[dict[str, Any]] = []
     for (symbol, alignment), d in bucket_data.items():
@@ -142,6 +154,7 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
         # Same bug-fixed formula as calibration_bias_bucket.py: well-defined
         # even at zero wins (it's just -1.0), so don't gate on avg_rr_winners.
         expectancy_r = round(win_rate * (avg_rr_winners or 0.0) - (1 - win_rate) * 1.0, 4)
+        hours = d["hours"]
         output_rows.append({
             "symbol": symbol,
             "alignment": alignment,
@@ -149,6 +162,11 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
             "win_rate": round(win_rate, 4),
             "avg_rr_winners": round(avg_rr_winners, 4) if avg_rr_winners is not None else None,
             "expectancy_r": expectancy_r,
+            "median_hours_to_resolve": (
+                round(float(np.percentile(hours, 50)), 2) if hours else None
+            ),
+            "p75_hours": round(float(np.percentile(hours, 75)), 2) if hours else None,
+            "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
         })
 
     try:
@@ -167,15 +185,24 @@ def _print_report(rows: list[dict[str, Any]]) -> None:
     if not rows:
         print("No macro-edge rows computed.")
         return
-    print(f"{'Symbol':<10} {'Alignment':<9} {'n':>6} {'WinRate':>8} {'AvgRR':>7} {'Expectancy':>11}")
-    print("-" * 60)
+    print(
+        f"{'Symbol':<10} {'Alignment':<9} {'n':>6} {'WinRate':>8} {'AvgRR':>7} "
+        f"{'Expectancy':>11} {'medHr':>7} {'p75':>7} {'p90':>7}"
+    )
+    print("-" * 90)
     for row in sorted(rows, key=lambda r: (r["symbol"], r["alignment"])):
         rr = row["avg_rr_winners"]
+        med = row["median_hours_to_resolve"]
+        p75 = row["p75_hours"]
+        p90 = row["p90_hours"]
         print(
             f"{row['symbol']:<10} {row['alignment']:<9} {row['n']:>6} "
             f"{row['win_rate'] * 100:>7.1f}% "
             f"{rr if rr is not None else '-':>7} "
-            f"{row['expectancy_r']:>+11.3f}"
+            f"{row['expectancy_r']:>+11.3f} "
+            f"{med if med is not None else '-':>7} "
+            f"{p75 if p75 is not None else '-':>7} "
+            f"{p90 if p90 is not None else '-':>7}"
         )
 
 

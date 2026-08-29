@@ -84,3 +84,21 @@ macro:
   strength_saturation: 0.15      # |macro_score_smoothed| at/beyond this -> macro_strength=1.0
   boost_scale: 0.3               # max +30% kelly at full strength when direction agrees
   penalty_scale: 0.5             # max -50% kelly at full strength when direction opposes
+
+# Phase 3a of the calibration reframe (2026-08-28, worklog
+# 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
+# simulation found the heavy sweep's Sharpe-only grid pick sometimes
+# lands in a distance/ATR bucket with negative realized expectancy
+# (nt_calibration_bias_by_bucket), and for some symbols the grid never
+# even generates a candidate in a good bucket at all. off | shadow |
+# live: shadow computes what a reachability/expectancy-aware re-rank
+# would have picked, persists the comparison to
+# nt_heavy_sweep_reachability_shadow, changes nothing about the actual
+# pick. live substitutes the reachability-aware pick when one survives
+# (falls back to the baseline Sharpe-only pick otherwise — a
+# provisional choice, not yet informed by real shadow data; see the
+# worklog's "live-mode fallback" note). NOT live by default — same
+# discipline as every other mode flag in this file. Phase 3b (widening
+# the grid itself) is a separate, not-yet-built follow-up gated on this
+# shadow data accumulating over real weekly cycles.
+heavy_sweep_reachability_mode: off

@@ -1447,3 +1447,188 @@ capturing but not touching Kelly sizing. `nt_macro_edge_by_symbol` needs
 real accumulation time (weeks, same as the original scope's own
 verification plan) before its evidence is meaningful for a
 `boost_scale`/`penalty_scale` review.
+
+## Macro-edge time aspect + admin views (2026-08-28)
+
+Two additions on top of the macro filter build above.
+
+**Time-to-resolve on `nt_macro_edge_by_symbol`** (migration 126): the
+win/loss+PnL evidence answered "does trading with the macro trend win
+more" but not "does it also resolve faster" — capital turnover matters
+at equal win rate too. Added `median_hours_to_resolve`/`p75_hours`/
+`p90_hours`, computed identically to `bracket_reachability.py`'s own
+percentile approach (reused `_hours_between` directly, not
+reimplemented), keyed by `alignment` instead of distance/ATR bucket.
+`macro_edge.py` now also selects `ts`/`resolved_at` from `nt_signal_sim`
+to feed this.
+
+**Admin-viewable summary views** (migration 127): both admin surfaces
+under consideration (nobletradingapp, the Hermes plugin) render generic
+Supabase table/view results directly via the anon key — same mechanism
+already proven for the Talaria plugin (migration 110). That meant no
+FastAPI router work was needed, just the views themselves — but also
+surfaced a real prerequisite checked against migration 107 before
+writing this: a Postgres view still needs the `anon` role to hold its
+own RLS policy + `GRANT SELECT` on every base table it reads, not only
+a grant on the view. None of the four base tables involved
+(`nt_bracket_reachability`, `nt_calibration_bias_by_bucket`,
+`nt_macro_regime`, `nt_macro_edge_by_symbol`) had ever been anon-granted
+— they've been service-role-only diagnostics until now — so the
+migration adds that first, identical shape to migration 107's own anon
+policies.
+
+Two views:
+- `v_bracket_performance` — one row per `(symbol, distance_atr_bucket)`,
+  `nt_bracket_reachability` LEFT JOINed with
+  `nt_calibration_bias_by_bucket`. Deliberately LEFT JOIN, not INNER: an
+  all-expired bucket has no win/loss rows and so never appears in the
+  bias-by-bucket table, but should still show up here (with those
+  columns NULL) rather than silently disappearing. The two tables' `n`
+  counts are exposed separately as `n_all` (any outcome) vs `n_resolved`
+  (win/loss only, a subset) rather than picked-one/conflated, since they
+  measure genuinely different populations.
+- `v_macro_filter_summary` — one row per symbol: `nt_macro_regime`'s
+  current price read, plus `nt_macro_edge_by_symbol`'s three alignment
+  rows pivoted into `aligned_*`/`opposed_*`/`neutral_*` columns via
+  `FILTER` (same idiom `v_talaria_signal_health`, migration 110, already
+  uses for its tp_hit/sl_hit split).
+
+**Verified**: full suite still 638 passed/0 failed after these changes.
+Ran `macro_edge.py` standalone against live Supabase — query executes
+cleanly (200 OK, correct new `ts`/`resolved_at` columns in the select),
+returns zero rows currently (expected: no live signal has captured
+`macro_label` yet since Studio hasn't been restarted with this code).
+Migrations 126/127 not yet applied.
+
+## What's still outstanding across this whole thread (2026-08-28 review)
+
+Asked directly "did I miss anything" — full inventory:
+
+- **Phase 3 of the original calibration reframe** (worklog
+  20260825_CALIBRATION_REFRAME_SCOPE.md, "Phase 3 scope") — wiring
+  bracket reachability into heavy-sweep's own combo selection (grid
+  search), so it prefers ATR-reachable brackets instead of just
+  reporting on them after the fact. Scoped in real detail (3a shadow-log
+  diagnostic, 3b actual grid widening gated on 3a's evidence) but never
+  built — no "build phase 3" instruction was ever given. Still open if
+  wanted.
+- **Migrations 124-127 not yet applied** — 124/125 confirmed applied by
+  you already; 126 (macro-edge hours) and 127 (anon views) from this
+  message are new and still need a run.
+- **Studio hasn't been restarted with the macro-filter code yet** (the
+  original macro build, or this hours/views follow-up) — nothing in
+  `nt_macro_regime`/`nt_macro_edge_by_symbol` will start populating from
+  live ticks until it has.
+- **No admin view yet for `nt_entry_drift`** (Phase 2, migration 121 —
+  per-symbol post-entry price drift at 1h/4h/24h) — same "nothing reads
+  it yet" state as the others were in before this message. Not asked
+  for; flagging since it's the one Phase-2 diagnostic without an
+  admin-facing view now that the other two have one.
+- **The actual admin-app-side work** (adding a table/view entry in
+  nobletradingapp or Hermes pointing at `v_bracket_performance`/
+  `v_macro_filter_summary`) is outside this repo — this session only
+  produced the Supabase-side half.
+- **Both new shadow mechanisms are intentionally still shadow-only**,
+  not a gap: `markov_source_mode`/`trend_probs_gate_mode` (accumulating
+  since the 2026-08-28T23:19:51Z reset) and `macro_regime_mode`
+  (essentially zero real accumulation yet, pending the Studio restart
+  above) both need real observation windows before any live-mode
+  decision — that's the design, not something left unfinished.
+- **The earlier outcome-validation-layer scope is superseded**, not
+  outstanding — explicitly dropped in favor of the root-cause classifier
+  fix per the "no more tacking on weight" rule; not a gap to fill.
+
+## Phase 3a build + v_entry_drift admin view (2026-08-28)
+
+Built the two items flagged in the "what's outstanding" review above.
+
+### Phase 3a — reachability-aware heavy-sweep combo pick (shadow only)
+
+Built exactly the ladder the worklog's own "Phase 3 scope" section
+prescribed — 3a (shadow) only, 3b (grid widening) still deliberately
+not built, since it's explicitly gated on 3a's real data accumulating
+over weekly cycles, not something to jump ahead on.
+
+**`heavy_sweep_reachability.py`** (new): `reachability_aware_pick(combos,
+atr, bias_by_bucket)` — a pure function. Mirrors `pick_best_combo`'s own
+`MIN_RR`/`MAX_SHARPE`/`MIN_TRADES` filter internally (a local copy, not
+a shared import — same "mirror, don't share" convention
+`calibration_enforcement.py` already uses for `BAYES_PRIOR_COUNT`/
+`KELLY_REDUCTION`, and it keeps this module free of any import-time
+dependency on `heavy_sweep.py`, avoiding a circular import since
+`heavy_sweep.py` is the one importing this module). Over that SAME
+quality-filtered pool, it additionally requires each combo's distance/
+ATR bucket (`bracket_reachability.py`'s buckets) to show
+`expectancy_r > 0` in `nt_calibration_bias_by_bucket`, OR have no
+calibration data yet for that bucket — an unscored bucket isn't
+evidence against a combo, only a scored-negative one is. `atr` falsy
+(missing/zero) fails open the same way — disables the reachability leg
+entirely rather than gating blindly on absent data. Combos are
+duck-typed (only `.brick_size`/`.sl_bricks`/`.tp_bricks`/`.sharpe`/
+`.total_trades` read), not `heavy_sweep.ComboResult` directly, for the
+same circular-import reason.
+
+**Config** (`config/feature_flags.yaml`): `heavy_sweep_reachability_mode:
+off` (off|shadow|live) — default `off`, not `shadow`, because unlike
+the HMM/macro shadow mechanisms this one still needs its underlying
+price-only assumption checked against real weekly cycles before even
+passive logging is worth the noise; matches the doc's own proposed
+default.
+
+**Migration 128**: `nt_heavy_sweep_reachability_shadow` — running
+per-symbol comparison (`n_compared`, `n_nothing_survived`,
+`n_pick_changed`, last baseline/filtered bucket+sharpe), same shape as
+`nt_markov_source_shadow`, `updated_at` included in the upsert payload
+from the start (learned from that table's own bug, not repeated here).
+Service-role-only RLS — a backend diagnostic, not admin-viewable, same
+tier as the other shadow tables.
+
+**Wiring** (`heavy_sweep.py`): right after `pick_best_combo` produces
+the baseline pick, gated on `heavy_sweep_reachability_mode != "off"`:
+fetches `nt_calibration_bias_by_bucket` for the symbol, runs
+`reachability_aware_pick` against the full `grid_results` already in
+scope, logs + persists the comparison (fire-and-forget). In `live`
+mode, overrides `best`/`result.best_combo` with the filtered pick when
+one survives; when nothing survives, falls back to the baseline
+Sharpe-only pick — the "safest" option the worklog's own "live-mode
+fallback" note left as an open decision, implemented now as a
+provisional default since `live` mode needs to be well-defined code-
+wise even though it isn't the shipped default, clearly commented as
+provisional pending real 3a data.
+
+**Tests** (`tests/test_heavy_sweep_reachability.py`, 7 new): good-bucket
+pick unchanged, bad-bucket pick changes to a reachable alternative,
+nothing-survives when every bucket scores negative, an unscored bucket
+is kept not excluded, missing `atr` disables the reachability leg
+entirely, the quality filter is correctly mirrored (a combo failing
+`MIN_TRADES` never appears despite a great sharpe/bucket), and an empty
+combo list is a safe no-op. Full suite: 645 passed, 21 skipped
+(pre-existing/unrelated), 0 failed (up from 638).
+
+**Real-data verification**: ran `fetch_bias_by_bucket` against live
+Supabase for the 5 symbols from the original Phase 3 live simulation.
+Values match that simulation exactly — XAUUSD `4+`: -0.2106 (doc:
+-0.211), AAPL `4+`: -0.6977 (doc: -0.698), US500 `4+`: +1.2296 (doc:
++1.230), XAGUSD `4+`: +0.5063 (doc: +0.506) — confirming the fetch
+reads real, current calibration-bias-by-bucket data correctly. Also
+reconfirmed XAUUSD's known-good `0.5-1` bucket (+1.577 expectancy) is
+sitting there unused, exactly the "grid never generates a candidate in
+the good bucket" finding the original simulation made — this is the
+concrete evidence Phase 3b would eventually act on.
+
+**Not done**: Phase 3b (grid widening) — deliberately, per the doc's own
+gating. Migration 128 not yet applied. `heavy_sweep_reachability_mode`
+stays `off` — no shadow data has started accumulating yet.
+
+### v_entry_drift admin view
+
+Migration 129: closes the one asymmetry flagged in the "what's
+outstanding" review — `nt_entry_drift` (Phase 2, migration 121) was the
+only Phase-2 diagnostic without an admin view once
+`v_bracket_performance`/`v_macro_filter_summary` shipped. Same exact
+pattern as migration 127 (anon read policy + grant on the base table,
+then the view, then grant on the view). `nt_entry_drift` is already a
+clean one-row-per-symbol shape, so `v_entry_drift` is a plain
+passthrough — no join/pivot needed, kept as a view anyway so every
+admin-surfaced object follows the same "view, not raw table" convention
+consistently. Migration 129 not yet applied.
