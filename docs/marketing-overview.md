@@ -5,6 +5,8 @@
 
 > **v7.7.0 update (2026-07-24):** The `p_markov` source is now produced by a **5-state multivariate Gaussian HMM** (9 features: log_return + 3 microstructure + 5 TA indicators) trained live via Baum-Welch, replacing the legacy discrete 3-state price-only `MarkovChain`. The 5 TA values (ADX, AO, BB Power, MACD, RSI) are persisted per sweep tick in `nt_sweep_result` + `nt_regime_log` (migration 036) for post-hoc calibration analytics.
 
+> **Latest update (2026-08-28):** Two additions to the sizing pipeline — a **macro regime filter** and a **win/loss + P/L evidence layer**. The macro filter is a pure price-trend read (200-day SMA, EMA-smoothed to a bull/bear/neutral label) that scales the Kelly fraction up to **+30%** when a trade agrees with the macro trend and down to **-50%** when it fights it. It's shipping in **shadow mode** — computing and logging on every signal, but not yet moving live position size. The evidence layer tracks win rate, average winner R-multiple, and expectancy by symbol and trend-alignment bucket, building the track record needed to promote the filter to live. Both stay **outside** the EV engine's `P_win` blend by design — see [EV Engine v4](#3-ev-engine-v4--blended-probability-of-winning-with-log-odds-pooling) below.
+
 ---
 
 ## 🔥 The Problem
@@ -54,6 +56,8 @@ f_i = β × (0.5 + M_i) × Q_i × DD_i × V_i
 
 Five factors controlling every trade: base risk appetite, batch urgency (time decay), model quality (regime confidence), drawdown protection (trailing loss gate), and volatility adjustment — all clamped by a Kelly overlay.
 
+**Macro Regime Overlay (new, shadow mode):** A 200-day SMA trend read, EMA-smoothed (10-day half-life) into a `bull` / `bear` / `neutral` label and a 0–1 strength score. When a trade's direction agrees with the macro label, the Kelly fraction is boosted up to **+30%**; when it disagrees, Kelly is cut up to **-50%** — strength-scaled and hard-clamped to a `[0.25×, 1.5×]` multiplier band. Refreshed daily across the symbol universe. Three modes gate the rollout: `off`, `shadow` (compute + log only — current default), and `live` (multiplies `effective_kelly` directly). Backing every future promotion to `live` is a new **win/loss + P/L evidence table** (`nt_macro_edge_by_symbol`) that buckets resolved signals by symbol and trend-alignment (aligned / opposed / neutral) and reports win rate, average winner R-multiple, and win-rate-weighted expectancy — plus time-to-resolution percentiles, so capital-turnover speed is visible alongside win rate. It's a read-only diagnostic today: nothing downstream auto-tunes off it yet, but it's the data trail that will justify dialing the boost/penalty scales up or flipping the overlay live.
+
 ### 3. EV Engine v4 — Blended Probability of Winning with Log-Odds Pooling
 
 ```
@@ -71,6 +75,7 @@ P_win = inv_logit(0.40 * logit(P_regime) + 0.25 * logit(P_external) + 0.35 * log
 - **Markov chain** moved from P_win blend → position-sizing multiplier (was double-counting directionality)
 - **Live L2 order book pipeline** — real-time multi-level imbalance from Alpaca (equities) and Hyperliquid (crypto)
 - **Self-calibrating:** The platform tracks its own prediction accuracy, computes Brier scores, reliability diagrams, and self-labels every prediction as CALIBRATED / OVERCONFIDENT / UNDERCONFIDENT
+- **Macro filter stays out of the blend:** the new macro regime filter (see [Position Sizing](#2-position-sizing--two-complementary-paths)) and its win/loss + P/L evidence layer deliberately don't touch `P_win` — they operate purely on the Kelly sizing side. `P_win` keeps its clean three-source log-odds pool; the macro read and its evidence trail exist to make sizing regime-aware without re-introducing the same directionality signal twice.
 
 ### 4. TimesFM Self-Hosted Forecasting
 
@@ -186,37 +191,13 @@ Tick → Brick Construction → Swing Classification → Pattern Detection
 
 | Integration | Purpose |
 |-------------|---------|
-| **Alpaca** | Live order execution, WebSocket P&L streaming |
 | **Supabase** | PostgreSQL backtest persistence, calibration, audit, API keys |
-| **Redis (Upstash)** | Price buffers, kill switch state, session cache |
+| **Redis Proxy** | Price buffers, kill switch state, session cache |
 | **TimesFM (Google)** | Self-hosted foundation model time-series forecasting |
-| **Clerk** | OAuth/JWT authentication with JWKS auto-fetching |
-| **Yahoo Finance** | Cold-start warmup for new symbols |
-| **Binance / IBKR** | Optional crypto / traditional broker feed adapters |
-| **Discord / Telegram** | Real-time alerts and execution notifications |
+| **Trading View Data API** | Pricing data for symbols |
+| **Hermes Agent** | Talaria Plugin Integration with Nous Research Hermes Agent |
+| **Discord / Web** | Real-time alerts and execution notifications |
 | **FastAPI-MCP** | Expose 30+ endpoints as AI agent tools |
-
----
-
-## 📦 Quick Start
-
-```bash
-# Clone
-git clone https://github.com/lexingtontechus/noble-trader-fastapi-backend.git
-cd noble-trader-fastapi-backend
-
-# Install
-pip install -r requirements.txt
-
-# Configure
-cp .env.example .env
-# Edit .env with your API keys
-
-# Launch (all 3 services)
-./start.sh
-```
-
-**Or deploy in 5 minutes on Lightning.ai (Full GPU) or Render** — `render.yaml` included, one-click setup.
 
 ---
 
@@ -234,27 +215,24 @@ cp .env.example .env
 | OpenAPI spec | 200+ paths |
 | MCP exposed tools | 30+ |
 | Python version | 3.11+ |
-| Version | **7.5.0** |
+| Version | **7.8.0** |
 
 ---
 
 ## 🔗 Links
 
-- **GitHub:** [github.com/lexingtontechus/noble-trader-fastapi-backend](https://github.com/lexingtontechus/noble-trader-fastapi-backend)
-- **Frontend:** [noble-trader-agent-frontend.vercel.app](https://noble-trader-agent-frontend.vercel.app)
-- **API Docs:** `/docs` (Swagger UI) and `/openapi.yaml`
-- **WebSocket Test Client:** `/ws-client.html`
-- **Changelog:** [docs/CHANGELOG.md](docs/CHANGELOG.md)
+- **Website:** [nobletrading.app](https://nobletrading.app)
+- **Talaria:** [talaria.nobletrading.app](https://talaria.nobletrading.app)
 
 ---
 
 ## 📄 License
 
-**Development Status:** 4 — Beta  
-**Intended Audience:** Financial and Insurance Industry
+**Development Status:** Production/Stable  
+**Intended Audience:** Fintech Industry
 
 ---
 
-*Built by **Lexington Tech LLC** — bridging the gap between AI agents and live trading infrastructure.*
+*Built by **Noble Trading App & Lexington Tech LLC** — bridging the gap between AI agents and live trading infrastructure.*
 
-*Noble Trader is not financial advice. Trading involves substantial risk of loss. Use at your own risk.*
+*Noble Trading App & Talaria are not financial advice. Trading involves substantial risk of loss. Use at your own risk.*

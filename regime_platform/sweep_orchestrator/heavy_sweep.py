@@ -21,7 +21,8 @@ Per-symbol heavy sweep does:
   4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0)
   5. Grid search: 5 bricks × 3 SL × 6 TP = 90 combos (RenkoPipeline)
   6. HMM regime + Kelly sizing (parallel with grid)
-  7. Pick best combo by Sharpe (MIN_RR=2.0, MAX_SHARPE=10.0, MIN_TRADES=10)
+  7. Pick best combo by Sharpe (MIN_RR/MAX_SHARPE/MIN_TRADES, default
+     2.0/10.0/10 — config/feature_flags.yaml's min_rr/heavy_sweep_grid)
   8. Calibration bias → set sweep_skip_until when CALIBRATED
   9. Write optimised brick params to config/brick_params.yaml
  10. Compute EV with Markov T^N (Phase A)
@@ -54,6 +55,11 @@ from typing import Any, Optional
 import numpy as np
 
 from regime_platform.core.settings import settings
+from regime_platform.core.feature_flags import (
+    get_heavy_sweep_max_sharpe,
+    get_heavy_sweep_min_trades,
+    get_min_rr,
+)
 from regime_platform.services.statistics.ev_engine import P_WIN_WEIGHTS_FULL
 
 # Note: write_brick_params + fetch_calibration_bias + log_sweep_result +
@@ -66,22 +72,25 @@ logger = logging.getLogger("regime.sweep.heavy")
 
 
 # ─── Grid search constants (ported from edge fn _shared/utils.ts) ────────
-import os as _os
 
 SWEEP_SL_RANGE = [3, 5, 7]
 SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12]
 
 # MIN_RR: shared with the orchestrator's qualification gate via the same
-# env var (default 2.0). When the user sets MIN_RR=1.5 for signal
-# qualification, the grid search MUST use the same threshold — otherwise
-# the heavy sweep pre-filter (line 737) skips combos the orchestrator
-# would accept, causing emergency sweeps to fail with
-# no_combo_passed_filters (verified 2026-08-13: EURUSD/GBPUSD/USDCAD
-# with MIN_RR=2.0 hardcoded vs orchestrator MIN_RR=1.5 env).
-# See orchestrator.py:105-111 for the canonical env-var definition.
-MIN_RR = float(_os.getenv("MIN_RR", "2.0"))
-MAX_SHARPE = float(_os.getenv("HEAVY_SWEEP_MAX_SHARPE", "10.0"))
-MIN_TRADES = int(_os.getenv("HEAVY_SWEEP_MIN_TRADES", "10"))
+# config/feature_flags.yaml value (default 2.0) — 2026-08-30
+# config-centralization fix, moved off two independent env vars/Studio
+# Secrets that had already diverged once in production (verified
+# 2026-08-13: EURUSD/GBPUSD/USDCAD emergency sweeps failed with
+# no_combo_passed_filters because heavy_sweep.py's hardcoded MIN_RR=2.0
+# disagreed with orchestrator.py's env-var override MIN_RR=1.5). One
+# shared config value, read by both modules AND passed explicitly into
+# heavy_sweep_reachability.py's reachability_aware_pick (Phase 3a) below,
+# makes that divergence structurally impossible now, not just less
+# likely. See orchestrator.py:105-116 and config/feature_flags.yaml's
+# own comment on ``min_rr`` for the full history.
+MIN_RR = get_min_rr()
+MAX_SHARPE = get_heavy_sweep_max_sharpe()
+MIN_TRADES = get_heavy_sweep_min_trades()
 
 # TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
 TIMESFM_CONFIDENT_THRESHOLD = 0.10
@@ -511,7 +520,16 @@ class HeavySweepMixin:
                 )
                 try:
                     bias_by_bucket = await fetch_bias_by_bucket(symbol)
-                    reach = reachability_aware_pick(grid_results, atr, bias_by_bucket)
+                    # Explicit min_rr/max_sharpe/min_trades (not the
+                    # function's own defaults) — guarantees this shadow
+                    # comparison's "baseline" recomputation uses the
+                    # EXACT SAME threshold values as pick_best_combo just
+                    # used above, not a second, independently-resolved
+                    # copy that could quietly drift from it.
+                    reach = reachability_aware_pick(
+                        grid_results, atr, bias_by_bucket,
+                        min_rr=MIN_RR, max_sharpe=MAX_SHARPE, min_trades=MIN_TRADES,
+                    )
                     asyncio.create_task(record_heavy_sweep_reachability_shadow(
                         symbol,
                         nothing_survived=reach["nothing_survived"],

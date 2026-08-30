@@ -101,4 +101,31 @@ macro:
 # discipline as every other mode flag in this file. Phase 3b (widening
 # the grid itself) is a separate, not-yet-built follow-up gated on this
 # shadow data accumulating over real weekly cycles.
-heavy_sweep_reachability_mode: off
+# Flipped off -> shadow 2026-08-28 to start that accumulation clock --
+# zero live-behavior change (still shadow, not live).
+heavy_sweep_reachability_mode: shadow
+
+# min_rr: minimum reward:risk ratio. Deliberately SHARED by two
+# independent gates: the light-sweep qualification gate (EVEngine.min_rr,
+# set from this value in orchestrator.py) and the heavy sweep's grid
+# search pre-filter/pick_best_combo (heavy_sweep.py). A divergence
+# between the two already broke production once (2026-08-13:
+# EURUSD/GBPUSD/USDCAD emergency heavy sweeps failed with
+# no_combo_passed_filters because heavy_sweep.py's hardcoded MIN_RR=2.0
+# disagreed with orchestrator.py's env-var override MIN_RR=1.5) — moved
+# both off separate env vars/Studio Secrets onto this single config
+# value (2026-08-30) specifically to make that recurring silently
+# impossible, not just less likely.
+min_rr: 2.0
+
+# Heavy-sweep grid quality filter, alongside min_rr above (2026-08-30,
+# same config-centralization move — these were previously
+# HEAVY_SWEEP_MAX_SHARPE/HEAVY_SWEEP_MIN_TRADES env vars). Read by
+# heavy_sweep.py's pick_best_combo AND passed explicitly into
+# heavy_sweep_reachability.py's reachability_aware_pick (Phase 3a) so
+# the shadow comparison's "baseline" is always computed from the exact
+# same threshold values as the real pick — not a second, independently-
+# resolved copy that could quietly drift.
+heavy_sweep_grid:
+  max_sharpe: 10.0   # reject combos with an absurdly high Sharpe (likely overfit)
+  min_trades: 10     # minimum backtested trade count for a combo to qualify

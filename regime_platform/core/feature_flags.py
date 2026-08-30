@@ -45,6 +45,11 @@ _DEFAULTS: dict[str, Any] = {
         "penalty_scale": 0.5,
     },
     "heavy_sweep_reachability_mode": "off",
+    "min_rr": 2.0,
+    "heavy_sweep_grid": {
+        "max_sharpe": 10.0,
+        "min_trades": 10,
+    },
 }
 
 _cache: dict[str, Any] | None = None
@@ -164,3 +169,32 @@ def get_heavy_sweep_reachability_mode() -> str:
     return str(_load().get(
         "heavy_sweep_reachability_mode", _DEFAULTS["heavy_sweep_reachability_mode"],
     )).lower()
+
+
+def get_min_rr() -> float:
+    """Minimum reward:risk ratio — shared by the light-sweep
+    qualification gate (EVEngine.min_rr) and the heavy sweep's grid
+    search (see this key's own comment in feature_flags.yaml for the
+    2026-08-13 incident this single-source-of-truth value prevents)."""
+    try:
+        return float(_load().get("min_rr", _DEFAULTS["min_rr"]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["min_rr"]
+
+
+def _heavy_sweep_grid_number(key: str) -> float:
+    try:
+        grid_cfg = _load().get("heavy_sweep_grid", _DEFAULTS["heavy_sweep_grid"])
+        if not isinstance(grid_cfg, dict):
+            grid_cfg = _DEFAULTS["heavy_sweep_grid"]
+        return float(grid_cfg.get(key, _DEFAULTS["heavy_sweep_grid"][key]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["heavy_sweep_grid"][key]
+
+
+def get_heavy_sweep_max_sharpe() -> float:
+    return _heavy_sweep_grid_number("max_sharpe")
+
+
+def get_heavy_sweep_min_trades() -> int:
+    return int(_heavy_sweep_grid_number("min_trades"))

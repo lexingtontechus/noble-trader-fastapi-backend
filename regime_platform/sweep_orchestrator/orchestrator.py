@@ -31,6 +31,7 @@ from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_markov_source_mode,
+    get_min_rr,
     get_trend_probs_gate_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
@@ -100,7 +101,7 @@ MARKOV_HOLD_STEPS = int(os.getenv("MARKOV_HOLD_STEPS", "10"))
 # engine requires rr >= MIN_RR (default 2.0), but with default brick
 # params sl_bricks=3, tp_bricks=5, the actual RR is 5/3 = 1.67 — below
 # the 2.0 minimum. Either:
-#   (a) lower MIN_RR to 1.5 (via env: MIN_RR=1.5), or
+#   (a) lower min_rr to 1.5 in config/feature_flags.yaml, or
 #   (b) increase tp_bricks to 6+ in config/brick_params.yaml per symbol, or
 #   (c) decrease sl_bricks to 2 in config/brick_params.yaml per symbol
 MIN_REGIME_CONF = float(os.getenv("MIN_REGIME_CONF", "0.60"))
@@ -109,7 +110,15 @@ MIN_TIMESFM_CONFIDENCE = float(os.getenv("MIN_TIMESFM_CONFIDENCE", "0.05"))
 # MIN_RR and MIN_EV are read by the EVEngine on init — see _ev_engine below.
 # We patch the engine's thresholds after construction.
 MIN_EV = float(os.getenv("MIN_EV", "0.0"))
-MIN_RR = float(os.getenv("MIN_RR", "2.0"))
+# MIN_RR (2026-08-30 config-centralization fix): moved off a Studio-
+# Secret/env-var (was float(os.getenv("MIN_RR", "2.0"))) onto
+# config/feature_flags.yaml's min_rr — see that key's own comment for
+# why: this value is INTENTIONALLY shared with heavy_sweep.py's grid
+# search, and the two had already diverged once via independent env
+# vars (2026-08-13 incident). One config value now, read by both
+# modules, makes that recurrence structurally impossible rather than
+# just less likely.
+MIN_RR = get_min_rr()
 # ── TimesFM gate mode ────────────────────────────────────────────────────
 # Controls how TimesFM confidence affects signal qualification:
 #

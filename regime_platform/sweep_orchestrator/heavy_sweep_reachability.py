@@ -11,16 +11,24 @@ expectancy_r``) — and for 2 of 5 symbols tested, the grid never even
 generated a candidate in a positive-expectancy bucket at all, so a pure
 post-hoc filter had nothing to fall back to for those symbols.
 
-``reachability_aware_pick`` is a PURE function (no I/O) — mirrors
+``reachability_aware_pick`` is a PURE function (no I/O) that re-applies
 ``pick_best_combo``'s own ``min_rr``/``max_sharpe``/``min_trades``
-filter internally (kept as a local copy rather than shared, same
-"mirror, don't share" convention ``calibration_enforcement.py`` already
-uses for ``BAYES_PRIOR_COUNT``/``KELLY_REDUCTION``, so this module has
-no import-time dependency on ``heavy_sweep.py`` and there's no circular
-import), then additionally requires each surviving combo's
-``distance/ATR`` bucket to show ``expectancy_r > 0`` OR have no
-calibration data yet for that bucket — an unscored bucket is not
-evidence AGAINST a combo, only a scored-negative one is.
+filter internally to recompute the baseline pick, then additionally
+requires each surviving combo's ``distance/ATR`` bucket to show
+``expectancy_r > 0`` OR have no calibration data yet for that bucket —
+an unscored bucket is not evidence AGAINST a combo, only a
+scored-negative one is.
+
+2026-08-30 correctness fix: ``min_rr``/``max_sharpe``/``min_trades`` are
+NOT read from this module's own copy in production — ``heavy_sweep.py``
+passes its own live values (themselves sourced from
+``config/feature_flags.yaml``, not an env var, per that file's
+``min_rr`` comment) explicitly into every real call. That's what
+actually prevents divergence; the defaults below only matter for
+standalone/test calls that don't specify them, and exist so this stays
+a self-contained pure function with no import-time dependency on
+``heavy_sweep.py`` (avoiding a circular import — ``heavy_sweep.py``
+imports this module, not the other way around).
 
 Deliberately does NOT change ``heavy_sweep.pick_best_combo`` — Phase 3a
 is a shadow computation only (``heavy_sweep_reachability_mode=off|
@@ -47,9 +55,9 @@ from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
 
 logger = logging.getLogger("regime.sweep.heavy_sweep_reachability")
 
-# Mirrors heavy_sweep.py's own MIN_RR/MAX_SHARPE/MIN_TRADES defaults —
-# kept as a local copy (see module docstring) rather than imported, so
-# a divergence would need to be deliberate on both sides, not silent.
+# Fallback defaults for standalone/test callers only — production
+# (heavy_sweep.py) always passes its own live config/feature_flags.yaml
+# values explicitly (see module docstring's 2026-08-30 fix note).
 _MIN_RR_DEFAULT = 2.0
 _MAX_SHARPE_DEFAULT = 10.0
 _MIN_TRADES_DEFAULT = 10

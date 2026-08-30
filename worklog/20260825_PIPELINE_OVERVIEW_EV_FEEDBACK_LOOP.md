@@ -1632,3 +1632,79 @@ clean one-row-per-symbol shape, so `v_entry_drift` is a plain
 passthrough — no join/pivot needed, kept as a view anyway so every
 admin-surfaced object follows the same "view, not raw table" convention
 consistently. Migration 129 not yet applied.
+
+## 36h checkpoint review + MIN_RR/MAX_SHARPE/MIN_TRADES config fix (2026-08-30)
+
+Ran a full data check (studio logs still unreachable — see below;
+Supabase data only) covering signal-sim health, Tier 1/2 HMM shadow,
+macro filter, calibration bias freshness, and the just-flipped Phase 3a
+shadow.
+
+**Findings**: 5,197 signals in 36h, 100% with `macro_label` captured
+(confirms the macro-filter deploy is genuinely live). Tier 1
+disagreement is 75.6%, up from the 61.5% pre-reset baseline — plausibly
+the classifier fix working as intended (it no longer defaults uncertain
+components to FLAT, so it disagrees with legacy's FLAT-heavy reads more
+often precisely because it's now doing something legitimately
+different), but flagged as worth continued watching given the
+magnitude (up to 98.7% on XAUAUD). `nt_macro_regime` only shows ONE
+`computed_at` (2026-08-29) — today's 06:00 UTC refresh didn't fire;
+most likely an innocent misfire-grace-window skip from a same-day
+restart, not a bug — confirm after tomorrow's window. Phase 3a is
+already producing real signal on day one: XAUUSD's baseline pick (`4+`
+bucket, sharpe 1.13) got correctly redirected to a `2-4` bucket pick
+(sharpe 0.52) both times it's run so far — the mechanism working
+exactly as designed on live data.
+
+**Studio logs — re-verified, not just re-asserted.** Grepped the entire
+repo for any Lightning AI Studio log-access code (zero matches) and
+re-checked `.env.example`'s own note that `LIGHTNING_APIKEY`/
+`LIGHTNING_USER_ID`/`LIGHTNING_URL` are deprecated with "no code
+consumers" (2026-08-12 audit). Studio's env/secrets are configured
+entirely through the Lightning AI UI, separate from this sandbox — "the
+studio is operational" and "this sandbox can read its logs" are
+independent facts; the first doesn't change the second. Not inventing a
+new Lightning API integration to guess around this — no documentation
+for it exists in this repo.
+
+**Real bug found while auditing Phase 3a's own correctness**:
+`heavy_sweep_reachability.py`'s `reachability_aware_pick()` mirrored
+`heavy_sweep.py`'s `MIN_RR`/`MAX_SHARPE`/`MIN_TRADES` filter using its
+own hardcoded copy (2.0/10.0/10) instead of reading `heavy_sweep.py`'s
+actual values — which were themselves `os.getenv()`-sourced (i.e.,
+Studio-Secret-overridable). Grepped every usage of these three names
+across the codebase before fixing anything, which surfaced something
+more important than the immediate bug: **`MIN_RR` is deliberately
+SHARED** between `orchestrator.py` (feeds `EVEngine.min_rr`, the live
+light-sweep qualification gate) and `heavy_sweep.py` (grid search
+filter) — and the two had **already diverged once in production**
+(2026-08-13: EURUSD/GBPUSD/USDCAD emergency heavy sweeps failed with
+`no_combo_passed_filters` because `heavy_sweep.py`'s hardcoded
+`MIN_RR=2.0` disagreed with `orchestrator.py`'s env-var override
+`MIN_RR=1.5`). `position_sizer.py` also has an unrelated `min_rr` (its
+own `sizing.min_rr`, auto-tuned via `tuning_registry.yaml`, default
+2.50) — confirmed this is a completely separate concept sharing only a
+name, and left untouched (it's already correctly homed in the
+auto-tuned config system, not this one).
+
+**Fix**: moved `MIN_RR` (shared), `MAX_SHARPE`, `MIN_TRADES` off env
+vars/Studio Secrets onto `config/feature_flags.yaml` (`min_rr` top-level
+— it's cross-cutting, not heavy-sweep-specific — plus a
+`heavy_sweep_grid: {max_sharpe, min_trades}` section). Both
+`orchestrator.py` and `heavy_sweep.py` now call the same
+`get_min_rr()`; `heavy_sweep.py`'s wiring call to
+`reachability_aware_pick()` now passes `min_rr=MIN_RR,
+max_sharpe=MAX_SHARPE, min_trades=MIN_TRADES` explicitly (its own
+already-in-scope, now-config-sourced constants) instead of letting
+`heavy_sweep_reachability.py` re-derive an independent copy — this is
+what actually eliminates the divergence risk structurally, not just the
+source-of-truth change. `heavy_sweep_reachability.py`'s own hardcoded
+defaults stay only as a standalone/test fallback, clearly documented as
+such now.
+
+**Verified**: all three getters resolve to the same defaults as before
+(2.0/10.0/10) — confirms no Studio Secret was actually overriding these
+in practice, so this was a structural/future-proofing fix, not a
+correction to currently-wrong shadow data. Full suite: 645 passed, 21
+skipped (pre-existing/unrelated), 0 failed — unchanged, as expected for
+a same-value config-source migration. Not yet pushed.
