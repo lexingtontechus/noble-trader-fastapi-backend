@@ -140,3 +140,26 @@ Built the scoped capture immediately after scoping it.
 **Not done**: migration 131 not yet applied. No accuracy data exists yet
 — needs the migration applied, a studio restart, and real accumulation
 time before the 2026-09-21 review target means anything.
+
+## Deployed and confirmed live (2026-08-31, same day)
+
+Migration 131 applied. Studio restarted 21:50:25 UTC — scheduler came up
+clean, all jobs registered (including the two chained onto the weekly
+job), zero errors. Confirmed independently via direct query (not just
+taking the restart at face value) that all 4 capture columns are
+populating on real signals from the first post-restart tick onward, e.g.:
+
+| symbol | legacy_markov_state | trend_hmm_markov_state | raw_p_regime | gated_p_regime |
+|---|---|---|---|---|
+| XAUUSD | UP | FLAT | 0.970 | 0.500 |
+| XAUAUD | UP | DOWN | 0.970 | 0.970 |
+| XAGUSD | UP | DOWN | 0.970 | 0.970 |
+| USDJPY | FLAT | FLAT | 0.651 | 0.486 |
+
+Real, varied values — genuine Tier 1 disagreement showing up (XAUAUD/
+XAGUSD legacy vs trend_hmm), Tier 2 gating actively firing on others
+(XAUUSD/USDJPY raw vs gated). **The 2026-09-21 review clock starts now**
+(2026-08-31T21:50:25Z) — only signals captured from this point forward
+have the outcome-linkable columns populated; anything resolved before
+this timestamp will read NULL for all four and won't contribute to
+`hmm_shadow_accuracy.py`'s per-symbol counts.
