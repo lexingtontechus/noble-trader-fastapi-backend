@@ -226,6 +226,13 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # diagnostic (macro_edge.py). Nullable; absent when macro_regime_mode
     # is off or no nt_macro_regime row exists yet.
     "macro_label", "macro_strength",
+    # legacy_markov_state/trend_hmm_markov_state, raw_p_regime/
+    # gated_p_regime (migration 131, 2026-08-31): Tier 1/2's own shadow-
+    # comparison values at capture time — feed the outcome-linked
+    # accuracy diagnostic (hmm_shadow_accuracy.py). Nullable; only
+    # populated during the real shadow-mode comparison.
+    "legacy_markov_state", "trend_hmm_markov_state",
+    "raw_p_regime", "gated_p_regime",
     # drift_*_pct (migration 121, Phase 2): direction-relative post-entry
     # price drift at fixed horizons, written by eod_resolver.py's PATCH
     # (this constant governs capture-time inserts; eod_resolver.py keeps
@@ -731,6 +738,45 @@ async def upsert_macro_edge_by_symbol(rows: list[dict[str, Any]]) -> None:
                 )
     except Exception as exc:
         logger.error("upsert_macro_edge_by_symbol: insert failed: %s", exc)
+
+
+NT_HMM_SHADOW_ACCURACY_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "metric", "n", "coverage", "accuracy", "brier_score",
+})
+
+
+async def upsert_hmm_shadow_accuracy(rows: list[dict[str, Any]]) -> None:
+    """Upsert rows into ``nt_hmm_shadow_accuracy`` (best-effort).
+
+    Keyed on ``(symbol, metric)`` — same upsert-on-conflict shape as
+    ``upsert_macro_edge_by_symbol``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_HMM_SHADOW_ACCURACY_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_hmm_shadow_accuracy: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_hmm_shadow_accuracy')}?on_conflict=symbol,metric",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_hmm_shadow_accuracy: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_hmm_shadow_accuracy: insert failed: %s", exc)
 
 
 NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({

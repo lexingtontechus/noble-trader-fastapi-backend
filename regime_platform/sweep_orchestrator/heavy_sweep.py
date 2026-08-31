@@ -617,6 +617,12 @@ class HeavySweepMixin:
             markov_source_mode = get_markov_source_mode()
             markov_T: dict[str, dict[str, float]] | None = None
             markov_current: str | None = None
+            # Tier 1/2 outcome-linked evidence (2026-08-31, worklog
+            # 20260831_SHADOW_TO_LIVE_ROADMAP.md) — see orchestrator.py's
+            # identical mirror for the full rationale. Only populated
+            # inside the actual shadow-mode comparison below.
+            sim_legacy_markov_state: str | None = None
+            sim_trend_hmm_markov_state: str | None = None
             if markov_source_mode != "trend_hmm_live":
                 markov_T, markov_current = self._hmm_model.emit_markov(symbol)
 
@@ -637,6 +643,8 @@ class HeavySweepMixin:
                         )
                         legacy_p_up = (markov_T or {}).get(markov_current or "", {}).get("UP", 0.5)
                         trend_p_up = trend_hmm_T.get(trend_hmm_current, {}).get("UP", 0.5)
+                        sim_legacy_markov_state = markov_current
+                        sim_trend_hmm_markov_state = trend_hmm_current
                         asyncio.create_task(record_markov_shadow_compare(
                             symbol,
                             state_agree=(markov_current == trend_hmm_current),
@@ -707,6 +715,10 @@ class HeavySweepMixin:
             from regime_platform.core.feature_flags import get_trend_probs_gate_mode
 
             trend_probs_gate_mode = get_trend_probs_gate_mode()
+            # Tier 1/2 outcome-linked evidence — see orchestrator.py's
+            # identical mirror for the full rationale.
+            sim_raw_p_regime: float | None = None
+            sim_gated_p_regime: float | None = None
             if trend_probs_gate_mode in ("shadow", "live"):
                 try:
                     _gated_trend_probs = regime_model.gated_trend_probs(_trend_probs)
@@ -722,6 +734,8 @@ class HeavySweepMixin:
                         from regime_platform.sweep_orchestrator.supabase_client import (
                             record_trend_probs_gate_shadow,
                         )
+                        sim_raw_p_regime = raw_p_regime
+                        sim_gated_p_regime = gated_p_regime
                         asyncio.create_task(record_trend_probs_gate_shadow(
                             symbol, raw_p_regime=raw_p_regime, gated_p_regime=gated_p_regime,
                         ))
@@ -899,6 +913,10 @@ class HeavySweepMixin:
                         atr=atr,
                         macro_label=macro_label,
                         macro_strength=macro_strength,
+                        legacy_markov_state=sim_legacy_markov_state,
+                        trend_hmm_markov_state=sim_trend_hmm_markov_state,
+                        raw_p_regime=sim_raw_p_regime,
+                        gated_p_regime=sim_gated_p_regime,
                     )
                     if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                         logger.debug(

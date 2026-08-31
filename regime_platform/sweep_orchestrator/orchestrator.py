@@ -708,6 +708,10 @@ def _build_signal_sim_payload(
     atr: float | None = None,
     macro_label: str | None = None,
     macro_strength: float | None = None,
+    legacy_markov_state: str | None = None,
+    trend_hmm_markov_state: str | None = None,
+    raw_p_regime: float | None = None,
+    gated_p_regime: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -738,6 +742,16 @@ def _build_signal_sim_payload(
     ``macro_filter.py``) — feed the win/loss+PnL evidence diagnostic
     (``macro_edge.py``). Nullable: absent when ``macro_regime_mode`` is
     ``off`` or no ``nt_macro_regime`` row exists yet for the symbol.
+
+    ``legacy_markov_state``/``trend_hmm_markov_state`` and
+    ``raw_p_regime``/``gated_p_regime`` (2026-08-31, migration 131,
+    worklog 20260831_SHADOW_TO_LIVE_ROADMAP.md) are Tier 1/2's own
+    shadow-comparison values at capture time — feed the outcome-linked
+    accuracy diagnostic (``hmm_shadow_accuracy.py``), closing the gap
+    where the shadow tables could show two sources disagree but not
+    which one was actually right. Nullable: only populated during the
+    real shadow-mode comparison (``markov_source_mode=trend_hmm_shadow``
+    / ``trend_probs_gate_mode=shadow``), None otherwise.
     """
     payload = {
         "symbol": symbol,
@@ -761,6 +775,10 @@ def _build_signal_sim_payload(
         "atr": round(float(atr), 6) if atr is not None else None,
         "macro_label": macro_label,
         "macro_strength": round(float(macro_strength), 4) if macro_strength is not None else None,
+        "legacy_markov_state": legacy_markov_state,
+        "trend_hmm_markov_state": trend_hmm_markov_state,
+        "raw_p_regime": round(float(raw_p_regime), 4) if raw_p_regime is not None else None,
+        "gated_p_regime": round(float(gated_p_regime), 4) if gated_p_regime is not None else None,
     }
     if (
         settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW
@@ -1536,6 +1554,26 @@ class SweepOrchestrator(HeavySweepMixin):
             except Exception as exc:
                 logger.error("[macro-edge] failed: %s", exc)
 
+        # HMM shadow accuracy (2026-08-31, worklog/
+        # 20260831_SHADOW_TO_LIVE_ROADMAP.md): outcome-linked evidence for
+        # the Tier 1/2 markov_source_mode/trend_probs_gate_mode live-mode
+        # decision (review target 2026-09-21). Chained onto this same
+        # weekly job — same resolved-nt_signal_sim population, same
+        # cadence. Read-only: informs the decision, does not make it.
+        if getattr(settings, "HMM_SHADOW_ACCURACY_ENABLED", True):
+            from regime_platform.sweep_orchestrator.hmm_shadow_accuracy import (
+                build_hmm_shadow_accuracy,
+            )
+
+            try:
+                accuracy_rows = await build_hmm_shadow_accuracy()
+                logger.info(
+                    "[hmm-shadow-accuracy] done: %d row(s) across %d symbol(s)",
+                    len(accuracy_rows), len({r["symbol"] for r in accuracy_rows}),
+                )
+            except Exception as exc:
+                logger.error("[hmm-shadow-accuracy] failed: %s", exc)
+
     async def _run_macro_regime_refresh(self) -> None:
         """Macro filter daily refresh (2026-08-28, worklog/
         20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
@@ -2014,6 +2052,18 @@ class SweepOrchestrator(HeavySweepMixin):
         markov_source_mode = get_markov_source_mode()
         _markov_T: dict[str, dict[str, float]] | None = None
         _markov_current_state: str | None = None
+        # Tier 1/2 outcome-linked evidence (2026-08-31, worklog
+        # 20260831_SHADOW_TO_LIVE_ROADMAP.md) — captured on nt_signal_sim
+        # ONLY during the actual shadow-mode comparison below (both
+        # legacy and trend_hmm current_state genuinely available and
+        # uncorrupted at the same time), so a later live-mode decision
+        # can be scored against realized outcomes. None otherwise — in
+        # trend_hmm_live mode _markov_current_state itself gets
+        # overwritten to the trend_hmm value (legacy fit is skipped), so
+        # these dedicated capture vars avoid that ambiguity rather than
+        # reusing _markov_current_state directly.
+        _sim_legacy_markov_state: str | None = None
+        _sim_trend_hmm_markov_state: str | None = None
         if markov_source_mode != "trend_hmm_live":
             _markov_T, _markov_current_state = self._hmm_model.emit_markov(symbol)
         p_up, p_dn = 0.5, 0.5  # neutral defaults; replaced if HMM emits
@@ -2049,6 +2099,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                     _legacy_p_up = (_markov_T or {}).get(_markov_current_state or "", {}).get("UP", 0.5)
                     _trend_p_up = _trend_hmm_T.get(_trend_hmm_current_state, {}).get("UP", 0.5)
+                    _sim_legacy_markov_state = _markov_current_state
+                    _sim_trend_hmm_markov_state = _trend_hmm_current_state
                     asyncio.create_task(record_markov_shadow_compare(
                         symbol,
                         state_agree=(_markov_current_state == _trend_hmm_current_state),
@@ -2156,6 +2208,13 @@ class SweepOrchestrator(HeavySweepMixin):
         # comparison but does NOT change what compute_ev sees; only
         # live mode substitutes the gated version.
         trend_probs_gate_mode = get_trend_probs_gate_mode()
+        # Tier 1/2 outcome-linked evidence (2026-08-31, worklog
+        # 20260831_SHADOW_TO_LIVE_ROADMAP.md) — only populated in the
+        # "shadow" branch below (both raw and gated genuinely computed
+        # side by side); None in "live"/"off" modes, same nullable
+        # capture-only-when-computed pattern as atr/macro_label.
+        _sim_raw_p_regime: float | None = None
+        _sim_gated_p_regime: float | None = None
         if trend_probs_gate_mode in ("shadow", "live"):
             try:
                 _gated_trend_probs = model.gated_trend_probs(_smoothed_trend_probs)
@@ -2172,6 +2231,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     from regime_platform.sweep_orchestrator.supabase_client import (
                         record_trend_probs_gate_shadow,
                     )
+                    _sim_raw_p_regime = _raw_p_regime
+                    _sim_gated_p_regime = _gated_p_regime
                     asyncio.create_task(record_trend_probs_gate_shadow(
                         symbol, raw_p_regime=_raw_p_regime, gated_p_regime=_gated_p_regime,
                     ))
@@ -2880,6 +2941,10 @@ class SweepOrchestrator(HeavySweepMixin):
                     atr=atr,
                     macro_label=macro_label,
                     macro_strength=macro_strength,
+                    legacy_markov_state=_sim_legacy_markov_state,
+                    trend_hmm_markov_state=_sim_trend_hmm_markov_state,
+                    raw_p_regime=_sim_raw_p_regime,
+                    gated_p_regime=_sim_gated_p_regime,
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

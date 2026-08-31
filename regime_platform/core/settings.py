@@ -436,6 +436,14 @@ class Settings(BaseSettings):
     # controls whether the two background jobs run at all.
     MACRO_REGIME_ENABLED: bool = True
 
+    # HMM_SHADOW_ACCURACY_ENABLED (default True, 2026-08-31, worklog/
+    # 20260831_SHADOW_TO_LIVE_ROADMAP.md): kill switch for the weekly
+    # outcome-linked accuracy diagnostic (hmm_shadow_accuracy.py),
+    # chained onto the existing bracket-reachability weekly job. Informs
+    # the Tier 1/2 (markov_source_mode/trend_probs_gate_mode) live-mode
+    # decision review — does not itself change either mode.
+    HMM_SHADOW_ACCURACY_ENABLED: bool = True
+
     # Emergency heavy-sweep cooldown for the intraday correction passes:
     # a symbol gets at most one re-optimization per this window (bounds
     # backtest cost; the nightly pass is unaffected).
