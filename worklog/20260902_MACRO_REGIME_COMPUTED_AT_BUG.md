@@ -144,3 +144,23 @@ live.
 `nt_macro_edge_by_symbol` evidence window — flagged in the
 Recommendation above as suspect, left for a human call on whether to
 reset the review clock rather than silently deciding that here.
+
+## Confirmed live post-restart (2026-09-02, same day)
+
+Studio restarted 21:05:03 UTC with this fix deployed. Confirmed, not
+just assumed:
+- Scheduler came up clean — all jobs registered including
+  "Macro regime refresh (daily)" and "Bracket reachability table
+  (weekly)", zero errors.
+- The startup catch-up check (`_catch_up_stale_jobs`) did NOT fire a
+  staleness warning for `nt_macro_regime` this time — correctly, since
+  the manual verification run 11 minutes earlier (20:54:27 UTC) left it
+  well inside `MACRO_REGIME_STALE_AFTER` (20h). This is the first
+  restart where that catch-up check has found this table genuinely
+  fresh rather than re-diagnosing the same 08-29 staleness — direct
+  evidence the fix is holding under the real deployed code path, not
+  just my standalone verification run.
+
+Closing this out: bug found, fixed, verified against live Supabase, and
+now confirmed clean through an actual studio restart with the fix
+deployed.
