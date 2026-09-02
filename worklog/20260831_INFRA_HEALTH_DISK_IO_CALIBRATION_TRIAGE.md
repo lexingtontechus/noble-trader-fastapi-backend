@@ -180,8 +180,122 @@ connection-limit failure today.**
 
 - Full root cause for `nt_signal_sim`'s elevated seq_scan count — flagged,
   not chased further this session.
-- The shared-httpx-client refactor itself — scoped only.
+- The shared-httpx-client refactor itself — scoped only (see below,
+  2026-09-01 addendum).
 - Reconstructing exactly what happened during the specific 00:32 UTC run
   that produced the calibration stall — log data lost to restart-driven
   truncation; not pursued further since the live re-run already answered
   the load-bearing question (is the mechanism broken — no).
+
+## Addendum (2026-09-01): shared-httpx-client — requirements + level of effort
+
+Re-inventoried precisely before sizing this, rather than working off the
+earlier "81 sites" estimate from memory — the real count is **87 sites
+across 30 files** (grew slightly since the earlier count, as this
+session's own new modules — `hmm_shadow_accuracy.py`,
+`heavy_sweep_reachability.py`, `macro_edge.py` — each added one).
+
+### What's actually being called — this matters for scope
+
+Checked every file's actual destination, not just the call-site count:
+
+| Destination | Sites | Files |
+|---|---|---|
+| **Supabase REST** | ~85 | `supabase_client.py` (24), `paper_book.py` (6), `pnl_service.py` (4 of 5 — see below), `routers/venue.py` (5), `services/backtest_store.py` (4), `services/operational/system_config.py` (3), `services/data_quality.py` (3), `sweep_orchestrator/portfolio_compare.py` (2), `eod_resolver.py` (2), `calibration_enforcement.py` (2), every diagnostic module built this session (1 each), `routers/calibration.py`, `core/runtime_config.py`, `services/operational/{reconciler,audit_logger}.py`, several `scripts/*.py` |
+| **TradingView/RapidAPI** | 2 | `price_fetcher.py` (1), `services/hmm/quote_fetcher.py` (1) |
+| **Alpaca** | 1 | `pnl_service.py`'s `_alpaca_get` (already has its own dedicated throttle middleware, `alpaca_throttle`) |
+
+**Recommendation: scope this to Supabase call sites only.** That's what
+the disk-IO investigation actually found, TradingView/Alpaca have
+different hosts/auth/rate-limit characteristics entirely, and Alpaca
+already has its own purpose-built throttling layer — folding it into
+this refactor would be solving a problem that already has a solution, for
+no benefit. This narrows the real build to ~85 sites in ~19 files, not 87
+across 30.
+
+**Also found**: several files (`routers/venue.py`,
+`services/backtest_store.py`, `routers/calibration.py`, `pnl_service.py`)
+maintain their OWN local copies of `_supabase_headers()`/`_supabase_url()`
+instead of importing `supabase_client.py`'s versions — duplicated code
+predating this refactor, not something to silently "fix" as a drive-by;
+flagging it as a design question for the build (import the shared
+client + header/url helpers from `supabase_client.py`, or give each file
+its own thin wrapper around the same shared client) rather than deciding
+it here.
+
+### Design
+
+- One lazy, module-level singleton in `supabase_client.py`:
+  ```python
+  _client: httpx.AsyncClient | None = None
+
+  async def _get_client() -> httpx.AsyncClient:
+      global _client
+      if _client is None:
+          _client = httpx.AsyncClient(
+              limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+          )
+      return _client
+  ```
+  Sizing (`20`/`10`) is a starting point, not derived from a load test —
+  should be revisited once real connection-count telemetry exists post-
+  deploy, not treated as final.
+- Each call site changes from
+  `async with httpx.AsyncClient(timeout=X) as client: ...` to
+  `client = await _get_client(); ...` — **per-call timeout values are
+  preserved**, not collapsed to one global timeout: httpx supports a
+  per-request `timeout=` override (`client.get(url, timeout=X)`) on a
+  shared client, so every site's existing, deliberately-chosen timeout
+  (5s/8s/10s/30s/60s — they vary meaningfully by call, e.g.
+  `paper_book.py` uses 60s for its heaviest reconciliation query) carries
+  over unchanged.
+- No FastAPI startup/shutdown lifecycle hook — deliberately, because a
+  large share of callers are standalone scripts (`scripts/*.py`,
+  `bracket_reachability.py`'s own `__main__`, etc.) that never run inside
+  the app's lifespan at all. A lazy singleton works identically in both
+  contexts; an explicit `aclose()` at process exit is unclosed-socket-at-
+  exit territory, not a real leak.
+
+### Testing impact — the real complexity, found by checking rather than assuming
+
+Grepped test files referencing `httpx.AsyncClient`: **13 files.**
+`conftest.py`'s global fixture patches `httpx.AsyncClient.request` (the
+method, not the constructor) — compatible with a shared client
+unmodified, since patching the method affects every instance regardless
+of when it was constructed.
+
+**The other ~12 files are the real risk**: they patch the constructor
+itself (`monkeypatch.setattr(httpx, "AsyncClient", FakeClient)` /
+`patch("httpx.AsyncClient", return_value=client)`, sometimes module-
+qualified) — a pattern that only works because today's code calls
+`httpx.AsyncClient(...)` fresh at the exact moment of each request. A
+lazy singleton constructed once and reused breaks this: whichever test
+happens to trigger the first-ever construction "locks in" that instance
+for the rest of the test session, and a later test's patch has nothing
+left to intercept.
+
+**Mitigation (recommended over rewriting all 12 files' mocks)**: one new
+autouse fixture in `conftest.py` that resets `supabase_client._client =
+None` before every test. This forces the lazy getter to reconstruct on
+each test's first Supabase call, picking up whatever `httpx.AsyncClient`
+that specific test has patched — the existing 12 files' mock patterns
+should keep working largely unchanged. **"Largely"**, not
+"guaranteed" — some may still need individual attention if their patch
+is scoped narrower than the test's first Supabase call (e.g., a `with
+patch(...):` block wrapping only part of the test body). Budget time to
+verify each of the 12 individually, not just add the fixture and assume
+green.
+
+### Level of effort
+
+| Phase | Scope | Rough size |
+|---|---|---|
+| Shared client + `_get_client()` + conftest reset fixture | `supabase_client.py` + `conftest.py` | Small — foundational, ~1-2 hours |
+| Migrate ~85 Supabase call sites across ~19 files | Mechanical (same transform repeated), but `supabase_client.py` alone has 24 sites | Largest chunk — most of a day |
+| Resolve the duplicated-header-helper files (`venue.py`, `backtest_store.py`, `routers/calibration.py`, `pnl_service.py`) | Decide + apply: import shared client, or thin local wrapper | Small-medium, contingent on the design decision above |
+| Verify the 12 test files individually | Confirm the reset fixture is sufficient, fix any that aren't | Medium — real unknown until attempted |
+| Full suite + real-data verification (standalone module runs + 24h `query_logs` re-check for the connection-count/latency improvement) | Same discipline as every other build this session | Small |
+
+**Total: roughly 1.5-2 focused days**, not a quick pass — the mechanical
+part is large-but-simple, the test-mocking part is small-but-uncertain
+until actually attempted. Scoped only; not built.
