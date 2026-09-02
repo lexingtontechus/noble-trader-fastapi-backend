@@ -105,6 +105,18 @@ async def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         force=True,
     )
+    # Log sanitization (2026-09-01, worklog/
+    # 20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md): httpx's own
+    # per-request INFO logging accounted for 35.4% of all lines in a
+    # measured production log (30,888 of 87,225) — one line per
+    # Supabase/TradingView/Discord/TimesFM call, none of it actionable
+    # (every real diagnostic this session reads Supabase directly, never
+    # scrapes the log). Demoted to WARNING so httpx only logs on actual
+    # request failures; this app's own loggers (regime.sweep.*,
+    # apscheduler.*) are unaffected. Directly extends how much real
+    # history survives on_start.sh's 10MB-triggered log truncation,
+    # without touching the truncation mechanism or the restart cadence.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     health_port = int(os.getenv("SWEEP_ORCHESTRATOR_PORT", "8003"))
     print(f"[sweep-orch] Starting sweep orchestrator (health port {health_port})...", flush=True)
