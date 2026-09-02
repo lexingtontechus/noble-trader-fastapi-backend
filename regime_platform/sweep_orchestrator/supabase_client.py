@@ -779,6 +779,43 @@ async def upsert_hmm_shadow_accuracy(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_hmm_shadow_accuracy: insert failed: %s", exc)
 
 
+async def fetch_max_computed_at(table: str) -> datetime | None:
+    """Latest ``computed_at`` for a diagnostic table (best-effort — ``None``
+    on any failure or an empty table).
+
+    Used by the orchestrator's startup catch-up check for fixed-time-of-
+    day/week jobs an in-memory APScheduler job store can silently skip
+    across restarts (2026-09-01, worklog/
+    20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md): ``add_job()`` on a
+    fresh scheduler computes the next fire time strictly forward from
+    "now," with no memory that today's/this-week's fire time already
+    passed while the process was down. Reading the job's own diagnostic
+    table for its last real success avoids needing a second, separately-
+    mutated piece of state (a config file) just to answer "did this run
+    recently."
+    """
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url(table),
+                headers=_headers(),
+                params={"select": "computed_at", "order": "computed_at.desc", "limit": "1"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        if not isinstance(data, list) or not data:
+            return None
+        raw = data[0].get("computed_at")
+        if not raw:
+            return None
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception as exc:
+        logger.warning("fetch_max_computed_at: %s: read failed: %s", table, exc)
+        return None
+
+
 NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
     "symbol", "n_compared", "n_state_disagree", "sum_abs_p_up_diff",
     "last_legacy_state", "last_trend_hmm_state", "updated_at",
@@ -919,6 +956,67 @@ async def record_trend_probs_gate_shadow(
                 )
     except Exception as exc:
         logger.error("record_trend_probs_gate_shadow: failed for %s: %s", symbol, exc)
+
+
+NT_REGIME_DEBOUNCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "n_differed",
+    "last_raw_label", "last_debounced_label", "updated_at",
+})
+
+
+async def record_regime_debounce_shadow(
+    symbol: str,
+    raw_label: str,
+    debounced_label: str,
+) -> None:
+    """Accumulate one tick's raw-vs-debounced regime_label comparison into
+    the running per-symbol row in ``nt_regime_debounce_shadow`` (best-effort).
+
+    Fetch-then-upsert, same shape as ``record_trend_probs_gate_shadow``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_regime_debounce_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,n_differed",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            differed = raw_label != debounced_label
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "n_differed": int(prev.get("n_differed", 0)) + (1 if differed else 0),
+                "last_raw_label": raw_label,
+                "last_debounced_label": debounced_label,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, NT_REGIME_DEBOUNCE_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_regime_debounce_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_regime_debounce_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_regime_debounce_shadow: failed for %s: %s", symbol, exc)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:

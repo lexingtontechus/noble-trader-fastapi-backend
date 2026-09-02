@@ -20,7 +20,7 @@ import math
 import os
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -28,10 +28,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from regime_platform.core.settings import settings
-from regime_platform.core.regime_engine import RegimeHMM, RegimeSnapshot
+from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_markov_source_mode,
     get_min_rr,
+    get_regime_label_debounce_mode,
+    get_regime_label_debounce_ticks,
+    get_regime_warm_start_mode,
     get_trend_probs_gate_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
@@ -591,6 +594,32 @@ def _apply_regime_kelly_floor(
     return round(min(floor, 0.06), 6), True, False
 
 
+# Staleness thresholds for the startup catch-up check (2026-09-01,
+# worklog/20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md) — see
+# SweepOrchestrator._catch_up_stale_jobs()'s docstring for why this
+# exists. Deliberately shorter than the full daily/weekly cycle so a
+# legitimately-recent run isn't needlessly re-triggered by a routine
+# restart.
+MACRO_REGIME_STALE_AFTER = timedelta(hours=20)
+BRACKET_REACHABILITY_STALE_AFTER = timedelta(hours=6.5 * 24)
+
+
+def _is_stale(
+    last_computed_at: datetime | None,
+    threshold: timedelta,
+    now: datetime | None = None,
+) -> bool:
+    """True if ``last_computed_at`` is missing or older than ``threshold``
+    relative to ``now`` (defaults to the current UTC time). Pure function,
+    no I/O — the actual data fetch lives in
+    ``supabase_client.fetch_max_computed_at()``.
+    """
+    if last_computed_at is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return (now - last_computed_at) > threshold
+
+
 def _evaluate_regime_shift(
     ev_engine: EVEngine,
     prev_regime: str | None,
@@ -841,6 +870,24 @@ class SweepOrchestrator(HeavySweepMixin):
         # regime_shift bookkeeping, which stays driven by the raw
         # (label-continuity-fixed) prediction.
         self._regime_label_means: dict[str, dict[str, dict[str, float]]] = {}
+        # Per-symbol full fitted params (means/covars/transmat/startprob,
+        # original units) from the LAST fit — warm-starts the NEXT fit()
+        # call's EM initialization when regime_warm_start_mode=live
+        # (2026-09-01, worklog 20260901_REGIME_LABEL_STABILITY_SCOPE.md).
+        # Separate from _regime_label_means above: that dict solves "what
+        # do we call this component," this one solves "where should EM
+        # start looking" — independent mechanisms, both keyed by symbol.
+        # Same in-memory-only lifecycle (lost on restart) as
+        # _regime_label_means already is; not a regression.
+        self._regime_warm_start_params: dict[str, dict[str, dict[str, np.ndarray]]] = {}
+        # Fix 2 (2026-09-01, same worklog) — one RegimeLabelDebouncer per
+        # symbol, persisted across ticks so its confirmed/candidate state
+        # carries forward. Independent of both dicts above: this smooths
+        # the OUTPUT label regardless of what produced it, rather than
+        # trying to stabilize the fit itself. Same in-memory-only
+        # lifecycle (lost on restart, restarts naturally just cold-start
+        # each symbol's debouncer again) as everything else in this block.
+        self._regime_debouncers: dict[str, RegimeLabelDebouncer] = {}
         self._regime_trend_ema: dict[str, dict[str, float]] = {}
         # Per-symbol cache of the Bayesian-shrunk realized win rate
         # (p_historical EV-blend source, R3) — same TTL pattern as
@@ -1059,6 +1106,11 @@ class SweepOrchestrator(HeavySweepMixin):
 
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
+
+        # Startup catch-up for fixed-time jobs that can silently skip
+        # across restarts (2026-09-01) — see
+        # _catch_up_stale_jobs()'s own docstring.
+        asyncio.create_task(self._catch_up_stale_jobs())
 
         # Start the stale-symbol background checker in the event loop
         asyncio.create_task(self._stale_check_loop())
@@ -1591,6 +1643,72 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[macro-regime] failed: %s", exc)
 
+    async def _catch_up_stale_jobs(self) -> None:
+        """Startup catch-up for fixed-time-of-day/week jobs an in-memory
+        APScheduler job store can silently skip across restarts
+        (2026-09-01, worklog/
+        20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md).
+
+        ``add_job()`` on a fresh scheduler computes the next fire time
+        strictly forward from "now" — it has no memory that today's/
+        this-week's fire time already passed if the process wasn't alive
+        to see it. Found live: the studio's restart cadence clusters
+        right around the 06:00 UTC daily trigger, so
+        ``macro-regime-daily`` and the weekly ``bracket-reachability``
+        job kept silently rolling forward to "tomorrow"/"next Sunday"
+        every cycle (`nt_macro_regime` sat 3.5 days stale, the weekly
+        diagnostics 6 days stale, while the 00:32 UTC EOD job — which
+        lands in the gaps between restarts — kept firing normally).
+
+        Reads each job's own diagnostic table for its last real success
+        via ``fetch_max_computed_at`` — no new config file, no second
+        piece of state to keep in sync — and fires the job immediately
+        (once) if it's gone stale. Thresholds
+        (``MACRO_REGIME_STALE_AFTER``/``BRACKET_REACHABILITY_STALE_AFTER``)
+        are deliberately shorter than the full cycle so a legitimately-
+        recent run isn't needlessly re-triggered by a routine restart.
+        Best-effort: never raises into scheduler startup.
+        """
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            fetch_max_computed_at,
+        )
+
+        now = datetime.now(timezone.utc)
+
+        if getattr(settings, "MACRO_REGIME_ENABLED", True):
+            try:
+                last = await fetch_max_computed_at("nt_macro_regime")
+                if _is_stale(last, MACRO_REGIME_STALE_AFTER, now):
+                    logger.warning(
+                        "[startup-catchup] nt_macro_regime last computed_at=%s — "
+                        "stale, running macro regime refresh now instead of "
+                        "waiting for the next 06:00 UTC window",
+                        last,
+                    )
+                    asyncio.create_task(self._run_macro_regime_refresh())
+            except Exception as exc:
+                logger.warning(
+                    "[startup-catchup] macro regime staleness check failed: %s", exc,
+                )
+
+        if getattr(settings, "BRACKET_REACHABILITY_ENABLED", True):
+            try:
+                last = await fetch_max_computed_at("nt_bracket_reachability")
+                if _is_stale(last, BRACKET_REACHABILITY_STALE_AFTER, now):
+                    logger.warning(
+                        "[startup-catchup] nt_bracket_reachability last "
+                        "computed_at=%s — stale, running the weekly diagnostics "
+                        "job now instead of waiting for the next Sunday 07:00 "
+                        "UTC window",
+                        last,
+                    )
+                    asyncio.create_task(self._run_bracket_reachability())
+            except Exception as exc:
+                logger.warning(
+                    "[startup-catchup] bracket reachability staleness check "
+                    "failed: %s", exc,
+                )
+
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,
         2026-08-23 — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.3, migration 118).
@@ -1942,17 +2060,36 @@ class SweepOrchestrator(HeavySweepMixin):
         # module docstring. ``symbol_prev_means`` is empty on a symbol's
         # first fit (falls back to rank-sort, unchanged from before).
         symbol_prev_means = self._regime_label_means.get(symbol, {})
+
+        # Warm-start (2026-09-01, worklog
+        # 20260901_REGIME_LABEL_STABILITY_SCOPE.md) — root-cause fix for
+        # regime_label flapping tick-to-tick. Gated separately from the
+        # label-continuity mechanism above: off by default, since it
+        # changes the fit itself rather than just relabeling its output.
+        regime_warm_start_mode = get_regime_warm_start_mode()
+        symbol_prev_params = (
+            self._regime_warm_start_params.get(symbol, {})
+            if regime_warm_start_mode == "live" else {}
+        )
+
         model = await RegimeHMM.from_runtime_config()
         model.fit(
             np_prices,
             prev_vol_means=symbol_prev_means.get("vol"),
             prev_trend_means=symbol_prev_means.get("trend"),
+            prev_vol_params=symbol_prev_params.get("vol"),
+            prev_trend_params=symbol_prev_params.get("trend"),
         )
         regime: RegimeSnapshot = model.predict(np_prices)
         self._regime_label_means[symbol] = {
             "vol": model.vol_label_means,
             "trend": model.trend_label_means,
         }
+        if regime_warm_start_mode == "live":
+            self._regime_warm_start_params[symbol] = {
+                "vol": model.vol_raw_params,
+                "trend": model.trend_raw_params,
+            }
 
         regime_label = regime.regime_label or "unknown"
         regime_conf = regime.confidence
@@ -2024,6 +2161,44 @@ class SweepOrchestrator(HeavySweepMixin):
                 "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, regime=%s, mu=%.8f)",
                 symbol, kelly_f, regime_conf, regime_label, _mu,
             )
+
+        # ── 2c. Regime-label debounce (Fix 2, 2026-09-01, worklog
+        # 20260901_REGIME_LABEL_STABILITY_SCOPE.md) ──
+        # Deliberately AFTER the Kelly floor above: that consumer stays on
+        # the RAW label (same wide-blast-radius boundary this session has
+        # held throughout — only direction selection and regime-shift
+        # detection below are in scope, per the worklog). Everything from
+        # here on reads whatever `regime_label` ends up bound to, so a
+        # live-mode reassignment naturally also becomes what gets
+        # persisted as nt_sweep_result/nt_signal_sim's "regime" column —
+        # the worklog's "whichever is authoritative" — with no separate
+        # code path needed for that.
+        regime_label_debounce_mode = get_regime_label_debounce_mode()
+        if regime_label_debounce_mode in ("shadow", "live"):
+            try:
+                debouncer = self._regime_debouncers.setdefault(
+                    symbol, RegimeLabelDebouncer(get_regime_label_debounce_ticks()),
+                )
+                debounced_label = debouncer.update(regime_label)
+                if regime_label_debounce_mode == "shadow":
+                    if debounced_label != regime_label:
+                        logger.info(
+                            "%s: regime debounce shadow — raw=%s, debounced=%s (would differ)",
+                            symbol, regime_label, debounced_label,
+                        )
+                    from regime_platform.sweep_orchestrator.supabase_client import (
+                        record_regime_debounce_shadow,
+                    )
+                    asyncio.create_task(record_regime_debounce_shadow(
+                        symbol, raw_label=regime_label, debounced_label=debounced_label,
+                    ))
+                else:  # live
+                    regime_label = debounced_label
+            except Exception as exc:
+                logger.warning(
+                    "%s: regime debounce failed (%s: %s), using raw regime_label",
+                    symbol, type(exc).__name__, exc,
+                )
 
         # ── 2b. Return statistics for Supabase ──
         np_returns = np.array(returns, dtype=float)
@@ -2145,32 +2320,24 @@ class SweepOrchestrator(HeavySweepMixin):
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
 
         # Extract p_up / p_dn from the HMM's 3x3 transition matrix
+        #
+        # The "markov diag" log line that used to live here (2026-08-22,
+        # worklog 20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2 Finding
+        # B) was explicitly temporary by its own comment — added to
+        # disambiguate current_state flapping vs. transition-matrix
+        # noise before the Tier 1/2 root-cause fix existed, to be removed
+        # once that mechanism was confirmed. It has been (this session's
+        # Tier 1/2 build + real-data verification); removed as log
+        # sanitization (2026-09-01, worklog/
+        # 20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md) — it fired
+        # on every tick for every symbol and was pure log volume by then.
         if _markov_T is not None and _markov_current_state:
             try:
                 state_row = _markov_T.get(_markov_current_state, {})
                 p_up = float(state_row.get("UP", 0.5))
                 p_dn = float(state_row.get("DOWN", 0.5))
-                # DIAGNOSTIC (2026-08-22, worklog 20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md
-                # §2 Finding B / Mechanism 1): AAPL/US500 p_win has been swinging between
-                # ~0.47 and ~0.85 tick-to-tick while regime/TimesFM stay frozen. This log
-                # line disambiguates the two candidate causes before any fix is built:
-                #   - current_state flips (UP<->DOWN classification noise at the 5->3
-                #     state-mapping boundary), vs.
-                #   - current_state is stable but the matrix ROW itself is noisy
-                #     (transition-matrix re-estimation instability tick-to-tick).
-                # Remove once the mechanism is confirmed and a fix lands.
-                logger.info(
-                    "%s: markov diag — current_state=%s row=%s (p_up=%.4f, p_dn=%.4f)",
-                    symbol, _markov_current_state, state_row, p_up, p_dn,
-                )
             except Exception:
                 pass
-        else:
-            logger.info(
-                "%s: markov diag — no transition matrix/current_state "
-                "(T is None=%s, current_state=%r)",
-                symbol, _markov_T is None, _markov_current_state,
-            )
 
         trade_signal = _compute_trade_signal(
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
@@ -2608,9 +2775,19 @@ class SweepOrchestrator(HeavySweepMixin):
                 conf_str = f"{confidence:.4f} >= {MIN_TIMESFM_CONFIDENCE}? {'✓' if gate_results['timesfm_confidence_ok'] else '✗ FAIL'}"
             else:
                 conf_str = "N/A (TimesFM unavailable)"
+            # Log sanitization (2026-09-01, worklog/
+            # 20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md): this
+            # fires on nearly every tick for ~13 of 14 symbols (qualified
+            # rate is ~1-2%), so the full per-gate dump moved to DEBUG —
+            # genuinely useful when actively tuning a specific symbol's
+            # qualification path, just not at every-tick volume. The
+            # short summary stays at INFO so "is X getting rejected, and
+            # by which gates" is still visible without turning on DEBUG.
             logger.info(
-                f"[sweep:orch] {symbol}: REJECTED — {len(failed_gates)} gate(s) failed: "
-                f"{failed_gates}\n"
+                "[sweep:orch] %s: REJECTED — %d gate(s) failed: %s",
+                symbol, len(failed_gates), failed_gates,
+            )
+            logger.debug(
                 f"    Gate details (TIMESFM_GATE_MODE={TIMESFM_GATE_MODE}):\n"
                 f"      signal={trade_signal['signal']!r}  qualifiable={signal_is_qualifiable}  "
                 f"(must be 'buy' or 'sell')\n"

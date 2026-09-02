@@ -50,6 +50,9 @@ _DEFAULTS: dict[str, Any] = {
         "max_sharpe": 10.0,
         "min_trades": 10,
     },
+    "regime_warm_start_mode": "off",
+    "regime_label_debounce_mode": "off",
+    "regime_label_debounce_ticks": 3,
 }
 
 _cache: dict[str, Any] | None = None
@@ -198,3 +201,31 @@ def get_heavy_sweep_max_sharpe() -> float:
 
 def get_heavy_sweep_min_trades() -> int:
     return int(_heavy_sweep_grid_number("min_trades"))
+
+
+def get_regime_warm_start_mode() -> str:
+    """``off`` | ``live`` (root-cause fix for regime_label flapping —
+    warm-starts RegimeHMM's EM fit from the previous tick's own
+    converged params instead of a fresh auto-init every tick)."""
+    return str(_load().get(
+        "regime_warm_start_mode", _DEFAULTS["regime_warm_start_mode"],
+    )).lower()
+
+
+def get_regime_label_debounce_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Fix 2 — hysteresis on
+    RegimeSnapshot.regime_label via RegimeLabelDebouncer)."""
+    return str(_load().get(
+        "regime_label_debounce_mode", _DEFAULTS["regime_label_debounce_mode"],
+    )).lower()
+
+
+def get_regime_label_debounce_ticks() -> int:
+    """Consecutive ticks of agreement required before RegimeLabelDebouncer
+    promotes a new label."""
+    try:
+        return int(_load().get(
+            "regime_label_debounce_ticks", _DEFAULTS["regime_label_debounce_ticks"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["regime_label_debounce_ticks"]

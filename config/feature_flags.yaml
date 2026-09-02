@@ -129,3 +129,74 @@ min_rr: 2.0
 heavy_sweep_grid:
   max_sharpe: 10.0   # reject combos with an absurdly high Sharpe (likely overfit)
   min_trades: 10     # minimum backtested trade count for a combo to qualify
+
+# regime_warm_start_mode (2026-09-01, worklog
+# 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
+# regime_label flapping tick-to-tick. RegimeHMM.fit() rebuilds and
+# re-fits a brand-new hmmlearn model every light-sweep tick with a
+# FIXED random_state — deterministic given identical data, so the
+# instability traces to the rolling window shifting one bar per tick,
+# occasionally nudging hmmlearn's own k-means auto-init across a
+# cluster boundary. live seeds each tick's EM initialization from the
+# PREVIOUS tick's own converged params (rebased onto this tick's
+# standardization scale) instead of a fresh auto-init, so EM starts
+# close to last tick's answer and converges to the same partition far
+# more often.
+#
+# Deliberately off | live only — no shadow. A true shadow comparison
+# (fit both warm-started AND cold every tick) would double the CPU cost
+# of the single most expensive part of each tick, for every symbol,
+# forever — not the same cheap-to-compute shadow diagnostic Tier 1/2
+# could afford. Confidence instead comes from unit-testing the
+# rebasing math directly and a real before/after label-flip-rate
+# comparison once live, not a live parallel-shadow computation.
+#
+# Only affects the light sweep (orchestrator.py) — heavy_sweep.py's own
+# regime fit doesn't even thread the existing label-continuity
+# (prev_vol_means/prev_trend_means) mechanism today, and its
+# weekly-ish, TimesFM-gated cadence means there's no adjacent-tick
+# relationship to warm-start from in the first place.
+#
+# Real-data verification found this alone doesn't reliably solve
+# regime_label flapping (regressed AAPL; a follow-up separation guard
+# regressed 4 other symbols) — see regime_label_debounce_mode below,
+# which real data shows DOES work, consistently, without this. Left
+# `off` rather than removed: harmless at rest, and the rebasing math
+# stays independently useful if a future need for warm-starting shows
+# up for a different reason.
+regime_warm_start_mode: off
+
+# regime_label_debounce_mode (2026-09-01, worklog
+# 20260901_REGIME_LABEL_STABILITY_SCOPE.md "Fix 2"): off | shadow |
+# live. Hysteresis on RegimeSnapshot.regime_label — RegimeLabelDebouncer
+# in regime_engine.py requires regime_label_debounce_ticks consecutive
+# ticks of agreement before promoting a new label, per symbol. shadow:
+# computes the debounced label and persists a running raw-vs-debounced
+# comparison to nt_regime_debounce_shadow, but direction selection and
+# regime-shift detection keep reading the RAW label — zero live-
+# behavior change. live: direction selection, regime-shift detection,
+# and the persisted nt_sweep_result/nt_signal_sim "regime" column all
+# switch to the debounced label instead (NOT the regime-based Kelly
+# floor in _apply_regime_kelly_floor — that's a separate consumer,
+# deliberately left reading the raw label, same wide-blast-radius
+# boundary this session has held throughout).
+#
+# Verified live (500-tick, 5-symbol real-data comparison) BEFORE
+# shipping: cuts a raw 36-58% tick-to-tick flip rate down to ~5-8% at
+# n_confirm=3, consistently across every symbol tested — unlike
+# regime_warm_start_mode above, no per-symbol regression found. Not
+# live by default regardless — same shadow-first discipline as every
+# other mode flag in this file.
+regime_label_debounce_mode: shadow
+
+# n_confirm for the debouncer above: consecutive ticks of agreement
+# required before a new label is promoted. At this system's ~hourly
+# effective relabeling cadence (the light sweep re-fits every ~5min,
+# but re-fetches the same 200 hourly bars until the next hour rolls
+# over, so the label only has an actual opportunity to change roughly
+# once an hour), n_confirm=3 means a genuine regime change takes ~3
+# hours to be confirmed and reported — a real tradeoff against faster
+# response to genuine shifts, tunable. n=2 leaves meaningfully more
+# noise through; n=4 buys a little more suppression for another hour
+# of lag. 3 was the best balance found in the real-data comparison.
+regime_label_debounce_ticks: 3

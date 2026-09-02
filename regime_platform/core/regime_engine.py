@@ -132,6 +132,71 @@ class RegimeSnapshot:
         return round(max(0.10, min(1.75, vol_scale * trend_scale)), 4)
 
 
+class RegimeLabelDebouncer:
+    """
+    Per-symbol hysteresis on ``RegimeSnapshot.regime_label`` (2026-09-01,
+    worklog 20260901_REGIME_LABEL_STABILITY_SCOPE.md "Fix 2" — defense
+    in depth for regime_label flapping tick-to-tick). Built and verified
+    AFTER Fix 1 (EM warm-start, ``RegimeHMM.fit()``'s
+    ``prev_vol_params``/``prev_trend_params``): a real 500-tick, 5-symbol
+    comparison found warm-starting regressed one symbol (AAPL) while
+    helping the rest, and a follow-up separation-based guard on top of it
+    made 4 of 5 symbols WORSE (a cold-reset mid-sequence knocks an
+    otherwise-continuous warm-started run onto a different partition).
+    This debouncer instead works on the OUTPUT symptom, not the fit
+    mechanism — it doesn't matter WHY a given tick's label disagrees with
+    the last one, only whether the disagreement persists. Verified live:
+    cuts a raw 36-58% tick-to-tick flip rate down to ~5-8% at
+    ``n_confirm=3``, consistently across every symbol tested (no
+    exceptions, unlike Fix 1) — see the worklog's "Fix 2 real-data
+    verification" section for the full comparison table.
+
+    State machine: track a "confirmed" label plus a pending challenger
+    and its consecutive-agreement count. A challenger is only promoted
+    to confirmed once it has been read ``n_confirm`` ticks in a row — a
+    single disagreeing tick doesn't move anything, which is the whole
+    point (that single tick is exactly what today's raw label flaps on).
+    Cold start (no confirmed label yet for this symbol) accepts the very
+    first read immediately — no artificial lag on a symbol's first tick.
+
+    One instance per symbol. Callers (``orchestrator.py``) persist one
+    per symbol across ticks, same pattern as ``_regime_label_means`` /
+    ``_regime_warm_start_params``.
+    """
+
+    def __init__(self, n_confirm: int = 3):
+        self.n_confirm = max(1, int(n_confirm))
+        self._confirmed: Optional[str] = None
+        self._candidate: Optional[str] = None
+        self._candidate_count: int = 0
+
+    def update(self, raw_label: str) -> str:
+        """Feed one tick's raw ``regime_label``; returns the debounced
+        (confirmed) label for this tick."""
+        if self._confirmed is None:
+            self._confirmed = raw_label
+            self._candidate = raw_label
+            self._candidate_count = 0
+            return self._confirmed
+
+        if raw_label == self._confirmed:
+            # Back in agreement with what's already confirmed — reset any
+            # in-progress challenger, nothing to confirm.
+            self._candidate = self._confirmed
+            self._candidate_count = 0
+        else:
+            if raw_label == self._candidate:
+                self._candidate_count += 1
+            else:
+                self._candidate = raw_label
+                self._candidate_count = 1
+            if self._candidate_count >= self.n_confirm:
+                self._confirmed = self._candidate
+                self._candidate_count = 0
+
+        return self._confirmed
+
+
 # ─── HMM Wrapper ─────────────────────────────────────────────────────────────
 
 class RegimeHMM:
@@ -214,6 +279,11 @@ class RegimeHMM:
         # window (2026-08-28 root-cause classifier — see
         # _classify_trend_components). {component_idx: share in [0,1]}.
         self._trend_occupancy: dict[int, float] = {}
+        # Whether this fit's trend components are separated enough to
+        # trust as a warm-start basis for the NEXT tick (2026-09-01,
+        # worklog 20260901_REGIME_LABEL_STABILITY_SCOPE.md "Rescope" —
+        # see _trend_separation_healthy). Gates trend_raw_params below.
+        self._trend_params_healthy: bool = True
         self.fitted = False
 
         # Active label sets for current n_components
@@ -268,6 +338,8 @@ class RegimeHMM:
         prices: np.ndarray,
         prev_vol_means: Optional[dict[str, float]] = None,
         prev_trend_means: Optional[dict[str, float]] = None,
+        prev_vol_params: Optional[dict[str, np.ndarray]] = None,
+        prev_trend_params: Optional[dict[str, np.ndarray]] = None,
     ) -> "RegimeHMM":
         """
         Fit both HMMs on a price series (1-D numpy array).
@@ -284,6 +356,25 @@ class RegimeHMM:
                 fix #2. ``None`` (default) preserves the original
                 rank-sort behavior (a symbol's first fit).
             prev_trend_means: Same, for the trend model.
+            prev_vol_params: Optional full fitted params (``means``/
+                ``covars``/``transmat``/``startprob``, ORIGINAL units —
+                see ``vol_raw_params``) from the PREVIOUS fit, used to
+                warm-start this fit's EM initialization instead of
+                hmmlearn's own auto-init (2026-09-01, worklog
+                20260901_REGIME_LABEL_STABILITY_SCOPE.md — root-cause
+                fix for ``regime_label`` flapping tick-to-tick on a
+                fixed ``random_state``: the fit is deterministic given
+                identical data, so instability traces to the rolling
+                window shifting slightly every tick and occasionally
+                nudging hmmlearn's k-means init across a cluster
+                boundary). Seeds by RAW COMPONENT INDEX, independent of
+                ``prev_vol_means``' label-based continuity matching —
+                the two solve different problems and both can be passed
+                together: this stabilizes *which partition* EM finds;
+                ``prev_vol_means`` decides what to *call* it afterward,
+                unchanged. ``None`` (default) preserves today's
+                fresh-auto-init-every-tick behavior.
+            prev_trend_params: Same, for the trend model.
         """
         min_bars = max(50, 4 * self.n_components * 5)   # 80 for n=4
         if len(prices) < min_bars:
@@ -310,6 +401,11 @@ class RegimeHMM:
 
         self._vol_model   = self._build_hmm()
         self._trend_model = self._build_hmm()
+
+        if prev_vol_params is not None:
+            self._seed_model(self._vol_model, prev_vol_params, self._vol_scale)
+        if prev_trend_params is not None:
+            self._seed_model(self._trend_model, prev_trend_params, self._trend_scale)
 
         self._vol_model.fit(vol_features_std)
         self._trend_model.fit(trend_features_std)
@@ -344,6 +440,8 @@ class RegimeHMM:
         except Exception:
             self._trend_occupancy = {}
 
+        self._trend_params_healthy = self._trend_separation_healthy()
+
         self._vol_label_map   = self._label_states(self._vol_model, self._vol_labels, prev_vol_means)
         self._trend_label_map = self._label_states(self._trend_model, self._trend_labels, prev_trend_means)
         self.fitted = True
@@ -369,6 +467,50 @@ class RegimeHMM:
         feature_idx = 2 if len(self._trend_labels) > 2 else 0
         means = self._trend_model.means_[:, feature_idx]
         return {lbl: float(means[i]) for i, lbl in self._trend_label_map.items()}
+
+    # ── Raw-param introspection (for cross-tick EM warm-starting) ──────────
+    # Callers persist these per-symbol and pass them back into the NEXT
+    # fit() call as prev_vol_params/prev_trend_params (2026-09-01, worklog
+    # 20260901_REGIME_LABEL_STABILITY_SCOPE.md). Unlike vol_label_means/
+    # trend_label_means (one feature, keyed by label), these carry the
+    # FULL fitted params (all features, keyed by raw component index) —
+    # what _seed_model actually needs to warm-start a future fit's EM
+    # initialization.
+
+    @property
+    def vol_raw_params(self) -> Optional[dict[str, np.ndarray]]:
+        """Full fitted params (original units) for the volatility model,
+        or ``None`` if not fitted."""
+        if not self.fitted or self._vol_model is None:
+            return None
+        return {
+            "means": self._vol_model.means_.copy(),
+            "covars": self._vol_model._covars_.copy(),
+            "transmat": self._vol_model.transmat_.copy(),
+            "startprob": self._vol_model.startprob_.copy(),
+        }
+
+    @property
+    def trend_raw_params(self) -> Optional[dict[str, np.ndarray]]:
+        """Same as ``vol_raw_params``, for the trend model — except
+        gated on ``_trend_params_healthy``: returns ``None`` when this
+        fit's trend components are too poorly separated to trust as a
+        warm-start basis for the next tick (2026-09-01, worklog
+        20260901_REGIME_LABEL_STABILITY_SCOPE.md "Rescope" — see
+        ``_trend_separation_healthy``). A caller receiving ``None``
+        naturally falls back to a fresh cold fit next tick, same as
+        ``fit()``'s existing behavior when no prev params are passed at
+        all — no separate no-warm-start code path needed."""
+        if not self.fitted or self._trend_model is None:
+            return None
+        if not self._trend_params_healthy:
+            return None
+        return {
+            "means": self._trend_model.means_.copy(),
+            "covars": self._trend_model._covars_.copy(),
+            "transmat": self._trend_model.transmat_.copy(),
+            "startprob": self._trend_model.startprob_.copy(),
+        }
 
     # ── Inference ────────────────────────────────────────────────────────────
 
@@ -448,6 +590,41 @@ class RegimeHMM:
         "strong_bull": "UP", "bull": "UP",
         "strong_bear": "DOWN", "bear": "DOWN",
     }
+
+    def _trend_separation_healthy(self) -> bool:
+        """
+        Guard for EM warm-starting (2026-09-01, worklog
+        20260901_REGIME_LABEL_STABILITY_SCOPE.md "Rescope" — the AAPL
+        regression). Reuses the same threshold as
+        ``_classify_trend_components`` below
+        (``markov_flat_gate_threshold_stds`` standard deviations of the
+        trend feature's fit-time noise scale), but asks a different
+        question: not whether any ONE component's mean clears the noise
+        floor, but whether the components are separated from EACH OTHER
+        at all.
+
+        Verified live: warm-starting from a fit where this collapses
+        (AAPL — component-mean spread shrinking to ~0.015-0.04 vs. a
+        healthy fit's steady ~0.10-0.13) causes EM to converge near that
+        same compressed local optimum tick after tick, since EM refines
+        a starting point rather than re-exploring from scratch — making
+        the rank-based bull/bear assignment flip on near-noise
+        differences. A fresh cold init doesn't have this problem, so an
+        unhealthy fit should not be handed forward as the next tick's
+        warm-start basis (see ``trend_raw_params``, which this gates).
+
+        Called once per fit(), on the already-fitted, already-
+        destandardized-to-original-units trend model.
+        """
+        from regime_platform.core.feature_flags import get_markov_flat_gate_threshold_stds
+
+        means = self._trend_model.means_[:, 2]
+        sigma = 1.0
+        if self._trend_scale is not None:
+            sigma = float(self._trend_scale[1][2]) or 1.0
+        threshold = get_markov_flat_gate_threshold_stds() * sigma
+        spread = float(np.max(means) - np.min(means))
+        return spread >= threshold
 
     def _classify_trend_components(self) -> dict[int, str]:
         """
@@ -708,6 +885,89 @@ class RegimeHMM:
             for i in range(len(returns))
         ])
         return np.column_stack([returns, cum_short, cum_long])
+
+    # ── Warm-start (2026-09-01, worklog 20260901_REGIME_LABEL_STABILITY_SCOPE.md) ──
+
+    @staticmethod
+    def _rebase_params_to_scale(
+        means_original: np.ndarray,
+        covars_original: np.ndarray,
+        scale: tuple[np.ndarray, np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Convert a fit's original-unit means/covars (diag covariance)
+        into a DIFFERENT fit's standardized space.
+
+        ``_fit_scale`` recomputes ``(mu, sigma)`` from the current window
+        every tick, so a previous tick's fitted params (relative to THAT
+        tick's scale) aren't directly reusable as this tick's warm-start
+        seed without rebasing onto the new scale first::
+
+            mean_std  = (mean_original - mu) / sigma
+            covar_std = covar_original / sigma**2
+
+        Pure function — no model/hmmlearn dependency, hand-computable.
+        """
+        mu, sigma = scale
+        means_std = (means_original - mu) / sigma
+        covars_std = covars_original / (sigma ** 2)
+        return means_std, covars_std
+
+    @staticmethod
+    def _seed_model(
+        model: hmm.GaussianHMM,
+        prev_params: dict[str, np.ndarray],
+        scale: tuple[np.ndarray, np.ndarray],
+    ) -> None:
+        """Seed ``model``'s EM initialization from a PREVIOUS fit's own
+        converged parameters (original units), rebased onto THIS fit's
+        standardization scale, instead of letting hmmlearn auto-init via
+        k-means on a fresh ``random_state``. See ``fit()``'s
+        ``prev_vol_params``/``prev_trend_params`` docstring for the full
+        rationale.
+
+        Seeds by RAW COMPONENT INDEX, not by label — component identity
+        isn't stable across fits by construction. ``_label_states``' own
+        ``prev_vol_means``/``prev_trend_means`` continuity matching
+        (unchanged, runs afterward) is what decides which human label a
+        component gets, independent of this.
+
+        Silently no-ops (falls back to hmmlearn's normal auto-init) if
+        ``prev_params`` is missing a key or its shape doesn't match this
+        model's ``n_components`` — e.g. ``n_components`` changed via
+        config between ticks. Never raises.
+        """
+        means_original = prev_params.get("means")
+        covars_original = prev_params.get("covars")
+        transmat = prev_params.get("transmat")
+        startprob = prev_params.get("startprob")
+        if any(p is None for p in (means_original, covars_original, transmat, startprob)):
+            return
+        n = model.n_components
+        if (
+            means_original.shape[0] != n
+            or covars_original.shape[0] != n
+            or transmat.shape != (n, n)
+            or startprob.shape != (n,)
+        ):
+            return
+
+        means_std, covars_std = RegimeHMM._rebase_params_to_scale(
+            means_original, covars_original, scale,
+        )
+        model.means_ = means_std
+        # Write to the private _covars_ to bypass the public covars_
+        # setter's shape validation (it expects a full n_features x
+        # n_features matrix per component; the compact diag form lives
+        # in _covars_ — same attribute _sanitize_model already writes to).
+        model._covars_ = covars_std
+        model.transmat_ = transmat.copy()
+        model.startprob_ = startprob.copy()
+        # Skip hmmlearn's own auto-init entirely — use what was just set
+        # as the EM starting point. `params` (which parameters EM still
+        # refines during .fit()) stays at its default "stmc": warm-
+        # starting only changes the INITIAL guess, not whether the
+        # fit continues to adapt to this tick's actual data.
+        model.init_params = ""
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
