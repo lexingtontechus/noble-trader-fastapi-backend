@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from regime_platform.core.feature_flags import (
@@ -191,7 +192,21 @@ async def refresh_macro_regime(symbols: list[str] | None = None) -> list[dict[st
             )
             continue
 
-        output_rows.append({"symbol": symbol, **computed})
+        # computed_at set HERE, not inside compute_macro_regime() (that
+        # function is pure/no-I/O by design — a wall-clock timestamp
+        # doesn't belong in it). Bug found 2026-09-02, worklog
+        # 20260902_MACRO_REGIME_COMPUTED_AT_BUG.md: compute_macro_regime()
+        # never returned a computed_at key at all, so upsert_macro_regime's
+        # merge-duplicates upsert (which only SETs columns present in the
+        # payload) silently left every symbol's row frozen at whatever
+        # computed_at its very first insert wrote (2026-08-29) — 5+
+        # "successful" daily/catch-up refreshes since then never actually
+        # advanced it.
+        output_rows.append({
+            "symbol": symbol,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            **computed,
+        })
 
     try:
         await upsert_macro_regime(output_rows)
