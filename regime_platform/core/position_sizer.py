@@ -116,6 +116,15 @@ class PositionRequest:
     kelly_fraction: float = 0.5  # fractional Kelly multiplier
     target_vol: float = 0.15  # annualised target vol for scaling
     regime: RegimeSnapshot | None = None
+    # "long" | "short" (2026-09-04, worklog
+    # 20260904_KELLY_DIRECTION_AWARE_SIZING.md): mu/kelly_edge/sharpe are
+    # all computed from raw price returns, which only ever answers "would
+    # a LONG position here have had positive edge?" A symbol in a genuine
+    # decline has negative mu regardless of which direction is actually
+    # about to be traded — for a short, that same decline IS the edge.
+    # Default "long" preserves today's behavior exactly for any caller
+    # that doesn't pass this.
+    direction: str = "long"
 
 
 def _kelly_continuous(mu: float, sigma2: float) -> float:
@@ -160,6 +169,16 @@ class PositionSizer:
 
         if len(r) < 2:
             raise ValueError("Need at least 2 return observations.")
+
+        # Direction-aware edge (2026-09-04, worklog
+        # 20260904_KELLY_DIRECTION_AWARE_SIZING.md): negating the returns
+        # before computing mu/sigma2 is the ONLY change needed — every
+        # quantity below (annual_mu, sharpe, kelly_edge, full_kelly) is
+        # already a function of these, so a decline correctly reads as
+        # positive edge for a short instead of negative edge for a long.
+        # Variance/sigma are unaffected by the sign flip (squared).
+        if req.direction == "short":
+            r = -r
 
         mu = float(np.mean(r))
         sigma2 = float(np.var(r, ddof=1))

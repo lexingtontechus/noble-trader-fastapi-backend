@@ -2094,6 +2094,15 @@ class SweepOrchestrator(HeavySweepMixin):
         regime_label = regime.regime_label or "unknown"
         regime_conf = regime.confidence
         trend_probs = dict(zip(RegimeHMM.TREND_LABELS, regime.trend_probs))
+        # Kelly-only direction read (2026-09-04, worklog
+        # 20260904_KELLY_DIRECTION_AWARE_SIZING.md), deliberately NOT the
+        # same `direction` computed later at "4. Direction & trade
+        # signal" — that one is deliberately positioned AFTER the regime-
+        # label debounce block below so it can pick up a debounced label
+        # once regime_label_debounce_mode=live (see that block's own
+        # comment). Kelly sizing/floor stay on the raw label here, same
+        # "stays on raw" boundary Fix 2 already drew for the Kelly floor.
+        _kelly_direction = "short" if "bear" in regime_label.lower() else "long"
 
         # R4 (2026-08-23, worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md):
         # the trend HMM's own EM fit is a live trust signal for p_regime that
@@ -2123,18 +2132,28 @@ class SweepOrchestrator(HeavySweepMixin):
                 kelly_fraction=0.5,
                 target_vol=0.15,
                 regime=regime,
+                direction=_kelly_direction,
             ),
             annualise_factor=annualise_factor,
         )
         kelly_f = kelly_result.recommended_f
 
         # ── 2a. Kelly edge diagnostics ──
+        # _mu/_sigma2 are the RAW price-direction mean/variance (unchanged
+        # meaning from before this fix) — kept as-is since they're also
+        # useful as a plain "which way has price actually been moving"
+        # read. _mu_for_floor is the DIRECTION-ADJUSTED value (2026-09-04,
+        # worklog 20260904_KELLY_DIRECTION_AWARE_SIZING.md) — mirrors what
+        # PositionSizer.size() does internally, needed separately here
+        # because _apply_regime_kelly_floor takes mu as a plain float, not
+        # a KellyResult.
         _mu = float(np.mean(np.array(returns, dtype=float)))
         _sigma2 = float(np.var(np.array(returns, dtype=float), ddof=1))
+        _mu_for_floor = _mu if _kelly_direction == "long" else -_mu
         logger.info(
-            "%s: kelly math — mu=%.8f, sigma2=%.8f, mu/sigma2=%.4f, "
+            "%s: kelly math — direction=%s, mu=%.8f, sigma2=%.8f, mu/sigma2=%.4f, "
             "full=%s, frac=%s, vol_scaled=%s, regime_gated=%s, recommended=%s",
-            symbol, _mu, _sigma2, (_mu / _sigma2 if _sigma2 > 0 else 0.0),
+            symbol, _kelly_direction, _mu, _sigma2, (_mu / _sigma2 if _sigma2 > 0 else 0.0),
             kelly_result.full_kelly_f, kelly_result.fractional_f,
             kelly_result.vol_scaled_f, kelly_result.regime_gated_f,
             kelly_result.recommended_f,
@@ -2143,23 +2162,30 @@ class SweepOrchestrator(HeavySweepMixin):
         # ── 2b. Regime-based Kelly floor (fix #3b, 2026-08-22 audit) ──
         # See _apply_regime_kelly_floor()'s docstring for the full rationale
         # and worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2/§4 fix #3b.
+        # Passed _mu_for_floor (direction-adjusted), not raw _mu — see
+        # 20260904_KELLY_DIRECTION_AWARE_SIZING.md: otherwise this floor
+        # would stay blind to shorts even after the base Kelly calc above
+        # is fixed, since it's a separate evaluation of the same question
+        # ("is there a negative edge here") on the same underlying data.
         _require_nonneg_mu = bool(
             getattr(settings, "KELLY_REGIME_FLOOR_REQUIRE_NONNEG_MU", True)
         )
         kelly_f, _floor_applied, _floor_withheld = _apply_regime_kelly_floor(
-            kelly_f, _mu, regime_label, regime_conf, _require_nonneg_mu,
+            kelly_f, _mu_for_floor, regime_label, regime_conf, _require_nonneg_mu,
         )
         if _floor_withheld:
             logger.info(
                 "%s: Kelly was 0, regime floor WITHHELD — measured mu=%.8f "
-                "is negative (regime=%s, conf=%.3f); a negative historical "
-                "edge is not force-sized just because regime confidence is high.",
-                symbol, _mu, regime_label, regime_conf,
+                "for direction=%s is negative (regime=%s, conf=%.3f); a "
+                "negative historical edge is not force-sized just because "
+                "regime confidence is high.",
+                symbol, _mu_for_floor, _kelly_direction, regime_label, regime_conf,
             )
         elif _floor_applied:
             logger.info(
-                "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, regime=%s, mu=%.8f)",
-                symbol, kelly_f, regime_conf, regime_label, _mu,
+                "%s: Kelly was 0 — applied regime floor %.4f (conf=%.3f, "
+                "regime=%s, direction=%s, mu=%.8f)",
+                symbol, kelly_f, regime_conf, regime_label, _kelly_direction, _mu_for_floor,
             )
 
         # ── 2c. Regime-label debounce (Fix 2, 2026-09-01, worklog
@@ -2309,6 +2335,13 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── 4. Direction & trade signal ──
         current_price = float(np_prices[-1])
+        # This is the FINAL direction — reads whatever regime_label is
+        # bound to at this point (raw today, potentially debounced once
+        # regime_label_debounce_mode=live — see the "2c" block above's own
+        # comment), unlike _kelly_direction above which deliberately reads
+        # the raw label. Deliberately recomputed here rather than reusing
+        # _kelly_direction (2026-09-04, worklog
+        # 20260904_KELLY_DIRECTION_AWARE_SIZING.md).
         direction = "short" if "bear" in regime_label.lower() else "long"
 
         # ATR(14) for the bracket-reachability diagnostic (migration 120,
