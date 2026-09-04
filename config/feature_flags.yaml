@@ -116,7 +116,22 @@ heavy_sweep_reachability_mode: shadow
 # both off separate env vars/Studio Secrets onto this single config
 # value (2026-08-30) specifically to make that recurring silently
 # impossible, not just less likely.
-min_rr: 2.0
+#
+# CORRECTION (2026-09-04, worklog 20260904_MIN_RR_REGRESSION.md): the
+# 2026-08-30 move shipped this key at 2.0 — the module's hard-coded
+# fallback default, not the Studio's actual long-running value. The
+# Studio's real MIN_RR env var (1.5) was still set at the time and got
+# silently ignored the moment orchestrator.py switched from
+# os.getenv("MIN_RR", ...) to this file (feature_flags.py deliberately
+# never reads env vars — see this file's own header) — confirmed live,
+# the Studio process still has MIN_RR=1.5 in its environment today,
+# doing nothing. That silently tightened the light-sweep qualification
+# gate from 1.5 to 2.0 for three-plus weeks, right through the exact
+# RR gap orchestrator.py's own comment already flagged ("with default
+# brick params... the actual RR is 5/3 = 1.67 — below the 2.0
+# minimum"). Restored to the value actually running before that
+# regression.
+min_rr: 1.5
 
 # Heavy-sweep grid quality filter, alongside min_rr above (2026-08-30,
 # same config-centralization move — these were previously
@@ -126,9 +141,14 @@ min_rr: 2.0
 # the shadow comparison's "baseline" is always computed from the exact
 # same threshold values as the real pick — not a second, independently-
 # resolved copy that could quietly drift.
+#
+# Same 2026-09-04 correction as min_rr above: shipped at the module
+# defaults (10.0/10), not the Studio's actual long-running env vars
+# (HEAVY_SWEEP_MAX_SHARPE=5.0, HEAVY_SWEEP_MIN_TRADES=5, both still set
+# and both silently ignored since 08-30). Restored to match.
 heavy_sweep_grid:
-  max_sharpe: 10.0   # reject combos with an absurdly high Sharpe (likely overfit)
-  min_trades: 10     # minimum backtested trade count for a combo to qualify
+  max_sharpe: 5.0    # reject combos with an absurdly high Sharpe (likely overfit)
+  min_trades: 5      # minimum backtested trade count for a combo to qualify
 
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
