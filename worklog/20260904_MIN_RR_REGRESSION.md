@@ -85,3 +85,19 @@ their Lightning AI Studio secret management is set up.
 
 **Not done**: the `position_sizer.py` direction-blind Kelly calculation
 (EURUSD/GBPUSD's issue) — flagged, not scoped or built here.
+
+## Confirmed live post-restart (2026-09-04, same day)
+
+Studio restarted 00:59:09 UTC with this fix deployed — startup log
+confirms `MIN_RR=1.5` (was `2.0` on the prior restart, 22:18:00 UTC the
+day before, which predates this fix's push and still showed 2.0).
+
+Verified via direct query, not just taking it at face value: **BTCUSD
+qualified at 01:40:18 UTC** — its first qualification since
+2026-08-30 20:30:19, ~5 days stale before this fix. Direct confirmation
+the restored threshold is working for at least one of the affected
+symbols. EURUSD/GBPUSD/USDCAD/USDJPY hadn't produced a new qualified
+signal in the first ~hour post-restart — not itself concerning given
+how infrequently any of them qualify even when healthy (a handful of
+times per day at most) — worth one more check-in in a few hours to
+confirm those four specifically resume.
