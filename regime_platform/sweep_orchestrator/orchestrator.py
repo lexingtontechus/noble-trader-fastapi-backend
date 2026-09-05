@@ -602,6 +602,14 @@ def _apply_regime_kelly_floor(
 # restart.
 MACRO_REGIME_STALE_AFTER = timedelta(hours=20)
 BRACKET_REACHABILITY_STALE_AFTER = timedelta(hours=6.5 * 24)
+# eod-lookback (2026-09-05, worklog 20260905_EOD_RESOLVER_SCHEDULER_MISS.md)
+# — the only job that calls resolve_pending_signals. Found live: a crash
+# in the ~6-minute gap between its 00:32 UTC daily fire and the prior
+# tick swallowed that day's run entirely, and the fresh instance that
+# came up afterward pushed the next fire to the FOLLOWING day — 45h of
+# zero resolutions before this was caught. Same "just under one cycle"
+# threshold as MACRO_REGIME_STALE_AFTER.
+EOD_LOOKBACK_STALE_AFTER = timedelta(hours=20)
 
 
 def _is_stale(
@@ -1657,16 +1665,30 @@ class SweepOrchestrator(HeavySweepMixin):
         ``macro-regime-daily`` and the weekly ``bracket-reachability``
         job kept silently rolling forward to "tomorrow"/"next Sunday"
         every cycle (`nt_macro_regime` sat 3.5 days stale, the weekly
-        diagnostics 6 days stale, while the 00:32 UTC EOD job — which
-        lands in the gaps between restarts — kept firing normally).
+        diagnostics 6 days stale).
+
+        CORRECTION (2026-09-05, worklog
+        20260905_EOD_RESOLVER_SCHEDULER_MISS.md): this docstring
+        originally assumed "the 00:32 UTC EOD job — which lands in the
+        gaps between restarts — kept firing normally." Confirmed false
+        live: a crash in the ~6-minute gap between a light-sweep tick and
+        the 00:32 ``eod-lookback`` fire swallowed an entire day's
+        resolution run, and the next instance up pushed its next fire to
+        the FOLLOWING day — 45h of zero ``nt_signal_sim`` resolutions
+        before it was caught. Same failure mode, just a job that hadn't
+        been added to this check's scope yet. It has now.
 
         Reads each job's own diagnostic table for its last real success
         via ``fetch_max_computed_at`` — no new config file, no second
         piece of state to keep in sync — and fires the job immediately
         (once) if it's gone stale. Thresholds
-        (``MACRO_REGIME_STALE_AFTER``/``BRACKET_REACHABILITY_STALE_AFTER``)
-        are deliberately shorter than the full cycle so a legitimately-
-        recent run isn't needlessly re-triggered by a routine restart.
+        (``MACRO_REGIME_STALE_AFTER``/``BRACKET_REACHABILITY_STALE_AFTER``/
+        ``EOD_LOOKBACK_STALE_AFTER``) are deliberately shorter than the
+        full cycle so a miss is caught the same day rather than waiting
+        for a second cycle — the accepted tradeoff (also true before this
+        change, for the other two) is that a restart late in a healthy
+        cycle can re-trigger a job that wasn't actually stale; harmless,
+        since all three targets are idempotent re-reads/re-computations.
         Best-effort: never raises into scheduler startup.
         """
         from regime_platform.sweep_orchestrator.supabase_client import (
@@ -1708,6 +1730,25 @@ class SweepOrchestrator(HeavySweepMixin):
                     "[startup-catchup] bracket reachability staleness check "
                     "failed: %s", exc,
                 )
+
+        # eod-lookback (2026-09-05, worklog
+        # 20260905_EOD_RESOLVER_SCHEDULER_MISS.md) — not gated behind a
+        # settings kill-switch, matching the base eod-lookback job itself
+        # (unlike the two above, it isn't gated by one either).
+        try:
+            last = await fetch_max_computed_at("nt_signal_sim", column="resolved_at")
+            if _is_stale(last, EOD_LOOKBACK_STALE_AFTER, now):
+                logger.warning(
+                    "[startup-catchup] nt_signal_sim last resolved_at=%s — "
+                    "stale, running the EOD resolver now instead of "
+                    "waiting for the next 00:32 UTC window",
+                    last,
+                )
+                asyncio.create_task(self._run_eod_lookback())
+        except Exception as exc:
+            logger.warning(
+                "[startup-catchup] eod-lookback staleness check failed: %s", exc,
+            )
 
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,

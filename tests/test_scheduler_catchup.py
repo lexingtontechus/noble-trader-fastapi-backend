@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from regime_platform.sweep_orchestrator.orchestrator import (
     BRACKET_REACHABILITY_STALE_AFTER,
+    EOD_LOOKBACK_STALE_AFTER,
     MACRO_REGIME_STALE_AFTER,
     _is_stale,
 )
@@ -65,3 +66,11 @@ def test_bracket_reachability_threshold_shorter_than_full_weekly_cycle():
 
 def test_macro_regime_threshold_shorter_than_full_daily_cycle():
     assert MACRO_REGIME_STALE_AFTER < timedelta(hours=24)
+
+
+def test_eod_lookback_stale_after_matches_documented_20_hours():
+    assert EOD_LOOKBACK_STALE_AFTER == timedelta(hours=20)
+
+
+def test_eod_lookback_threshold_shorter_than_full_daily_cycle():
+    assert EOD_LOOKBACK_STALE_AFTER < timedelta(hours=24)

@@ -779,9 +779,9 @@ async def upsert_hmm_shadow_accuracy(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_hmm_shadow_accuracy: insert failed: %s", exc)
 
 
-async def fetch_max_computed_at(table: str) -> datetime | None:
-    """Latest ``computed_at`` for a diagnostic table (best-effort — ``None``
-    on any failure or an empty table).
+async def fetch_max_computed_at(table: str, column: str = "computed_at") -> datetime | None:
+    """Latest timestamp column for a diagnostic table (best-effort —
+    ``None`` on any failure or an empty table).
 
     Used by the orchestrator's startup catch-up check for fixed-time-of-
     day/week jobs an in-memory APScheduler job store can silently skip
@@ -793,6 +793,21 @@ async def fetch_max_computed_at(table: str) -> datetime | None:
     table for its last real success avoids needing a second, separately-
     mutated piece of state (a config file) just to answer "did this run
     recently."
+
+    ``column`` defaults to ``"computed_at"`` (the original two callers —
+    ``nt_macro_regime``/``nt_bracket_reachability`` — both use that name
+    unchanged). Generalized 2026-09-05 (worklog
+    20260905_EOD_RESOLVER_SCHEDULER_MISS.md) to also cover
+    ``nt_signal_sim.resolved_at`` rather than duplicating this whole
+    function a third time for one different column name.
+
+    ``order=...desc.nullslast`` (not just ``desc``): caught live while
+    building the ``resolved_at`` case — most ``nt_signal_sim`` rows are
+    still-pending (``resolved_at IS NULL``), and Postgres/PostgREST's
+    default NULL ordering puts NULLs FIRST on a DESC sort, so a plain
+    ``desc`` silently returned a pending row's ``None`` instead of the
+    latest real resolution. The original two callers' columns are never
+    NULL, so this was latent until a nullable column was ever passed.
     """
     if not settings.SUPABASE_URL:
         return None
@@ -801,18 +816,18 @@ async def fetch_max_computed_at(table: str) -> datetime | None:
             resp = await client.get(
                 _url(table),
                 headers=_headers(),
-                params={"select": "computed_at", "order": "computed_at.desc", "limit": "1"},
+                params={"select": column, "order": f"{column}.desc.nullslast", "limit": "1"},
             )
             resp.raise_for_status()
             data = resp.json()
         if not isinstance(data, list) or not data:
             return None
-        raw = data[0].get("computed_at")
+        raw = data[0].get(column)
         if not raw:
             return None
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except Exception as exc:
-        logger.warning("fetch_max_computed_at: %s: read failed: %s", table, exc)
+        logger.warning("fetch_max_computed_at: %s.%s: read failed: %s", table, column, exc)
         return None
 
 
