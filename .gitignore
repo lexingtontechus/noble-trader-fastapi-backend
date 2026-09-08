@@ -120,3 +120,19 @@ monitor_ev_fix_delivery.log
 # this file is a fast local cache only. See
 # worklog/PARAMETER_TUNING_PLAYBOOK.md §2.3/§2.4.
 config/tuning_registry.yaml
+
+# 2026-09-08: applying the exact fix above to brick_params.yaml itself —
+# this was the file the comment above was warning not to repeat the
+# mistake for, and the mistake had already been made here. Confirmed
+# stale (last git commit predates this ignore by 7+ weeks, missing
+# XAUUSD/XAUEUR/XAUAUD entirely, defaults section sized for a ~$1 asset).
+# It's the same live-mutated-runtime-state-not-an-audit-trail shape:
+# heavy_sweep.py's weekly rewrite happens on Studio's local disk and was
+# never meant to be committed back. The real, queryable audit trail
+# already exists — nt_signal_sim captures brick_size/sl_bricks/tp_bricks
+# per signal at generation time, so "what geometry was live for symbol X
+# at time Y" is answerable from real per-signal data, not from this file.
+# Untracking this so nobody (human or agent) mistakes the committed copy
+# for ground truth again — see worklog
+# 20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md.
+config/brick_params.yaml

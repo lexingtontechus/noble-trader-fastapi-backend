@@ -50,6 +50,8 @@ _DEFAULTS: dict[str, Any] = {
         "max_sharpe": 10.0,
         "min_trades": 10,
     },
+    "heavy_sweep_atr_anchored_bricks_mode": "off",
+    "heavy_sweep_deadline_aware_scoring_mode": "off",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -201,6 +203,29 @@ def get_heavy_sweep_max_sharpe() -> float:
 
 def get_heavy_sweep_min_trades() -> int:
     return int(_heavy_sweep_grid_number("min_trades"))
+
+
+def get_heavy_sweep_atr_anchored_bricks_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Phase A of worklog
+    20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md
+    — ATR-anchored brick-size candidates added to the heavy-sweep grid,
+    gated separately from ``heavy_sweep_reachability_mode``)."""
+    return str(_load().get(
+        "heavy_sweep_atr_anchored_bricks_mode",
+        _DEFAULTS["heavy_sweep_atr_anchored_bricks_mode"],
+    )).lower()
+
+
+def get_heavy_sweep_deadline_aware_scoring_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (root-cause fix, worklog
+    20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md — rescores heavy-sweep
+    grid candidates with any trade held longer than EXPIRY_BARS treated as
+    0 PnL, matching eod_resolver.py's live deadline, instead of the
+    unlimited-patience backtest Sharpe)."""
+    return str(_load().get(
+        "heavy_sweep_deadline_aware_scoring_mode",
+        _DEFAULTS["heavy_sweep_deadline_aware_scoring_mode"],
+    )).lower()
 
 
 def get_regime_warm_start_mode() -> str:

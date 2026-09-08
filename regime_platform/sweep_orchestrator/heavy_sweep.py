@@ -18,8 +18,12 @@ Per-symbol heavy sweep does:
   1. Skip check (sweep_skip_until from YAML metadata)
   2. Fetch 2160 hourly candles (90 d) from TDVA
   3. TimesFM confidence gate (skip if confident)
-  4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0)
-  5. Grid search: 5 bricks × 3 SL × 6 TP = 90 combos (RenkoPipeline)
+  4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0), plus
+     3 optional ATR-anchored candidates (0.15x/0.3x/0.6x ATR) when
+     heavy_sweep_atr_anchored_bricks_mode != off (config/feature_flags.yaml,
+     default off — see worklog
+     20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md)
+  5. Grid search: up to 8 bricks × 3 SL × 6 TP = up to 144 combos (RenkoPipeline)
   6. HMM regime + Kelly sizing (parallel with grid)
   7. Pick best combo by Sharpe (MIN_RR/MAX_SHARPE/MIN_TRADES, default
      2.0/10.0/10 — config/feature_flags.yaml's min_rr/heavy_sweep_grid)
@@ -61,6 +65,14 @@ from regime_platform.core.feature_flags import (
     get_min_rr,
 )
 from regime_platform.services.statistics.ev_engine import P_WIN_WEIGHTS_FULL
+from regime_platform.sweep_orchestrator.eod_resolver import EXPIRY_BARS
+
+# EXPIRY_BARS: single source of truth for "how many post-entry hours a
+# real signal gets before eod_resolver.py calls it expired," imported
+# (not duplicated) so the grid search's deadline-aware scoring (below)
+# can never silently drift from what live resolution actually enforces —
+# same reasoning as MIN_RR's own shared-config history (see that
+# constant's comment further down).
 
 # Note: write_brick_params + fetch_calibration_bias + log_sweep_result +
 # fetch_candles_for_symbols are imported lazily inside their callers to
@@ -121,6 +133,19 @@ class ComboResult:
     profit_factor: float = 0.0
     total_pnl_bricks: float = 0.0
     max_drawdown_bricks: float = 0.0
+    # Root cause found 2026-09-08 (worklog
+    # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md): `sharpe` above is
+    # computed by RenkoPipeline over the FULL uncapped trade set — a
+    # simulated trade that takes 200+ hours to close still counts as a win
+    # there, even though eod_resolver.py gives every real signal only
+    # EXPIRY_HOURS to prove itself before calling it "expired." This field
+    # recomputes the identical Sharpe formula
+    # (mean(pnl_bricks)/std(pnl_bricks, ddof=1)) but zeroes any trade whose
+    # hold time exceeds EXPIRY_HOURS first — see
+    # deadline_aware_sharpe()'s docstring. Always computed (cheap — same
+    # trade list already in hand); only USED for selection when
+    # heavy_sweep_deadline_aware_scoring_mode != "off".
+    deadline_aware_sharpe: float = 0.0
 
 
 @dataclass
@@ -199,11 +224,90 @@ def generate_brick_sizes(atr: float, price: float) -> list[float]:
     return out or [0.5]
 
 
+def generate_atr_anchored_brick_sizes(atr: float) -> list[float]:
+    """3 additional brick-size candidates anchored directly to ATR.
+
+    Phase A of worklog
+    20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md:
+    ``generate_brick_sizes``'s 5 candidates are a coarse ``price × pct``
+    formula, never anchored to the symbol's own ATR — the grid can (and,
+    per ``nt_bracket_reachability``, for XAUUSD/XAUEUR/XAUAUD routinely
+    does) contain zero candidates near the 0.5-1x ATR distance bucket that
+    resolves reliably. These three multipliers give the grid something to
+    find there. Additive only — callers decide whether/how to combine this
+    with ``generate_brick_sizes``'s output (see
+    ``heavy_sweep_atr_anchored_bricks_mode`` in ``config/feature_flags.yaml``).
+
+    2026-09-07 CORRECTION (real-data backfill, same worklog): the original
+    [0.5, 1.0, 2.0] multipliers were mathematically incapable of ever
+    reaching the "0.5-1"/"1-2" distance/ATR buckets — the grid's own
+    ``SWEEP_SL_RANGE``/``SWEEP_TP_RANGE`` combined with ``MIN_RR`` reject
+    every ``tp_bricks`` below 5 (``tp=4`` never clears ``MIN_RR=1.5`` at
+    any ``sl``), so the smallest reachable distance was
+    ``5 * 0.5 = 2.5x ATR`` ("2-4" bucket) — never the proven-good "0.5-1"/
+    "1-2" buckets. Confirmed empirically: a 70-anchor historical replay
+    against real TDVA data (14 symbols) landed in "4+" or "2-4" every
+    single time, "0.5-1" zero times. These multipliers are chosen so
+    ``tp_bricks=5`` (the grid's own minimum viable value) lands inside
+    "0.5-1"/"1-2"/"2-4" respectively: ``5 * 0.15 = 0.75x`` ("0.5-1"),
+    ``5 * 0.3 = 1.5x`` ("1-2"), ``5 * 0.6 = 3.0x`` ("2-4", kept for a
+    same-bucket comparison point against the old multipliers).
+    """
+    if atr <= 0:
+        return []
+    multipliers = [0.15, 0.3, 0.6]
+    seen: set[float] = set()
+    out: list[float] = []
+    for m in multipliers:
+        b = round(atr * m, 6)
+        if b > 0 and b not in seen:
+            seen.add(b)
+            out.append(b)
+    return out
+
+
+def deadline_aware_sharpe(trades: list[dict]) -> float:
+    """Sharpe over a trade set, but with any trade held longer than
+    ``EXPIRY_BARS`` hours scored as 0 PnL first.
+
+    Root cause fix, worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md:
+    ``ComboResult.sharpe`` (and the ``win_rate``/etc. it's derived from)
+    comes from ``RenkoPipeline``'s own ``TradeJournal.get_stats()``, which
+    scores every trade however long it actually took to close — no
+    concept of a deadline. Live, ``eod_resolver.py`` gives every real
+    signal only ``EXPIRY_BARS`` hours before calling it "expired" (PnL 0,
+    per that module's ``compute_pnl``... as of the 2026-09-08 fix, expired
+    is scored as real mark-to-market, not a flat 0 — but a *backtest*
+    candidate that would clearly expire live still shouldn't get credit
+    for a "win" it will never actually be given time to realize, which is
+    exactly what this function corrects for at SELECTION time). Verified
+    against ``renko/trade_journal.py`` before writing this: ``entry_ts``/
+    ``exit_ts`` on each trade dict are bar indices when the backtest is
+    run without explicit timestamps (exactly how ``_renko_grid_search_sync``
+    calls it), so ``exit_ts - entry_ts`` is hours-held, directly
+    comparable to ``EXPIRY_BARS``. The Sharpe formula itself
+    (``mean(pnl_bricks) / std(pnl_bricks, ddof=1)``) is reused verbatim
+    from ``TradeJournal.get_stats()``, not reinvented.
+
+    ``trades`` is the raw ``result["trades"]`` list from
+    ``RenkoPipeline.backtest_with_analytics`` (list of ``TradeRecord.to_dict()``).
+    """
+    if len(trades) <= 1:
+        return 0.0
+    capped_pnls = np.array([
+        0.0 if (t["exit_ts"] - t["entry_ts"]) > EXPIRY_BARS else t["pnl_bricks"]
+        for t in trades
+    ])
+    std = capped_pnls.std(ddof=1)
+    return float(capped_pnls.mean() / std) if std > 0 else 0.0
+
+
 def pick_best_combo(
     combos: list[ComboResult],
     min_rr: float = MIN_RR,
     max_sharpe: float = MAX_SHARPE,
     min_trades: int = MIN_TRADES,
+    sharpe_fn=lambda c: c.sharpe,
 ) -> Optional[ComboResult]:
     """Pick the best combo by Sharpe, applying filter gates.
 
@@ -211,16 +315,157 @@ def pick_best_combo(
       • rr = tp/sl >= min_rr
       • sharpe <= max_sharpe (reject absurd outliers — likely overfit)
       • total_trades >= min_trades
+
+    ``sharpe_fn`` selects which Sharpe value on ``ComboResult`` both the
+    ``max_sharpe`` filter and the final argmax use — defaults to the
+    original uncapped ``c.sharpe`` (unchanged behavior for every existing
+    caller). ``select_best_combo_deadline_aware`` passes
+    ``lambda c: c.deadline_aware_sharpe`` instead.
     """
     candidates = [
         c for c in combos
         if c.tp_bricks / max(c.sl_bricks, 1) >= min_rr
-        and c.sharpe <= max_sharpe
+        and sharpe_fn(c) <= max_sharpe
         and c.total_trades >= min_trades
     ]
     if not candidates:
         return None
-    return max(candidates, key=lambda c: c.sharpe)
+    return max(candidates, key=sharpe_fn)
+
+
+@dataclass
+class AtrAnchoredSelection:
+    """Result of ``select_best_combo_with_atr_anchoring``.
+
+    ``chosen`` is what the caller should actually use (the real,
+    production combo). ``baseline``/``widened``/``changed`` are always
+    populated when ``mode != "off"``, purely for logging/comparison —
+    ``baseline`` is "what today's original-5-candidate grid would have
+    picked" and ``widened`` is "what the full ATR-anchored grid picks."
+    """
+    chosen: Optional[ComboResult]
+    baseline: Optional[ComboResult] = None
+    widened: Optional[ComboResult] = None
+    changed: bool = False
+
+
+def select_best_combo_with_atr_anchoring(
+    grid_results: list[ComboResult],
+    original_brick_sizes: set[float],
+    mode: str,
+    min_rr: float = MIN_RR,
+    max_sharpe: float = MAX_SHARPE,
+    min_trades: int = MIN_TRADES,
+) -> AtrAnchoredSelection:
+    """Pick the real (production) combo, plus — in shadow/live mode —
+    what the ATR-anchored-widened grid would have picked instead.
+
+    Phase A of worklog
+    20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md.
+    Pure function (no I/O) so it's unit-testable in isolation, same shape
+    as ``pick_best_combo``/``heavy_sweep_reachability.reachability_aware_pick``.
+
+    Args:
+        grid_results: the FULL grid — original candidates plus any
+            ATR-anchored ones the caller backtested (empty/absent when
+            mode is ``"off"``).
+        original_brick_sizes: the brick sizes from ``generate_brick_sizes``
+            only (never includes ATR-anchored candidates).
+        mode: ``"off"`` | ``"shadow"`` | ``"live"``.
+
+    Semantics:
+      • ``"off"``: ``chosen`` is the pick over ``grid_results`` as given
+        (the caller is expected to not have generated ATR-anchored
+        candidates at all in this mode) — byte-identical to pre-Phase-A
+        behavior.
+      • ``"shadow"``: ``chosen`` is restricted to ``original_brick_sizes``
+        only — zero live-behavior change. ``widened`` is computed over
+        the full grid for comparison/logging only; it never overrides
+        ``chosen``.
+      • ``"live"``: ``chosen`` becomes ``widened`` whenever one exists,
+        falling back to the original-only pick otherwise.
+    """
+    if mode == "off":
+        chosen = pick_best_combo(grid_results, min_rr, max_sharpe, min_trades)
+        return AtrAnchoredSelection(chosen=chosen)
+
+    baseline = pick_best_combo(
+        [c for c in grid_results if c.brick_size in original_brick_sizes],
+        min_rr, max_sharpe, min_trades,
+    )
+    widened = pick_best_combo(grid_results, min_rr, max_sharpe, min_trades)
+    changed = widened is not None and (
+        baseline is None or (
+            widened.brick_size, widened.sl_bricks, widened.tp_bricks
+        ) != (baseline.brick_size, baseline.sl_bricks, baseline.tp_bricks)
+    )
+    chosen = widened if (mode == "live" and widened is not None) else baseline
+    return AtrAnchoredSelection(
+        chosen=chosen, baseline=baseline, widened=widened, changed=changed,
+    )
+
+
+@dataclass
+class DeadlineAwareSelection:
+    """Result of ``select_best_combo_deadline_aware``.
+
+    ``chosen`` is what the caller should actually use. ``uncapped``/
+    ``corrected``/``changed`` are always populated when ``mode != "off"``,
+    purely for logging/comparison — ``uncapped`` is "what today's
+    unmodified Sharpe would pick," ``corrected`` is "what the same
+    candidates pick when scored with the 48h deadline applied first."
+    """
+    chosen: Optional[ComboResult]
+    uncapped: Optional[ComboResult] = None
+    corrected: Optional[ComboResult] = None
+    changed: bool = False
+
+
+def select_best_combo_deadline_aware(
+    grid_results: list[ComboResult],
+    mode: str,
+    min_rr: float = MIN_RR,
+    max_sharpe: float = MAX_SHARPE,
+    min_trades: int = MIN_TRADES,
+) -> DeadlineAwareSelection:
+    """Pick the real (production) combo, plus — in shadow/live mode —
+    what deadline-aware scoring picks from the SAME candidate set instead.
+
+    Root cause fix, worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md.
+    Unlike ``select_best_combo_with_atr_anchoring`` (which changed WHICH
+    candidates are considered and turned out to be solving the wrong
+    problem), this changes nothing about the candidate grid — only how
+    each candidate already in it gets scored. Pure function (no I/O), same
+    shape as the other two selection helpers in this module.
+
+    Semantics:
+      • ``"off"``: ``chosen`` is today's exact pick (``c.sharpe``,
+        uncapped) — byte-identical to pre-fix behavior.
+      • ``"shadow"``: ``chosen`` stays the uncapped pick — zero
+        live-behavior change. ``corrected`` (picked by
+        ``c.deadline_aware_sharpe``) is computed for comparison/logging
+        only.
+      • ``"live"``: ``chosen`` becomes ``corrected`` whenever one exists,
+        falling back to the uncapped pick otherwise.
+    """
+    if mode == "off":
+        chosen = pick_best_combo(grid_results, min_rr, max_sharpe, min_trades)
+        return DeadlineAwareSelection(chosen=chosen)
+
+    uncapped = pick_best_combo(grid_results, min_rr, max_sharpe, min_trades)
+    corrected = pick_best_combo(
+        grid_results, min_rr, max_sharpe, min_trades,
+        sharpe_fn=lambda c: c.deadline_aware_sharpe,
+    )
+    changed = corrected is not None and (
+        uncapped is None or (
+            corrected.brick_size, corrected.sl_bricks, corrected.tp_bricks
+        ) != (uncapped.brick_size, uncapped.sl_bricks, uncapped.tp_bricks)
+    )
+    chosen = corrected if (mode == "live" and corrected is not None) else uncapped
+    return DeadlineAwareSelection(
+        chosen=chosen, uncapped=uncapped, corrected=corrected, changed=changed,
+    )
 
 
 # ─── Mix-in ──────────────────────────────────────────────────────────────
@@ -445,17 +690,39 @@ class HeavySweepMixin:
             current_price = float(prices[-1])
             atr = compute_atr(prices, period=14)
             brick_sizes = generate_brick_sizes(atr, current_price)
+
+            # ATR-anchored candidates (Phase A, worklog
+            # 20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md).
+            # Additive only — see heavy_sweep_atr_anchored_bricks_mode's
+            # own comment in config/feature_flags.yaml for off/shadow/live.
+            from regime_platform.core.feature_flags import (
+                get_heavy_sweep_atr_anchored_bricks_mode,
+            )
+
+            atr_anchored_mode = get_heavy_sweep_atr_anchored_bricks_mode()
+            original_brick_sizes = set(brick_sizes)
+            atr_anchored_sizes: list[float] = []
+            if atr_anchored_mode != "off":
+                atr_anchored_sizes = [
+                    b for b in generate_atr_anchored_brick_sizes(atr)
+                    if b not in original_brick_sizes
+                ]
+            all_brick_sizes = brick_sizes + atr_anchored_sizes
             logger.info(
-                "[sweep:heavy] %s: ATR=%.4f, price=%.2f, bricks=%s",
+                "[sweep:heavy] %s: ATR=%.4f, price=%.2f, bricks=%s%s",
                 symbol, atr, current_price,
                 [f"{b:.4f}" for b in brick_sizes],
+                (
+                    f" (+ATR-anchored {[f'{b:.4f}' for b in atr_anchored_sizes]}, "
+                    f"mode={atr_anchored_mode})"
+                ) if atr_anchored_sizes else "",
             )
 
             # ── 4. Grid + regime + Kelly in parallel ──────────────────
             # Each runs in asyncio.to_thread so the event loop stays
             # responsive (light-sweep ticks can fire concurrently).
             grid_task = asyncio.to_thread(
-                self._renko_grid_search_sync, prices, brick_sizes, symbol,
+                self._renko_grid_search_sync, prices, all_brick_sizes, symbol,
             )
             regime_task = asyncio.to_thread(self._regime_sync, prices)
             kelly_task = asyncio.to_thread(
@@ -471,7 +738,106 @@ class HeavySweepMixin:
             result.kelly_f = kelly_result.recommended_f
 
             # ── 5. Pick best combo by Sharpe ──────────────────────────
-            best = pick_best_combo(grid_results)
+            # See select_best_combo_with_atr_anchoring's docstring for the
+            # off/shadow/live semantics — mode="off" is byte-identical to
+            # pre-Phase-A behavior (all_brick_sizes == brick_sizes above).
+            selection = select_best_combo_with_atr_anchoring(
+                grid_results, original_brick_sizes, atr_anchored_mode,
+            )
+            best = selection.chosen
+            if atr_anchored_mode in ("shadow", "live"):
+                def _fmt(c: Optional[ComboResult]) -> str:
+                    if c is None:
+                        return "none"
+                    return (
+                        f"brick={c.brick_size:.4f} sl={c.sl_bricks} tp={c.tp_bricks} "
+                        f"sharpe={c.sharpe:.4f}"
+                    )
+
+                logger.info(
+                    "[sweep:heavy] %s: ATR-anchored bricks %s — baseline=%s | "
+                    "widened=%s (changed=%s)",
+                    symbol, atr_anchored_mode,
+                    _fmt(selection.baseline), _fmt(selection.widened), selection.changed,
+                )
+                if atr_anchored_mode == "live" and selection.widened is not None:
+                    logger.info(
+                        "[sweep:heavy] %s: LIVE ATR-anchored pick applied", symbol,
+                    )
+
+                # Persist the comparison so the flip-to-live decision can be
+                # made from a query, not by grepping logs — same reasoning
+                # as heavy_sweep_reachability_mode's own shadow table.
+                # Reuses bracket_reachability.py's bucket math (via
+                # heavy_sweep_reachability._bucket_for_combo) rather than
+                # re-deriving it here.
+                from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
+                    _bucket_for_combo,
+                )
+                from regime_platform.sweep_orchestrator.supabase_client import (
+                    record_heavy_sweep_atr_anchored_shadow,
+                )
+                asyncio.create_task(record_heavy_sweep_atr_anchored_shadow(
+                    symbol,
+                    changed=selection.changed,
+                    baseline_bucket=_bucket_for_combo(selection.baseline, atr),
+                    baseline_sharpe=selection.baseline.sharpe if selection.baseline else None,
+                    widened_bucket=_bucket_for_combo(selection.widened, atr),
+                    widened_sharpe=selection.widened.sharpe if selection.widened else None,
+                ))
+
+            # ── 5a2. Deadline-aware rescoring — root cause fix, worklog
+            # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md. Applied
+            # after ATR-anchoring (independent re-ranking over the same
+            # grid_results — with atr_anchored_mode="off", grid_results is
+            # just the original 5-brick-size grid, matching exactly what
+            # this fix was validated against). "off" reproduces `best`
+            # above exactly (both read c.sharpe uncapped) — no behavior
+            # change when both flags are off, which is today's shipped
+            # default for both.
+            from regime_platform.core.feature_flags import (
+                get_heavy_sweep_deadline_aware_scoring_mode,
+            )
+
+            deadline_mode = get_heavy_sweep_deadline_aware_scoring_mode()
+            deadline_selection = select_best_combo_deadline_aware(grid_results, deadline_mode)
+            best = deadline_selection.chosen
+            if deadline_mode in ("shadow", "live"):
+                def _fmt2(c: Optional[ComboResult]) -> str:
+                    if c is None:
+                        return "none"
+                    return (
+                        f"brick={c.brick_size:.4f} sl={c.sl_bricks} tp={c.tp_bricks} "
+                        f"sharpe={c.sharpe:.4f} deadline_sharpe={c.deadline_aware_sharpe:.4f}"
+                    )
+
+                logger.info(
+                    "[sweep:heavy] %s: deadline-aware scoring %s — uncapped=%s | "
+                    "corrected=%s (changed=%s)",
+                    symbol, deadline_mode,
+                    _fmt2(deadline_selection.uncapped), _fmt2(deadline_selection.corrected),
+                    deadline_selection.changed,
+                )
+                if deadline_mode == "live" and deadline_selection.corrected is not None:
+                    logger.info(
+                        "[sweep:heavy] %s: LIVE deadline-aware pick applied", symbol,
+                    )
+
+                from regime_platform.sweep_orchestrator.supabase_client import (
+                    record_heavy_sweep_deadline_aware_shadow,
+                )
+                asyncio.create_task(record_heavy_sweep_deadline_aware_shadow(
+                    symbol,
+                    changed=deadline_selection.changed,
+                    uncapped_sharpe=(
+                        deadline_selection.uncapped.sharpe
+                        if deadline_selection.uncapped else None
+                    ),
+                    corrected_sharpe=(
+                        deadline_selection.corrected.deadline_aware_sharpe
+                        if deadline_selection.corrected else None
+                    ),
+                ))
             if best is None:
                 result.error = (
                     f"no_combo_passed_filters "
@@ -1033,6 +1399,7 @@ class HeavySweepMixin:
                             profit_factor=float(stats.get("profit_factor", 0.0)),
                             total_pnl_bricks=float(stats.get("total_pnl_bricks", 0.0)),
                             max_drawdown_bricks=float(stats.get("max_drawdown_bricks", 0.0)),
+                            deadline_aware_sharpe=deadline_aware_sharpe(bt.get("trades", [])),
                         ))
                     except Exception as exc:
                         logger.warning(

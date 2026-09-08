@@ -630,6 +630,145 @@ async def record_heavy_sweep_reachability_shadow(
         logger.error("record_heavy_sweep_reachability_shadow: failed for %s: %s", symbol, exc)
 
 
+NT_HEAVY_SWEEP_ATR_ANCHORED_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "n_changed",
+    "last_baseline_bucket", "last_baseline_sharpe",
+    "last_widened_bucket", "last_widened_sharpe", "updated_at",
+})
+
+
+async def record_heavy_sweep_atr_anchored_shadow(
+    symbol: str,
+    changed: bool,
+    baseline_bucket: str | None,
+    baseline_sharpe: float | None,
+    widened_bucket: str | None,
+    widened_sharpe: float | None,
+) -> None:
+    """Accumulate one heavy-sweep's ATR-anchored-bricks comparison into the
+    running per-symbol row in ``nt_heavy_sweep_atr_anchored_shadow``
+    (best-effort). Phase A of worklog
+    20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md.
+
+    Fetch-then-upsert, same shape as
+    ``record_heavy_sweep_reachability_shadow`` (its sibling table) —
+    ``updated_at`` included in the payload from the start for the same
+    reason: an upsert-on-conflict never touches a column absent from the
+    payload, so without this the timestamp would silently freeze at
+    first-insert time forever.
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_heavy_sweep_atr_anchored_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,n_changed",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "n_changed": int(prev.get("n_changed", 0)) + (1 if changed else 0),
+                "last_baseline_bucket": baseline_bucket,
+                "last_baseline_sharpe": round(float(baseline_sharpe), 4) if baseline_sharpe is not None else None,
+                "last_widened_bucket": widened_bucket,
+                "last_widened_sharpe": round(float(widened_sharpe), 4) if widened_sharpe is not None else None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, NT_HEAVY_SWEEP_ATR_ANCHORED_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_heavy_sweep_atr_anchored_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_heavy_sweep_atr_anchored_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_heavy_sweep_atr_anchored_shadow: failed for %s: %s", symbol, exc)
+
+
+NT_HEAVY_SWEEP_DEADLINE_AWARE_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "n_compared", "n_changed",
+    "last_uncapped_sharpe", "last_corrected_sharpe", "updated_at",
+})
+
+
+async def record_heavy_sweep_deadline_aware_shadow(
+    symbol: str,
+    changed: bool,
+    uncapped_sharpe: float | None,
+    corrected_sharpe: float | None,
+) -> None:
+    """Accumulate one heavy-sweep's deadline-aware-scoring comparison into
+    the running per-symbol row in ``nt_heavy_sweep_deadline_aware_shadow``
+    (best-effort). Root-cause fix, worklog
+    20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md.
+
+    Fetch-then-upsert, same shape as its sibling
+    ``record_heavy_sweep_atr_anchored_shadow`` — ``updated_at`` included in
+    the payload from the start for the same reason: an upsert-on-conflict
+    never touches a column absent from the payload.
+    """
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_heavy_sweep_deadline_aware_shadow"),
+                headers=_headers(),
+                params={
+                    "select": "n_compared,n_changed",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            prev = data[0] if isinstance(data, list) and data else {}
+
+            row = _filter_payload({
+                "symbol": symbol,
+                "n_compared": int(prev.get("n_compared", 0)) + 1,
+                "n_changed": int(prev.get("n_changed", 0)) + (1 if changed else 0),
+                "last_uncapped_sharpe": round(float(uncapped_sharpe), 4) if uncapped_sharpe is not None else None,
+                "last_corrected_sharpe": round(float(corrected_sharpe), 4) if corrected_sharpe is not None else None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, NT_HEAVY_SWEEP_DEADLINE_AWARE_SHADOW_COLUMNS)
+
+            resp = await client.post(
+                f"{_url('nt_heavy_sweep_deadline_aware_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_heavy_sweep_deadline_aware_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_heavy_sweep_deadline_aware_shadow: failed for %s: %s", symbol, exc)
+
+
 NT_MACRO_REGIME_COLUMNS: frozenset[str] = frozenset({
     "symbol", "macro_score", "macro_score_smoothed", "macro_label",
     "macro_strength", "sma_window_days", "computed_at",

@@ -230,6 +230,17 @@ def resolve_signal_outcome(
                 outcome, exit_price, exit_idx = "sl_hit", close, i
                 break
 
+    # 2026-09-08 fix: an expired signal is still open at the last walked
+    # close — that price was always available here (it's how mfe/mae
+    # below get computed) but was previously discarded, leaving
+    # exit_price permanently NULL for every expired row (confirmed live:
+    # 59,913 of 59,913 expired signals had exit_price=NULL). Capture it
+    # so compute_pnl can score a real mark-to-market outcome instead of a
+    # fixed 0 — "expired" still means "never touched TP/SL," it no longer
+    # means "financially nothing happened."
+    if outcome == "expired" and window:
+        exit_price = float(window[-1])
+
     # Excursion is measured over the bars actually walked (through the
     # exit bar, or the whole window when expired).
     walked = window if exit_idx is None else window[: exit_idx + 1]
@@ -267,13 +278,28 @@ def compute_pnl(
     tp_bricks: float | None,
     sl_bricks: float | None,
     brick_size: float | None,
+    entry_price: float | None = None,
+    exit_price: float | None = None,
+    direction: str = "buy",
 ) -> dict[str, float]:
     """PnL in bricks and dollars for a resolved outcome.
 
     Convention (matches the pipeline's brick-delta model):
       * ``tp_hit``  → ``pnl_bricks = +tp_bricks``
       * ``sl_hit``  → ``pnl_bricks = -sl_bricks``
-      * ``expired`` → ``pnl_bricks = 0``  (no fill, no PnL booked)
+      * ``expired`` → mark-to-market, not a fixed 0 (2026-09-08 fix). The
+        position was still open at ``exit_price`` (the last walked close
+        — see ``resolve_signal_outcome``'s 2026-09-08 fix) when the 48h
+        window ran out; scoring it as a flat 0 regardless of whether it
+        was actually up or down was fiction, not a "no fill" case (no
+        signal here is ever unfilled — entry is the live market price at
+        signal time). ``pnl_bricks = signed(exit_price - entry_price) /
+        brick_size`` — same brick-unit convention as tp_hit/sl_hit, so all
+        three outcome types stay directly summable downstream. Falls back
+        to the old ``0.0`` only when price/brick_size data is missing
+        (defensive — should not happen for any row resolved after this
+        fix; historical expired rows resolved before it have no
+        exit_price to compute from).
     ``abs()`` guards against a future schema that stores negative brick
     counts — a take-profit is always a gain and a stop-loss always a loss.
     ``pnl_dollars = pnl_bricks * brick_size`` (6dp).
@@ -282,6 +308,18 @@ def compute_pnl(
         pnl_bricks = abs(float(tp_bricks or 0.0))
     elif outcome == "sl_hit":
         pnl_bricks = -abs(float(sl_bricks or 0.0))
+    elif (
+        outcome == "expired"
+        and entry_price is not None
+        and exit_price is not None
+        and brick_size
+    ):
+        is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
+        delta = (
+            float(exit_price) - float(entry_price) if is_buy
+            else float(entry_price) - float(exit_price)
+        )
+        pnl_bricks = delta / float(brick_size)
     else:
         pnl_bricks = 0.0
     dollars = pnl_bricks * float(brick_size or 0.0)
@@ -474,6 +512,9 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
     pnl = compute_pnl(
         resolved["outcome"],
         sig.get("tp_bricks"), sig.get("sl_bricks"), sig.get("brick_size"),
+        entry_price=entry,
+        exit_price=resolved["exit_price"],
+        direction=sig.get("signal") or "buy",
     )
 
     patch = _filter_payload({

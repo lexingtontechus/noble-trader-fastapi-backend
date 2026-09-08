@@ -150,6 +150,77 @@ heavy_sweep_grid:
   max_sharpe: 5.0    # reject combos with an absurdly high Sharpe (likely overfit)
   min_trades: 5      # minimum backtested trade count for a combo to qualify
 
+# heavy_sweep_atr_anchored_bricks_mode (2026-09-07, Phase A of worklog
+# 20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md
+# — this is the "Phase 3b" grid-widening follow-up flagged above as
+# not-yet-built). generate_brick_sizes()'s 5 candidates are derived from
+# a coarse price-% volatility tier, never anchored to the symbol's own
+# ATR — nt_bracket_reachability shows the grid then has zero candidates
+# near the 0.5-1x ATR bucket that resolves reliably for XAUUSD/XAUEUR/
+# XAUAUD, so heavy_sweep_reachability_mode's shadow filter finds "nothing
+# survives" for those symbols no matter how it re-ranks. This flag adds 3
+# extra ATR-multiple candidates (0.15x/0.3x/0.6x) to the grid search
+# alongside the existing 5 — a strictly additive widening, not a
+# replacement.
+#
+# CORRECTION (2026-09-07, real-data backfill): originally shipped at
+# 0.5x/1x/2x. A 70-anchor historical replay against real TDVA data (14
+# symbols) showed those multipliers can NEVER reach "0.5-1"/"1-2" —
+# the grid's own SWEEP_SL_RANGE/SWEEP_TP_RANGE + MIN_RR reject every
+# tp_bricks below 5, so the floor was 5 * 0.5 = 2.5x ATR ("2-4" at best).
+# 0.15x/0.3x/0.6x put tp_bricks=5 (the grid's minimum viable value) at
+# 0.75x/1.5x/3.0x ATR — inside "0.5-1"/"1-2"/"2-4" respectively.
+#   off    (default): unchanged — identical candidates/behavior to today.
+#   shadow: backtests the extra candidates too (so the reachability-mode
+#           shadow comparison above finally has something good to find),
+#           logs what the *baseline* Sharpe-only pick would be with vs.
+#           without them, but the real persisted brick_params.yaml pick
+#           still comes from the original 5-candidate set only — zero
+#           live-behavior change.
+#   live:   the extra candidates can win the baseline Sharpe-only pick
+#           for real (still subject to heavy_sweep_reachability_mode's
+#           own gate on top, unchanged).
+# NOT live by default — same discipline as every other mode flag in this
+# file, and the exact gating this key's own governing comment above
+# already called for before Phase 3b could ship.
+heavy_sweep_atr_anchored_bricks_mode: off
+
+# heavy_sweep_deadline_aware_scoring_mode (2026-09-08, worklog
+# 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md) — THE root-cause fix,
+# superseding the ATR-anchoring key above (that was solving the wrong
+# variable: candidate SET, not candidate SCORING). The heavy-sweep grid
+# search scores every candidate bracket by Sharpe over the full 90-day
+# backtest with no concept of a deadline — a simulated trade that takes
+# 200+ hours to close still counts as a win there. eod_resolver.py gives
+# every real signal only EXPIRY_BARS (48) hours before calling it expired.
+# Proven directly (scripts/sim_deadline_aware_scoring.py, real TDVA data,
+# no candidate widening): XAUUSD's actual current pick produces 10
+# trades / 0 wins / 0 losses / 10 expired / $0 — literally every "win" in
+# its backtest takes longer than 48h to close. Rescoring the SAME
+# candidates with any trade held > EXPIRY_BARS treated as 0 PnL first
+# (matching what eod_resolver.py already does to real signals) picked a
+# different bracket: 15 trades / 13 wins / 2 losses / 0 expired / 86.7%
+# win / +$468.70. This was independently found and numerically verified
+# once already, two weeks earlier, in worklog
+# 20260825_US500_USDCAD_TIME_HORIZON_SCOPE.md (candidate fix #3, "full
+# wall-clock backtest/live parity") — explicitly deferred there as
+# "structurally correct... right long-term target, wrong thing to lead
+# with," and nothing on that list was built before this. Don't repeat
+# that: this key exists so the fix ships, gated, not deferred again.
+#   off    (default): unchanged — identical candidate scoring to today.
+#   shadow: computes the corrected Sharpe too (ComboResult.deadline_aware_sharpe
+#           is always populated regardless of mode — cheap, same trade
+#           list already in hand), logs/persists what it would have
+#           picked instead, but the real persisted pick is unchanged.
+#   live:   the corrected Sharpe drives the real pick.
+# NOT live by default — same discipline as every other mode flag in this
+# file. Given the strength of the existing single-window evidence above,
+# this does not need weeks of organic shadow accumulation the way the
+# ATR-anchoring key did — a multi-window historical replay (same method as
+# scripts/backfill_atr_anchored_bricks_shadow.py) can validate this
+# directly against real history before flipping, rather than waiting.
+heavy_sweep_deadline_aware_scoring_mode: off
+
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
 # regime_label flapping tick-to-tick. RegimeHMM.fit() rebuilds and

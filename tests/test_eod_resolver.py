@@ -222,7 +222,10 @@ class TestResolveSignalOutcome:
             closes=[1.1010, 1.1020, 1.1030], direction="buy",
         )
         assert result["outcome"] == "expired"
-        assert result["exit_price"] is None
+        # 2026-09-08 fix: expired still records the real mark-to-market
+        # price (the last walked close) instead of discarding it as None
+        # — the position was still open, not "no fill."
+        assert result["exit_price"] == pytest.approx(1.1030)
         assert result["exit_idx"] is None
 
     def test_buy_expired_honors_expiry_bars(self):
@@ -597,10 +600,40 @@ class TestComputePnl:
         assert pnl["pnl_bricks"] == -3.0
         assert pnl["pnl_dollars"] == pytest.approx(-0.003)
 
-    def test_expired_zero(self):
+    def test_expired_zero_without_price_data(self):
+        # Fallback only — no entry/exit price passed, nothing to mark to
+        # market from (e.g. historical rows resolved before the
+        # 2026-09-08 fix, which have no exit_price to compute from).
         pnl = compute_pnl("expired", tp_bricks=6, sl_bricks=3, brick_size=0.001)
         assert pnl["pnl_bricks"] == 0.0
         assert pnl["pnl_dollars"] == 0.0
+
+    def test_expired_marks_to_market_buy_favorable(self):
+        # 2026-09-08 fix: a buy still open above entry when it expires is
+        # a real, positive result — not a fixed 0.
+        pnl = compute_pnl(
+            "expired", tp_bricks=6, sl_bricks=3, brick_size=0.5,
+            entry_price=100.0, exit_price=101.5, direction="buy",
+        )
+        assert pnl["pnl_bricks"] == pytest.approx(3.0)   # (101.5-100)/0.5
+        assert pnl["pnl_dollars"] == pytest.approx(1.5)
+
+    def test_expired_marks_to_market_buy_unfavorable(self):
+        pnl = compute_pnl(
+            "expired", tp_bricks=6, sl_bricks=3, brick_size=0.5,
+            entry_price=100.0, exit_price=99.0, direction="buy",
+        )
+        assert pnl["pnl_bricks"] == pytest.approx(-2.0)  # (99-100)/0.5
+        assert pnl["pnl_dollars"] == pytest.approx(-1.0)
+
+    def test_expired_marks_to_market_sell_favorable(self):
+        # SELL profits when price falls, so exit below entry is a win.
+        pnl = compute_pnl(
+            "expired", tp_bricks=6, sl_bricks=3, brick_size=0.5,
+            entry_price=100.0, exit_price=98.0, direction="sell",
+        )
+        assert pnl["pnl_bricks"] == pytest.approx(4.0)   # (100-98)/0.5
+        assert pnl["pnl_dollars"] == pytest.approx(2.0)
 
     def test_negative_brick_counts_abs_guard(self):
         # Schema stores positive brick counts; abs() guards against negatives
