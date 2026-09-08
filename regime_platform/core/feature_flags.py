@@ -55,6 +55,16 @@ _DEFAULTS: dict[str, Any] = {
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
+    "qualification_gates": {
+        "min_regime_conf": 0.60,
+        "min_kelly": 0.02,
+        "min_timesfm_confidence": 0.05,
+        "min_ev": 0.0,
+        "min_p_win": 0.55,
+    },
+    "timesfm_gate_mode": "soft",
+    "sweep_after_hours": False,
+    "signal_cooldown_minutes": 60.0,
 }
 
 _cache: dict[str, Any] | None = None
@@ -254,3 +264,78 @@ def get_regime_label_debounce_ticks() -> int:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["regime_label_debounce_ticks"]
+
+
+def _qualification_gate_number(key: str) -> float:
+    try:
+        gates_cfg = _load().get("qualification_gates", _DEFAULTS["qualification_gates"])
+        if not isinstance(gates_cfg, dict):
+            gates_cfg = _DEFAULTS["qualification_gates"]
+        return float(gates_cfg.get(key, _DEFAULTS["qualification_gates"][key]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["qualification_gates"][key]
+
+
+def get_min_regime_conf() -> float:
+    """Gate 2 — minimum HMM regime confidence to qualify a signal.
+    2026-09-08 config-centralization fix (was os.getenv("MIN_REGIME_CONF"))."""
+    return _qualification_gate_number("min_regime_conf")
+
+
+def get_min_kelly() -> float:
+    """Gate 3 — minimum Kelly fraction to qualify a signal.
+    2026-09-08 config-centralization fix (was os.getenv("MIN_KELLY"))."""
+    return _qualification_gate_number("min_kelly")
+
+
+def get_min_timesfm_confidence() -> float:
+    """Gate 5 — minimum ``|p_timesfm - 0.5|`` for TimesFM's hard-gate mode.
+    2026-09-08 config-centralization fix (was os.getenv("MIN_TIMESFM_CONFIDENCE"))."""
+    return _qualification_gate_number("min_timesfm_confidence")
+
+
+def get_min_ev() -> float:
+    """Gate 6a — minimum expected value to qualify a signal.
+    2026-09-08 config-centralization fix (was os.getenv("MIN_EV"))."""
+    return _qualification_gate_number("min_ev")
+
+
+def get_min_p_win() -> float:
+    """Gate 6b — minimum blended p_win to qualify a signal (full weight;
+    a soft band below this down to 0.50 still qualifies with a
+    proportional Kelly shrink — see orchestrator.py's usage). 2026-09-08
+    config-centralization fix (was os.getenv("MIN_P_WIN"))."""
+    return _qualification_gate_number("min_p_win")
+
+
+def get_timesfm_gate_mode() -> str:
+    """``hard`` | ``soft`` | ``off`` — how TimesFM confidence affects
+    qualification (see orchestrator.py's inline comment at this value's
+    usage for full semantics). 2026-09-08 config-centralization fix (was
+    os.getenv("TIMESFM_GATE_MODE"))."""
+    return str(_load().get(
+        "timesfm_gate_mode", _DEFAULTS["timesfm_gate_mode"],
+    )).lower()
+
+
+def get_sweep_after_hours() -> bool:
+    """When true, sweep all symbols regardless of market hours (crypto/
+    forex are always swept regardless of this flag — only affects stocks/
+    commodities). 2026-09-08 config-centralization fix (was
+    os.getenv("SWEEP_AFTER_HOURS") == "1")."""
+    val = _load().get("sweep_after_hours", _DEFAULTS["sweep_after_hours"])
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
+def get_signal_cooldown_minutes() -> float:
+    """Minutes to suppress a repeat qualified signal for the same
+    (symbol, direction) pair. 2026-09-08 config-centralization fix (was
+    os.getenv("SIGNAL_COOLDOWN_MINUTES"))."""
+    try:
+        return float(_load().get(
+            "signal_cooldown_minutes", _DEFAULTS["signal_cooldown_minutes"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["signal_cooldown_minutes"]

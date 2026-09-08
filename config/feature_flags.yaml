@@ -19,6 +19,52 @@
 # the sole source of truth. Edits take effect on the next read (the
 # loader checks the file's mtime on every call) — no restart required.
 
+# Qualification gate thresholds (light-sweep + heavy-sweep qualification —
+# orchestrator.py::_process_symbol / heavy_sweep.py::_evaluate_heavy_
+# qualification). 2026-09-08 config-centralization fix: these 5 were still
+# being read straight from os.getenv(...) with a code-level fallback
+# default, each one an ACTIVE Studio-Secret/`.env.local` entry with no
+# feature_flags.yaml counterpart — the exact same undetectable-divergence
+# shape that caused the MIN_RR incident (worklog/20260904_MIN_RR_REGRESSION.md),
+# just not yet triggered. Found via a same-day audit, not assumed. Values
+# below are what `.env.local`/Studio actually held at migration time (read
+# directly, not the code's bare fallback) — verify these still match
+# intended live behavior; if Studio's real values differ from these, THAT
+# divergence is exactly what this migration exists to surface and end.
+# Also declared in regime_platform/core/tuning_registry.py's PARAM_BOUNDS
+# (Tier C, "gate thresholds") as future Layer-1-autonomous-tuner
+# candidates — that tuner isn't built yet, so this file is the actual read
+# path today, same relationship MIN_RR (below) already has with that
+# registry.
+qualification_gates:
+  min_regime_conf: 0.60        # Gate 2: HMM confidence
+  min_kelly: 0.02              # Gate 3: Kelly minimum
+  min_timesfm_confidence: 0.05 # Gate 5: TimesFM certainty
+  min_ev: 0.0                  # Gate 6a: EV minimum
+  min_p_win: 0.55              # Gate 6b: blended p_win minimum
+
+# timesfm_gate_mode: hard|soft|off — controls how TimesFM confidence
+# affects signal qualification (see orchestrator.py's own inline comment
+# at TIMESFM_GATE_MODE's usage for the full hard/soft/off semantics). Same
+# config-centralization fix as qualification_gates above.
+timesfm_gate_mode: soft
+
+# sweep_after_hours: when true, sweep ALL symbols regardless of market
+# hours (crypto is always 24/7 and forex Sun-Fri regardless of this flag —
+# it only affects stocks/commodities). NOTE: `.env.local`'s actual value
+# was `1` (true) at migration time, which is the OPPOSITE of the code's
+# own documented "recommended"/fallback default (false, skip stocks/
+# commodities when market is closed) — flagging this explicitly since it's
+# a real, surprising divergence between the code comment's stated
+# expectation and the value actually configured; worth confirming this is
+# intentional rather than assuming either way.
+sweep_after_hours: true
+
+# signal_cooldown_minutes: suppress repeat qualified signals for the same
+# (symbol, direction) pair within this many minutes of the last one, to
+# prevent spam when a regime is stable. Same config-centralization fix.
+signal_cooldown_minutes: 60
+
 # MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,
 # FLAT} transition matrix. legacy_hmm (the separate, numerically-unstable
 # 5-state HmmModel) | trend_hmm_shadow (compute both, log+persist a

@@ -31,10 +31,18 @@ from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_markov_source_mode,
+    get_min_ev,
+    get_min_kelly,
+    get_min_p_win,
+    get_min_regime_conf,
     get_min_rr,
+    get_min_timesfm_confidence,
     get_regime_label_debounce_mode,
     get_regime_label_debounce_ticks,
     get_regime_warm_start_mode,
+    get_signal_cooldown_minutes,
+    get_sweep_after_hours,
+    get_timesfm_gate_mode,
     get_trend_probs_gate_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
@@ -107,12 +115,16 @@ MARKOV_HOLD_STEPS = int(os.getenv("MARKOV_HOLD_STEPS", "10"))
 #   (a) lower min_rr to 1.5 in config/feature_flags.yaml, or
 #   (b) increase tp_bricks to 6+ in config/brick_params.yaml per symbol, or
 #   (c) decrease sl_bricks to 2 in config/brick_params.yaml per symbol
-MIN_REGIME_CONF = float(os.getenv("MIN_REGIME_CONF", "0.60"))
-MIN_KELLY = float(os.getenv("MIN_KELLY", "0.02"))
-MIN_TIMESFM_CONFIDENCE = float(os.getenv("MIN_TIMESFM_CONFIDENCE", "0.05"))
+# 2026-09-08 config-centralization fix (same shape as MIN_RR below): these
+# 4 were still os.getenv(...)-sourced with an active Studio-Secret/
+# .env.local entry and no feature_flags.yaml counterpart — see that file's
+# qualification_gates section for the full incident-precedent rationale.
+MIN_REGIME_CONF = get_min_regime_conf()
+MIN_KELLY = get_min_kelly()
+MIN_TIMESFM_CONFIDENCE = get_min_timesfm_confidence()
 # MIN_RR and MIN_EV are read by the EVEngine on init — see _ev_engine below.
 # We patch the engine's thresholds after construction.
-MIN_EV = float(os.getenv("MIN_EV", "0.0"))
+MIN_EV = get_min_ev()
 # MIN_RR (2026-08-30 config-centralization fix): moved off a Studio-
 # Secret/env-var (was float(os.getenv("MIN_RR", "2.0"))) onto
 # config/feature_flags.yaml's min_rr — see that key's own comment for
@@ -143,7 +155,9 @@ MIN_RR = get_min_rr()
 #   "off": no TimesFM gate at all. Rely entirely on the blended EV.
 #       If TimesFM is uncertain, the blend naturally reduces p_win, which
 #       reduces EV, which the EV gate handles.
-TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
+# 2026-09-08 config-centralization fix — see feature_flags.yaml's
+# timesfm_gate_mode entry.
+TIMESFM_GATE_MODE = get_timesfm_gate_mode()
 
 # MARKOV_SOURCE_MODE (Part 1 Change B, 2026-08-25): which source feeds
 # p_markov_hold_n's 3x3 {UP,DOWN,FLAT} transition matrix.
@@ -192,7 +206,10 @@ TIMESFM_GATE_MODE = os.getenv("TIMESFM_GATE_MODE", "soft").lower()
 # When False (default), stocks/commodities are skipped when the market
 # is closed (matching the TS edge function behavior). Crypto and forex
 # are always swept (24/7 and Sun-Fri respectively).
-SWEEP_AFTER_HOURS = os.getenv("SWEEP_AFTER_HOURS", "0") == "1"
+# 2026-09-08 config-centralization fix — see feature_flags.yaml's
+# sweep_after_hours entry (NOTE its own comment: the real configured
+# value was `true`, the opposite of this code comment's stated default).
+SWEEP_AFTER_HOURS = get_sweep_after_hours()
 
 # ── Signal cooldown (prevents signal spam) ────────────────────────────────
 # After a qualified signal is published for a (symbol, direction) pair,
@@ -202,7 +219,9 @@ SWEEP_AFTER_HOURS = os.getenv("SWEEP_AFTER_HOURS", "0") == "1"
 #
 # Set to 0 to disable cooldown (every qualified sweep is published).
 # Recommended: 60 (1 hour) — gives ~3-8 signals per day per symbol.
-SIGNAL_COOLDOWN_MINUTES = float(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
+# 2026-09-08 config-centralization fix — see feature_flags.yaml's
+# signal_cooldown_minutes entry.
+SIGNAL_COOLDOWN_MINUTES = get_signal_cooldown_minutes()
 
 # ── Minimum p_win threshold ───────────────────────────────────────────────
 # Require the blended p_win (from the EV engine's log-odds pooling) to be
@@ -213,7 +232,9 @@ SIGNAL_COOLDOWN_MINUTES = float(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
 # Set to 0.0 to disable (accept any positive-EV signal).
 # Recommended: 0.55 — filters out signals where the blend is only marginally
 # directional (p_win just barely above 0.5).
-MIN_P_WIN = float(os.getenv("MIN_P_WIN", "0.55"))
+# 2026-09-08 config-centralization fix — see feature_flags.yaml's
+# qualification_gates.min_p_win entry.
+MIN_P_WIN = get_min_p_win()
 
 # ── TimesFM forecast → probability mapping ─────────────────────────────────
 # The TimesFM point forecast (a price) is converted to p(up-move) via:
