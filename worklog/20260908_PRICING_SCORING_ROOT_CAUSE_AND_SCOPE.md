@@ -481,4 +481,63 @@ the webapp can query it directly. In the process found
 **no** `anon`/`authenticated` grant at all since it was created —
 the webapp could never have read it; fixed in migration 139. Both are
 now live in Supabase (view-only changes, no Studio code deploy
-required).
+required). Follow-up (same day): the base view is an all-time lifetime
+aggregate, not useful on its own for "how are we doing lately" or
+trend-over-time. Added `v_symbol_signal_scorecard_7d` (rolling 7-day
+window) and `v_symbol_signal_scorecard_monthly` (one row per calendar
+month × symbol), same columns/caveats, migration 140.
+
+## `sweep_after_hours` vs. cron scheduling — confirmed not redundant
+
+User asked whether APScheduler's own cron trigger already handles
+market hours, making the `sweep_after_hours` in-tick filter redundant.
+Traced definitively: no. Every symbol's `regime_cron` is a flat,
+hours-agnostic expression (`*/5 * * * *` for light sweeps, `0 20 * * 0`
+for the weekly heavy sweep) applied identically across asset classes —
+`SweepOrchestrator._refresh_symbols()` groups symbols purely by matching
+cron STRING, so stocks/forex/commodities/crypto sharing a cron string
+land in the same job with the same broad-firing schedule
+(`orchestrator.py:1191-1198`, `supabase/migrations/028_add_tradingview_datasource.sql`).
+`is_market_open()`/`sweep_after_hours`, called only inside `_sweep_group()`
+at tick-time, is the *only* place that discriminates per-symbol market
+hours. The cron layer structurally cannot express this (one job's
+symbol list spans multiple sessions) — not redundant, doing necessary
+work the schedule itself doesn't do.
+
+## USDCHF calibration governor — reclassified: not a design gap, a poisoned-sample problem
+
+Deeper dig (per user pushback: "not a design gap, it's a data issue
+now — is there a way to correct or sanitize the data?") found the exact
+shape of the poisoning. All 294 rows in the frozen bias sample are
+**real, distinct, correctly-computed** trades (294 distinct `signal_id`s,
+each with its own real entry/exit price) — this is NOT corrupted or
+duplicated data in the row-integrity sense. The problem is
+**non-independence**: entries run every ~5 minutes continuously from
+2026-09-02 01:05 for roughly 24h straight, each with a *confidently
+bullish* `predicted_p_win` (0.68–0.80), each held ~40 hours, and
+**every single one** eventually hit its stop-loss — because it is the
+same underlying multi-day adverse price move, re-entered on essentially
+every sweep tick with no effective de-duplication, not 294 independent
+trials of a bad model. `nt_eod_actions.detail.distinct_days=3` was
+already a (currently inert) hint of exactly this — the system recorded
+that n=294 spans only 3 calendar days but the enforcement logic never
+acts on that signal, it only checks raw row count (`>=20`) against
+`v_eod_calibration_bias_latest`.
+
+**Why this isn't a quick SQL cleanup**: deleting or altering these 294
+rows would mean editing real historical trade records to make a number
+look better — the numbers in each row are correct, individually. The
+actual defect is upstream, in how `v_eod_calibration_bias_latest`
+counts "n" (raw row count instead of independent episodes) — and that
+view also feeds `calibration_enforcement.fetch_historical_p_win()`,
+which feeds the EV blend's `p_historical` source for **every** symbol,
+not just USDCHF. Changing that counting methodology is a real, general
+fix (e.g. capping counted samples to one per correction cycle, or
+requiring a minimum number of distinct entry episodes rather than raw
+rows) — but it touches the same calibration-bias pipeline that feeds
+`compute_ev`, which is explicitly out of rework scope. Flagged, not
+built, pending an explicit decision on scope. `SIGNAL_COOLDOWN_MINUTES`
+(migrated to `feature_flags.yaml` earlier today, now confirmed correctly
+sourced at 60 minutes) should prevent this exact "same signal every 5
+minutes" pattern going forward regardless of whether it fixes the
+already-poisoned historical window.
