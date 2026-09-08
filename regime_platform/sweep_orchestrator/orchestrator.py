@@ -209,7 +209,12 @@ TIMESFM_GATE_MODE = get_timesfm_gate_mode()
 # 2026-09-08 config-centralization fix — see feature_flags.yaml's
 # sweep_after_hours entry (NOTE its own comment: the real configured
 # value was `true`, the opposite of this code comment's stated default).
-SWEEP_AFTER_HOURS = get_sweep_after_hours()
+# NOT a module-level constant (2026-09-08 follow-up fix): the first cut of
+# this migration captured get_sweep_after_hours() once at import time, so a
+# YAML edit needed a process restart to take effect — inconsistent with
+# get_markov_source_mode()'s documented "call fresh each time, cheap and
+# mtime-cached" hot-reload pattern above. _sweep_group() now calls
+# get_sweep_after_hours() directly instead of reading this name.
 
 # ── Signal cooldown (prevents signal spam) ────────────────────────────────
 # After a qualified signal is published for a (symbol, direction) pair,
@@ -1867,11 +1872,15 @@ class SweepOrchestrator(HeavySweepMixin):
         self, cron_expr: str, symbols: list[dict[str, Any]]
     ) -> None:
         """Process all symbols in one cron group."""
-        # Filter by market hours
-        if SWEEP_AFTER_HOURS:
+        # Filter by market hours. Read fresh each call (not the module-level
+        # SWEEP_AFTER_HOURS constant) so a feature_flags.yaml edit takes
+        # effect on the next tick, not the next deploy — see the constant's
+        # definition comment above.
+        sweep_after_hours = get_sweep_after_hours()
+        if sweep_after_hours:
             active = symbols
             logger.info(
-                "Running sweep group [%s]: %d symbols (SWEEP_AFTER_HOURS=1, "
+                "Running sweep group [%s]: %d symbols (sweep_after_hours=true, "
                 "market-hours filter bypassed)",
                 cron_expr,
                 len(active),

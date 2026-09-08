@@ -401,3 +401,84 @@ fail `p_win_ok<0.55`) for 8+ consecutive days, based on a frozen
 investigated further — added to `nt_roadmap` as
 `usdchf_calibration_governor_stuck`. EURUSD checked in the same pass:
 genuinely quiet market, not a bug, no action taken.
+
+## Studio deployment confirmed + three more findings (2026-09-08, continued)
+
+**Studio is current.** `ssh noble-trader-unified "cd /home/zeus/content/noble-trader && git log -1"` matches local HEAD (`5b917de`) exactly — the deadline-aware-scoring live flip and the 8-parameter config migration are both deployed and running.
+
+**USDCHF calibration governor — fully root-caused, not just observed.**
+This is a permanent self-lock, not a slow-to-clear stale value. Chain:
+(1) a burst of 294 near-duplicate calibration records was written
+2026-09-02→2026-09-04 (5-minute cadence, virtually all `outcome=loss`,
+`realized_win_rate` exactly `0.0` in `v_eod_calibration_bias_latest`) —
+likely a casualty of the same pricing/scoring bugs fixed today, not
+investigated further; (2) that produces `bias=0.56` (OVERCONFIDENT,
+threshold 0.10), firing `bayesian_penalty` + `kelly_reduction` (kelly
+×0.5) every 4h cycle since; (3) adjusted kelly (0.0322 raw × 0.5 =
+0.0161) falls below `MIN_KELLY=0.02`, so USDCHF can never qualify a new
+signal; (4) `_write_calibration_record` (`eod_resolver.py:538-539`) only
+fires for actually-entered `tp_hit`/`sl_hit` outcomes — with no new
+qualified signal ever entered, no new evidence can ever arrive to move
+the bias; (5) `stagnation_streak` hit 9 (≥ `STAGNATION_RESET_CYCLES=8`)
+on 2026-09-08, resetting `stagnation_tier` to 0 — this only stops
+*escalation* (a harder kill-switch), it does not lift the underlying
+penalty. The only real exit today is the 7-day rolling window
+(`v_eod_calibration_bias_latest WHERE entered_at >= now()-7days`)
+draining the poisoned Sept 2-4 rows on its own: `n` drops below 20
+(→`INSUFFICIENT_DATA`) around 2026-09-09, fully empty by 2026-09-11.
+No code fix applied — this is a design gap (calibration-evidence
+deadlock with no self-recovery path other than time) worth a real
+decision, e.g. exempting an `INSUFFICIENT_DATA` symbol from
+`kelly_reduction` so it can requalify and generate fresh evidence sooner
+rather than waiting on the window to empty. Updated on `nt_roadmap`
+with `review_at=2026-09-11`.
+
+**`sweep_after_hours` — verified live/load-bearing, not legacy; found and fixed a real hot-reload bug.**
+Full trace confirmed this is NOT dead code: it gates
+`orchestrator.py::_sweep_group`'s market-hours filter — `true` (today's
+live value) sweeps every symbol regardless of market hours; `false`
+skips stocks/commodities when their market is closed (crypto/forex are
+always swept either way). But the same-day config-centralization
+migration had captured it as a module-level constant read once at
+import — unlike the neighboring `MARKOV_SOURCE_MODE`, which is
+documented to re-read fresh per call so a YAML edit takes effect on the
+next tick, not the next deploy. Fixed immediately: `_sweep_group()` now
+calls `get_sweep_after_hours()` fresh each tick. 715 tests still pass.
+Left the value at `true` (bypass market-hours filter) since that's the
+real pre-migration production setting, not a new decision to make here.
+
+**P/L methodology — three inconsistent conventions found, none fixed.**
+Full trace of every dollar-P/L computation in the codebase: (1)
+`nt_signal_sim.pnl_dollars` (`eod_resolver.compute_pnl`) =
+`pnl_bricks * brick_size`, with **no** qty/lot/contract-size term at
+all — a notional "1 unit of the underlying" figure, identical
+convention for every symbol/asset class, NOT risk-normalized and NOT
+comparable across symbols with different price scales (a gold/index
+`brick_size` in absolute price terms dwarfs a forex pair's). This is
+what feeds the new per-symbol scorecard below. (2)
+`renko/risk_manager.py` (live executor / backtest engine) =
+`pnl_bricks * brick_size * qty`, with `qty` from real equity-based Kelly
+sizing (`position_usd = equity * min(effective_kelly, 0.10)`). (3)
+`sweep_orchestrator/paper_book.py` ("paper book", `nt_paper_positions`)
+= `pnl_bricks * brick_size * size_units`, with its own, different,
+$1000-base-notional Kelly sizing model. `heavy_sweep.py`'s actual
+sweep-selection Sharpe scoring never converts to dollars at all — it
+stays in brick units. No `DOLLAR_PER_BRICK`/`LOT_SIZE`/`CONTRACT_SIZE`
+constant exists anywhere. Not fixed — added to `nt_roadmap` as
+`pnl_methodology_three_conventions`; this needs a real decision (keep
+the 1-unit notional convention and label it clearly everywhere, or
+recompute on an equal-risk/paper_book-style basis for cross-symbol
+comparability), not a silent pick.
+
+**Per-symbol W/L + P/L scorecard, promoted to a live webapp view.**
+Turned yesterday's one-off table into `v_symbol_signal_scorecard`
+(migration 138): `symbol | qualified | resolved | win | loss | expired |
+win_pct | expired_pct | pnl_notional_1unit | last_qualified_ts`, grouped
+from `nt_signal_sim`, expired excluded from win/loss/PnL (per the
+existing `#3` decision), granted `SELECT` to `anon`/`authenticated` so
+the webapp can query it directly. In the process found
+`v_qualified_signal_detail` (the earlier per-signal detail view) had
+**no** `anon`/`authenticated` grant at all since it was created —
+the webapp could never have read it; fixed in migration 139. Both are
+now live in Supabase (view-only changes, no Studio code deploy
+required).
