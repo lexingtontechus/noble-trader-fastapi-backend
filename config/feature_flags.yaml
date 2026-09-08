@@ -65,6 +65,28 @@ sweep_after_hours: true
 # prevent spam when a regime is stable. Same config-centralization fix.
 signal_cooldown_minutes: 60
 
+# expiry_rate_alert (2026-09-08, worklog
+# 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md, priority #3): a signal
+# that neither hits TP nor SL within the 48h deadline is deliberately
+# excluded from win/loss/PnL (a timeout is neither) -- but a persistently
+# high expiry rate is itself a real signal-quality problem and needs its
+# own visibility instead of silently vanishing from the win/loss stats.
+# Checked once per day (end of the eod-lookback resolver run, after fresh
+# 7-day numbers exist) against v_symbol_signal_scorecard_7d; fires a
+# Discord risk alert (#system-status) per symbol over threshold_pct,
+# gated by cooldown_hours so a persisting condition doesn't spam daily.
+# threshold_pct=50 chosen from today's real spread (AUDUSD 83.8%, EURUSD
+# 75.4%, XAUUSD 47.7%, XAGUSD 36.8% at build time) -- roughly the point
+# where "more signals time out than resolve" starts, not a settled
+# long-term number. min_resolved=15 avoids alerting on small, noisy
+# samples (a new symbol with 3 resolved signals and 2 expired shouldn't
+# page anyone).
+expiry_rate_alert:
+  enabled: true
+  threshold_pct: 50.0
+  min_resolved: 15
+  cooldown_hours: 24.0
+
 # MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,
 # FLAT} transition matrix. legacy_hmm (the separate, numerically-unstable
 # 5-state HmmModel) | trend_hmm_shadow (compute both, log+persist a

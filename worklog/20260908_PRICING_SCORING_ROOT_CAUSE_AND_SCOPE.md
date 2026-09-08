@@ -208,18 +208,47 @@ check reports.
 ## Priority order
 
 1. **Historical remediation** (recompute the 59,913 contaminated rows) —
-   mechanical, no design decisions pending, ready to build now.
+   mechanical, no design decisions pending, ready to build now. **Done**
+   (59,912/59,913 backfilled cleanly, 1 manual retry).
 2. **Root cause 1 in production** (`_renko_grid_search_sync`/
    `pick_best_combo` deadline-aware rescoring) — the highest-value fix,
-   currently proven only in a standalone script.
+   currently proven only in a standalone script. **Done** — flipped
+   `heavy_sweep_deadline_aware_scoring_mode` to `live` after 70-anchor
+   multi-window validation (win% 58.5→74.5, expired% 49.3→42.0).
 3. **Threshold alert for expiry rate** — needs a numeric threshold
-   decided, then reuses existing Discord alert plumbing.
+   decided, then reuses existing Discord alert plumbing. **Done** —
+   `expiry_rate_alert.py` built, 50% threshold (data-driven, tunable via
+   `feature_flags.yaml`), live-smoke-tested (see below).
 4. **Studio deployment** of both eod_resolver.py fixes and (once built)
    the production scoring fix — nothing above has any live effect until
-   this happens.
+   this happens. **Confirmed deployed** — Studio `git log -1` matches
+   local HEAD.
 5. **USDCAD's directional miscalibration** — separate problem, not
    reachability or timing, not addressed by anything above. Needs its own
-   investigation thread.
+   investigation thread. **Not started.**
+
+## Priority #3 built — expiry-rate threshold alert
+
+`regime_platform/sweep_orchestrator/expiry_rate_alert.py`: checked once
+daily at the end of `_run_eod_lookback` (after the resolver batch
+produces fresh numbers), reads `v_symbol_signal_scorecard_7d` (migration
+138/140), fires `notifications.discord.send_risk_alert` (#system-status,
+existing plumbing — no new Discord integration built) per symbol whose
+7-day `expired_pct` exceeds a threshold, gated by a per-symbol cooldown
+(`nt_expiry_rate_alerts`, migration 141) so a persisting condition
+doesn't re-alert every day. All four parameters
+(`enabled`/`threshold_pct`/`min_resolved`/`cooldown_hours`) live in
+`config/feature_flags.yaml`'s `expiry_rate_alert` section — no env var,
+no Studio Secret, same config-centralization discipline as everything
+else today. `threshold_pct=50.0` chosen from today's real cross-symbol
+spread (AUDUSD 83.8%, EURUSD 75.4%, XAUUSD 47.7%, XAGUSD 36.8%) —
+flagged in the YAML comment as data-driven, not a settled long-term
+number. 6 new unit tests (721 total passing). Live-smoke-tested against
+production data before considering it done: correctly identified AUDUSD
+(83.9%, n=31) and BTCUSD (61.1%, n=18) over threshold and sent real
+Discord alerts to #system-status; correctly suppressed a repeat AUDUSD
+alert on a second run (cooldown active). Code pushed, not yet deployed
+to Studio.
 
 ## Explicitly not in this scope
 

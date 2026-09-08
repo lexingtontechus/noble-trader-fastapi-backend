@@ -65,6 +65,12 @@ _DEFAULTS: dict[str, Any] = {
     "timesfm_gate_mode": "soft",
     "sweep_after_hours": False,
     "signal_cooldown_minutes": 60.0,
+    "expiry_rate_alert": {
+        "enabled": True,
+        "threshold_pct": 50.0,
+        "min_resolved": 15,
+        "cooldown_hours": 24.0,
+    },
 }
 
 _cache: dict[str, Any] | None = None
@@ -339,3 +345,43 @@ def get_signal_cooldown_minutes() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["signal_cooldown_minutes"]
+
+
+def get_expiry_rate_alert_config() -> dict[str, Any]:
+    """Priority #3, worklog/20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md:
+    threshold config for the expiry-rate Discord alert
+    (``sweep_orchestrator/expiry_rate_alert.py``). ``enabled`` (bool),
+    ``threshold_pct`` (float — 7-day ``expired_pct`` at/above this fires),
+    ``min_resolved`` (int — skip symbols with too few resolved trades in
+    the window to be meaningful), ``cooldown_hours`` (float — minimum gap
+    between repeat alerts for the same symbol while the condition
+    persists). Missing/malformed keys fall back individually to
+    ``_DEFAULTS["expiry_rate_alert"]`` rather than discarding the whole
+    dict, so a partial override in the YAML doesn't silently reset
+    everything else to defaults."""
+    defaults = _DEFAULTS["expiry_rate_alert"]
+    cfg = _load().get("expiry_rate_alert", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    try:
+        enabled = bool(cfg.get("enabled", defaults["enabled"]))
+    except (TypeError, ValueError):
+        enabled = defaults["enabled"]
+    try:
+        threshold_pct = float(cfg.get("threshold_pct", defaults["threshold_pct"]))
+    except (TypeError, ValueError):
+        threshold_pct = defaults["threshold_pct"]
+    try:
+        min_resolved = int(cfg.get("min_resolved", defaults["min_resolved"]))
+    except (TypeError, ValueError):
+        min_resolved = defaults["min_resolved"]
+    try:
+        cooldown_hours = float(cfg.get("cooldown_hours", defaults["cooldown_hours"]))
+    except (TypeError, ValueError):
+        cooldown_hours = defaults["cooldown_hours"]
+    return {
+        "enabled": enabled,
+        "threshold_pct": threshold_pct,
+        "min_resolved": min_resolved,
+        "cooldown_hours": cooldown_hours,
+    }

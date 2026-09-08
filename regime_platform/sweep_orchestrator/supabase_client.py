@@ -1774,4 +1774,95 @@ async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
 
     if not isinstance(data, list) or len(data) == 0:
         return None
+
     return data[0]
+
+
+# ─── Expiry-rate alert (priority #3, worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md) ──
+
+
+async def fetch_symbol_scorecard_7d() -> list[dict[str, Any]]:
+    """Read ``v_symbol_signal_scorecard_7d`` (migration 140) — the rolling
+    7-day per-symbol W/L/PnL scorecard. Used by
+    ``expiry_rate_alert.check_expiry_rate_alerts()``. Returns ``[]`` on any
+    failure (never raises)."""
+    if not settings.SUPABASE_URL:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("v_symbol_signal_scorecard_7d"),
+                headers=_headers(),
+                params={"select": "symbol,resolved,expired,expired_pct"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("fetch_symbol_scorecard_7d failed: %s", exc)
+        return []
+
+
+async def fetch_expiry_rate_alert_state(symbol: str) -> Optional[dict[str, Any]]:
+    """Last-alert state for ``symbol`` from ``nt_expiry_rate_alerts``
+    (migration 141), or ``None`` if never alerted / on failure."""
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_expiry_rate_alerts"),
+                headers=_headers(),
+                params={
+                    "select": "symbol,last_alert_at,expired_pct,resolved_n",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_expiry_rate_alert_state %s failed: %s", symbol, exc)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data[0]
+
+
+NT_EXPIRY_RATE_ALERTS_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "last_alert_at", "expired_pct", "resolved_n", "updated_at",
+})
+
+
+async def record_expiry_rate_alert(symbol: str, expired_pct: float, resolved_n: int) -> None:
+    """Upsert ``nt_expiry_rate_alerts`` after sending an alert for
+    ``symbol`` — same fetch-free upsert-on-conflict shape as
+    ``record_heavy_sweep_deadline_aware_shadow`` (best-effort, never
+    raises)."""
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        row = _filter_payload({
+            "symbol": symbol,
+            "last_alert_at": datetime.now(timezone.utc).isoformat(),
+            "expired_pct": round(float(expired_pct), 2),
+            "resolved_n": int(resolved_n),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, NT_EXPIRY_RATE_ALERTS_COLUMNS)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{_url('nt_expiry_rate_alerts')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_expiry_rate_alert: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_expiry_rate_alert: failed for %s: %s", symbol, exc)

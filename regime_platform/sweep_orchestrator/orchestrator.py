@@ -1499,6 +1499,23 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[eod:lookback] retention failed: %s", exc)
 
+        # ── Part V: expiry-rate threshold alert (2026-09-08, priority #3) ──
+        # Runs last, after resolution has produced fresh 7-day numbers —
+        # see expiry_rate_alert.py's module docstring for the full
+        # rationale. Best-effort: failures are logged and counted, never
+        # raised (matching every other part of this method).
+        try:
+            from regime_platform.sweep_orchestrator.expiry_rate_alert import (
+                check_expiry_rate_alerts,
+            )
+            expiry_alert_summary = await check_expiry_rate_alerts()
+            logger.info(
+                "[eod:lookback] expiry-rate alert check done: %s",
+                expiry_alert_summary,
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] expiry-rate alert check failed: %s", exc)
+
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
         """Run emergency heavy sweeps for the given symbols (best-effort).
 
