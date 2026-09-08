@@ -8,10 +8,14 @@ are pure functions (no I/O) — tested here against hand-computed expected
 values.
 """
 
+import asyncio
+
 from pytest import approx as pytest_approx
 
+import regime_platform.sweep_orchestrator.hmm_shadow_accuracy as hmm_shadow_accuracy
 from regime_platform.sweep_orchestrator.hmm_shadow_accuracy import (
     _realized_direction,
+    build_hmm_shadow_accuracy,
     compute_tier1_accuracy,
     compute_tier2_brier,
 )
@@ -156,3 +160,35 @@ def test_tier2_brier_expired_rows_ignored():
     rows = [_row2(outcome="expired", raw=0.8)]
     result = compute_tier2_brier(rows)
     assert result == []
+
+
+# ─── build_hmm_shadow_accuracy stamps computed_at ──────────────────────────
+# 2026-09-08 regression test: found live that the job re-ran and computed
+# fresh rows (per the orchestrator log) but nt_hmm_shadow_accuracy.computed_at
+# stayed frozen at the first-ever insert time on every subsequent run —
+# compute_tier1_accuracy/compute_tier2_brier never set it, so the upsert
+# payload omitted the column entirely, and an upsert-on-conflict never
+# touches a column absent from the payload. Fixed by stamping computed_at
+# centrally in build_hmm_shadow_accuracy, right before the upsert.
+
+
+def test_build_hmm_shadow_accuracy_stamps_computed_at_on_every_row(monkeypatch):
+    captured: dict[str, list] = {}
+
+    async def fake_fetch_all(table, select, filters):
+        return [_row(legacy="UP", trend_hmm="UP")]
+
+    async def fake_upsert(rows):
+        captured["rows"] = rows
+
+    monkeypatch.setattr(hmm_shadow_accuracy, "_fetch_all", fake_fetch_all)
+    monkeypatch.setattr(hmm_shadow_accuracy, "upsert_hmm_shadow_accuracy", fake_upsert)
+
+    result = asyncio.run(build_hmm_shadow_accuracy())
+
+    assert result, "expected at least one computed row"
+    assert all("computed_at" in r and r["computed_at"] for r in result)
+    # Same upsert call these rows were actually sent through — confirms
+    # the stamp survives into the payload the DB actually receives, not
+    # just the function's return value.
+    assert all("computed_at" in r for r in captured["rows"])

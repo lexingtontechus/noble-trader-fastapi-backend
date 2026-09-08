@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -193,6 +194,19 @@ async def build_hmm_shadow_accuracy(symbols: list[str] | None = None) -> list[di
         return []
 
     output_rows = compute_tier1_accuracy(rows) + compute_tier2_brier(rows)
+
+    # 2026-09-08 fix: compute_tier1_accuracy/compute_tier2_brier are pure
+    # (no wall-clock dependency, by design, for testability) and never set
+    # computed_at themselves -- it has to be stamped here, at the
+    # orchestration point, right before the upsert. Without it the upsert
+    # payload omits the column entirely, and an upsert-on-conflict never
+    # touches a column absent from the payload -- identical bug class to
+    # the 2026-09-02 nt_macro_regime.computed_at incident (confirmed live
+    # 2026-09-08: the job re-ran and computed fresh rows per the log, but
+    # every row's computed_at stayed frozen at its first-ever insert time).
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for row in output_rows:
+        row["computed_at"] = now_iso
 
     try:
         await upsert_hmm_shadow_accuracy(output_rows)
