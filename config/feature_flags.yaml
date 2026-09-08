@@ -265,7 +265,16 @@ heavy_sweep_atr_anchored_bricks_mode: off
 # ATR-anchoring key did — a multi-window historical replay (same method as
 # scripts/backfill_atr_anchored_bricks_shadow.py) can validate this
 # directly against real history before flipping, rather than waiting.
-heavy_sweep_deadline_aware_scoring_mode: off
+heavy_sweep_deadline_aware_scoring_mode: live
+# FLIPPED TO LIVE 2026-09-08 (worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md):
+# multi-window historical validation (scripts/backfill_deadline_aware_scoring.py,
+# 70 real anchors across all 14 symbols, not one lucky window) confirmed
+# the corrected scoring beats today's uncapped method on every aggregate
+# metric -- win% 58.5->74.5, expired% 49.3->42.0, total pnl $59,658->$66,632
+# -- with no catastrophic regression on any symbol (USDCAD stays bad either
+# way, a separate known directional-miscalibration issue this fix doesn't
+# touch). Per user directive: verify continuously with real data, don't
+# wait for a calendar review date once the evidence is this consistent.
 
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for

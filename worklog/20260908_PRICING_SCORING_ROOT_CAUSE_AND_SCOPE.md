@@ -300,3 +300,104 @@ All of the above reflected in `nt_roadmap` (rows updated/added:
 `eod_resolver_catchup_deploy`, `nt_calibration_bias_by_bucket_recompute`,
 `weekly_chained_job_not_firing`, new row
 `hmm_shadow_accuracy_computed_at_freeze`).
+
+## Resolution reached (2026-09-08, later same day) — deadline-aware scoring flipped to live
+
+User directive: stop waiting for calendar review dates once evidence is
+strong; test and verify continuously; work toward a self-learning
+platform. Applied directly to `heavy_sweep_deadline_aware_scoring_mode`,
+which had been sitting at `off` with a 09-11 review date.
+
+**Multi-window validation, run same day, not deferred**:
+`scripts/backfill_deadline_aware_scoring.py` — same real-outcome
+methodology as `scripts/sim_deadline_aware_scoring.py` (single window,
+prior day), extended to 70 historical anchors across all 14 symbols
+(reusing the multi-window/multiprocessing mechanics from
+`scripts/backfill_atr_anchored_bricks_shadow.py`, and the actual
+production `ComboResult`/`deadline_aware_sharpe`/
+`select_best_combo_deadline_aware` functions directly — not a
+re-derived approximation).
+
+**Result**: corrected scoring beat the uncapped method on every aggregate
+metric, over real historical price data:
+
+| Method | avg win% | avg expired% | total P/L |
+|---|---|---|---|
+| original (today's method) | 58.5% | 49.3% | $59,658.69 |
+| corrected (the fix) | 74.5% | 42.0% | $66,631.94 |
+
+11 of 14 symbols improved or held flat on win rate, several dramatically
+(US30USD 42.0%→85.6% win rate with 4.3x PnL; US500 34.8%→82.6% with 2.4x
+PnL; GBPUSD 30.0%→75.0%; USDJPY 45.0%→80.0%). No catastrophic regression
+on any symbol — the handful with a small PnL dip (AAPL, BTCUSD, XAUAUD,
+XAUUSD) all still gained win-rate/reliability. USDCAD stayed bad either
+way (0%→10%, still effectively broken) — consistent with its
+already-diagnosed separate directional-miscalibration problem, which this
+fix was never meant to touch and correctly doesn't.
+
+**Decision**: `heavy_sweep_deadline_aware_scoring_mode` flipped from
+`off` to `live` in `config/feature_flags.yaml` same day. Full suite
+re-verified: 715 passed, 0 failed. Config-only change (no code touched)
+— committed and pushed. **Not yet deployed to Studio** — the config
+change has zero live effect until the running process picks it up.
+`nt_roadmap` updated: the mechanism's own row marked resolved with a new
+09-11 review date (monitor real production outcomes once deployed, not
+more backtesting); new row `deadline_aware_scoring_live_deploy` tracks
+the deployment step itself.
+
+## Config-centralization fix — 8 more parameters migrated (2026-09-08)
+
+Parallel agent audit (launched alongside the above, per the user's
+"run parallel subagents" instruction) found 8 qualification-gate
+parameters still read via `os.getenv(...)` with an ACTIVE `.env.local`/
+Studio entry and zero `feature_flags.yaml` counterpart —
+`MIN_REGIME_CONF`, `MIN_KELLY`, `MIN_TIMESFM_CONFIDENCE`, `MIN_EV`,
+`MIN_P_WIN`, `TIMESFM_GATE_MODE`, `SWEEP_AFTER_HOURS`,
+`SIGNAL_COOLDOWN_MINUTES` — the exact undetectable-divergence shape that
+caused the `MIN_RR` incident, just not yet triggered.
+
+Migrated using `.env.local`'s actual current values (not code fallback
+defaults) into a new `qualification_gates` section + 3 standalone keys in
+`config/feature_flags.yaml`, with 8 new getters in `feature_flags.py`
+following the exact `get_min_rr()` precedent. **Found one real,
+surprising divergence in the process**: `SWEEP_AFTER_HOURS` was
+configured `true` (sweep all symbols regardless of market hours) —
+the *opposite* of the code's own comment describing `false` as the
+recommended default. Flagged explicitly in the new config's comment for
+review rather than silently resolved either way. Also confirmed via a
+separate read of `tuning_registry.py`: 5 of these 8 already have
+declared `PARAM_BOUNDS` as future Layer-1-autonomous-tuner candidates —
+that tuner isn't built yet, so `feature_flags.yaml` remains the correct,
+active read path today, same relationship `MIN_RR` already has with that
+registry.
+
+Full suite re-verified after migration: 715 passed, 0 failed. All 8
+getters spot-checked to return the exact expected values. Committed and
+pushed, not yet deployed.
+
+## Two more real findings from parallel agent investigation (2026-09-08)
+
+**Weekly cron trigger — root cause found, decided not to fix.**
+`BRACKET_REACHABILITY_STALE_AFTER = 6.5 days` (orchestrator.py:604) is
+shorter than the job's own 7-day cadence, so the catch-up safety net
+always preempts the real Sun-07:00-UTC `CronTrigger` before it gets a
+clean week to itself — confirmed via 3/3 historical `computed_at`
+timestamps landing at 6.6-7.1 day intervals on non-Sunday days. Decision:
+not changing the threshold. The deeper cause is architectural
+(`AsyncIOScheduler`'s in-memory job store recomputes `next_run_time`
+forward from "now" on every restart, documented 2026-09-01) — widening
+the threshold would only let tables go more stale without fixing cron
+reliability, since restarts (every 2-6h) already vastly outpace any
+staleness window that would matter. The catch-up net is objectively
+providing *better* freshness than the intended weekly cadence ever
+would. Accepted as-is.
+
+**USDCHF calibration governor stuck.** Raw Kelly math shows a genuine
+positive edge (`mu/sigma2` ≈ 65-110, raw Kelly `full=1.0`), but
+calibration-bias enforcement has been force-zeroing effective Kelly
+(0.0322→0.0145) and crushing `p_win` (avg 0.28, 100% of 1,181 sweeps
+fail `p_win_ok<0.55`) for 8+ consecutive days, based on a frozen
+`OVERCONFIDENT bias=0.5619, n=294` sample that isn't updating. Not yet
+investigated further — added to `nt_roadmap` as
+`usdchf_calibration_governor_stuck`. EURUSD checked in the same pass:
+genuinely quiet market, not a bug, no action taken.
