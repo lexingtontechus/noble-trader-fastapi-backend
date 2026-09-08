@@ -228,3 +228,75 @@ Regime labelling, calibration bias enforcement's classification logic,
 `EXPIRY_BARS` itself (the 48h deadline stays exactly where it is — this
 whole document is about scoring and recording against that fixed
 deadline, not moving it).
+
+## Follow-up pulse check (2026-09-08, next morning) — deploy confirmed, one new bug found and fixed
+
+Git pushed (`f0be810`) end of prior session; user deployed to Studio
+overnight. Ran `pulse-check` (rewritten version, §0 `nt_roadmap` first)
+plus the deferred Tier1/2 first-look and the two deployment-verification
+roadmap items.
+
+**Deployment — confirmed, with one open caveat.** SSH-confirmed Studio's
+`git log -1` HEAD is exactly `f0be810`, matching local. A process restart
+happened at 2026-09-08 18:14 UTC (triggered the `nt_bracket_reachability`
+startup-catchup guard, confirming it was a real restart, not just a file
+sync). Also confirmed via the same method: `dfec69a` (Kelly direction-
+aware sizing) and `7cb8616` (EOD catch-up) are both in Studio's commit
+ancestry — the two previously-unverified deployments from the prior audit
+are resolved. **Caveat, not yet closed**: zero signals have passed through
+the batch resolver since the 18:14 restart (last batch ran 00:32 UTC,
+before the deploy) — `expired_missing_exit_price = 0` today is real but
+not yet a live test of the fix under the new code; that test is tonight's
+00:32 UTC `eod-lookback` run, not yet observed as of this writing.
+
+**Tier1/2 first-look — done, with a real (if early) finding.** The
+weekly chained diagnostics job (`_run_bracket_reachability`) fired twice
+today via the restart catch-up (10:28 and 18:14 UTC), refreshing
+`nt_bracket_reachability`/`nt_calibration_bias_by_bucket`/
+`nt_macro_edge_by_symbol` and, eventually, `nt_hmm_shadow_accuracy` (see
+bug below). Real data now exists for the first time. Early read, not yet
+conclusive ahead of the 2026-09-21 review: **`trend_hmm` accuracy is
+notably worse than `legacy` for the gold-family symbols specifically**
+(XAUUSD: legacy 57.2% vs trend_hmm 17.5%; XAUEUR: legacy 57.4% vs
+trend_hmm 11.9%), on real sample sizes (n in the hundreds per symbol).
+Mixed/roughly-even elsewhere (e.g. USDJPY: legacy 40.9% vs trend_hmm
+45.9%). Worth tracking into the review, not a decision on its own — this
+is the first time this table has ever had real data, not a trend.
+
+**New bug found and fixed: `nt_hmm_shadow_accuracy.computed_at` frozen on
+every re-run.** The orchestrator log showed the job genuinely re-computing
+fresh rows each run (`[hmm-shadow-accuracy] done: 52 row(s)` at
+18:15:55 UTC), but every row's `computed_at` stayed pinned at the very
+first insert (`2026-09-08 10:26:09`), even after that later run. Root
+cause: `compute_tier1_accuracy`/`compute_tier2_brier` (both deliberately
+pure, no wall-clock dependency) never set `computed_at`, so the upsert
+payload omitted the column entirely — and `Prefer: resolution=merge-
+duplicates` never touches a column absent from the payload. **Identical
+bug class to the 2026-09-02 `nt_macro_regime.computed_at` incident**,
+just never patched in this sibling module. Fixed:
+`build_hmm_shadow_accuracy()` now stamps `computed_at` centrally right
+before the upsert; `NT_HMM_SHADOW_ACCURACY_COLUMNS` now includes it (it
+would have been silently stripped even if set upstream — found this while
+fixing, not before). New regression test
+(`test_build_hmm_shadow_accuracy_stamps_computed_at_on_every_row`). Full
+suite: 715 passed, 0 failed. Committed and pushed (`b8ebd85`) — not yet
+deployed; will self-verify next time the weekly job runs.
+
+**Weekly cron trigger — downgraded, not closed.** The real question from
+last night ("why does `_run_bracket_reachability`'s Sun 07:00 UTC
+`CronTrigger` never fire on schedule") is still unanswered. But the
+catch-up safety net fired correctly twice today (10:28 and 18:14 UTC
+restarts), so the operational risk is lower than framed last night —
+Studio restarts every 2-6h, comfortably under the 6.5-day staleness
+threshold. Still worth root-causing eventually, no longer urgent.
+
+**New, not-yet-triaged finding**: `nt_roadmap`/pulse-check §7 showed
+EURUSD (8 days) and USDCHF (5 days) with no qualified signal in that
+window — not investigated further this session. Candidate for today's
+work if prioritized.
+
+All of the above reflected in `nt_roadmap` (rows updated/added:
+`deadline_aware_scoring_studio_deploy`, `kelly_direction_aware_sizing_deploy`,
+`eod_resolver_catchup_deploy`, `nt_calibration_bias_by_bucket_recompute`,
+`weekly_chained_job_not_firing`, new row
+`hmm_shadow_accuracy_computed_at_freeze`).
