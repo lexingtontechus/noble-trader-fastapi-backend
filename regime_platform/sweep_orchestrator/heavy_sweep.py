@@ -125,6 +125,28 @@ MIN_TRADES = get_heavy_sweep_min_trades()
 # TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
 TIMESFM_CONFIDENT_THRESHOLD = 0.10
 
+
+def _should_force_refresh(
+    last_full_ts: Optional[datetime], now: datetime, threshold_hours: float,
+) -> tuple[bool, str]:
+    """Pure decision function for the force-refresh override (2026-09-09,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md P0
+    fix) — isolated from ``run_heavy_sweep_for_symbol``'s I/O so it's
+    directly unit-testable without mocking the whole heavy-sweep
+    pipeline.
+
+    Returns ``(force_refresh, reason)``. ``last_full_ts=None`` (this
+    symbol has never had a completed heavy sweep) always forces a
+    refresh — there's nothing to be stale relative to, and a first sweep
+    should always run in full.
+    """
+    if last_full_ts is None:
+        return True, "no completed heavy sweep on record"
+    age_hours = (now - last_full_ts).total_seconds() / 3600.0
+    if age_hours > threshold_hours:
+        return True, f"last full sweep {age_hours:.1f}h ago (> {threshold_hours:.0f}h threshold)"
+    return False, ""
+
 # Heavy-sweep concurrency cap. Originally added (2026-08-09) because firing
 # all 14 symbols at once exhausted the shared Redis pool; kept because it
 # also caps the CPU-bound grid-search thread pool (each symbol spawns 3
@@ -683,11 +705,36 @@ class HeavySweepMixin:
             # more often (2026-09-08 correction — see module docstring:
             # direction confidence and bracket/TP/SL geometry fit are
             # different questions).
+            #
+            # Force-refresh override (2026-09-09, worklog
+            # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, P0
+            # fix): confirmed live that this gate can defer a symbol's
+            # bracket re-optimization INDEFINITELY if TimesFM stays
+            # confident cycle after cycle — 5 of 14 symbols sat 2+ days
+            # stale on their pre-fix brackets despite two major scoring
+            # fixes going live the day before, because they got skipped
+            # every single daily attempt. If this symbol's last COMPLETED
+            # (non-skipped) sweep is older than
+            # get_heavy_sweep_force_refresh_hours(), run the full
+            # re-optimization regardless of TimesFM confidence.
+            from regime_platform.core.feature_flags import (
+                get_heavy_sweep_force_refresh_hours,
+            )
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                fetch_last_full_heavy_sweep_ts,
+            )
+
+            last_full_ts = await fetch_last_full_heavy_sweep_ts(symbol)
+            force_refresh, force_refresh_reason = _should_force_refresh(
+                last_full_ts, datetime.now(timezone.utc),
+                get_heavy_sweep_force_refresh_hours(),
+            )
+
             p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
             p_timesfm: Optional[float] = None
             if p_timesfm_result is not None:
                 p_timesfm, _ = p_timesfm_result
-                if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD:
+                if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD and not force_refresh:
                     result.skipped = True
                     result.skip_reason = (
                         f"timesfm_confident (p={p_timesfm:.4f})"
@@ -699,6 +746,12 @@ class HeavySweepMixin:
                         symbol, result.skip_reason,
                     )
                     return result
+                if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD and force_refresh:
+                    logger.info(
+                        "[sweep:heavy] %s: TimesFM confident (p=%.4f) but "
+                        "forcing full re-optimization anyway — %s",
+                        symbol, p_timesfm, force_refresh_reason,
+                    )
 
             result.p_timesfm = p_timesfm
 

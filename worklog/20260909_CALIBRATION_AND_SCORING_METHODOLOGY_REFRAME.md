@@ -476,3 +476,65 @@ nothing consumes this model's output yet.
 `config/feature_flags.yaml`'s `signal_stream_meta_model_mode` comment
 updated to reflect the v2 fix; the v1-limitation caveat there is now
 resolved, replaced with the convergence-monitoring note above.
+
+## 11. Deployment verified (2026-09-09) — caught and fixed a real regression, plus the actual P0 fix
+
+Studio deployed and restarted. Verified rather than assumed clean:
+
+**Deployment confirmed**: Studio `git log -1` matches local HEAD
+(`d4cc31a`) exactly, 0 tracebacks. `heavy_sweep_deadline_aware_scoring_mode:
+live` and `signal_stream_meta_model_mode: off` confirmed directly from
+the live `config/feature_flags.yaml` on Studio.
+
+**A real regression found and fixed during verification, not assumed
+away**: `log_renko_bricks` was failing on every single write since
+restart (42 occurrences), Postgres error 42P10 — "no unique or exclusion
+constraint matching the ON CONFLICT specification." The constraint from
+migration 145 (`brick_size` added to the unique key) was genuinely
+present in Postgres (confirmed via `pg_constraint`) — PostgREST's schema
+cache simply hadn't picked it up, because the migration was applied via
+direct SQL (the Supabase MCP tool) rather than a flow that also triggers
+a reload. Fixed with `NOTIFY pgrst, 'reload schema';`, confirmed via a
+real insert against production Supabase immediately after (succeeded,
+verified the row, cleaned it up).
+
+**The actual P0 fix — TimesFM confidence gate can defer bracket
+re-optimization indefinitely.** Investigating the stale
+`eurusd_usdchf_qualification_drought` roadmap item with fresh data (not
+assuming the earlier "genuinely quiet market" read still held) found a
+real, more precise root cause: **exactly 5 of 14 symbols** (EURUSD,
+GBPUSD, BTCUSD, USDJPY, XAUAUD) have had their last COMPLETED heavy
+sweep stuck at 2026-09-06 20:00 UTC — the last pre-daily-cadence Sunday
+run — while the other 9 symbols refreshed hours ago under the new daily
+cadence. Confirmed directly (`nt_sweep_result`, `source='sweep-heavy'`):
+these 5 have been silently TimesFM-confidence-skipped on every single
+daily attempt since. Meaning: two of the biggest fixes from the last two
+days (daily cadence, deadline-aware scoring) have delivered **zero**
+benefit to these 5 symbols, because the confidence gate — which the
+worklog already flagged as answering a different question than "is the
+bracket well-suited" — has been quietly vetoing every chance to apply
+either fix to them.
+
+**Fix**: `_should_force_refresh` (pure decision function,
+`heavy_sweep.py`) — if a symbol's last completed heavy sweep is older
+than `heavy_sweep_force_refresh_hours` (new config, default 72h), force
+the full re-optimization regardless of TimesFM confidence.
+`fetch_last_full_heavy_sweep_ts` (new, `supabase_client.py`) supplies the
+staleness check. 72h is a bound, not a guess: the OLD weekly cadence
+already tolerated up to 7 days of staleness with no override at all, so
+72h can never be worse than what shipped before while still preserving
+most of the gate's real compute savings on days a fresh run genuinely
+isn't warranted.
+
+9 new tests (`test_heavy_sweep_force_refresh.py`,
+`test_fetch_last_full_heavy_sweep_ts.py`) — the decision function tested
+in isolation rather than mocking the entire heavy-sweep pipeline. 795
+total passing. Smoke-tested against real production data: all 5 stuck
+symbols currently read `force_refresh=False` (~57h stale, under the 72h
+bound) — correct, not yet due. Honest timing note: their last success
+(2026-09-06 20:00:29-20:06:00) lands almost exactly 72h before tonight's
+20:00 UTC attempt (71h59m-ish), close enough to the boundary that it may
+take one more cycle (tomorrow, ~96h stale) before the override
+definitively fires, depending on exact timing — not a bug, just an
+honest read of the numbers rather than a claim it fires tonight for
+certain.

@@ -1940,6 +1940,43 @@ async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
     return data[0]
 
 
+async def fetch_last_full_heavy_sweep_ts(symbol: str) -> Optional[datetime]:
+    """Timestamp of the most recent COMPLETED (non-TimesFM-skipped) heavy
+    sweep for ``symbol`` — ``source='sweep-heavy'`` rows only, since a
+    skipped run never writes a full ``nt_sweep_result`` row (worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md — confirmed
+    live: EURUSD/GBPUSD/BTCUSD/USDJPY/XAUAUD sat 2+ days stale on their
+    pre-deadline-aware-scoring bracket because the TimesFM confidence
+    gate kept skipping every daily attempt). Used by
+    ``heavy_sweep.py``'s force-refresh staleness override so that gate
+    can no longer defer a real re-optimization indefinitely.
+
+    Returns ``None`` if this symbol has never had a completed heavy
+    sweep, or on any failure — never raises. Callers should treat
+    ``None`` as "definitely stale, force a run."
+    """
+    try:
+        url = _url("nt_sweep_result")
+        params = {
+            "select": "sweep_timestamp",
+            "symbol": f"eq.{symbol}",
+            "source": "eq.sweep-heavy",
+            "order": "sweep_timestamp.desc",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_last_full_heavy_sweep_ts %s failed: %s", symbol, exc)
+        return None
+
+    if not isinstance(data, list) or len(data) == 0:
+        return None
+    return _parse_iso_dt(data[0].get("sweep_timestamp"))
+
+
 async def fetch_latest_qualified_signal(symbol: str, direction: str) -> dict[str, Any] | None:
     """Most recent QUALIFIED ``nt_signal_sim`` row for ``(symbol, direction)``.
 

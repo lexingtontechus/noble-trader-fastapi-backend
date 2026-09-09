@@ -74,6 +74,7 @@ _DEFAULTS: dict[str, Any] = {
     "calibration_bias_min_episodes": 2,
     "signal_stream_meta_model_mode": "off",
     "renko_brick_retention_days": 2,
+    "heavy_sweep_force_refresh_hours": 72.0,
 }
 
 _cache: dict[str, Any] | None = None
@@ -443,3 +444,30 @@ def get_renko_brick_retention_days() -> int:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["renko_brick_retention_days"]
+
+
+def get_heavy_sweep_force_refresh_hours() -> float:
+    """Force a FULL heavy sweep (bypassing the TimesFM confidence gate)
+    when a symbol's last completed (non-skipped) heavy sweep is older
+    than this many hours. 2026-09-09, worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md: confirmed
+    live that the TimesFM confidence gate can defer a symbol's bracket
+    re-optimization INDEFINITELY if TimesFM stays confident — EURUSD,
+    GBPUSD, BTCUSD, USDJPY, and XAUAUD were all still running on their
+    pre-daily-cadence, pre-deadline-aware-scoring brackets (last full
+    sweep 2026-09-06, 2+ days stale and counting) despite two major
+    fixes going live the day before, entirely because the gate kept
+    skipping every single daily attempt.
+
+    Default 72h (3 days) is a bound, not a guess: the OLD weekly cadence
+    (pre-2026-09-08) already tolerated up to 7 days of staleness with NO
+    override at all, so 72h can never be worse than what shipped before
+    while still preserving most of the gate's real compute savings on
+    days a fresh run genuinely isn't warranted."""
+    try:
+        return float(_load().get(
+            "heavy_sweep_force_refresh_hours",
+            _DEFAULTS["heavy_sweep_force_refresh_hours"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["heavy_sweep_force_refresh_hours"]
