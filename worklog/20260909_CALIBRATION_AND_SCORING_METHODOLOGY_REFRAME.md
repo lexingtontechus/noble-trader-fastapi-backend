@@ -538,3 +538,88 @@ take one more cycle (tomorrow, ~96h stale) before the override
 definitively fires, depending on exact timing — not a bug, just an
 honest read of the numbers rather than a claim it fires tonight for
 certain.
+
+## 12. Fixed nominal lot-size P/L convention — built (2026-09-09)
+
+Closes `pnl_methodology_three_conventions` in `nt_roadmap`: of the
+convention proposals discussed there, the user confirmed the intended
+shape is a **fixed nominal lot size** (0.01 lot / micro-lot, a realistic
+minimum retail position), applied as a constant per-symbol multiplier —
+not dynamic equal-risk position sizing (which would size every trade so
+its SL loss equals a fixed dollar amount, a materially different and
+more involved model the user explicitly ruled out: "which is why I said
+nominal lot size, eg. 0.01").
+
+**Design**: `pnl_notional_1unit` (migration 138/146, unchanged) already
+encodes P/L as `pnl_bricks * brick_size` — a notional 1-unit-of-underlying
+price delta, with NO lot/contract sizing baked in, using the same formula
+for every symbol regardless of what "1 unit" means for that instrument's
+quoting convention. `pnl_001_lot` is the same underlying number scaled by
+a real per-symbol multiplier, so it reflects what an actual 0.01-lot
+position would have made — and, unlike `pnl_notional_1unit`, is genuinely
+comparable *across* symbols, not just within one over time.
+
+**The multiplier isn't uniform, and isn't even one direction** — grounded
+in each symbol's real venue (`nt_symbol.exchange`) and what "1 unit"
+already means in the current formula for that quoting convention:
+
+| Asset class | Symbols | "1 unit" today | 0.01 lot | Multiplier | Confidence |
+|---|---|---|---|---|---|
+| Forex | AUDUSD, EURUSD, GBPUSD, USDCAD, USDCHF, USDJPY | 1 unit of base currency | 1,000 units (OANDA: 1.0 lot = 100,000) | **×1000** (scale up) | high |
+| Gold | XAUUSD, XAUEUR, XAUAUD | 1 troy oz | 1 oz (OANDA: 1.0 lot = 100 oz) | **×1** (no change) | high |
+| Silver | XAGUSD | 1 troy oz | 50 oz (OANDA: 1.0 lot = 5,000 oz) | **×50** (scale up) | high |
+| Index | US30USD (OANDA), US500 (PEPPERSTONE) | already ≈$1/point (no multiplier in current formula) | $0.01/point | **×0.01** (scale down) | low-medium (broker-variable) |
+| Stock | AAPL (NASDAQ) | 1 share | 1 share (common: 1.0 lot = 100 shares) | **×1** (no change) | medium (common, not universal) |
+| Crypto | BTCUSD (COINBASE, spot feed) | 1 BTC | 0.01 BTC (common CFD convention: 1.0 lot = 1 BTC) | **×0.01** (scale down) | medium (overlays a CFD convention on a spot feed) |
+
+Forex/gold/silver multipliers are high confidence because they match
+OANDA's actually-published contract specs for the exact venue
+`nt_symbol.exchange` names for those symbols. Index/stock/crypto are
+lower confidence by nature — broker-variable or convention-based, not
+each venue's individually verified live spec sheet — and are labeled as
+such in the data itself (`nt_symbol_lot_multiplier.confidence`), not
+just in this doc.
+
+**Built**: migration 148 — `nt_symbol_lot_multiplier` (symbol PK,
+asset_class_label, lot_unit_description, multiplier, confidence CHECK IN
+`('high','medium','low-medium')`), a real reviewable table rather than a
+CASE expression buried in a view, populated for all 14 active symbols,
+RLS-enabled with a service-role write policy and `SELECT` granted to
+`anon`/`authenticated`. Migration 149 — `pnl_001_lot` added to
+`v_symbol_signal_scorecard`, `_7d`, and `_monthly` via a `LEFT JOIN` on
+symbol, summing `pnl_dollars * multiplier` directly per resolved row
+(not multiplying the already-rounded `pnl_notional_1unit`, to avoid
+compounding rounding error). `pnl_notional_1unit` is kept alongside it
+unchanged — additive only, consistent with this session's "never
+silently remove/rename an already-exposed column" discipline.
+
+**A real mistake caught immediately, not shipped**: the first attempt at
+migration 149 placed `pnl_001_lot` in the middle of each view's column
+list (right after `pnl_notional_1unit`) and failed outright —
+`ERROR: 42P16: cannot change name of view column "last_qualified_ts" to
+"pnl_001_lot"`. `CREATE OR REPLACE VIEW` requires a strictly
+column-order-preserving replacement; a new column must be appended at
+the end of the SELECT list, not inserted anywhere else. Fixed by moving
+`pnl_001_lot` to the last position in all three views' column lists,
+re-applied cleanly.
+
+**Verified against real production data** (not just that the migration
+applied) across every asset class, confirming both magnitude and
+direction:
+
+| Symbol | pnl_notional_1unit | pnl_001_lot | Multiplier applied |
+|---|---|---|---|
+| AAPL | -61.62 | -61.62 | ×1 (unchanged, as expected) |
+| XAUUSD | -636.63 | -636.63 | ×1 (unchanged, as expected) |
+| EURUSD | 0.05 | 48.00 | ×1000 (scaled up, as expected) |
+| XAGUSD | 284.77 | 14238.73 | ×50 (scaled up, as expected) |
+| BTCUSD | 47158.13 | 471.58 | ×0.01 (scaled down, as expected) |
+| US30USD | -1807.85 | -18.08 | ×0.01 (scaled down, as expected) |
+
+Every row matches the derivation table exactly — no sign flips, no
+unexpected magnitude. `pnl_methodology_three_conventions` marked
+`resolved` in `nt_roadmap`, with the note that it should only reopen if a
+new symbol is added to `nt_symbol` without a matching
+`nt_symbol_lot_multiplier` row (currently no enforcement of that at
+insert time — a future consideration, not built now, since `nt_symbol`
+inserts are rare and manual today).
