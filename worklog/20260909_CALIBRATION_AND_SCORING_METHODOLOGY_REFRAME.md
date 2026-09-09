@@ -1,4 +1,19 @@
-# Calibration + Scoring Methodology Reframe — Scope Only, Nothing Built
+# Calibration + Scoring Methodology Reframe
+
+> **This file is a narrative record of how we got here — not the status
+> tracker.** For current priority/status/what's-next, query `nt_roadmap`
+> directly (Supabase project `pcvscowltlrxzgxjurcr`):
+> ```sql
+> select mechanism, status, current_state, review_at, review_condition
+> from nt_roadmap where status not in ('resolved','superseded')
+> order by review_at nulls last;
+> ```
+> Every mechanism below has a matching `nt_roadmap` row kept in sync as
+> work happens — this document explains *why*, the roadmap tracks *where
+> things stand right now*. Sections 1-8 were written when nothing had
+> been built yet (hence the original title); section 9 (built the same
+> day) and section 10 (v2 fix, one day later) are additions, not a
+> rewrite — read in order for the actual chronology.
 
 Continuation of `worklog/20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md`. That
 document fixed real bugs (mark-to-market expiry P&L, deadline-aware sweep
@@ -8,8 +23,9 @@ whole EOD/calibration pipeline (same day) concluded the calibration-bias
 correction mechanisms, evaluated far faster than evidence refreshes, capable
 of starving their own evidence supply. The user paused further deployment to
 rethink the whole thing from first principles. This document is that rethink.
-**No code has been written from this document — it is scope only, per
-"scope in worklog, get honest review, build only on explicit instruction."**
+**Sections 1-8: no code has been written yet at this point — scope only, per
+"scope in worklog, get honest review, build only on explicit instruction."
+Section 9 onward: built, per explicit approval — see that section.**
 
 ## 1. Calibration bias vs. scoring bias — the corrected mental model
 
