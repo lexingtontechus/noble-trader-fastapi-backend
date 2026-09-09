@@ -1218,13 +1218,17 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── Phase B: group by sweep_cron for heavy sweep jobs ──────
         # Mirrors the light-sweep grouping above. Default sweep_cron is
-        # '0 20 * * sun' (Sunday 20:00 UTC, migration 026) when NULL.
-        # NOTE: APScheduler's from_crontab uses PYTHON weekday convention
-        # (0=Monday) — the cron-conventional '0 20 * * 0' fires MONDAY.
-        # Use the 'sun' name (or '6') for Sunday.
+        # '0 20 * * *' (daily 20:00 UTC) when NULL — changed from weekly
+        # 2026-09-08 (worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md):
+        # the weekly cadence relied on "TimesFM makes frequent
+        # re-optimization unnecessary," which conflates directional
+        # confidence with bracket/TP/SL geometry fit — see heavy_sweep.py's
+        # module docstring for the full reasoning and the real-cost
+        # measurement (~7 min/day for all 14 symbols) that made daily the
+        # obvious choice once the flawed assumption was found.
         heavy_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for sym in symbols:
-            cron_raw = sym.get("sweep_cron") or "0 20 * * sun"
+            cron_raw = sym.get("sweep_cron") or "0 20 * * *"
             for cron in self._split_cron(cron_raw):
                 heavy_groups[cron].append(sym)
         for cron in heavy_groups:

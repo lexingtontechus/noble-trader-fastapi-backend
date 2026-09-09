@@ -53,9 +53,8 @@ async def fetch_active_symbols() -> list[dict[str, Any]]:
     #
     # sweep_cron added — heavy sweep (Phase B) groups symbols by this column,
     # mirroring how the light sweep groups by regime_cron. Default is
-    # '0 20 * * sun' (Sunday 20:00 UTC, migration 026) when NULL.
-    # NOTE: APScheduler uses PYTHON weekday convention (0=Monday); use the
-    # 'sun' name (or '6') for Sunday, NOT '0'.
+    # '0 20 * * *' (daily 20:00 UTC) when NULL — changed from weekly
+    # 2026-09-08, migration 142 (see heavy_sweep.py's module docstring).
     # plan_ids (UUID[]) added in migration 032 — needed so the orchestrator's
     # Discord plan-routing can route signals per subscription plan
     # (Signal Scout / Precision Pro).
@@ -1266,16 +1265,112 @@ def _decay_weighted_bias_stats(
     return weighted_pred / total_weight, weighted_wins / total_weight
 
 
-def _clustering_discounted_n(raw_n: int, distinct_days: int, min_distinct_days: int) -> float:
-    """Scale ``raw_n`` down when records are clustered into fewer than
-    ``min_distinct_days`` distinct days — a burst of many records in a few
-    hours shouldn't carry the same weight in the Bayesian shrink
-    (``bayesian_adjusted_p_win``) as the same count spread over a full
-    window. No-op (returns ``raw_n`` unchanged) once the data spans enough
-    distinct days."""
-    if min_distinct_days <= 0 or distinct_days >= min_distinct_days:
-        return float(raw_n)
-    return round(raw_n * (distinct_days / min_distinct_days), 2)
+def _group_into_episodes(
+    records: list[dict], entered_key: str = "entered_at", closed_key: str = "closed_at",
+) -> list[list[dict]]:
+    """Group calibration records into independent EPISODES by merging
+    overlapping ``[entered_at, closed_at]`` windows (2026-09-08, worklog
+    20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md — replaces the
+    2026-08-25 distinct-calendar-days discount below).
+
+    Two records whose holding windows overlap in time are riding (at
+    least partially) the same underlying price move and are NOT
+    independent evidence, regardless of how many raw rows exist between
+    them — confirmed live: USDCHF had 294 raw rows entered every ~5
+    minutes over ~68 continuous hours, all resolving the same way,
+    because each new "record" was really just a fresh snapshot of the
+    same still-unresolved move. The distinct-calendar-days discount this
+    replaces (``EOD_BIAS_MIN_DISTINCT_DAYS``) missed this case entirely:
+    the burst happened to touch exactly 3 calendar dates, which equalled
+    its own default threshold and disabled the discount.
+
+    Standard interval-merge, sorted by ``entered_key``: a new episode
+    starts whenever a record's ``entered_at`` falls strictly after the
+    running maximum ``closed_at`` seen so far among all earlier records
+    (NOT just the immediately preceding one — an early long-hold record
+    can still overlap a later record even if a short-hold record in
+    between has already closed). Records with an unparseable/missing
+    ``entered_at`` are dropped (can't be ordered). A missing/unparseable
+    ``closed_at`` falls back to ``entered_at`` itself (zero-duration —
+    the conservative assumption when hold duration is unknown: it can
+    only merge INTO a later record's episode, never absorb one).
+    """
+    parsed: list[tuple[datetime, datetime, dict]] = []
+    for row in records:
+        entered = _parse_iso_dt(row.get(entered_key))
+        if entered is None:
+            continue
+        closed = _parse_iso_dt(row.get(closed_key)) or entered
+        parsed.append((entered, closed, row))
+    parsed.sort(key=lambda t: t[0])
+
+    episodes: list[list[dict]] = []
+    running_max_closed: datetime | None = None
+    for entered, closed, row in parsed:
+        if running_max_closed is None or entered > running_max_closed:
+            episodes.append([])
+        episodes[-1].append(row)
+        running_max_closed = closed if running_max_closed is None else max(running_max_closed, closed)
+    return episodes
+
+
+def _episode_summaries(episodes: list[list[dict]]) -> list[dict]:
+    """Collapse each episode's raw rows into ONE representative
+    pseudo-record: ``{entered_at, predicted_p_win, predicted_p_win_raw,
+    win_fraction}`` — the episode's earliest ``entered_at`` (for recency
+    weighting), the mean of each pred column across its rows, and the
+    fraction of its rows with ``outcome == "win"``.
+
+    ``predicted_p_win_raw`` falls back to ``predicted_p_win`` per-row
+    before averaging — same fallback ``_decay_weighted_bias_stats``
+    applies — so behavior on pre-migration-114 data (no raw column
+    populated) is unchanged.
+    """
+    summaries: list[dict] = []
+    for ep in episodes:
+        preds = [float(r.get("predicted_p_win", 0.5) or 0.5) for r in ep]
+        preds_raw = [
+            float(r["predicted_p_win_raw"]) if r.get("predicted_p_win_raw") is not None
+            else float(r.get("predicted_p_win", 0.5) or 0.5)
+            for r in ep
+        ]
+        wins = [1.0 if r.get("outcome") == "win" else 0.0 for r in ep]
+        entered_ats = [r.get("entered_at") for r in ep if r.get("entered_at")]
+        summaries.append({
+            "entered_at": min(entered_ats) if entered_ats else None,
+            "predicted_p_win": sum(preds) / len(preds) if preds else 0.5,
+            "predicted_p_win_raw": sum(preds_raw) / len(preds_raw) if preds_raw else 0.5,
+            "win_fraction": sum(wins) / len(wins) if wins else 0.0,
+        })
+    return summaries
+
+
+def _decay_weighted_episode_stats(
+    episode_summaries: list[dict], pred_key: str, half_life_days: float, now: datetime,
+) -> tuple[float, float]:
+    """Recency-weighted (avg_pred, win_rate) over EPISODE summaries
+    (``_episode_summaries``) instead of raw rows — sibling of
+    ``_decay_weighted_bias_stats`` that runs AFTER episode-collapse, so a
+    correlated burst contributes exactly one weighted sample instead of
+    one per raw row within it. Same ``0.5 ** (age_days / half_life_days)``
+    weighting, keyed off each episode's earliest ``entered_at``.
+    """
+    total_weight = 0.0
+    weighted_pred = 0.0
+    weighted_wins = 0.0
+    for ep in episode_summaries:
+        dt = _parse_iso_dt(ep.get("entered_at"))
+        if dt is not None:
+            age_days = max((now - dt).total_seconds() / 86400.0, 0.0)
+            weight = 0.5 ** (age_days / max(half_life_days, 1e-6))
+        else:
+            weight = 1.0
+        total_weight += weight
+        weighted_pred += weight * float(ep.get(pred_key, 0.5))
+        weighted_wins += weight * float(ep.get("win_fraction", 0.0))
+    if total_weight <= 0:
+        return 0.5, 0.0
+    return weighted_pred / total_weight, weighted_wins / total_weight
 
 
 async def fetch_calibration_bias(
@@ -1284,51 +1379,64 @@ async def fetch_calibration_bias(
     *,
     window_days: int | None = None,
     min_records: int | None = None,
+    min_episodes: int | None = None,
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
 
-    Returns ``{bias: float, status: str, n: float, raw_n: int,
+    Returns ``{bias: float, status: str, n: int, raw_n: int,
     distinct_days: int, win_rate: float, avg_pred: float}`` or ``None`` on
-    failure (or when fewer than ``min_records`` records exist in the window
-    — ``n`` is too small for the bias to be meaningful). If ``venue`` is
-    provided, filters by both symbol AND venue (exchange).
+    failure, when fewer than ``min_records`` raw records exist in the
+    window, or when they collapse into fewer than ``min_episodes``
+    independent episodes (see below — either way, not enough real
+    evidence to trust a verdict). If ``venue`` is provided, filters by
+    both symbol AND venue (exchange).
 
     ROLLING WINDOW (2026-08-13, intraday cadence plan): the bias is computed
     over records with ``entered_at`` within the last ``window_days`` days
     (default ``settings.EOD_BIAS_WINDOW_DAYS`` = 7) instead of all-time, so a
     regime shift moves the bias in hours, not days. Pass ``window_days=0``
     for the legacy all-time behaviour. ``min_records`` defaults to
-    ``settings.EOD_BIAS_MIN_RECORDS`` (20).
+    ``settings.EOD_BIAS_MIN_RECORDS`` (20) — a cheap raw-count floor before
+    bothering to compute anything.
 
-    CLUSTERING GUARD + DECAY WEIGHTING (2026-08-25): a hard N-day cutoff has
-    no protection against a single anomalous burst dominating the window —
-    confirmed live: USDCAD's ``stagnation_kill_switch`` was driven by n=69
-    records all written within one 6-hour stretch, counted with the same
-    confidence as 69 records spread across a week. Two mitigations:
-      1. Recency decay (``_decay_weighted_bias_stats``): each record's
+    EPISODE COUNTING + DECAY WEIGHTING (2026-09-08, worklog
+    20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md): a hard N-day cutoff
+    has no protection against a single anomalous burst dominating the
+    window — confirmed live TWICE now: USDCAD's ``stagnation_kill_switch``
+    (2026-08-25) was driven by n=69 records all written within one 6-hour
+    stretch; USDCHF's stuck OVERCONFIDENT penalty (2026-09-08) was driven
+    by n=294 records that were really ONE continuous ~68-hour episode
+    (entries every ~5 min, each riding the same still-unresolved price
+    move) — evading the 2026-08-25 fix (a distinct-calendar-days discount)
+    because the burst happened to span exactly its own default threshold
+    of 3 calendar dates. Two mitigations, both now episode-based:
+      1. ``_group_into_episodes``: records whose ``[entered_at, closed_at]``
+         windows overlap in time are merged into ONE episode — the actual
+         count of independent evidence, not a proxy for it.
+      2. Recency decay (``_decay_weighted_episode_stats``): each EPISODE's
          contribution to ``avg_pred``/``win_rate`` is weighted by
-         ``0.5 ** (age_days / EOD_BIAS_DECAY_HALFLIFE_DAYS)`` instead of
-         counted equally — smooths the abrupt 7-day cliff.
-      2. Clustering discount (``_clustering_discounted_n``): when records
-         span fewer than ``EOD_BIAS_MIN_DISTINCT_DAYS`` distinct calendar
-         days, the returned ``n`` (what callers feed to
-         ``bayesian_adjusted_p_win``) is scaled down proportionally — a
-         burst crammed into a few hours carries the sample size of a few
-         hours, not a full window. ``raw_n``/``distinct_days`` are returned
-         alongside for observability (surfaced in ``nt_eod_actions.detail``
-         by the caller) so this discount is auditable, not silent.
+         ``0.5 ** (age_days / EOD_BIAS_DECAY_HALFLIFE_DAYS)`` — same decay
+         shape as before, now applied post-episode-collapse so a
+         correlated burst contributes one weighted sample, not one per
+         raw row within it.
+    ``n`` returned is the real episode count (not a scaled approximation);
+    ``raw_n``/``distinct_days`` are kept for observability only.
+    ``min_episodes`` defaults to ``get_calibration_bias_min_episodes()``
+    (config/feature_flags.yaml, default 2).
     """
     if not settings.SUPABASE_URL:
         return None
 
+    from regime_platform.core.feature_flags import get_calibration_bias_min_episodes
+
     win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
     min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
-    min_distinct_days = getattr(settings, "EOD_BIAS_MIN_DISTINCT_DAYS", 3)
+    min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
     url = _url("nt_calibration_records")
     params = {
-        "select": "predicted_p_win,outcome,entered_at",
+        "select": "predicted_p_win,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
     if venue:
@@ -1350,8 +1458,15 @@ async def fetch_calibration_bias(
 
     raw_n = len(data)
     distinct_days = _count_distinct_days(data)
+    episodes = _group_into_episodes(data)
+    n_episodes = len(episodes)
+    if n_episodes < min_eps:
+        return None
+    episode_summaries = _episode_summaries(episodes)
     now = datetime.now(timezone.utc)
-    avg_pred, win_rate = _decay_weighted_bias_stats(data, "predicted_p_win", half_life, now)
+    avg_pred, win_rate = _decay_weighted_episode_stats(
+        episode_summaries, "predicted_p_win", half_life, now,
+    )
     bias = round(avg_pred - win_rate, 4)
 
     if abs(bias) < 0.05:
@@ -1364,7 +1479,7 @@ async def fetch_calibration_bias(
     return {
         "bias": bias,
         "status": status,
-        "n": _clustering_discounted_n(raw_n, distinct_days, min_distinct_days),
+        "n": n_episodes,
         "raw_n": raw_n,
         "distinct_days": distinct_days,
         "win_rate": round(win_rate, 4),
@@ -1378,6 +1493,7 @@ async def fetch_calibration_bias_raw(
     *,
     window_days: int | None = None,
     min_records: int | None = None,
+    min_episodes: int | None = None,
 ) -> dict[str, float | str | int] | None:
     """Query nt_calibration_records and return calibration bias computed from
     ``predicted_p_win_raw`` (the PRE-enforcement p_win) rather than the
@@ -1402,23 +1518,26 @@ async def fetch_calibration_bias_raw(
     more extreme. Classification is done by the caller (``run_eod_correction``
     in raw mode) using those settings.
 
-    CLUSTERING GUARD + DECAY WEIGHTING (2026-08-25): same mitigations as
+    EPISODE COUNTING + DECAY WEIGHTING (2026-09-08): same mitigations as
     ``fetch_calibration_bias`` — see that function's docstring. This is the
     variant the 4h intraday correction pass (and therefore the stagnation
-    streak/kill-switch logic) actually reads, so the discount applies to
-    exactly the path that misfired for USDCAD.
+    streak/kill-switch logic) actually reads, so the fix applies to exactly
+    the path that misfired for both USDCAD (2026-08-25) and USDCHF
+    (2026-09-08).
     """
     if not settings.SUPABASE_URL:
         return None
 
+    from regime_platform.core.feature_flags import get_calibration_bias_min_episodes
+
     win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
     min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
-    min_distinct_days = getattr(settings, "EOD_BIAS_MIN_DISTINCT_DAYS", 3)
+    min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
     url = _url("nt_calibration_records")
     params = {
-        "select": "predicted_p_win,predicted_p_win_raw,outcome,entered_at",
+        "select": "predicted_p_win,predicted_p_win_raw,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
     if venue:
@@ -1440,9 +1559,18 @@ async def fetch_calibration_bias_raw(
 
     raw_n = len(data)
     distinct_days = _count_distinct_days(data)
+    episodes = _group_into_episodes(data)
+    n_episodes = len(episodes)
+    if n_episodes < min_eps:
+        return None
+    episode_summaries = _episode_summaries(episodes)
     now = datetime.now(timezone.utc)
-    avg_pred_enforced, win_rate = _decay_weighted_bias_stats(data, "predicted_p_win", half_life, now)
-    avg_pred_raw, _ = _decay_weighted_bias_stats(data, "predicted_p_win_raw", half_life, now)
+    avg_pred_enforced, win_rate = _decay_weighted_episode_stats(
+        episode_summaries, "predicted_p_win", half_life, now,
+    )
+    avg_pred_raw, _ = _decay_weighted_episode_stats(
+        episode_summaries, "predicted_p_win_raw", half_life, now,
+    )
     # Bias is computed from the RAW (pre-enforcement) p_win so it reflects
     # the model's true miscalibration, not the enforcement compensation.
     bias = round(avg_pred_raw - win_rate, 4)
@@ -1457,7 +1585,7 @@ async def fetch_calibration_bias_raw(
     return {
         "bias": bias,
         "status": status,
-        "n": _clustering_discounted_n(raw_n, distinct_days, min_distinct_days),
+        "n": n_episodes,
         "raw_n": raw_n,
         "distinct_days": distinct_days,
         "win_rate": round(win_rate, 4),

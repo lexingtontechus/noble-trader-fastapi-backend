@@ -246,17 +246,18 @@ class Settings(BaseSettings):
     EOD_BIAS_WINDOW_DAYS: int = 7
     EOD_BIAS_MIN_RECORDS: int = 20
 
-    # EOD_BIAS_MIN_DISTINCT_DAYS (default 3, 2026-08-25):
-    #   The 7-day window above has no protection against a single clustered
-    #   burst dominating it — confirmed live: USDCAD's stagnation_kill_switch
-    #   was driven by n=69 records that were ALL written within one 6-hour
-    #   stretch, counted with the same confidence as 69 records spread evenly
-    #   across a week. When distinct_days (count of distinct entered_at dates
-    #   in the window) falls below this, the effective sample size fed to the
-    #   Bayesian shrink is scaled down proportionally (see
-    #   fetch_calibration_bias) rather than vetoing the status outright — a
-    #   genuinely-stuck symbol should be trusted less, not silently ignored.
-    EOD_BIAS_MIN_DISTINCT_DAYS: int = 3
+    # EOD_BIAS_MIN_DISTINCT_DAYS retired 2026-09-08 (worklog
+    # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md): the distinct-
+    # calendar-days clustering discount it drove could be evaded by a
+    # burst that happened to span exactly this many calendar dates while
+    # still being one continuous overlapping episode (USDCHF: 294 records,
+    # 1 real episode, 3 calendar dates == this setting's own default).
+    # Replaced by real episode counting (see
+    # fetch_calibration_bias/_group_into_episodes, supabase_client.py) —
+    # min-episode threshold now lives in config/feature_flags.yaml's
+    # calibration_bias_min_episodes (regime_platform/core/feature_flags.py's
+    # get_calibration_bias_min_episodes()), not here, per this session's
+    # config-centralization discipline.
 
     # EOD_BIAS_DECAY_HALFLIFE_DAYS (default 3, 2026-08-25):
     #   Records within EOD_BIAS_WINDOW_DAYS are weighted by recency

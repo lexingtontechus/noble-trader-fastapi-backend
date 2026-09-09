@@ -570,3 +570,130 @@ built, pending an explicit decision on scope. `SIGNAL_COOLDOWN_MINUTES`
 sourced at 60 minutes) should prevent this exact "same signal every 5
 minutes" pattern going forward regardless of whether it fixes the
 already-poisoned historical window.
+
+## Heavy sweep: weekly → daily, light/heavy mutex added (2026-09-08)
+
+User pushback: doesn't APScheduler's own cron already handle market
+hours, making `sweep_after_hours` redundant, and shouldn't heavy sweep
+run daily given intraday triggers exist and the "TimesFM makes daily
+unnecessary" assumption might not hold? Investigated both directly.
+
+**`sweep_after_hours` — confirmed NOT redundant.** Every cron schedule
+(`regime_cron='*/5 * * * *'`, `sweep_cron` weekly) is flat and
+hours-agnostic, mixing asset classes in the same job by matching cron
+STRING (`orchestrator.py::_refresh_symbols`). `is_market_open()` inside
+`_sweep_group` is the only place that discriminates per-symbol market
+hours — the cron layer structurally can't express it. Also found and
+fixed a real bug from the same-day config migration: `SWEEP_AFTER_HOURS`
+was read once at import instead of hot-reloading like its sibling
+`MARKOV_SOURCE_MODE` — `_sweep_group()` now calls `get_sweep_after_hours()`
+fresh each tick.
+
+**Heavy sweep cadence — the "TimesFM makes daily unnecessary" assumption
+does not hold, confirmed via direct code read.** `heavy_sweep.py`'s own
+comment: *"Skip the heavy sweep entirely if TimesFM is already confident
+… This negates the need for daily heavy sweeps."* That conflates two
+different questions — TimesFM's confidence gate answers "is the
+DIRECTIONAL forecast already confident," not "is the currently-selected
+brick/SL/TP GEOMETRY still well-matched to this symbol's volatility." A
+confident direction call says nothing about bracket-fit — real data
+already showed EURUSD/USDCAD/USDJPY sitting at 82-94% expiry even under
+the corrected deadline-aware scorer, i.e. exactly the failure mode a
+stale weekly bracket produces, regardless of TimesFM confidence. The
+mid-week safety net meant to catch this (`emergency_heavy_sweep`,
+triggered off calibration bias) is also unreliable now that the bias
+signal itself is known to run on 0.1-1.9% real independence (see below).
+Real measured cost settles the compute question: `nt_sweep_result`'s
+last 30 heavy-sweep durations average **28.8s**, worst case **93s** — a
+full 14-symbol pass averages **~6.7 min**, worst-case **~22 min** serial.
+Daily is trivial. Changed `nt_symbol.sweep_cron` from `0 20 * * sun` to
+`0 20 * * *` for all 14 active symbols (migration 142), same time-of-day.
+
+**Light/heavy overlap — closed.** Before this, `run_heavy_sweep_for_symbol`
+never acquired the per-symbol `_sweep_locks` `asyncio.Lock` the light
+sweep already uses to prevent re-entrant concurrent ticks — light and
+heavy sweep for the same symbol could run fully concurrently, a rare
+weekly coincidence that becomes a real daily one once cadence changes.
+Fixed by wrapping the existing implementation: `run_heavy_sweep_for_symbol`
+now acquires the shared lock (blocking — it's not latency-sensitive) and
+delegates to `_run_heavy_sweep_for_symbol_locked` for the actual work;
+light sweep's existing "skip if locked" behavior means a light tick
+landing mid-heavy-sweep is simply skipped until the next 5-minute tick,
+rather than racing on `config/brick_params.yaml`. No new lock type —
+reused the existing mechanism. 730 tests passing after both changes.
+
+## Calibration-bias counting fix — built (2026-09-08)
+
+User: "not a design gap, it's a data issue — is there a way to correct
+or sanitize the data? Follow my intuition, it is not wrong." Built the
+fix, and found it's bigger than USDCHF: there are actually TWO parallel,
+independently-computed bias mechanisms sharing the same underlying flaw.
+
+**Found first: an existing but insufficient prior fix.** `eod_correction.py`
+doesn't read the SQL view analyzed in the prior turns at all — it calls
+`fetch_calibration_bias`/`fetch_calibration_bias_raw` (`supabase_client.py`),
+which already had a 2026-08-25 "clustering discount"
+(`_clustering_discounted_n`) built for a near-identical prior incident
+(USDCAD, `stagnation_kill_switch` fired off n=69 records from one 6-hour
+burst). That discount used **distinct calendar days** as an independence
+proxy — and USDCHF's burst evaded it by construction: it spanned exactly
+3 calendar dates (Sept 2-4), which exactly equalled the discount's own
+`EOD_BIAS_MIN_DISTINCT_DAYS=3` default, disabling the discount entirely
+even though those "3 days" were one continuous ~68-hour episode.
+
+**Second, separate mechanism, same flaw, never fixed at all:**
+`v_eod_calibration_bias_latest` (the SQL view `calibration_enforcement.
+fetch_historical_p_win()` reads for the EV blend's `p_historical` source)
+had **zero** clustering protection — plain `COUNT(*)`. Checking it
+directly (not assumed) showed the same systemic pattern across every
+symbol, not just USDCHF: raw row counts in the hundreds to over a
+thousand collapsing to single-digit real episodes (AAPL 1,329→7, XAUAUD
+1,294→3, BTCUSD 946→1, USDJPY 1,162→6…) — a 0.1-1.9% real-independence
+ratio platform-wide.
+
+**Fix: real episode counting, replacing the calendar-day proxy
+entirely.** New `_group_into_episodes` (`supabase_client.py`) merges
+`nt_calibration_records` rows whose `[entered_at, closed_at]` windows
+overlap in time into one independent episode — a proper interval-merge
+using a **running max** of `closed_at` seen so far (not just the
+immediately-preceding row: an earlier long-hold record can still overlap
+a later record even if a short-hold record in between has already
+closed — verified this distinction matters with a direct regression
+test). Each episode collapses to one representative point (mean
+predicted p_win, win fraction) before the final per-symbol aggregation
+and recency-decay weighting (`_decay_weighted_episode_stats`, same decay
+shape as before, now applied post-collapse). Applied to BOTH mechanisms:
+`fetch_calibration_bias`/`_raw` (now returns `None` — the existing
+"insufficient data" path — when episodes fall below
+`calibration_bias_min_episodes`, instead of a discounted-but-still-fired
+verdict) and `v_eod_calibration_bias_latest` (migration 143, same
+episode-merge logic in SQL, `INSUFFICIENT_DATA` threshold changed from
+"< 20 raw rows" to "< 2 episodes").
+
+**New config**: `calibration_bias_min_episodes` (`feature_flags.yaml`,
+default 2) — explicitly flagged as a conservative placeholder, not a
+settled number. Real data at build time showed most symbols sitting at
+only 1-7 independent episodes per 7-day window; this threshold directly
+controls how often the OVERCONFIDENT/UNDERCONFIDENT enforcement can fire
+at all. Retired the old `EOD_BIAS_MIN_DISTINCT_DAYS` setting and
+`_clustering_discounted_n` entirely (dead once replaced) — the SQL
+view's threshold is a hardcoded mirror since views can't read YAML,
+flagged as a manual-sync point.
+
+**Verified live, not just in tests.** USDCHF now reads `n=1 episode,
+status=INSUFFICIENT_DATA` on both paths (was `n=294, OVERCONFIDENT`)
+within minutes of shipping — `fetch_calibration_bias`/`_raw` return
+`None` directly against production data, meaning the next `eod_correction`
+cycle will not renew USDCHF's penalty, and the existing one ages out
+within `ACTION_FRESH_WINDOW_HOURS` (8h) rather than waiting until the
+7-day window fully drains (~2026-09-11). 9 new/updated tests (some
+existing 2026-08-25 USDCAD-incident tests needed realistic `closed_at`
+fixtures added, not just patched assertions), 730 total passing.
+
+**10% expiry rate — set as the aspirational target, not enforced today.**
+Confirms the per-symbol-baseline alert design direction (not a flat
+threshold) — `expiry_rate_alert`'s `threshold_pct=50.0` stays as the
+near-term operational floor; 10% is the bar to measure progress against
+as daily heavy-sweep cadence and the deadline-aware scorer mature, given
+several symbols structurally sit at 60-94% expiry today even under the
+corrected scorer.

@@ -16,6 +16,7 @@ Covers:
 import asyncio
 import json
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -97,25 +98,40 @@ class FakeAsyncClient:
 # ─── Row builders ────────────────────────────────────────────────────────
 
 def _rows_with_raw(n, wins, raw=0.90, enforced=0.55):
-    """Build n calibration records with both raw and enforced p_win."""
+    """Build n calibration records with both raw and enforced p_win.
+
+    2026-09-08: entered_at added, spaced 1 SECOND apart (no closed_at, so
+    each is a zero-duration event) — enough for each row to form its OWN
+    independent episode under ``_group_into_episodes`` (strictly
+    increasing entered_at always starts a new episode when there's no
+    overlap), while the ~30-second total span is negligible next to the
+    3-day decay half-life, so these raw-vs-enforced-p_win tests (not
+    about timing) keep their original unweighted-average assertions
+    valid. See worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md.
+    """
+    now = datetime.now(timezone.utc)
     out = []
     for i in range(n):
         out.append({
             "predicted_p_win": enforced,
             "predicted_p_win_raw": raw,
             "outcome": "win" if i < wins else "loss",
+            "entered_at": (now - timedelta(seconds=i)).isoformat(),
         })
     return out
 
 
 def _rows_raw_null(n, wins, enforced=0.50):
-    """Records where predicted_p_win_raw IS NULL (fallback path)."""
+    """Records where predicted_p_win_raw IS NULL (fallback path). See
+    ``_rows_with_raw`` for why entered_at is populated."""
+    now = datetime.now(timezone.utc)
     out = []
     for i in range(n):
         out.append({
             "predicted_p_win": enforced,
             "predicted_p_win_raw": None,
             "outcome": "win" if i < wins else "loss",
+            "entered_at": (now - timedelta(seconds=i)).isoformat(),
         })
     return out
 
@@ -687,13 +703,7 @@ class TestRawBiasCompounding:
         """When enforcement has shrunk p_win from 0.95→0.65 and win_rate is 0.50,
         raw bias (0.95-0.50=0.45) > enforced bias (0.65-0.50=0.15).
         The enforced bias is artificially LOW because enforcement shrunk p_win."""
-        rows = []
-        for i in range(30):
-            rows.append({
-                "predicted_p_win": 0.65,       # enforced (shrunk)
-                "predicted_p_win_raw": 0.95,   # raw model output
-                "outcome": "win" if i < 15 else "loss",
-            })
+        rows = _rows_with_raw(30, 15, raw=0.95, enforced=0.65)
 
         client = FakeAsyncClient(get_rows=rows)
         with (

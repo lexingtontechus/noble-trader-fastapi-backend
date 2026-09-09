@@ -71,6 +71,7 @@ _DEFAULTS: dict[str, Any] = {
         "min_resolved": 15,
         "cooldown_hours": 24.0,
     },
+    "calibration_bias_min_episodes": 2,
 }
 
 _cache: dict[str, Any] | None = None
@@ -385,3 +386,33 @@ def get_expiry_rate_alert_config() -> dict[str, Any]:
         "min_resolved": min_resolved,
         "cooldown_hours": cooldown_hours,
     }
+
+
+def get_calibration_bias_min_episodes() -> int:
+    """Minimum number of independent EPISODES (not raw rows) required
+    before ``fetch_calibration_bias``/``fetch_calibration_bias_raw``
+    (supabase_client.py) will return a bias verdict at all — worklog
+    20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md's counting fix.
+
+    Replaces the 2026-08-25 ``_clustering_discounted_n``/distinct-calendar-
+    days discount, which USDCHF's incident showed can be evaded by a burst
+    that happens to straddle exactly ``EOD_BIAS_MIN_DISTINCT_DAYS``
+    calendar dates while still being one continuous overlapping episode
+    (294 raw records, 1 real episode, 3 calendar dates). Episodes are
+    counted by merging records whose ``[entered_at, closed_at]`` windows
+    overlap — see ``_group_into_episodes``.
+
+    Default 2 is a deliberately conservative starting point, not a
+    settled number: real post-deploy data showed most symbols sit at only
+    1-7 independent episodes per rolling 7-day window, so this threshold
+    directly controls how often the enforcement mechanism can act at all.
+    Needs monitoring against real data post-deploy (see nt_roadmap) —
+    too high and the mechanism goes permanently dormant, too low and it's
+    back to counting noise as evidence."""
+    try:
+        return int(_load().get(
+            "calibration_bias_min_episodes",
+            _DEFAULTS["calibration_bias_min_episodes"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["calibration_bias_min_episodes"]

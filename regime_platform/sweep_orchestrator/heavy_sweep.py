@@ -7,12 +7,30 @@ Ports the heavy sweep from the deprecated Supabase Edge Function
 backend Python ``SweepOrchestrator``.
 
 Heavy sweep runs on a per-symbol cron schedule defined by
-``nt_symbol.sweep_cron`` (default ``0 20 * * sun`` — Sunday 20:00 UTC).
+``nt_symbol.sweep_cron`` (default ``0 20 * * *`` — daily 20:00 UTC, changed
+from weekly 2026-09-08, worklog
+20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md). The weekly cadence
+(migration 022/028) was justified by "TimesFM handles non-stationarity
+24/7, so bracket re-optimization doesn't need to run often" — that
+conflates two different questions: TimesFM's confidence gate (below)
+answers "is the DIRECTIONAL forecast already confident," not "is the
+currently-selected brick/SL/TP GEOMETRY still well-matched to this
+symbol's volatility." A confident direction call says nothing about
+whether the current bracket resolves inside the 48h expiry deadline —
+real data showed EURUSD/USDCAD/USDJPY sitting at 82-94% expiry even
+under the corrected deadline-aware scorer, i.e. the bracket-fit problem
+persists regardless of TimesFM's confidence. Measured real cost of
+re-running daily instead of weekly is trivial (~29s avg/symbol, ~93s
+worst case, full 14-symbol pass ~7 min average even without the
+TimesFM-gate skip) — the original compute-savings rationale doesn't
+survive contact with current numbers either.
 NOTE: APScheduler's ``from_crontab`` uses PYTHON weekday convention
-(0=Monday), so the cron-conventional ``0 20 * * 0`` fires MONDAY — use
-the ``sun`` name (or ``6``) for Sunday.
-TimesFM confidence gate skips ~70 % of scheduled runs, so the effective
-frequency is ~0.6 runs/week/symbol.
+(0=Monday) — irrelevant now that the schedule is daily, still relevant
+if a per-symbol override ever reintroduces a weekday-specific cron.
+TimesFM confidence gate still skips ~70% of scheduled runs (it remains
+useful for its OWN purpose — skipping a full re-optimization when
+direction is already clear cuts real compute — just not a substitute
+for cadence).
 
 Per-symbol heavy sweep does:
   1. Skip check (sweep_skip_until from YAML metadata)
@@ -625,7 +643,35 @@ class HeavySweepMixin:
         sym: dict[str, Any],
         prices: Optional[list[float]] = None,
     ) -> HeavySweepResult:
-        """Run the heavy sweep for one symbol.
+        """Run the heavy sweep for one symbol, holding the symbol's
+        in-process sweep lock for the duration.
+
+        2026-09-08 (worklog 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md):
+        now that heavy sweep runs daily instead of weekly, an uncoordinated
+        overlap with a light-sweep tick for the same symbol (every 5 min)
+        went from a rare weekly coincidence to a real daily one. Reuses the
+        SAME ``self._sweep_locks`` per-symbol ``asyncio.Lock`` the light
+        sweep already holds during ``_process_symbol`` (orchestrator.py) —
+        no new lock type. Heavy sweep BLOCKS (awaits the lock) rather than
+        skipping, since it's not latency-sensitive and a light-sweep tick
+        holds the lock for at most a few seconds; the light sweep's
+        existing "if lock.locked(): skip" behavior means a light tick that
+        lands during a heavy sweep's ~30-90s run is simply skipped until
+        the next 5-minute tick, rather than reading/writing
+        ``config/brick_params.yaml`` concurrently with the heavy sweep.
+        """
+        symbol = sym["symbol"]
+        lock = self._sweep_locks.setdefault(symbol, asyncio.Lock())
+        async with lock:
+            return await self._run_heavy_sweep_for_symbol_locked(sym, prices)
+
+    async def _run_heavy_sweep_for_symbol_locked(
+        self,
+        sym: dict[str, Any],
+        prices: Optional[list[float]] = None,
+    ) -> HeavySweepResult:
+        """Heavy sweep implementation — see ``run_heavy_sweep_for_symbol``
+        for the lock this always runs under.
 
         Args:
             sym: nt_symbol row dict. Must have ``symbol``, ``asset_class``,
@@ -665,8 +711,12 @@ class HeavySweepMixin:
 
             # ── 2. TimesFM confidence gate ─────────────────────────────
             # Skip the heavy sweep entirely if TimesFM is already confident
-            # (|p_timesfm - 0.5| > 0.1). This negates the need for daily
-            # heavy sweeps — TimesFM handles non-stationarity 24/7.
+            # (|p_timesfm - 0.5| > 0.1). Saves real compute on runs where a
+            # full re-optimization is unlikely to change the directional
+            # call — it is NOT a substitute for running the cadence itself
+            # more often (2026-09-08 correction — see module docstring:
+            # direction confidence and bracket/TP/SL geometry fit are
+            # different questions).
             p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
             p_timesfm: Optional[float] = None
             if p_timesfm_result is not None:
