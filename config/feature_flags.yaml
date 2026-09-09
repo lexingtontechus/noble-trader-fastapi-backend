@@ -457,17 +457,13 @@ regime_label_debounce_ticks: 3
 # instead of a one-time migration DELETE.
 renko_brick_retention_days: 2
 
-# heavy_sweep_force_refresh_hours (2026-09-09, worklog
-# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, P0 fix): forces
-# a FULL heavy sweep (bypassing the TimesFM confidence gate) when a
-# symbol's last completed sweep is older than this. Confirmed live: the
-# gate can defer a symbol's bracket re-optimization indefinitely if
-# TimesFM stays confident -- EURUSD/GBPUSD/BTCUSD/USDJPY/XAUAUD were all
-# still on their pre-daily-cadence, pre-deadline-aware-scoring brackets
-# (last full sweep 2026-09-06, 2+ days stale) despite both of those fixes
-# going live the day before, because the gate skipped every single daily
-# attempt for those 5 symbols. 72h (3 days) is a bound, not a guess: the
-# OLD weekly cadence already tolerated up to 7 days of staleness with NO
-# override at all, so this can never be worse than what shipped before
-# while still preserving most of the gate's real compute savings.
-heavy_sweep_force_refresh_hours: 72.0
+# heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was
+# a 72h timer bounding how long the TimesFM confidence gate in
+# heavy_sweep.py could defer a symbol's bracket re-optimization. The gate
+# itself was removed the same day (its only justification -- compute cost
+# on the old Supabase Edge Function deployment -- was moot once that
+# infrastructure was migrated to Lightning AI Studio, and was independently
+# falsified by real measurement even before the migration). Bounding an
+# unjustified decision with a timer was not a substitute for removing the
+# decision -- see heavy_sweep.py's module docstring for the full history.

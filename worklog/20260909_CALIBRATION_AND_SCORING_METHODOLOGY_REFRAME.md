@@ -623,3 +623,235 @@ new symbol is added to `nt_symbol` without a matching
 `nt_symbol_lot_multiplier` row (currently no enforcement of that at
 insert time — a future consideration, not built now, since `nt_symbol`
 inserts are rare and manual today).
+
+## 13. The TimesFM confidence gate — a sinking foundation, traced and rescoped (2026-09-09)
+
+**SCOPE ONLY — nothing built yet, per this session's standing discipline.**
+User pushback, verbatim: "this is a flawed methodology using time to
+hopefully correct a technical/process issue... a poor decision that is
+causing the problem patched with another poor decision." Correct call.
+Full history traced (git log, migration headers, worklogs, `nt_roadmap`)
+before proposing anything, rather than patching the patch again.
+
+### The sequence, in full
+
+1. **2026-06-20/21 (origin)** — `supabase/migrations/022_reduce_heavy_with_timesfm.sql`.
+   The gate was invented to solve an **infrastructure** problem: Edge
+   Function 150s timeouts colliding with Render cold starts under burst
+   load (84 heavy invocations/day across 14 symbols → silent 5xx
+   storms, per migration 018's own incident writeup). The fix bundled
+   two unrelated levers together — cadence reduction (daily → 2-3x/week)
+   *and* a new "TimesFM confidence gate": skip the heavy sweep outright
+   whenever `abs(p_timesfm - 0.5) > 0.10`. Migration 022's own header
+   states the goal directly: "Heavy invocations/day: 39 → 16 (-59%).
+   Plus ~70% of those will be TimesFM-skipped → ~5 actual runs/day."
+   **This was a compute-cost lever from day one, never a signal-quality
+   claim** — the "TimesFM handles non-stationarity 24/7" framing was
+   asserted, not measured, and (see #5) never checked against a real
+   number until 11 weeks later.
+2. **2026-07-25** — ported verbatim into `heavy_sweep.py` during the
+   Python-port squash commit, rationale and all, unexamined.
+3. **2026-08-28** — `heavy_sweep_reachability_mode` added (shadow): a
+   different corrective layer entirely (re-rank the Sharpe-only pick by
+   realized bucket expectancy). Never reconciled against the gate;
+   still open today (see below).
+4. **2026-09-07** — `heavy_sweep_atr_anchored_bricks_mode` added,
+   found within 24 hours to solve the wrong variable (candidate *set*,
+   not scoring), honestly retired to `superseded` the same day. **Proof
+   the team can and does kill an invalidated mechanism fast, when it's
+   checked.**
+5. **2026-09-08** — real cost measurement finally run
+   (`worklog/20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md`): actual
+   heavy-sweep cost is ~29s/symbol average, ~93s worst case, ~7 minutes
+   for a full 14-symbol pass. **This directly falsifies migration 022's
+   entire founding premise** — there was never a real compute problem
+   large enough to justify skipping anything. Weekly→daily cadence was
+   fixed as a result (migration 142). **But the confidence-gate skip
+   itself — the actual "don't spend compute today" mechanism — was left
+   completely untouched**, even though its own justification had just
+   been disproven in the same worklog. The current module docstring
+   even names the conceptual error explicitly ("conflates... 'is the
+   DIRECTIONAL forecast already confident' [with] 'is the currently-
+   selected brick/SL/TP GEOMETRY still well-matched'") — the diagnosis
+   was written down and then not acted on.
+6. **2026-09-08, later same day** — deadline-aware scoring shipped
+   live, a genuine, validated, root-cause fix to the Sharpe formula
+   itself (70-anchor real backtest, win% 58.5→74.5). Good, independent
+   work — unaffected by anything in this section.
+7. **2026-09-09, early** — 5 symbols (EURUSD, GBPUSD, BTCUSD, USDJPY,
+   XAUAUD) found stuck 2+ days behind on pre-fix brackets, because the
+   still-untouched gate had skipped every single daily attempt for all
+   five. Correctly diagnosed as a real defect.
+8. **2026-09-09** — instead of removing the gate whose founding premise
+   had already been falsified the day before, `heavy_sweep_force_refresh_hours`
+   (72h) was added **on top of it**: a countdown timer that forces a
+   refresh once staleness crosses a bound, while leaving the invalid
+   skip condition itself fully intact for every case that doesn't cross
+   that bound. A patch on a patch — treating "the gate makes an
+   unjustified decision sometimes" by capping how long the unjustified
+   decision is tolerated, instead of removing the decision.
+9. **2026-09-09, this conversation** — the 72h patch turns out to
+   almost exactly coincide with the daily cron's own fire time for
+   these 5 symbols (last success landed at ~20:00-20:06 UTC, the same
+   time the cron fires). Computed precisely: tonight's attempt lands
+   EURUSD at 71h59m31s — **29 seconds short of its own 72h threshold**.
+   A timer built to route around a timing problem has its own timing
+   problem. This is the concrete illustration of "sinking foundation":
+   each layer inherited the fragility of the one below it.
+
+### "What does 'bracket is stale' mean?" — honest answer: it was never defined
+
+Searched the entire codebase for any signal that compares "the
+volatility/regime the active bracket was optimized under" against
+"the volatility/regime right now" — **no such comparison exists
+anywhere.** The closest analogs (`bracket_reachability.py`'s ATR
+backfill, the light-sweep regime-shift alert) both operate at the wrong
+layer: one is a resolution-time data-quality shim using *current* ATR
+as a stand-in for a missing historical value, the other is a tick-to-
+tick (minutes) detection-only alert that never feeds back into bracket
+selection. "Staleness" has only ever meant, operationally, "wall-clock
+time since the last completed run" — which is exactly why every attempt
+to fix this reached for a wall-clock threshold instead of a real
+measurement. There was nothing else to reach for, because nothing else
+was ever built.
+
+### Untangling: what's sound vs. what's a patch on an invalid foundation
+
+**Sound, independent, unaffected by this section:**
+- Daily cadence (migration 142) — justified by real cost data, holds.
+- `heavy_sweep_deadline_aware_scoring_mode` (live) — root-cause scoring
+  fix, validated on 70 real anchors.
+- `heavy_sweep_atr_anchored_bricks_mode` (superseded) — honestly killed
+  within a day of being found wrong. No action needed.
+
+**Invalid at the root, everything built on it inherits the defect:**
+- The TimesFM confidence gate itself (`TIMESFM_CONFIDENT_THRESHOLD`,
+  `heavy_sweep.py`) — its only justification (compute cost) was
+  measured and falsified on 2026-09-08. The signal it gates on
+  (directional confidence) was never causally connected to the thing
+  it's supposed to protect (bracket-geometry fit) in the first place —
+  two independent, sufficient reasons to remove it, not patch it.
+- `heavy_sweep_force_refresh_hours` / `_should_force_refresh` — exists
+  solely to bound the damage from the gate above. If the gate goes,
+  this has nothing left to bound.
+
+**Open, unresolved, adjacent (not part of this fix, flagged for a
+separate decision):**
+- `heavy_sweep_reachability_mode` (shadow since 2026-08-28) — its own
+  `nt_roadmap` notes already say "possibly superseded by
+  heavy_sweep_deadline_aware_scoring_mode... not yet determined." Same
+  category of dangling loose end, smaller blast radius, deserves its
+  own explicit check rather than being silently swept into this fix.
+- `orchestrator.py:3717-3725`'s `_load_brick_params` docstring still
+  says "the heavy sweep (weekly) rewrites it" — stale wording left over
+  from before migration 142, harmless but worth correcting while in the
+  area.
+- There has never been an `nt_roadmap` row for the TimesFM confidence
+  gate itself, unlike every other mode-gated mechanism this session —
+  the gate was only ever referenced inline inside *other* mechanisms'
+  notes. That's a process gap: the one mechanism doing the most
+  consequential (indefinite deferral) damage was the one mechanism
+  never given its own tracked review checkpoint.
+
+### Proposed resolution — remove, don't bound
+
+1. **Delete the TimesFM confidence gate outright** — both
+   `TIMESFM_CONFIDENT_THRESHOLD` and the skip branch in
+   `heavy_sweep.py`. Every symbol runs its full daily re-optimization,
+   unconditionally, every day. No remaining justification exists for
+   skipping any of them.
+2. **Delete `_should_force_refresh` and `heavy_sweep_force_refresh_hours`
+   with it** — a bypass for a gate that no longer exists has nothing to
+   bypass. Remove the config flag, the pure function, and its tests.
+3. This makes the 71h59m31s edge case moot by removing the premise that
+   made timing matter at all — not by making the timer smarter.
+4. Close `heavy_sweep_force_refresh_override` in `nt_roadmap` as
+   **superseded by removal**, not resolved-by-waiting. Simplify
+   `heavy_sweep_daily_cadence_log_confirmation`'s remaining job: once
+   skip is not a possible outcome, "did the cron fire and complete" is
+   the only thing left to confirm.
+5. Add a new `nt_roadmap` row for the gate's removal itself, carrying
+   this full history, so the same compute-saving idea doesn't get
+   silently reinvented later without institutional memory of why it was
+   killed.
+6. Separately, explicitly deferred: fix the `heavy_sweep_reachability_mode`
+   open question and the stale "weekly" docstring — related, smaller,
+   not bundled into this change.
+7. Explicitly **not** proposed now: a real event-driven re-optimization
+   trigger (e.g., "ATR jumped 40% intraday, don't wait for tonight's
+   cron") would be a legitimate *future* enhancement built on an actual
+   measured signal (ATR/regime now vs. ATR/regime at last optimization)
+   — but it's additive new scope, not a fix for today's problem, and
+   building it now would repeat exactly the mistake being corrected
+   here: reaching for a plausible-sounding mechanism before confirming
+   there's still a problem left to solve once the invalid gate is gone.
+
+Waiting on explicit go-ahead to build steps 1-5 above.
+
+### Built (2026-09-09, same day, following explicit approval)
+
+User confirmed the missing piece of context that makes this an even
+easier call: the original 2026-06 justification (Supabase Edge Function
+150s timeouts colliding with Render cold starts under burst load) was
+an infrastructure constraint of the OLD deployment — the decision to
+migrate off Supabase Edge Functions onto Lightning AI Studio already
+resolved that constraint entirely, independent of and prior to anything
+in this section. So the gate's founding premise was dead on **two
+separate counts**: the infrastructure problem it solved no longer
+exists (migration to Lightning), and even before that migration, the
+2026-09-08 real-cost measurement had already falsified it on its own
+terms. Explicit instruction: "streamline/optimize the codebase. Stop
+adding time as a fix > it is not a solution! build this worklog."
+
+Steps 1-5 built exactly as scoped, nothing expanded beyond it:
+
+1. **`heavy_sweep.py`**: removed `TIMESFM_CONFIDENT_THRESHOLD` and the
+   entire skip branch. TimesFM's forecast is still fetched
+   (`_fetch_timesfm_cached`) and still feeds the EV blend downstream —
+   it simply no longer gates whether the sweep runs. Module docstring
+   rewritten: removed the false "TimesFM confidence gate still skips
+   ~70% of scheduled runs... remains useful for its OWN purpose" claim,
+   replaced with a full "TimesFM confidence gate — removed" section
+   carrying the complete history (infra origin, falsified premise,
+   category error, the 71h59m31s near-miss) so this can't get silently
+   reinvented later without the context for why it was killed.
+2. **Deleted `_should_force_refresh`** (the pure decision function) —
+   nothing left to bypass once there's no gate.
+3. **Deleted `get_heavy_sweep_force_refresh_hours`** (`core/feature_flags.py`)
+   and its `_DEFAULTS` entry, and **`fetch_last_full_heavy_sweep_ts`**
+   (`supabase_client.py`) — confirmed zero remaining callers of either
+   before deleting (`_should_force_refresh` was its only caller).
+4. **`config/feature_flags.yaml`**: removed the `heavy_sweep_force_refresh_hours: 72.0`
+   value, replaced the block with a short "REMOVED" pointer to this
+   section rather than deleting the historical trail outright.
+5. **Deleted both test files** for the removed mechanism
+   (`test_heavy_sweep_force_refresh.py`, 6 tests;
+   `test_fetch_last_full_heavy_sweep_ts.py`, 3 tests) — testing code
+   that no longer exists isn't coverage, it's clutter. Full suite: 791
+   passed, 21 skipped (was 800 passed before this change; -9 for the
+   deleted tests, 0 new failures, 0 regressions).
+6. **In-area honesty fixes** (flagged in scope as related, done while
+   already touching this code): `orchestrator.py`'s `_refresh_symbols`
+   and `_load_brick_params` docstrings both still said "the heavy sweep
+   (weekly)" — stale since migration 142 (2026-09-08) changed cadence to
+   daily. Corrected both to reflect current, accurate behavior.
+7. **`nt_roadmap`**: `heavy_sweep_force_refresh_override` marked
+   `superseded` (not `resolved` — it wasn't validated, it was deleted).
+   New row `heavy_sweep_confidence_gate_removed` added (`resolved`, no
+   review needed) carrying the full history so the same compute-saving
+   idea can't get reinvented later without institutional memory of why
+   it failed twice. `heavy_sweep_daily_cadence_log_confirmation`
+   simplified — "was this symbol skipped by the gate" is no longer a
+   variable to control for when checking tonight's cron completion.
+
+**Explicitly not done, per the scope's own step 6/7** (separate
+decisions, not silently folded in): `heavy_sweep_reachability_mode`'s
+open "possibly superseded by deadline-aware scoring" question is still
+unresolved, still `shadow` since 2026-08-28 — untouched. No new
+event-driven re-optimization trigger was built — the scope document is
+explicit that building a replacement mechanism before confirming a
+problem still exists once the invalid gate is gone would repeat the
+same mistake this section corrects.
+
+Not yet deployed to Studio — pushed to git only, per this session's
+established push/notify pattern.

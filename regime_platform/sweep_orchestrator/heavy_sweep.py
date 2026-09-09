@@ -9,33 +9,18 @@ backend Python ``SweepOrchestrator``.
 Heavy sweep runs on a per-symbol cron schedule defined by
 ``nt_symbol.sweep_cron`` (default ``0 20 * * *`` — daily 20:00 UTC, changed
 from weekly 2026-09-08, worklog
-20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md). The weekly cadence
-(migration 022/028) was justified by "TimesFM handles non-stationarity
-24/7, so bracket re-optimization doesn't need to run often" — that
-conflates two different questions: TimesFM's confidence gate (below)
-answers "is the DIRECTIONAL forecast already confident," not "is the
-currently-selected brick/SL/TP GEOMETRY still well-matched to this
-symbol's volatility." A confident direction call says nothing about
-whether the current bracket resolves inside the 48h expiry deadline —
-real data showed EURUSD/USDCAD/USDJPY sitting at 82-94% expiry even
-under the corrected deadline-aware scorer, i.e. the bracket-fit problem
-persists regardless of TimesFM's confidence. Measured real cost of
-re-running daily instead of weekly is trivial (~29s avg/symbol, ~93s
-worst case, full 14-symbol pass ~7 min average even without the
-TimesFM-gate skip) — the original compute-savings rationale doesn't
-survive contact with current numbers either.
+20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md). Runs unconditionally
+for every symbol every day — no confidence gate, no skip branch (see
+"TimesFM confidence gate — removed" below).
 NOTE: APScheduler's ``from_crontab`` uses PYTHON weekday convention
 (0=Monday) — irrelevant now that the schedule is daily, still relevant
 if a per-symbol override ever reintroduces a weekday-specific cron.
-TimesFM confidence gate still skips ~70% of scheduled runs (it remains
-useful for its OWN purpose — skipping a full re-optimization when
-direction is already clear cuts real compute — just not a substitute
-for cadence).
 
 Per-symbol heavy sweep does:
   1. Skip check (sweep_skip_until from YAML metadata)
   2. Fetch 2160 hourly candles (90 d) from TDVA
-  3. TimesFM confidence gate (skip if confident)
+  3. Fetch TimesFM forecast (informational input to the EV blend below —
+     does not gate whether this sweep runs)
   4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0), plus
      3 optional ATR-anchored candidates (0.15x/0.3x/0.6x ATR) when
      heavy_sweep_atr_anchored_bricks_mode != off (config/feature_flags.yaml,
@@ -52,6 +37,32 @@ Per-symbol heavy sweep does:
 
 T4 w/GPU runs 14 symbols in <30 s total — no stagger needed, no shadow
 mode, no transition period. All Supabase Edge Functions are already OFF.
+
+TimesFM confidence gate — removed 2026-09-09 (worklog
+20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §13). From
+2026-06-21 (migration 022_reduce_heavy_with_timesfm.sql) through today,
+a gate here skipped the entire re-optimization whenever
+``abs(p_timesfm - 0.5) > 0.10``. Removed outright, not bounded with a
+timer, for two independent, each-sufficient reasons: (1) its only
+justification was compute/timeout pressure on the old Supabase Edge
+Function deployment (150s timeout colliding with Render cold starts
+under burst load) — moot since the 2026-08 migration off Supabase Edge
+Functions onto Lightning AI Studio removed that infrastructure
+constraint entirely, and even before that migration the 2026-09-08
+real-cost measurement (~29s/symbol, ~7 min for a full 14-symbol pass)
+had already falsified the compute-savings premise on its own terms; (2)
+the signal it gated on (TimesFM's directional confidence) was never
+causally connected to the thing it was supposedly protecting (whether
+the brick/SL/TP geometry still fits current volatility) — a confident
+direction call says nothing about bracket fit. A 72h force-refresh
+override (``heavy_sweep_force_refresh_hours``) was added 2026-09-09 to
+bound the damage after 5 of 14 symbols were found skipped for 2+ days
+straight, then removed again the same day once it was clear the gate
+itself — not its duration — was the actual defect: bounding an
+unjustified decision with a timer is not a substitute for removing the
+decision, and time is not a fix for a logic error. TimesFM's forecast is
+still fetched and fed into the EV blend every run; it simply no longer
+gates whether the run happens at all.
 
 NOTE (2026-08-09, historical): concurrency is CAPPED at
 ``HEAVY_SWEEP_MAX_CONCURRENCY`` symbols at a time. Originally added
@@ -121,31 +132,6 @@ SWEEP_TP_RANGE = [4, 5, 6, 8, 10, 12]
 MIN_RR = get_min_rr()
 MAX_SHARPE = get_heavy_sweep_max_sharpe()
 MIN_TRADES = get_heavy_sweep_min_trades()
-
-# TimesFM confidence gate: skip heavy sweep if |p_timesfm - 0.5| > 0.1
-TIMESFM_CONFIDENT_THRESHOLD = 0.10
-
-
-def _should_force_refresh(
-    last_full_ts: Optional[datetime], now: datetime, threshold_hours: float,
-) -> tuple[bool, str]:
-    """Pure decision function for the force-refresh override (2026-09-09,
-    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md P0
-    fix) — isolated from ``run_heavy_sweep_for_symbol``'s I/O so it's
-    directly unit-testable without mocking the whole heavy-sweep
-    pipeline.
-
-    Returns ``(force_refresh, reason)``. ``last_full_ts=None`` (this
-    symbol has never had a completed heavy sweep) always forces a
-    refresh — there's nothing to be stale relative to, and a first sweep
-    should always run in full.
-    """
-    if last_full_ts is None:
-        return True, "no completed heavy sweep on record"
-    age_hours = (now - last_full_ts).total_seconds() / 3600.0
-    if age_hours > threshold_hours:
-        return True, f"last full sweep {age_hours:.1f}h ago (> {threshold_hours:.0f}h threshold)"
-    return False, ""
 
 # Heavy-sweep concurrency cap. Originally added (2026-08-09) because firing
 # all 14 symbols at once exhausted the shared Redis pool; kept because it
@@ -697,62 +683,16 @@ class HeavySweepMixin:
                 logger.warning("[sweep:heavy] %s: %s", symbol, result.error)
                 return result
 
-            # ── 2. TimesFM confidence gate ─────────────────────────────
-            # Skip the heavy sweep entirely if TimesFM is already confident
-            # (|p_timesfm - 0.5| > 0.1). Saves real compute on runs where a
-            # full re-optimization is unlikely to change the directional
-            # call — it is NOT a substitute for running the cadence itself
-            # more often (2026-09-08 correction — see module docstring:
-            # direction confidence and bracket/TP/SL geometry fit are
-            # different questions).
-            #
-            # Force-refresh override (2026-09-09, worklog
-            # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, P0
-            # fix): confirmed live that this gate can defer a symbol's
-            # bracket re-optimization INDEFINITELY if TimesFM stays
-            # confident cycle after cycle — 5 of 14 symbols sat 2+ days
-            # stale on their pre-fix brackets despite two major scoring
-            # fixes going live the day before, because they got skipped
-            # every single daily attempt. If this symbol's last COMPLETED
-            # (non-skipped) sweep is older than
-            # get_heavy_sweep_force_refresh_hours(), run the full
-            # re-optimization regardless of TimesFM confidence.
-            from regime_platform.core.feature_flags import (
-                get_heavy_sweep_force_refresh_hours,
-            )
-            from regime_platform.sweep_orchestrator.supabase_client import (
-                fetch_last_full_heavy_sweep_ts,
-            )
-
-            last_full_ts = await fetch_last_full_heavy_sweep_ts(symbol)
-            force_refresh, force_refresh_reason = _should_force_refresh(
-                last_full_ts, datetime.now(timezone.utc),
-                get_heavy_sweep_force_refresh_hours(),
-            )
-
+            # ── 2. TimesFM forecast (informational — no gate) ──────────
+            # No confidence-based skip here. Removed 2026-09-09 — see the
+            # module docstring's "TimesFM confidence gate — removed"
+            # section for the full history. This sweep always runs to
+            # completion; TimesFM's forecast is fetched purely as an
+            # input to the EV blend further down.
             p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
             p_timesfm: Optional[float] = None
             if p_timesfm_result is not None:
                 p_timesfm, _ = p_timesfm_result
-                if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD and not force_refresh:
-                    result.skipped = True
-                    result.skip_reason = (
-                        f"timesfm_confident (p={p_timesfm:.4f})"
-                    )
-                    result.p_timesfm = p_timesfm
-                    result.duration_ms = int((time.time() - start_ts) * 1000)
-                    logger.info(
-                        "[sweep:heavy] %s: SKIPPED — %s",
-                        symbol, result.skip_reason,
-                    )
-                    return result
-                if abs(p_timesfm - 0.5) > TIMESFM_CONFIDENT_THRESHOLD and force_refresh:
-                    logger.info(
-                        "[sweep:heavy] %s: TimesFM confident (p=%.4f) but "
-                        "forcing full re-optimization anyway — %s",
-                        symbol, p_timesfm, force_refresh_reason,
-                    )
-
             result.p_timesfm = p_timesfm
 
             # ── 3. ATR(14) + 5 brick sizes ────────────────────────────

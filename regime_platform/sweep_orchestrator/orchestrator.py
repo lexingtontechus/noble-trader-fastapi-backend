@@ -1274,9 +1274,10 @@ class SweepOrchestrator(HeavySweepMixin):
         Also synchronises the local brick_params.yaml ``symbols:`` section
         with ``nt_symbol.active=true`` — adds seed defaults for newly-active
         symbols and prunes entries for symbols no longer active. The heavy
-        sweep (weekly) is still the only writer of OPTIMISED params; this
-        sync only ensures the YAML has entries for every active symbol so
-        the light sweep can read them between heavy-sweep runs.
+        sweep (daily, changed from weekly 2026-09-08) is still the only
+        writer of OPTIMISED params; this sync only ensures the YAML has
+        entries for every active symbol so the light sweep can read them
+        between heavy-sweep runs.
         """
         symbols = await fetch_active_symbols()
         if not symbols:
@@ -3719,7 +3720,8 @@ class SweepOrchestrator(HeavySweepMixin):
 
         Replaces the Redis ``trading:config:{symbol}`` hash lookup. The
         YAML file (``config/brick_params.yaml``) is the source of truth;
-        the heavy sweep (weekly) rewrites it with ATR-scaled optimised
+        the heavy sweep (daily, unconditional — no TimesFM confidence
+        gate as of 2026-09-09) rewrites it with ATR-scaled optimised
         values. Light sweep reads from the YAML — no Redis round-trip.
 
         Falls back to (0.5, 3, 6) if the YAML is missing or malformed.
