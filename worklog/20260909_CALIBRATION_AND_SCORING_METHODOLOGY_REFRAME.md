@@ -945,3 +945,175 @@ backtest loop with no operational reader. Worth considering a demotion
 to DEBUG level or removal in a future pass; not done here since it
 wasn't part of what was asked and doesn't share the "permanently-false
 gate" defect this section actually corrects.
+
+## 15. EOD resolver / lookback / drift / calibration — fresh-eyes review (2026-09-09)
+
+**SCOPE ONLY — explanation and findings, nothing built yet.** User
+request: "review the eod resolver, lookback, drift process with fresh
+eyes/mind > optimize and decouple weights. this process is
+overengineered... explain plain language the process and logic,
+flaws/shortcomings. how yesterday's changes to calibration impacts
+EOD." Full pipeline traced (file:line, not assumed) across
+`eod_resolver.py`, `eod_correction.py`, `eod_retention.py`,
+`drift_monitor.py`, `calibration_bias_bucket.py`,
+`calibration_enforcement.py`, `supabase_client.py`, `orchestrator.py`,
+`settings.py` before writing anything below.
+
+### Plain-language walkthrough
+
+Four jobs, one shared purpose — grading past signals and feeding that
+grade back into future confidence:
+
+1. **Resolver (nightly, 00:32 UTC)** — every signal the platform ever
+   generated eventually gets checked against what price actually did
+   afterward: did it hit take-profit, hit stop-loss, or time out after
+   48 hours with neither happening ("expired")? This is the literal
+   answer to "won, lost, or timed out" for every past signal.
+2. **Correction / bias check (nightly right after the resolver, AND
+   every 4 hours, AND continuously on every ~15-minute tick)** — takes
+   the graded results and asks "is this symbol's stated confidence
+   currently honest?" If the model said "70% sure" and it's actually
+   winning 30% of the time, the symbol is OVERCONFIDENT; the system
+   writes a note that (a) shrinks that symbol's future confidence and
+   position size, and (b) can trigger an emergency re-optimization of
+   its bracket outside the normal daily schedule.
+3. **Retention (nightly)** — housekeeping: deletes old resolved
+   signals, marks long-abandoned ones as expired.
+4. **Drift monitor (continuously, every tick)** — a fast, in-between
+   version of the same overconfidence check, so a symbol going bad
+   doesn't have to wait for the next scheduled 4-hour check to get
+   caught.
+
+**Root purpose, confirmed**: yes, this is exactly "figure out
+calibration and why symbols were expiring." The resolver's entire job
+is "did this resolve, and if not why," and the high expiry rate this
+whole session has revolved around is a direct symptom of what this
+pipeline measures. Traced precisely: the high expiry rate (58% seen in
+today's pulse check) was **not a bug in the resolver** — it was a real,
+already-identified, already-mostly-fixed upstream defect. Heavy sweep's
+own grid search used to score candidate brackets by Sharpe over the
+full 90-day backtest with **no concept of the resolver's 48h deadline**
+at all — proven live on XAUUSD, whose picked bracket had "10 trades / 0
+wins / 0 losses / 10 expired / $0 — literally every 'win' in its
+backtest takes longer than 48h to close." That was fixed 2026-09-08
+(`heavy_sweep_deadline_aware_scoring_mode`, validated on 70 real
+anchors: win% 58.5→74.5, expired% 49.3→42.0). The 58% figure seen
+yesterday is very plausibly a mix of pre-fix and post-fix brackets
+still cycling through the resolver's rolling window, not evidence the
+fix didn't work.
+
+### Flaws found — this genuinely is overengineered, concretely
+
+**The same question — "is this symbol calibrated right now" — is
+computed independently at least four different ways, on four different
+cadences, with four different thresholds, off the same underlying
+data:**
+
+| Where | Cadence | Window | Threshold |
+|---|---|---|---|
+| Nightly enforced-bias check (`eod_correction.py`) | 00:32 UTC daily | 7d, 3d decay half-life | ±0.10 |
+| Intraday raw-bias check (`eod_correction.py`, `raw_bias_mode=True`) | every 4h | same window | +0.30 / -0.20 |
+| Drift monitor (`drift_monitor.py`) | every ~15 min, per tick | 48h/2d | 0.15 (one-directional) |
+| `fetch_calibration_bias`'s own internal status | computed every call, **read by nobody who uses it correctly** | same as caller | 0.05 |
+
+That last row is a genuinely dead, load-bearing-looking calculation:
+`fetch_calibration_bias` computes a CALIBRATED/OVERCONFIDENT status at
+a 0.05 threshold and returns it — `eod_correction.py` fetches this dict
+but **never reads that field**, re-deriving its own 0.10-threshold
+verdict instead. `heavy_sweep.py` independently reads that same
+0.05-threshold field to compute a 12-hour "skip window"
+(`sweep_skip_until`) — which is itself now **fully dead**: traced end
+to end, it's computed and logged every day for every symbol, then
+never passed to the brick-params writer, never stored, never read by
+anything. The skip mechanism it was built to feed was the TimesFM
+confidence gate removed yesterday (§13) — the calibration-bias fetch
+that fed it was never cleaned up alongside it. Same "sinking
+foundation" pattern as §13's own finding, one layer over: half a
+mechanism got removed, the other half is still running a live Supabase
+call per symbol per day for no effect.
+
+**Other concrete duplication, not editorializing — found in the code:**
+- Three-plus constant pairs (bias thresholds, "how long is a penalty
+  valid" hours, Bayesian prior count, Kelly reduction factor) are
+  copy-pasted verbatim between `eod_correction.py` and
+  `calibration_enforcement.py`, by explicit stated design ("kept as a
+  separate copy... consistent with this file's existing 'mirror, don't
+  share' convention"), kept in sync **only by unit tests** — not by a
+  shared source of truth. Forgetting to update one side breaks nothing
+  until a sync test happens to run.
+- `nt_eod_actions` is written by four independently-timed mechanisms
+  (nightly correction, 4-hourly correction, per-tick drift monitor,
+  per-tick regime-shift-alert) and read by three consumers. This has
+  already caused one confirmed live bug (one writer's rows silently
+  masking another's, breaking the stagnation-escalation counter for
+  USDCAD) — patched with an extra filter, not a redesign that prevents
+  the collision category itself.
+- The stagnation-tier escalation counter and its own clearing logic
+  were coupled badly enough that clearing `bayesian_penalty` rows
+  (needed for other reasons) reset the counter to 1 every single cycle,
+  silently preventing Tier 1/2 escalation from ever firing — fixed by
+  splitting into two differently-scoped clearing functions rather than
+  removing the coupling.
+- The emergency-heavy-sweep trigger (bias-driven, uncapped at night,
+  12h-cooldown-capped intraday) was never reconciled against
+  yesterday's change: now that every symbol re-optimizes unconditionally
+  every single day (§13), an emergency re-sweep the same day is often
+  just running that day's sweep twice for that symbol. Not addressed by
+  §13 (out of its scope), so it's unreviewed residual scope, not a
+  deliberate decision.
+
+### How yesterday's calibration change (§9 item #1) impacts this pipeline: it doesn't, directly
+
+Confirmed by grep across all five EOD-pipeline files (not assumed):
+**zero references** to `p_historical` or the removed EV-blend anywhere
+in `eod_resolver.py`, `eod_correction.py`, `eod_retention.py`,
+`drift_monitor.py`, or `calibration_bias_bucket.py`. This entire
+pipeline is structurally downstream of `nt_signal_sim` and
+`nt_calibration_records` only — it computes bias from realized
+outcomes and writes `nt_eod_actions` recommendations; it has never
+called `compute_ev()` or read the blend directly. Yesterday's change
+touched exactly one thing: at the two places a signal's confidence
+actually gets used live (light sweep, heavy sweep), p_win used to be
+corrected **twice** on the way out — once softly inside the EV blend
+(`p_historical`, now removed) and once hard afterward
+(`apply_calibration_adjustment`, reading this exact pipeline's output)
+— and now it's corrected once. Every mechanism in this section computes
+the same numbers, the same way, on the same schedule it always did.
+
+### Proposed decoupling, ranked, not yet built
+
+1. **Delete the dead `sweep_skip_until`/`SWEEP_SKIP_CALIBRATED_HOURS`
+   computation in `heavy_sweep.py`** — the direct, same-pattern
+   follow-up to §13's own removal. Frees one Supabase round-trip per
+   symbol per day for zero behavior change (it already does nothing).
+2. **Pick one arbiter for "is this symbol calibrated," stop computing
+   it four ways.** Concretely: either delete `fetch_calibration_bias`'s
+   dead internal 0.05-threshold status, or make it the single source of
+   truth every other classifier (`eod_correction`, the now-dead
+   heavy_sweep read) calls into instead of re-deriving its own
+   threshold on the same number.
+3. **Replace the "mirror, don't share" duplicated-constant convention**
+   (bias thresholds, prior count, Kelly reduction, freshness windows
+   duplicated across `eod_correction.py`/`calibration_enforcement.py`)
+   with real shared imports from one definition. The sync-test safety
+   net is a symptom that this should be one source, not a solution.
+4. **Reconcile emergency-heavy-sweep dispatch against the new
+   unconditional-daily cadence** — decide explicitly whether a same-day
+   emergency re-run still adds value now that every symbol already
+   re-optimizes daily regardless, rather than leaving both mechanisms
+   running unreconciled.
+5. **Consolidate or explicitly justify the three overlapping bias-drift
+   thresholds** (0.10 nightly / 0.30·-0.20 intraday-raw / 0.15
+   drift-monitor) — either a deliberately-tiered design (cheap+wide at
+   tick level, escalating to slower+narrower nightly) with the
+   reasoning written down, or one fewer independently-tuned number.
+6. **Larger, separate, higher-risk item, not proposed for now**: the
+   `nt_eod_actions` four-writer/three-reader shared-table design is the
+   deepest structural issue and has already caused one real incident.
+   Fixing it properly (a single writer, or real event-sourcing instead
+   of a shared mutable log with per-consumer filters bolted on) is a
+   genuine redesign, not a same-day cleanup — flagged for its own future
+   decision, not bundled into items 1-5.
+
+Waiting on explicit direction on which of 1-5 (or all) to build; 6 is
+flagged, not proposed, for now.
