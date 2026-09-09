@@ -267,6 +267,13 @@ class Settings(BaseSettings):
     #   window itself (which would slow reaction to genuine regime shifts).
     EOD_BIAS_DECAY_HALFLIFE_DAYS: float = 3.0
 
+    # This is one of THREE calibration-trust thresholds in the platform
+    # (this one, EOD_BIAS_ENFORCED_THRESHOLD below, and
+    # drift_monitor.py's EOD_DRIFT_THRESHOLD) — see eod_correction.py's
+    # module-level comment above OVERCONFIDENT_BIAS for the full tiering
+    # table (2026-09-09, worklog
+    # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16).
+    #
     # EOD_BIAS_RAW_OVERCONFIDENT (default 0.30, 2026-08-22):
     #   Threshold for the 4h intraday correction pass (raw-bias mode). The raw
     #   p_win (predicted_p_win_raw, pre-enforcement) is naturally more extreme

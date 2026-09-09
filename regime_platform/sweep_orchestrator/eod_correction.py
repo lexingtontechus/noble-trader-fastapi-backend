@@ -41,6 +41,56 @@ from typing import Any, Optional
 
 logger = logging.getLogger("regime.sweep.eod_correction")
 
+# ── Three calibration-trust checks, three cadences, three thresholds —
+# a deliberately-tiered design, made explicit here (2026-09-09, worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16) after a
+# fresh-eyes review found the relationship between them undocumented
+# anywhere, indistinguishable from accidental duplication:
+#
+#   Cadence         Threshold        Reads              Purpose
+#   ~15 min/tick    0.15 (one-way,   predicted_p_win     Fast tripwire between
+#                   overconfidence   (enforced value,     scheduled passes —
+#                   only)            drift_monitor.py)    drift_monitor.py's own
+#                                                          docstring: "detects
+#                                                          bias drift BETWEEN
+#                                                          [the 4h/24h] passes."
+#                                                          Overconfidence-only
+#                                                          by design (docstring:
+#                                                          "underconfidence is
+#                                                          conservative...
+#                                                          handled by the
+#                                                          scheduled passes").
+#   4h              0.30 / -0.20     predicted_p_win_raw  Wider band because
+#                   (this module,    (pre-enforcement,    raw model output is
+#                   raw_bias_mode)   this module)         naturally more
+#                                                          extreme than the
+#                                                          enforcement-
+#                                                          compensated value —
+#                                                          measures true model
+#                                                          drift, not the
+#                                                          correction already
+#                                                          applied on top of it.
+#   24h (nightly)   0.10 (this       predicted_p_win      The narrow, "official"
+#                   module,          (enforced value,     threshold that
+#                   default mode)    this module)         actually drives
+#                                                          kelly_reduction/
+#                                                          bayesian_penalty/
+#                                                          emergency_heavy_sweep
+#                                                          — the least noisy
+#                                                          signal (most data,
+#                                                          slowest cadence), so
+#                                                          it gets the tightest
+#                                                          band.
+#
+# None of these three should be merged into one: each answers "is this
+# symbol's confidence trustworthy" for a genuinely different combination
+# of (how fast do we need to know, how noisy is the input at that
+# cadence, what should touching it actually do). Consolidating them into
+# a single check would either make the tick-level tripwire too slow to
+# be useful, or make the low-noise nightly enforcement threshold too
+# jumpy. If a fourth calibration-trust check is ever proposed, it must
+# justify its own place in this table, not just add another number.
+
 # Bias thresholds (mirror the user's decision tree). MUST mirror
 # settings.EOD_BIAS_ENFORCED_THRESHOLD (a test asserts they stay in sync) —
 # the public /calibration/bias and /calibration/status endpoints
@@ -414,11 +464,14 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                     )
                 continue
 
-            # ── Classify using raw or enforced thresholds ──
-            if raw_bias_mode:
-                status = _classify_bias_raw(bias)
-            else:
-                status = _classify_bias(bias)
+            # ── Classification (2026-09-09, worklog
+            # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+            # SS16): read it straight from cal["status"] instead of
+            # re-deriving with a second _classify_bias/_classify_bias_raw
+            # call — fetch_calibration_bias/_raw now classify internally
+            # using these exact functions, so recomputing here was pure
+            # duplication of an already-correct answer, not a safety net.
+            status = cal["status"]
             # "source": "eod_correction" (2026-08-24 fix) tags every action
             # this module writes so fetch_recent_action_bias can tell them
             # apart from drift_monitor.py's OWN bayesian_penalty writes,

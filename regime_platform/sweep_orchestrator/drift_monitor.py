@@ -19,6 +19,15 @@ Guards:
   * Overconfidence-only — ``bias > +threshold`` is the risk direction (larger
     positions on inflated p_win). Underconfidence is conservative (smaller
     positions) and is handled by the scheduled passes.
+
+This is one of THREE calibration-trust checks in the platform, each
+tuned for a different cadence — see ``eod_correction.py``'s module-level
+comment (above ``OVERCONFIDENT_BIAS``) for the full tiering table and
+why they're deliberately not merged into one. ``EOD_DRIFT_THRESHOLD``
+(default 0.15) is the fast/tick-level tier; this module's own default is
+intentionally narrower than the 4h raw-bias band (0.30) and wider than
+the 24h enforced-bias band (0.10) — see that table before changing any
+of the three.
 """
 
 from __future__ import annotations

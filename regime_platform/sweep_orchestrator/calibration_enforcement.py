@@ -47,20 +47,30 @@ from typing import Any, Optional
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
 
+# One source of truth (2026-09-09, worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16): these
+# constants and _settings_number were previously copy-pasted verbatim
+# into this module ("mirror, don't share"), kept in sync only by a unit
+# test — real shared imports instead, since eod_correction.py doesn't
+# import anything from this module (no circularity) and IS the module
+# that actually writes the nt_eod_actions rows these values
+# classify/shrink. bayesian_adjusted_p_win is deliberately NOT imported
+# here — found, while consolidating, to have a real behavioral
+# difference at n_records=0 (this module returns raw p_win unshrunk in
+# that case, "no evidence to shrink on"; eod_correction.py's version
+# shrinks fully to 0.5 via the same formula) — a considered live-
+# enforcement safety choice, not accidental drift, so it's kept as its
+# own local definition below rather than silently unified.
+from regime_platform.sweep_orchestrator.eod_correction import (
+    OVERCONFIDENT_BIAS,
+    UNDERCONFIDENT_BIAS,
+    BAYES_PRIOR_COUNT,
+    BAYES_PRIOR_PWIN,
+    KELLY_REDUCTION,
+    _settings_number,
+)
+
 log = logging.getLogger("regime.sweep.calibration_enforcement")
-
-# Bias thresholds (MUST mirror eod_correction.OVERCONFIDENT_BIAS /
-# UNDERCONFIDENT_BIAS — the enforcement reads the EOD's classification, but
-# these are kept for self-documentation + the no-actions fallback).
-OVERCONFIDENT_BIAS = 0.10
-UNDERCONFIDENT_BIAS = -0.10
-
-# Bayesian prior strength — MUST mirror eod_correction.BAYES_PRIOR_COUNT.
-BAYES_PRIOR_COUNT = 10
-BAYES_PRIOR_PWIN = 0.5
-
-# Kelly reduction factor — MUST mirror eod_correction.KELLY_REDUCTION.
-KELLY_REDUCTION = 0.5
 
 # How old an EOD action may be before it stops being enforced. The EOD
 # correction now runs every 4h (EOD_CORRECTION_INTERVAL_HOURS), so the
@@ -84,31 +94,6 @@ PENALTY_ACTIONS = (
 AUDIT_ONLY_ACTIONS = ("parameter_decay_check",)
 
 
-def _settings_number(name: str, default: float) -> float:
-    """Read a tunable numeric value: tuning registry file -> settings ->
-    ``default``. Mirrors ``eod_correction._settings_number`` (2026-08-23,
-    Layer 1 E2E wiring — worklog/PARAMETER_TUNING_PLAYBOOK.md §2.5.2.1),
-    kept as a separate copy rather than a cross-module import, consistent
-    with this file's existing "mirror, don't share" convention for
-    BAYES_PRIOR_COUNT / KELLY_REDUCTION (both guarded by a sync test).
-    """
-    try:
-        from regime_platform.core import tuning_registry
-        settings_value = getattr(settings, name, default)
-        # isinstance, NOT float(settings_value) — see
-        # eod_correction._settings_number's comment: a fully-mocked
-        # `settings` object (patch(".settings") with no spec, common in
-        # this test suite) auto-generates attributes that satisfy float()
-        # (returning 1.0) instead of raising, silently ignoring `default`.
-        if isinstance(settings_value, (int, float)) and not isinstance(settings_value, bool):
-            settings_default = float(settings_value)
-        else:
-            settings_default = default
-        return tuning_registry.read_param(name, default=settings_default)
-    except (TypeError, ValueError, ImportError, AttributeError):
-        return default
-
-
 def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     """Shrink ``p_win`` toward 0.5 with a Bayesian prior.
 
@@ -118,6 +103,17 @@ def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     many records the observed p_win dominates (shrink less).
     ``prior_count`` (BAYES_PRIOR_COUNT) is registry-tunable (Layer 1); the
     0.5 anchor (BAYES_PRIOR_PWIN) is not — see §2.5.2.1.
+
+    NOT the same function as ``eod_correction.bayesian_adjusted_p_win``
+    despite the identical name/formula — this one deliberately returns
+    ``p_win`` UNCHANGED at ``n_records=0`` ("no evidence to shrink on")
+    rather than shrinking fully to 0.5, since this is the live
+    enforcement path and ``n_records=0`` can occur here for a mundane
+    reason (an ``nt_eod_actions`` row missing its ``n``/``count`` field)
+    rather than meaning "confirmed zero calibration evidence." See this
+    module's import comment (top of file) — found via the 2026-09-09
+    duplicated-constants consolidation, kept as a deliberate divergence
+    rather than silently unified.
     """
     n = max(int(n_records or 0), 0)
     if n == 0:

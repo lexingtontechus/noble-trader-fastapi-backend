@@ -17,23 +17,28 @@ NOTE: APScheduler's ``from_crontab`` uses PYTHON weekday convention
 if a per-symbol override ever reintroduces a weekday-specific cron.
 
 Per-symbol heavy sweep does:
-  1. Skip check (sweep_skip_until from YAML metadata)
-  2. Fetch 2160 hourly candles (90 d) from TDVA
-  3. Fetch TimesFM forecast (informational input to the EV blend below —
+  1. Fetch 2160 hourly candles (90 d) from TDVA
+  2. Fetch TimesFM forecast (informational input to the EV blend below —
      does not gate whether this sweep runs)
-  4. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0), plus
+  3. ATR(14) + 5 brick sizes (multipliers 0.75, 1.0, 1.5, 2.0, 3.0), plus
      3 optional ATR-anchored candidates (0.15x/0.3x/0.6x ATR) when
      heavy_sweep_atr_anchored_bricks_mode != off (config/feature_flags.yaml,
      default off — see worklog
      20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md)
-  5. Grid search: up to 8 bricks × 3 SL × 6 TP = up to 144 combos (RenkoPipeline)
-  6. HMM regime + Kelly sizing (parallel with grid)
-  7. Pick best combo by Sharpe (MIN_RR/MAX_SHARPE/MIN_TRADES, default
+  4. Grid search: up to 8 bricks × 3 SL × 6 TP = up to 144 combos (RenkoPipeline)
+  5. HMM regime + Kelly sizing (parallel with grid)
+  6. Pick best combo by Sharpe (MIN_RR/MAX_SHARPE/MIN_TRADES, default
      2.0/10.0/10 — config/feature_flags.yaml's min_rr/heavy_sweep_grid)
-  8. Calibration bias → set sweep_skip_until when CALIBRATED
-  9. Write optimised brick params to config/brick_params.yaml
- 10. Compute EV with Markov T^N (Phase A)
- 11. Build qualified signal payload and deliver it directly to Discord
+  7. Write optimised brick params to config/brick_params.yaml
+  8. Compute EV with Markov T^N (Phase A)
+  9. Build qualified signal payload and deliver it directly to Discord
+
+(A "skip if already CALIBRATED" step and its sweep_skip_until value
+existed here through 2026-09-09 — removed as fully dead code, worklog
+20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16: it was
+computed and logged every run but never consumed by anything. Leftover
+half of the TimesFM-confidence-gate removal in SS13 — the skip mechanism
+it fed was deleted then, this half wasn't.)
 
 T4 w/GPU runs 14 symbols in <30 s total — no stagger needed, no shadow
 mode, no transition period. All Supabase Edge Functions are already OFF.
@@ -82,7 +87,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import numpy as np
@@ -139,9 +144,6 @@ MIN_TRADES = get_heavy_sweep_min_trades()
 # to_thread tasks — 14 × 3 = 42 threads otherwise). The grid searches
 # dominate wall time anyway.
 HEAVY_SWEEP_MAX_CONCURRENCY = 4
-
-# When calibration is CALIBRATED, skip the next heavy sweep for 12 h
-SWEEP_SKIP_CALIBRATED_HOURS = 12
 
 
 # ─── Result dataclass ────────────────────────────────────────────────────
@@ -953,21 +955,7 @@ class HeavySweepMixin:
                         symbol, type(exc).__name__, exc,
                     )
 
-            # ── 6. Calibration bias → sweep_skip_until ────────────────
-            from regime_platform.sweep_orchestrator.supabase_client import (
-                fetch_calibration_bias,
-            )
             venue_name = _derive_venue(sym)
-            cal = await fetch_calibration_bias(symbol, venue=venue_name)
-            sweep_skip_until: Optional[datetime] = None
-            if cal and cal.get("status") == "CALIBRATED":
-                sweep_skip_until = datetime.now(timezone.utc) + timedelta(
-                    hours=SWEEP_SKIP_CALIBRATED_HOURS,
-                )
-                logger.info(
-                    "[sweep:heavy] %s: CALIBRATED — skip_until=%s",
-                    symbol, sweep_skip_until.isoformat(),
-                )
 
             # ── 7. Persist optimised brick params to YAML ─────────────
             await self._persist_brick_params_to_yaml(
@@ -1188,6 +1176,18 @@ class HeavySweepMixin:
                             "[sweep:heavy] %s: macro filter read failed (%s: %s), skipping",
                             symbol, type(exc).__name__, exc,
                         )
+
+            # ── Calibration bias (display only) ───────────────────────
+            # Only fetch when qualified — an extra Supabase round-trip
+            # that's only useful for the push payload's calibration_bias/
+            # calibration_status fields on signals we'll actually publish
+            # (mirrors orchestrator.py's identical light-sweep comment).
+            cal = None
+            if qualified:
+                from regime_platform.sweep_orchestrator.supabase_client import (
+                    fetch_calibration_bias,
+                )
+                cal = await fetch_calibration_bias(symbol, venue=venue_name)
 
             if qualified:
                 await self._push_heavy_signal(
@@ -1616,6 +1616,22 @@ class HeavySweepMixin:
         venue_name = _derive_venue(sym)
         effective_kelly = kelly_f * ev_result.ev_scale
 
+        # ── One arbiter for "is this symbol calibrated" (2026-09-09,
+        # worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+        # SS16): classify via eod_correction._classify_bias — the exact,
+        # registry-tunable function that actually drives live enforcement
+        # — instead of fetch_calibration_bias's own internal, hardcoded
+        # 0.05-threshold status, which could and did disagree with the
+        # real 0.10-threshold verdict for any |bias| in [0.05, 0.10).
+        # Same fix, same reasoning as routers/calibration.py's 2026-08-22
+        # audit fix for the identical duplication.
+        calibration_status = None
+        if cal is not None:
+            from regime_platform.sweep_orchestrator.eod_correction import (
+                _classify_bias,
+            )
+            calibration_status = _classify_bias(cal["bias"])
+
         # ── EOD calibration enforcement (2026-08-10) ────────────────────
         # Heavy-sweep signals get the same live calibration correction as
         # light sweeps: read the latest nt_eod_actions recommendation and
@@ -1676,7 +1692,7 @@ class HeavySweepMixin:
             "weights_used": ev_result.weights_used or {},
             "timesfm_available": p_timesfm is not None,
             "calibration_bias": round(cal["bias"], 4) if cal else None,
-            "calibration_status": cal["status"] if cal else None,
+            "calibration_status": calibration_status,
             "calibration_enforced": bool(calib_adj and calib_adj.get("applied")),
             "sharpe": round(best.sharpe, 4),
             "n_combos_tested": True,  # marker — agent can show "optimised" badge

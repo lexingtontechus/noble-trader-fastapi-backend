@@ -1062,13 +1062,6 @@ class SweepOrchestrator(HeavySweepMixin):
         # backend must supply them.)
         self._shift_counts: dict[str, list[float]] = {}
 
-        # ── Emergency heavy-sweep cooldown (intraday correction, 2026-08-13) ──
-        # Last time an emergency heavy sweep re-optimised each symbol (epoch
-        # seconds). The 4h intraday correction passes skip symbols swept within
-        # EOD_HEAVY_SWEEP_COOLDOWN_HOURS to bound backtest cost; the nightly
-        # 00:30 pass is NOT subject to the cooldown.
-        self._heavy_sweep_last: dict[str, float] = {}
-
         # Shared engine instances
         self._sizer = PositionSizer()
         self._ev_engine = EVEngine()
@@ -1658,17 +1651,39 @@ class SweepOrchestrator(HeavySweepMixin):
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
         """Run emergency heavy sweeps for the given symbols (best-effort).
 
-        Shared by the nightly lookback (no cooldown) and the intraday
-        correction passes (cooldown applied by the caller via
-        ``_heavy_sweep_last``). Each symbol is fetched + swept in isolation;
-        failures are logged, never raised out of the tick.
+        Shared by the nightly lookback and the intraday correction passes.
+
+        Cooldown (2026-09-09, worklog
+        20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
+        reconciling this dispatch against the now-unconditional daily
+        heavy-sweep cadence (SS13) found the nightly caller applied NO
+        cooldown at all, and the intraday caller's cooldown lived only in
+        an in-memory, emergency-sweeps-only, restart-fragile dict
+        (``_heavy_sweep_last``, now removed) — invisible to the regular
+        daily cron's own completions. Both are replaced with one durable
+        check here, applied uniformly to every caller:
+        ``fetch_last_full_heavy_sweep_ts`` reads the real last-completed
+        heavy sweep for the symbol from ``nt_sweep_result``, regardless of
+        whether the regular cron or a prior emergency dispatch produced
+        it. A symbol whose bracket was already re-optimized within
+        ``EOD_HEAVY_SWEEP_COOLDOWN_HOURS`` (default 12h) is skipped — a
+        second re-optimization against essentially the same 90-day window
+        wouldn't change the outcome, it would just repeat the same
+        compute.
+
+        Each symbol is fetched + swept in isolation; failures are logged,
+        never raised out of the tick.
         """
         if not emergency_syms:
             return
         try:
             from regime_platform.sweep_orchestrator.supabase_client import (
                 fetch_active_symbols,
+                fetch_last_full_heavy_sweep_ts,
             )
+            cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12) or 12)
+            now = datetime.now(timezone.utc)
+
             all_symbols = await fetch_active_symbols()
             sym_map = {s.get("symbol"): s for s in all_symbols}
             for sym_name in emergency_syms:
@@ -1679,9 +1694,20 @@ class SweepOrchestrator(HeavySweepMixin):
                         sym_name,
                     )
                     continue
+
+                last_full_ts = await fetch_last_full_heavy_sweep_ts(sym_name)
+                if last_full_ts is not None:
+                    age_h = (now - last_full_ts).total_seconds() / 3600.0
+                    if age_h < cooldown_h:
+                        logger.info(
+                            "[eod:lookback] emergency sweep %s: skipped — "
+                            "last full sweep %.1fh ago (< %.0fh cooldown)",
+                            sym_name, age_h, cooldown_h,
+                        )
+                        continue
+
                 try:
                     result = await self.run_heavy_sweep_for_symbol(sym)
-                    self._heavy_sweep_last[sym_name] = time.time()
                     logger.info(
                         "[eod:lookback] emergency heavy sweep %s: %s",
                         sym_name,
@@ -1972,8 +1998,12 @@ class SweepOrchestrator(HeavySweepMixin):
         ``eod-correction-intraday-*``). Recomputes per-symbol calibration
         bias over the rolling window and rewrites ``nt_eod_actions`` so a
         mid-day regime shift moves the bias in hours, not 24h. Emergency
-        heavy sweeps run only for NEWLY-flagged symbols, subject to
-        ``EOD_HEAVY_SWEEP_COOLDOWN_HOURS`` (the nightly pass is exempt).
+        heavy sweeps are dispatched for every flagged symbol; the
+        ``EOD_HEAVY_SWEEP_COOLDOWN_HOURS`` cooldown is applied uniformly
+        (this pass and the nightly pass alike) inside
+        ``_execute_emergency_heavy_sweeps`` itself — see that method's
+        docstring (2026-09-09 reconciliation with the now-unconditional
+        daily heavy-sweep cadence).
 
         Does NOT run the resolver or retention — the nightly 00:30 lookback
         owns those. Best-effort: failures are logged, never raised.
@@ -1996,6 +2026,11 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # L3 fix (2026-08-21): Also trigger emergency heavy sweeps for
         # degeneracy_breaker actions (symbols with p_win≈0 and no calibration).
+        # Cooldown (2026-09-09, worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16) is
+        # now applied uniformly inside _execute_emergency_heavy_sweeps
+        # itself (durable, DB-backed, source-agnostic) — no separate
+        # pre-filter needed here.
         emergency_syms = sorted({
             a.get("symbol")
             for a in (correction_summary.get("actions") or [])
@@ -2005,24 +2040,11 @@ class SweepOrchestrator(HeavySweepMixin):
         if not emergency_syms:
             return
 
-        cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12) or 12)
-        now = time.time()
-        to_sweep = [
-            s for s in emergency_syms
-            if now - self._heavy_sweep_last.get(s, 0.0) >= cooldown_h * 3600.0
-        ]
-        skipped = [s for s in emergency_syms if s not in to_sweep]
-        if skipped:
-            logger.info(
-                "[eod:correction-intraday] heavy-sweep cooldown skips: %s",
-                skipped,
-            )
-        if to_sweep:
-            logger.info(
-                "[eod:correction-intraday] emergency heavy sweeps requested: %s",
-                to_sweep,
-            )
-            await self._execute_emergency_heavy_sweeps(to_sweep)
+        logger.info(
+            "[eod:correction-intraday] emergency heavy sweeps requested: %s",
+            emergency_syms,
+        )
+        await self._execute_emergency_heavy_sweeps(emergency_syms)
 
     async def _sweep_group(
         self, cron_expr: str, symbols: list[dict[str, Any]]
@@ -3149,6 +3171,22 @@ class SweepOrchestrator(HeavySweepMixin):
         venue_name = _derive_venue(sym)
         cal = await fetch_calibration_bias(symbol, venue=venue_name) if qualified else None
 
+        # One arbiter for "is this symbol calibrated" (2026-09-09, worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
+        # classify via eod_correction._classify_bias — the exact,
+        # registry-tunable function that actually drives live enforcement
+        # — instead of fetch_calibration_bias's own internal, hardcoded
+        # 0.05-threshold status, which could and did disagree with the
+        # real 0.10-threshold verdict for any |bias| in [0.05, 0.10). Same
+        # fix, same reasoning as routers/calibration.py's 2026-08-22 audit
+        # fix for the identical duplication.
+        calibration_status = None
+        if cal is not None:
+            from regime_platform.sweep_orchestrator.eod_correction import (
+                _classify_bias,
+            )
+            calibration_status = _classify_bias(cal["bias"])
+
         # ── 7. Regime shift detection ──
         prev_regime = self._last_regime.get(symbol)
         prev_trend_probs = self._last_trend_probs.get(symbol)
@@ -3299,7 +3337,7 @@ class SweepOrchestrator(HeavySweepMixin):
             # (bias > 0.10). Also applied in backtest/sim as a P_win
             # correction (see backtest/engine.py).
             "calibration_bias": round(cal["bias"], 4) if cal else None,
-            "calibration_status": cal["status"] if cal else None,
+            "calibration_status": calibration_status,
             "regime_shift": "true" if regime_shift else "false",
             "prev_regime": prev_regime or "",
             "size_mult": round(size_mult, 2),

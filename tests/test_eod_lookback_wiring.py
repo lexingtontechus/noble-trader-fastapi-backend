@@ -153,16 +153,27 @@ class TestSignalSimPayloadRawPWin:
 
 
 class TestEodCorrectionIntraday:
-    def _orch(self):
-        orch = _make_orchestrator()
-        orch._heavy_sweep_last = {}
-        return orch
+    """2026-09-09 (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+    SS16): the cooldown moved from an in-memory ``orch._heavy_sweep_last``
+    dict (emergency-sweeps-only, wiped on restart) to a durable,
+    source-agnostic Supabase check (``fetch_last_full_heavy_sweep_ts``),
+    applied uniformly inside ``_execute_emergency_heavy_sweeps`` for both
+    the nightly and intraday callers. Tests patch that function directly
+    instead of setting the (now-removed) dict.
+    """
 
-    def _patch_sweep_sources(self):
+    def _orch(self):
+        return _make_orchestrator()
+
+    def _patch_sweep_sources(self, last_full_ts=None):
         return (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
                 new=AsyncMock(return_value=[{"symbol": "EURUSD"}, {"symbol": "BTCUSD"}]),
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_last_full_heavy_sweep_ts",
+                new=AsyncMock(return_value=last_full_ts),
             ),
         )
 
@@ -172,6 +183,7 @@ class TestEodCorrectionIntraday:
             {"symbol": "EURUSD", "action": "emergency_heavy_sweep"},
             {"symbol": "BTCUSD", "action": "bayesian_penalty"},  # not a sweep
         ]
+        p1, p2 = self._patch_sweep_sources(last_full_ts=None)
 
         async def run():
             with (
@@ -179,13 +191,12 @@ class TestEodCorrectionIntraday:
                     "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
                     new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
                 ),
-                self._patch_sweep_sources()[0],
+                p1, p2,
             ):
                 await orch._run_eod_correction_only()
 
         asyncio.run(run())
         assert orch.run_heavy_sweep_for_symbol.await_count == 1  # only EURUSD swept
-        assert "EURUSD" in orch._heavy_sweep_last
 
     def test_no_actions_means_no_sweeps(self):
         orch = self._orch()
@@ -201,11 +212,12 @@ class TestEodCorrectionIntraday:
         orch.run_heavy_sweep_for_symbol.assert_not_awaited()
 
     def test_cooldown_skips_recently_swept_symbol(self):
-        import time as _time
+        from datetime import datetime, timezone
 
         orch = self._orch()
-        orch._heavy_sweep_last = {"EURUSD": _time.time()}  # swept just now
         actions = [{"symbol": "EURUSD", "action": "emergency_heavy_sweep"}]
+        # Last full sweep "just now" -> well within the cooldown window.
+        p1, p2 = self._patch_sweep_sources(last_full_ts=datetime.now(timezone.utc))
 
         async def run():
             with (
@@ -213,7 +225,7 @@ class TestEodCorrectionIntraday:
                     "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
                     new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
                 ),
-                self._patch_sweep_sources()[0],
+                p1, p2,
             ):
                 await orch._run_eod_correction_only()
 
@@ -221,12 +233,13 @@ class TestEodCorrectionIntraday:
         orch.run_heavy_sweep_for_symbol.assert_not_awaited()
 
     def test_cooldown_expired_sweeps_again(self):
-        import time as _time
+        from datetime import datetime, timedelta, timezone
 
         orch = self._orch()
         cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12))
-        orch._heavy_sweep_last = {"EURUSD": _time.time() - cooldown_h * 3600.0 - 1}
         actions = [{"symbol": "EURUSD", "action": "emergency_heavy_sweep"}]
+        last_full_ts = datetime.now(timezone.utc) - timedelta(hours=cooldown_h, seconds=1)
+        p1, p2 = self._patch_sweep_sources(last_full_ts=last_full_ts)
 
         async def run():
             with (
@@ -234,7 +247,7 @@ class TestEodCorrectionIntraday:
                     "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
                     new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
                 ),
-                self._patch_sweep_sources()[0],
+                p1, p2,
             ):
                 await orch._run_eod_correction_only()
 
@@ -262,6 +275,10 @@ class TestEodCorrectionIntraday:
                     "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
                     new=AsyncMock(return_value=[{"symbol": "AUDUSD"}, {"symbol": "BTCUSD"}]),
                 ),
+                patch(
+                    "regime_platform.sweep_orchestrator.supabase_client.fetch_last_full_heavy_sweep_ts",
+                    new=AsyncMock(return_value=None),
+                ),
             ):
                 await orch._run_eod_correction_only()
 
@@ -288,6 +305,10 @@ class TestEodCorrectionIntraday:
                 patch(
                     "regime_platform.sweep_orchestrator.eod_correction.run_eod_correction",
                     new=AsyncMock(return_value={"checked": 14, "actions": actions, "errors": 0}),
+                ),
+                patch(
+                    "regime_platform.sweep_orchestrator.supabase_client.fetch_last_full_heavy_sweep_ts",
+                    new=AsyncMock(return_value=None),
                 ),
                 patch(
                     "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",

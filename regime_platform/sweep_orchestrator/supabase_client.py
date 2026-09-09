@@ -1503,12 +1503,17 @@ async def fetch_calibration_bias(
     )
     bias = round(avg_pred - win_rate, 4)
 
-    if abs(bias) < 0.05:
-        status = "CALIBRATED"
-    elif bias >= 0.05:
-        status = "OVERCONFIDENT"
-    else:
-        status = "UNDERCONFIDENT"
+    # One arbiter for "is this symbol calibrated" (2026-09-09, worklog
+    # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
+    # classify via eod_correction._classify_bias -- the exact,
+    # registry-tunable function that actually drives live enforcement --
+    # instead of a hardcoded 0.05 threshold computed independently here.
+    # Local import: eod_correction.py imports THIS module's functions the
+    # same way (also locally, inside run_eod_correction), so neither
+    # module can import the other at module load time -- both already
+    # rely on function-local imports to avoid a circular dependency.
+    from regime_platform.sweep_orchestrator.eod_correction import _classify_bias
+    status = _classify_bias(bias)
 
     return {
         "bias": bias,
@@ -1549,8 +1554,10 @@ async def fetch_calibration_bias_raw(
 
     The bias thresholds here are wider (``EOD_BIAS_RAW_OVERCONFIDENT`` /
     ``EOD_BIAS_RAW_UNDERCONFIDENT``) because raw model output is naturally
-    more extreme. Classification is done by the caller (``run_eod_correction``
-    in raw mode) using those settings.
+    more extreme. Classification is done here, via
+    ``eod_correction._classify_bias_raw`` (2026-09-09) — the same function
+    every other consumer of a raw-bias verdict calls, so this can never
+    silently disagree with what's actually enforced.
 
     EPISODE COUNTING + DECAY WEIGHTING (2026-09-08): same mitigations as
     ``fetch_calibration_bias`` — see that function's docstring. This is the
@@ -1609,12 +1616,14 @@ async def fetch_calibration_bias_raw(
     # the model's true miscalibration, not the enforcement compensation.
     bias = round(avg_pred_raw - win_rate, 4)
 
-    if abs(bias) < 0.05:
-        status = "CALIBRATED"
-    elif bias >= 0.05:
-        status = "OVERCONFIDENT"
-    else:
-        status = "UNDERCONFIDENT"
+    # One arbiter (2026-09-09, worklog
+    # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
+    # classify via eod_correction._classify_bias_raw -- the wider,
+    # registry-tunable thresholds this docstring already says should be
+    # used, instead of the hardcoded 0.05 this function computed
+    # independently before (contradicting its own documented design).
+    from regime_platform.sweep_orchestrator.eod_correction import _classify_bias_raw
+    status = _classify_bias_raw(bias)
 
     return {
         "bias": bias,
@@ -1938,6 +1947,54 @@ async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
         return None
 
     return data[0]
+
+
+async def fetch_last_full_heavy_sweep_ts(symbol: str) -> Optional[datetime]:
+    """Timestamp of the most recent COMPLETED heavy sweep for ``symbol``
+    (``source='sweep-heavy'`` rows in ``nt_sweep_result``), regardless of
+    what triggered it — the regular daily cron or an emergency dispatch.
+
+    Used by ``orchestrator._execute_emergency_heavy_sweeps`` (2026-09-09,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16)
+    as a durable, source-agnostic cooldown check: reconciling the
+    emergency-heavy-sweep dispatch against the now-unconditional daily
+    cadence found the nightly path had NO cooldown at all (could
+    re-trigger a full re-optimization on the same day's data every
+    single night for a chronically-biased symbol) and the intraday path's
+    cooldown lived only in an in-memory dict, tracking emergency sweeps
+    only — invisible to the regular cron's own completions, and wiped on
+    every Studio restart. This function replaces both with one real
+    question: "has ANY heavy sweep completed for this symbol recently,
+    from any source" — not a resurrection of the removed TimesFM-gate
+    force-refresh mechanism (SS13), a structurally different use: that one
+    used staleness to override a decision that shouldn't have existed;
+    this one uses recency to avoid two heavy sweeps doing the same
+    90-day-window optimization twice in one day.
+
+    Returns ``None`` if this symbol has never had a completed heavy
+    sweep, or on any failure — never raises. Callers should treat
+    ``None`` as "no prior sweep, nothing to cool down against."
+    """
+    try:
+        url = _url("nt_sweep_result")
+        params = {
+            "select": "sweep_timestamp",
+            "symbol": f"eq.{symbol}",
+            "source": "eq.sweep-heavy",
+            "order": "sweep_timestamp.desc",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_last_full_heavy_sweep_ts %s failed: %s", symbol, exc)
+        return None
+
+    if not isinstance(data, list) or len(data) == 0:
+        return None
+    return _parse_iso_dt(data[0].get("sweep_timestamp"))
 
 
 async def fetch_latest_qualified_signal(symbol: str, direction: str) -> dict[str, Any] | None:

@@ -626,7 +626,6 @@ class TestOrchestratorWiring:
         from regime_platform.sweep_orchestrator.orchestrator import SweepOrchestrator
 
         orch = object.__new__(SweepOrchestrator)
-        orch._heavy_sweep_last = {}
         correction_mock = AsyncMock(return_value={"checked": 14, "actions": [], "errors": 0})
 
         with (
@@ -650,7 +649,6 @@ class TestOrchestratorWiring:
         from regime_platform.sweep_orchestrator.orchestrator import SweepOrchestrator
 
         orch = object.__new__(SweepOrchestrator)
-        orch._heavy_sweep_last = {}
         correction_mock = AsyncMock(return_value={"checked": 14, "actions": [], "errors": 0})
 
         with (

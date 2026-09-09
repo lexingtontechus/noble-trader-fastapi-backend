@@ -1117,3 +1117,194 @@ the same numbers, the same way, on the same schedule it always did.
 
 Waiting on explicit direction on which of 1-5 (or all) to build; 6 is
 flagged, not proposed, for now.
+
+### Built (2026-09-09, same day, explicit approval: "add it to the worklog and build")
+
+All five items built, in order. Full suite: 791 passed, 21 skipped, 0
+failures throughout (checked after every item, not just at the end).
+
+**#1 — deleted the dead `sweep_skip_until`/`SWEEP_SKIP_CALIBRATED_HOURS`
+computation** (`heavy_sweep.py`). Traced fully before deleting: it was
+computed and logged every run, then never passed to
+`_persist_brick_params_to_yaml`, never stored on the result, never read
+anywhere — the skip mechanism it fed was the TimesFM gate removed in
+§13. Caught mid-edit that `venue_name` (needed later in the same
+function for the push-payload venue field) was assigned in the same
+block I was deleting — restored it as its own line rather than
+reintroducing the dead calibration fetch around it. Module docstring's
+step list corrected (was still describing a "skip check" step that
+never existed in the actual code).
+
+**#2 — one arbiter for "is this symbol calibrated."** Found the
+diagnosis was even more concrete than scoped: `fetch_calibration_bias`/
+`fetch_calibration_bias_raw` (`supabase_client.py`) computed their own
+internal status using a hardcoded 0.05 threshold, which `eod_correction.py`
+already correctly ignored (re-deriving its own 0.10/0.30·-0.20
+verdict) — but `heavy_sweep.py` and `orchestrator.py`'s live Discord/
+agent push payloads were NOT ignoring it, sending the wrong-threshold
+0.05-based "calibration_status" to the downstream hermes agent. Found a
+real, pre-existing precedent for the correct fix already in the
+codebase: `routers/calibration.py` (2026-08-22 audit fix) already
+classifies via `eod_correction._classify_bias`/`_classify_bias_raw`
+instead of trusting `fetch_calibration_bias`'s internal field, for
+exactly this reason. Applied the same pattern everywhere: `supabase_client.py`'s
+two fetch functions now classify via those same functions internally
+(no circularity — neither module imports the other at module load
+time, both already used function-local imports for this exact
+reason); `eod_correction.py`'s own `run_eod_correction` now reads
+`cal["status"]` directly instead of re-deriving it a second time;
+`heavy_sweep.py`/`orchestrator.py`'s push payloads now explicitly
+classify via `_classify_bias` rather than trusting the fetch result.
+Also restored `heavy_sweep.py`'s `cal` fetch (broken by #1's deletion,
+since `_push_heavy_signal` still needed it for its own payload) —
+moved it to fire only when qualified, matching the light sweep's
+existing "only fetch when we'll actually publish" optimization.
+
+**#3 — replaced duplicated constants with real shared imports**
+(`calibration_enforcement.py` → `eod_correction.py`): `OVERCONFIDENT_BIAS`,
+`UNDERCONFIDENT_BIAS`, `BAYES_PRIOR_COUNT`, `BAYES_PRIOR_PWIN`,
+`KELLY_REDUCTION`, `_settings_number` — all previously copy-pasted
+verbatim ("mirror, don't share... guarded by a sync test"), now
+imported directly (no circularity in this direction either).
+**Deliberately did NOT unify `bayesian_adjusted_p_win`** — found, while
+comparing the two "identical" copies line by line before merging them,
+that they'd already drifted: `calibration_enforcement.py`'s version
+returns `p_win` unchanged at `n_records=0` ("no evidence to shrink
+on"), while `eod_correction.py`'s version shrinks fully to 0.5 via the
+same formula at n=0. This is a live-enforcement safety choice (an
+`nt_eod_actions` row missing its `n`/`count` field is a data-quality
+gap, not "confirmed zero evidence" — shrinking to exactly 0.5 in that
+case would be a worse outcome than leaving the signal alone), not
+accidental drift. Documented the divergence explicitly in both
+functions' docstrings and kept them separate — this is exactly the
+"verify before unifying" discipline this whole review is about; a
+mechanical merge here would have silently changed live risk-management
+behavior as a side effect of a "cleanup."
+
+**#4 — reconciled emergency-heavy-sweep dispatch against the
+now-unconditional daily cadence.** Found the overlap was worse than
+scoped: the nightly dispatch had **no cooldown at all** (could
+re-trigger a full re-optimization on a chronically-biased symbol every
+single night, hours after that day's regular cron already ran), and the
+intraday dispatch's cooldown lived only in an in-memory dict
+(`self._heavy_sweep_last`) that tracked emergency sweeps ONLY —
+invisible to the regular cron's own completions, and wiped on every
+Studio restart (the same restart-fragility class of bug behind several
+other fixes this session). Restored a helper structurally similar to
+one deleted in §13 (`fetch_last_full_heavy_sweep_ts`) — but for a
+genuinely different purpose this time: §13's version fed a force-refresh
+override for a decision (the TimesFM gate) that had no valid reason to
+exist at all; this version answers a real question ("has ANY heavy
+sweep completed for this symbol recently, from any source") to avoid
+running the same 90-day-window optimization twice in one day. Moved the
+`EOD_HEAVY_SWEEP_COOLDOWN_HOURS` check into `_execute_emergency_heavy_sweeps`
+itself, applied uniformly to both the nightly and intraday callers;
+deleted `self._heavy_sweep_last` entirely and the intraday-only
+pre-filter that duplicated it. Updated `tests/test_eod_lookback_wiring.py`'s
+four cooldown-dependent tests to patch the new durable function instead
+of setting the removed dict.
+
+**#5 — consolidated/justified the three overlapping bias-drift
+thresholds**, rather than merging them. Re-examined each threshold's own
+documentation before deciding: all three (tick-level 0.15 one-directional,
+4h-raw 0.30/-0.20, nightly-enforced 0.10) turned out to be a genuinely
+deliberate, already-reasoned tiered design (fast/cheap/narrow-scope at
+the tick level, escalating to slower/lower-noise/tighter-band at the
+nightly level) — not three independently-guessed numbers. Forcibly
+merging them would have removed real, considered fast-path protection
+for no benefit. Chose the "explicitly justify" branch instead: added a
+full tiering table (cadence × threshold × what it reads × why) as a
+module-level comment in `eod_correction.py` (the hub all three orbit),
+cross-referenced from `drift_monitor.py`'s docstring and `settings.py`'s
+threshold constants, so a future reader (or a future fourth-threshold
+proposal) sees the deliberate relationship instead of mistaking it for
+duplication.
+
+### Item #6, scoped in detail — nt_eod_actions: state and history sharing one table
+
+**Not built. Scoping only, per the explicit request to detail this
+further before any commitment.**
+
+**The root problem, precisely.** `nt_eod_actions` is asked to serve two
+incompatible roles at once:
+1. **Audit trail** — a permanent historical record of every
+   calibration-bias assessment ever made, at any cadence, useful for
+   debugging and for `_stagnation_streak`'s own history lookup.
+2. **Live command bus** — "what is the CURRENT enforceable penalty for
+   symbol X, right now" — a piece of single-current-value STATE, which
+   `apply_calibration_adjustment` needs on every qualification decision.
+
+Every reader has to reconstruct role #2 by querying role #1's log:
+"fetch the latest row matching (action type, source, freshness
+window)." Every time a new writer or a new purpose was added, that
+reconstruction logic had to be revisited everywhere it was done, or a
+new writer's rows silently corrupted an existing reader's
+"reconstruct current state" query. This is the direct, confirmed cause
+of at least two real incidents already fixed this session's prior work:
+USDCAD's stagnation-streak counter being reset to 1 every cycle by an
+overly-broad clear operation, and USDCAD's stagnation signal being
+diluted by `drift_monitor.py`'s own `bayesian_penalty` writes
+interleaving with `eod_correction.py`'s. Both were patched with an
+additional filter (a `source` tag, a split clearing function) — real
+fixes, but each one is a patch on the SAME underlying design defect,
+not a fix to the defect itself. A third latent issue, found during this
+review: `nt_eod_actions` isn't even a reliable permanent audit trail
+today, since `_clear_stale_eod_actions` periodically deletes rows from
+it specifically to reset live enforcement state — the "audit log"
+is mutated to serve the "state" role, undermining its own purpose as
+history.
+
+**Current writers (4):** `eod_correction.py` nightly (00:32 UTC),
+`eod_correction.py` intraday (4h, raw-bias mode), `drift_monitor.py`
+(per light-sweep tick), `orchestrator._write_regime_shift_alert` (per
+tick, a structurally different, non-enforcement action type sharing the
+same table).
+
+**Current readers (3):** `calibration_enforcement.apply_calibration_adjustment`
+(live enforcement — the highest-stakes reader), `drift_monitor.py`'s own
+freshness guard, `eod_correction._stagnation_streak`'s history lookup.
+
+**Two credible redesign directions:**
+
+**Option A — separate state from history (recommended).** Add a new
+table, e.g. `nt_symbol_calibration_state`: one row PER SYMBOL (upsert,
+not insert) — `symbol` (PK), `action`, `bias`, `status`, `n_records`,
+`kelly_reduction_override`, `stagnation_tier`, `source`, `computed_at`.
+This becomes the SOLE thing `apply_calibration_adjustment` reads — "read
+this symbol's one row," not "reconstruct the latest matching row from a
+shared log." `nt_eod_actions` stops being mutated for enforcement
+purposes and becomes a genuinely permanent, append-only audit log for
+the first time — every writer keeps writing to it for history, nothing
+reads it to decide live enforcement anymore. Whichever pass computes a
+new verdict (nightly/intraday/drift-monitor) upserts the state table,
+with an explicit, written-down precedence rule for "who wins" (proposed:
+nightly > intraday > drift-monitor, since that's the same order as most
+data → least noise). `_stagnation_streak` keeps reading history from
+the (now-truly-permanent) audit log exactly as today — that's a
+legitimate "look at history" operation, not part of the state-vs-log
+confusion, so it doesn't need to move. `_clear_stale_eod_actions`/
+`_clear_stagnation_history` get repointed to clear/reset the new state
+table's row instead of deleting audit history — fixing the "audit log
+gets mutated" issue as a side effect, not a separate task.
+Cost: one migration, plus updating `apply_calibration_adjustment`'s read
+path and every writer's "also upsert state" call — a moderate, but
+mechanical and low-ambiguity, refactor.
+
+**Option B — single-writer discipline, no new table.** Introduce one
+arbiter module that becomes the SOLE writer to `nt_eod_actions`; the
+three current writers call INTO it with their computed verdict instead
+of writing directly, and the arbiter resolves precedence in code rather
+than leaving every reader to re-derive it via SQL filters.
+`regime_shift_alert` would move to its own table as part of this
+(already conceptually a detection-only alert, not a penalty — sharing
+a table with enforcement actions was never load-bearing for it).
+Cost: no schema migration, but doesn't fix the deeper "state
+reconstructed from a log" pattern, and doesn't resolve the
+audit-log-gets-mutated issue — a smaller, incomplete fix.
+
+**Recommendation:** Option A. It's the better foundation for the
+platform's stated next goal (self-learning) — a self-learning loop
+needs one clean, authoritative "what do we currently believe about
+symbol X" record to read and update directly, not a log to re-derive
+state from on every decision. Not started; needs explicit go-ahead
+given it's a real schema change touching the live enforcement path.
