@@ -488,18 +488,6 @@ def select_best_combo_deadline_aware(
 
 # ─── Mix-in ──────────────────────────────────────────────────────────────
 
-# p_historical fetch cache (R3, 2026-08-23, worklog/
-# 20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md). Calibration bias changes on
-# the 4h EOD-correction / daily EOD-resolver cadence, not every sweep tick —
-# a 15-minute cache (same TTL as the orchestrator's TimesFM cache) avoids a
-# Supabase round-trip per symbol per tick for data that's effectively
-# static within that window. Lives here (not orchestrator.py) because
-# BOTH the light-sweep path (SweepOrchestrator._process_symbol) and the
-# heavy-sweep path (this mixin) need it, and only this mixin's methods are
-# guaranteed on a bare ``HeavySweepMixin`` test double (see
-# tests/test_heavy_sweep_resilience.py's ``_make_orchestrator()``).
-P_HISTORICAL_CACHE_TTL_S = 900  # 15 minutes
-
 
 class HeavySweepMixin:
     """Mix-in providing heavy-sweep methods to ``SweepOrchestrator``.
@@ -515,38 +503,16 @@ class HeavySweepMixin:
       • ``_regime_sync(prices)`` — CPU-bound HMM regime
       • ``_kelly_sync(prices, asset_class)`` — CPU-bound Kelly sizing
       • ``_persist_brick_params_to_yaml(symbol, brick, sl, tp)`` — YAML write
-      • ``_fetch_p_historical_cached(symbol)`` — cached p_historical fetch
-        (R3), shared with the light-sweep path via inheritance.
+
+    (``_fetch_p_historical_cached`` — the cached ``p_historical`` EV-blend
+    fetch (R3, 2026-08-23) — was removed 2026-09-09,
+    worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md:
+    ``p_historical`` and ``calibration_enforcement.apply_calibration_adjustment``
+    were two independently-computed mechanisms both correcting for symbol
+    confidence off the same evidence; consolidated to
+    ``apply_calibration_adjustment`` — the hard, post-hoc mechanism — as
+    the sole calibration-correction path.)
     """
-
-    async def _fetch_p_historical_cached(self, symbol: str) -> Optional[float]:
-        """Bayesian-shrunk realized win rate for ``symbol`` (R3 EV-blend
-        source), cached for ``P_HISTORICAL_CACHE_TTL_S``. Mirrors
-        ``orchestrator._fetch_timesfm_cached``.
-
-        Requires ``self._p_historical_cache`` (a ``dict[str, tuple[float |
-        None, float]]``) to exist — ``SweepOrchestrator.__init__`` sets it;
-        test doubles constructing a bare mixin instance must stub it too.
-        """
-        cache = self._p_historical_cache
-        now = time.time()
-        cached = cache.get(symbol)
-        if cached is not None:
-            value, ts = cached
-            if now - ts < P_HISTORICAL_CACHE_TTL_S:
-                return value
-            cache.pop(symbol, None)
-
-        from regime_platform.sweep_orchestrator.calibration_enforcement import (
-            fetch_historical_p_win,
-        )
-        try:
-            value = await fetch_historical_p_win(symbol)
-        except Exception as exc:
-            logger.debug("%s: p_historical fetch failed: %s", symbol, exc)
-            value = None
-        cache[symbol] = (value, now)
-        return value
 
     # ── Cron tick handler ────────────────────────────────────────────
 
@@ -1093,12 +1059,11 @@ class HeavySweepMixin:
             from regime_platform.services.hmm import latest_ta
             ta_snapshot = latest_ta(self._hmm_buffer, symbol)
 
-            # p_historical (R3, 2026-08-23): same Bayesian-shrunk realized
-            # win-rate source as the light sweep, reused here for blend
-            # consistency across both sweep paths — replaces the old
-            # p_pattern=None (always-null server-side source; removed
-            # rather than kept, see ev_engine.py's module docstring).
-            _p_historical = await self._fetch_p_historical_cached(symbol)
+            # p_historical (R3, 2026-08-23) was retired as a live blend
+            # input 2026-09-09 — see the class docstring above and
+            # orchestrator.py's mirror comment for the full rationale
+            # (duplicate calibration-correction mechanism, consolidated to
+            # apply_calibration_adjustment).
             # R4 (2026-08-23): same non-convergence discount as the light
             # sweep, reusing regime_snapshot.trend_converged (populated by
             # RegimeHMM.predict() automatically via _regime_sync() above --
@@ -1167,7 +1132,6 @@ class HeavySweepMixin:
                 ev_result = self._ev_engine.compute_ev(
                     trend_probs=_trend_probs,
                     direction=direction,
-                    p_historical=_p_historical,
                     transition_matrix=markov_T,
                     current_state=markov_current,
                     p_timesfm=p_timesfm,

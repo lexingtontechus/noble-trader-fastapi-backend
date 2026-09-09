@@ -39,8 +39,12 @@ def _make_orchestrator(hmm_model=None):
     orch._ev_engine = MagicMock()
     orch._sizer = MagicMock()
     orch._scheduler = None
-    # R3 (2026-08-23): _fetch_p_historical_cached needs this cache dict.
-    orch._p_historical_cache = {}
+    # R3 (2026-08-23) added _p_historical_cache here for
+    # _fetch_p_historical_cached; both were removed 2026-09-09 when the
+    # p_historical EV-blend source was retired as a duplicate
+    # calibration-correction mechanism (see
+    # worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md) —
+    # no longer needed here.
     return orch
 
 

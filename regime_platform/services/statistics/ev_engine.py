@@ -2,12 +2,32 @@
 EV Engine v6 — 4-source logit-pooled P_win with T^N Markov hold probability.
 
 Sources (default weights, override via ``set_weights()``):
-    P_historical    0.30   — Bayesian-shrunk realized win rate (server-side,
-                             from nt_calibration_records — see
-                             calibration_enforcement.fetch_historical_p_win())
+    P_historical    0.30   — Bayesian-shrunk realized win rate. NOT fed by
+                             any production caller as of 2026-09-09 (see
+                             note below) — orchestrator.py/heavy_sweep.py
+                             no longer pass a value, so this source always
+                             renormalises out live. The weight entry, the
+                             parameter, and ``compute_p_historical()``
+                             remain for the ad-hoc renko/router.py
+                             ``/ev/compute`` endpoint and any direct caller
+                             that supplies its own value.
     P_regime        0.25   — HMM regime posterior
     P_markov_hold_N 0.20   — T^N multi-step hold probability (N = bars to TP)
     P_timesfm       0.25   — TimesFM foundation model forecast
+
+NOTE (2026-09-09, worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md):
+``p_historical`` (this soft, continuous blend input) and
+``calibration_enforcement.apply_calibration_adjustment()`` (a separate,
+hard, post-hoc correction applied AFTER this blend runs) were found to be
+two independently-computed mechanisms both correcting for "is this
+symbol's confidence trustworthy" off the same calibration-bias evidence,
+stacked on top of each other. Consolidated to ``apply_calibration_adjustment``
+as the sole calibration-correction mechanism; the formerly-live fetch
+(``calibration_enforcement.fetch_historical_p_win()``, which read
+``v_eod_calibration_bias_latest``) was deleted. This blend's formula/
+weights are otherwise unchanged — the 3 surviving sources (p_regime,
+p_markov_hold_n, p_timesfm) and the logit-pooling/renormalization
+mechanism were not touched.
 
 When any source is unavailable, the engine renormalises the remaining weights
 to sum to 1.0 and blends only the available sources — it does NOT silently
@@ -474,10 +494,14 @@ class EVEngine:
     # v6 (2026-08-23): replaces the old agent-DuckDB-only p_pattern source.
     # The engine itself stays a pure function here — fetching the win/loss
     # counts from nt_calibration_records and applying the Bayesian shrink
-    # is the CALLER's responsibility (see
-    # calibration_enforcement.fetch_historical_p_win()), mirroring how
-    # p_markov_override works: the caller computes/smooths a value and
-    # passes the already-final probability in.
+    # was the CALLER's responsibility, mirroring how p_markov_override
+    # works: the caller computes/smooths a value and passes the
+    # already-final probability in. That caller
+    # (``calibration_enforcement.fetch_historical_p_win()``) was removed
+    # 2026-09-09 (see the module docstring's NOTE) — no production caller
+    # supplies a value anymore, so this always renormalises out live. Kept
+    # as a pass-through for direct callers (e.g. renko/router.py's
+    # ``/ev/compute`` endpoint) that still supply their own value.
 
     @staticmethod
     def compute_p_historical(
@@ -490,7 +514,8 @@ class EVEngine:
         symbol, or below the minimum-sample threshold) — the blend will
         renormalise around the missing source. Returns the value unchanged
         otherwise (it is already a Bayesian-shrunk P(win) estimate for this
-        symbol — see ``calibration_enforcement.fetch_historical_p_win()``).
+        symbol). No production caller supplies one as of 2026-09-09 — see
+        the module docstring's NOTE.
 
         Args:
             p_historical: Bayesian-shrunk realized win rate for this symbol,
@@ -582,10 +607,13 @@ class EVEngine:
         Args:
             trend_probs: HMM regime posterior dict. Drives P_regime.
             direction: "long" or "short".
-            p_historical: Bayesian-shrunk realized win rate for this symbol
-                       (see ``calibration_enforcement.fetch_historical_p_win()``).
-                       None if not available (new symbol, or below the
-                       minimum-sample threshold). Drives P_historical.
+            p_historical: Bayesian-shrunk realized win rate for this symbol.
+                       None if not available. Drives P_historical when
+                       supplied. No production caller (orchestrator.py,
+                       heavy_sweep.py) passes this anymore as of
+                       2026-09-09 — see the module docstring's NOTE; kept
+                       for direct callers such as renko/router.py's
+                       ``/ev/compute`` endpoint.
             transition_matrix: 3x3 dict-of-dicts keyed by {UP, DOWN, FLAT}.
                                Drives P_markov_hold_N via T^N.
             current_state: One of "UP", "DOWN", "FLAT".

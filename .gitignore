@@ -136,3 +136,14 @@ config/tuning_registry.yaml
 # for ground truth again — see worklog
 # 20260907_REACHABILITY_LIVE_RESOLUTION_AND_SIGNAL_QUALITY_REPORT_SCOPE.md.
 config/brick_params.yaml
+
+# Signal-stream local lookback cache (2026-09-09,
+# regime_platform/sweep_orchestrator/signal_stream_cache.py) — a local
+# SQLite rolling cache of per-tick signal features feeding the meta-
+# regime model. Supabase's nt_signal_sim remains the durable source of
+# truth (resync_from_supabase() self-heals this file from it); this is a
+# fast local working set only, not an audit trail. Same
+# live-mutated-runtime-state shape as tuning_registry.yaml/
+# brick_params.yaml above. See worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §6.
+config/signal_stream_cache.sqlite

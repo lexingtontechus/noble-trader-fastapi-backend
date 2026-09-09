@@ -1,128 +1,40 @@
-"""Tests for the p_historical EV-blend source (R3, 2026-08-23 —
+"""Tests for the ``p_historical`` EV-blend source (R3, 2026-08-23 —
 worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md).
 
 Covers:
-  1. ``calibration_enforcement.fetch_historical_p_win`` — reads
-     ``v_eod_calibration_bias_latest``, applies the Bayesian shrink, and
-     respects the view's own INSUFFICIENT_DATA gate.
-  2. ``EVEngine.compute_p_historical`` — the pass-through/clamp contract.
-  3. ``EVEngine.compute_ev`` — p_historical participates in the blend and
+  1. ``EVEngine.compute_p_historical`` — the pass-through/clamp contract.
+  2. ``EVEngine.compute_ev`` — p_historical participates in the blend and
      renormalizes out cleanly when unavailable (replacing the old
      always-None p_pattern source).
-"""
-import asyncio
-from unittest.mock import patch
 
+REMOVED 2026-09-09 (worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md):
+this file used to also cover ``calibration_enforcement.fetch_historical_p_win``
+(reads ``v_eod_calibration_bias_latest``, applies the Bayesian shrink,
+respects the view's own INSUFFICIENT_DATA gate). That function was deleted
+outright — it fed ``p_historical`` into this blend as a soft, continuous
+correction, independently of (and stacked on top of)
+``calibration_enforcement.apply_calibration_adjustment()``, a separate
+hard, post-hoc correction applied to the SAME p_win after this blend
+already ran, off the SAME underlying calibration-bias evidence. Consolidated
+to ``apply_calibration_adjustment`` as the sole calibration-correction
+mechanism, so those fetch-behavior tests were testing intentionally-removed
+functionality, not surviving behavior — deleted, not adapted.
+
+What remains below (``compute_p_historical``'s pass-through/clamp contract,
+and ``compute_ev``'s renormalization when p_historical is absent/present)
+is genuine, still-present ``ev_engine.py`` behavior: no production caller
+(orchestrator.py, heavy_sweep.py) feeds this source anymore, but the
+parameter/weight entry/renormalization contract itself was deliberately
+left in place for direct callers that still supply their own value (e.g.
+renko/router.py's ad-hoc ``/ev/compute`` endpoint) — see ev_engine.py's
+module docstring NOTE.
+"""
 import pytest
 
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
-from regime_platform.sweep_orchestrator.calibration_enforcement import (
-    fetch_historical_p_win,
-)
 
 
-# ─── 1. fetch_historical_p_win ──────────────────────────────────────────
-
-
-class FakeResp:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._rows
-
-
-class FakeClient:
-    def __init__(self, rows):
-        self.rows = rows
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def get(self, url, headers=None, params=None):
-        return FakeResp(self.rows)
-
-
-def _run_fetch(symbol="AAPL", rows=None):
-    client = FakeClient(rows if rows is not None else [])
-    with (
-        patch(
-            "regime_platform.sweep_orchestrator.calibration_enforcement._url",
-            return_value="https://x.supabase.co/rest/v1/v_eod_calibration_bias_latest",
-        ),
-        patch(
-            "regime_platform.sweep_orchestrator.calibration_enforcement._headers",
-            return_value={"apikey": "k", "Authorization": "Bearer k"},
-        ),
-        patch("httpx.AsyncClient", return_value=client),
-        patch("regime_platform.core.settings.settings.SUPABASE_URL", "https://x.supabase.co"),
-        patch("regime_platform.core.settings.settings.SUPABASE_KEY", "k"),
-    ):
-        return asyncio.run(fetch_historical_p_win(symbol))
-
-
-def test_shrinks_realized_win_rate_toward_half():
-    """n=90, win_rate=0.10 (like US500's real numbers) -> Bayesian-shrunk
-    toward 0.5, not the raw (extreme) realized rate."""
-    result = _run_fetch(rows=[{"n": 90, "realized_win_rate": 0.10, "status_raw": "OVERCONFIDENT"}])
-    assert result is not None
-    # (0.10*90 + 0.5*10) / 100 = 0.14 with the default prior_count=10.
-    assert abs(result - 0.14) < 1e-6
-    assert result > 0.10  # shrunk toward 0.5, not the raw extreme
-
-
-def test_insufficient_data_returns_none():
-    """The view's own min-sample gate (status_raw=INSUFFICIENT_DATA) is
-    respected, not re-derived — a new/thin-history symbol must drop out
-    of the blend rather than contribute a noisy small-n estimate."""
-    result = _run_fetch(rows=[{"n": 4, "realized_win_rate": 0.25, "status_raw": "INSUFFICIENT_DATA"}])
-    assert result is None
-
-
-def test_no_row_returns_none():
-    """A symbol with no calibration history at all (empty result set)."""
-    assert _run_fetch(rows=[]) is None
-
-
-def test_unconfigured_supabase_returns_none():
-    with (
-        patch("regime_platform.core.settings.settings.SUPABASE_URL", ""),
-        patch("regime_platform.core.settings.settings.SUPABASE_KEY", ""),
-    ):
-        assert asyncio.run(fetch_historical_p_win("AAPL")) is None
-
-
-def test_network_error_returns_none_not_raise():
-    class ExplodingClient:
-        async def __aenter__(self):
-            raise ConnectionError("boom")
-
-        async def __aexit__(self, *exc):
-            return False
-
-    with (
-        patch(
-            "regime_platform.sweep_orchestrator.calibration_enforcement._url",
-            return_value="https://x.supabase.co/rest/v1/v_eod_calibration_bias_latest",
-        ),
-        patch(
-            "regime_platform.sweep_orchestrator.calibration_enforcement._headers",
-            return_value={},
-        ),
-        patch("httpx.AsyncClient", return_value=ExplodingClient()),
-        patch("regime_platform.core.settings.settings.SUPABASE_URL", "https://x.supabase.co"),
-        patch("regime_platform.core.settings.settings.SUPABASE_KEY", "k"),
-    ):
-        assert asyncio.run(fetch_historical_p_win("AAPL")) is None
-
-
-# ─── 2. EVEngine.compute_p_historical (pass-through contract) ──────────
+# ─── 1. EVEngine.compute_p_historical (pass-through contract) ──────────
 
 
 def test_compute_p_historical_passthrough_and_clamp():
@@ -132,19 +44,21 @@ def test_compute_p_historical_passthrough_and_clamp():
     assert EVEngine.compute_p_historical(-0.2, "long") == 0.0  # clamped
 
 
-# ─── 3. compute_ev() blend integration ─────────────────────────────────
+# ─── 2. compute_ev() blend integration ─────────────────────────────────
 
 
 def test_weights_full_has_historical_not_pattern():
     """R2: p_pattern is gone; R3: p_historical replaces it at the same
-    30% base weight."""
+    30% base weight. The weight table entry itself survives the 2026-09-09
+    removal of the production fetch — only the live feed was retired."""
     assert "p_pattern" not in P_WIN_WEIGHTS_FULL
     assert P_WIN_WEIGHTS_FULL["p_historical"] == 0.30
     assert abs(sum(P_WIN_WEIGHTS_FULL.values()) - 1.0) < 1e-9
 
 
 def test_p_historical_none_renormalizes_like_old_p_pattern():
-    """Omitting p_historical (None, e.g. a brand-new symbol) must drop it
+    """Omitting p_historical (None — the default, and now what every
+    production caller passes since the 2026-09-09 removal) must drop it
     from the blend and renormalize over the remaining 3 sources — the
     exact contract p_pattern always relied on, since the server always
     passed it as None."""
@@ -161,8 +75,10 @@ def test_p_historical_none_renormalizes_like_old_p_pattern():
 
 
 def test_p_historical_present_participates_in_blend():
-    """A high p_historical (symbol has a strong realized track record)
-    pulls p_win up relative to the same call without it."""
+    """A direct caller that still supplies p_historical (e.g.
+    renko/router.py's ad-hoc /ev/compute endpoint) gets it blended: a high
+    value (symbol has a strong realized track record) pulls p_win up
+    relative to the same call without it."""
     engine = EVEngine()
     common = dict(
         trend_probs={"bull": 0.5, "bear": 0.5},

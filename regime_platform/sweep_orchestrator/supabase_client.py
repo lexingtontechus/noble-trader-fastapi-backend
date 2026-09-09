@@ -357,21 +357,44 @@ async def log_renko_bricks(
     brick_size: float | None = None,
     session_date: str | None = None,
     sweep_ts: float | None = None,
+    has_real_timestamps: bool = False,
 ) -> None:
     """Persist one brick per row to ``nt_renko_bricks`` (best-effort).
 
     Matches the real table schema: brick_id serial PK, unique
-    (symbol, brick_index, session_date). Uses ``Prefer:
-    resolution=merge-duplicates`` + ``on_conflict=symbol,brick_index,
-    session_date`` so a re-sweep of the same symbol+brick_index replaces
-    the prior brick instead of duplicating rows (the table's PK is the
-    serial brick_id, so without the on_conflict hint PostgREST resolves on
+    (symbol, brick_index, session_date, brick_size) — brick_size was added
+    to the key 2026-09-09 (migration 145,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7
+    "Finding 2") so a re-sweep at a NEW brick_size can never silently
+    overwrite a row that belongs to a DIFFERENT grid at the same
+    (symbol, brick_index, session_date) — each (symbol, brick_size) pair
+    now owns its own brick_index/session_date space. Growth from stale
+    grids is bounded separately by the nightly ``renko_retention.py`` pass,
+    not by this key change. Uses ``Prefer: resolution=merge-duplicates`` +
+    ``on_conflict=symbol,brick_index,session_date,brick_size`` so a
+    re-sweep of the same symbol+brick_index+brick_size replaces the prior
+    brick instead of duplicating rows (the table's PK is the serial
+    brick_id, so without the on_conflict hint PostgREST resolves on
     brick_id → always INSERTs → unbounded growth).
 
     ``session_date`` defaults to CURRENT_DATE (DB default) when omitted.
-    When ``sweep_ts`` is provided, brick timestamps are synthesised as
-    hourly epochs backward from it (the sweep passes only close prices, no
-    per-brick timestamps; this keeps the chart's time axis sane).
+
+    ``has_real_timestamps`` (2026-09-09 fix for worklog §7 "Finding 1"):
+    when True, each brick dict's own ``"timestamp"`` field (set by
+    ``RenkoBrickEngine.build_from_prices(prices, timestamps=...)`` from the
+    REAL per-bar epoch the price fetcher returned) is used as-is — this is
+    now the expected default path from the live sweep, which threads real
+    timestamps through end to end (see orchestrator.py's brick-capture
+    block). When False (the caller determined real timestamps were
+    unavailable or incomplete for this batch — e.g. the price fetch had no
+    parseable time field for some bars, or a caller invoked this with only
+    close prices), ``build_from_prices`` fell back to its own bare
+    auto-incrementing index (0, 1, 2, ...), so a real epoch cannot be
+    recovered from the brick dict — that case falls back to synthesising
+    hourly spacing backward from ``sweep_ts`` purely so the admin chart's
+    x-axis stays readable. This fallback timing is FABRICATED (uniform
+    "1 hour per brick," not real brick-formation timing) and must never be
+    treated as a real feature — see the module docstring reference above.
 
     Never raises: failures are logged and swallowed.
     """
@@ -381,12 +404,23 @@ async def log_renko_bricks(
     rows = []
     n = len(bricks)
     for i, b in enumerate(bricks):
-        ts_epoch = float(b.get("timestamp") or 0)
-        if sweep_ts is not None:
-            # The sweep passes only close prices, so build_from_prices
-            # auto-increments timestamps from 0 (→ 1970). Synthesise hourly
-            # spacing backward from the sweep time instead.
+        if has_real_timestamps:
+            ts_epoch = float(b.get("timestamp") or 0)
+        elif sweep_ts is not None:
+            # Fallback path — triggers ONLY when the caller could not
+            # supply real per-bar timestamps (has_real_timestamps=False).
+            # build_from_prices was given no timestamps (or an incomplete
+            # array), so every brick.timestamp here is a bare
+            # auto-incrementing index, not a real epoch. Synthesise hourly
+            # spacing backward from sweep_ts instead — a uniform "1 hour
+            # per brick" reconstruction, NOT real brick-formation timing.
             ts_epoch = sweep_ts - (n - 1 - i) * 3600.0
+        else:
+            # Neither real timestamps nor a sweep_ts fallback were
+            # supplied — the brick's own field is whatever the caller put
+            # there (real epoch if the caller pre-populated it directly,
+            # else build_from_prices' bare index).
+            ts_epoch = float(b.get("timestamp") or 0)
         row = {
             "symbol": symbol,
             "direction": b.get("direction"),
@@ -409,7 +443,7 @@ async def log_renko_bricks(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{_url('nt_renko_bricks')}?on_conflict=symbol,brick_index,session_date",
+                f"{_url('nt_renko_bricks')}?on_conflict=symbol,brick_index,session_date,brick_size",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",
@@ -1898,6 +1932,51 @@ async def fetch_latest_sweep(symbol: str) -> dict[str, Any] | None:
             data: list[dict] = resp.json()
     except Exception as exc:
         logger.warning("fetch_latest_sweep %s failed: %s", symbol, exc)
+        return None
+
+    if not isinstance(data, list) or len(data) == 0:
+        return None
+
+    return data[0]
+
+
+async def fetch_latest_qualified_signal(symbol: str, direction: str) -> dict[str, Any] | None:
+    """Most recent QUALIFIED ``nt_signal_sim`` row for ``(symbol, direction)``.
+
+    Cooldown-restart fix (2026-09-08, worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, user directive
+    "after a sl/tp hits > the cooldown should restart"): before letting a
+    new signal qualify, the orchestrator's cooldown gate needs to know
+    whether the LAST qualified signal in this same direction has actually
+    resolved yet (TP/SL hit, or expired) rather than trusting elapsed
+    wall-clock time alone. This returns the raw row — ``ts``,
+    ``entry_price``, ``stop_loss``, ``take_profit``, ``signal``,
+    ``outcome``, ``exit_ts``, ``resolved_at`` — so the caller can apply
+    ``eod_resolver.resolve_signal_outcome``'s own TP/SL-crossing logic for
+    a live (pre-batch-resolution) check.
+
+    Best-effort: returns ``None`` on any failure or when no qualified
+    signal exists yet for this pair — the caller must fall back to the
+    existing wall-clock-only cooldown behavior in that case, never raise.
+    """
+    try:
+        url = _url("nt_signal_sim")
+        params = {
+            "select": "signal_id,ts,entry_price,stop_loss,take_profit,signal,outcome,exit_ts,resolved_at",
+            "symbol": f"eq.{symbol}",
+            "signal": f"eq.{direction}",
+            "qualified": "eq.true",
+            "order": "ts.desc",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning(
+            "fetch_latest_qualified_signal %s/%s failed: %s", symbol, direction, exc,
+        )
         return None
 
     if not isinstance(data, list) or len(data) == 0:

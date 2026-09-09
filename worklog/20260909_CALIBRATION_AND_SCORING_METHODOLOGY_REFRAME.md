@@ -285,3 +285,99 @@ scoped, buildable fix (not a redesign) — flagged here, not yet built.
 
 No code has been written. Waiting on direction on which of the above to
 scope into an actual build plan next.
+
+## 9. Built (2026-09-09, same day, following explicit approval)
+
+All five open decisions above were resolved and built the same day, plus
+two more items from a follow-up conversation. Three independent builds ran
+in parallel (subagents); the sweep-cadence decision, the SQLite cache, and
+the meta-regime model were built directly. Full suite: 784 passed, 21
+skipped, 0 failed. Nothing deployed to Studio yet — pushed to git only.
+
+**#1 — calibration-bias architecture, consolidated to the hard mechanism.**
+Removed `p_historical` (the soft, continuous EV-blend correction) entirely
+from both production call sites (`orchestrator.py`, `heavy_sweep.py`) —
+`apply_calibration_adjustment` (hard, post-hoc, already episode-counted
+per 2026-09-08's fix) is now the sole calibration correction. Deleted
+`fetch_historical_p_win()` and its cache helpers outright once they became
+fully dead. Deliberately left `ev_engine.py`'s blend formula and the
+separate `/ev/compute` API endpoint (`renko/router.py`, a genuinely
+different live consumer of `p_historical`) untouched — narrower blast
+radius than gutting the engine, and per [[ev_engine_no_rework]].
+
+**#2 — the meta-HMM over the signal-generation stream: built (v1).**
+`meta_regime_model.py`: a 2-state GaussianHMM fit on regime-label
+persistence + confidence deviation, reusing `RegimeHMM`'s own
+standardization/degenerate-fit-repair statics directly. Validated against
+real XAUUSD history (not just synthetic), which surfaced an honest
+limitation: the binary label-persistence feature dominates the fit over
+the more continuous confidence signal, so it reliably catches label
+flip-flopping but under-weights a confidence *spike* without a label
+change — exactly the failure mode in the original 13:01 example. Shipped
+`signal_stream_meta_model_mode: off` — needs that v2 feature before
+shadow, let alone live.
+
+**#3 — brick-data timestamps: fixed and verified against live data.**
+Real per-bar timestamps now flow `price_fetcher.py` → `orchestrator.py` →
+`log_renko_bricks`, replacing the fabricated `sweep_ts`-backward
+reconstruction — the fabrication path is now an explicit, logged fallback
+for when real timestamps genuinely aren't available, not a silent
+default. Root cause traced one layer deeper than originally scoped:
+`price_fetcher.py` was discarding TDVA's real candle timestamps before
+they ever reached the brick engine. Also fixed the undiscriminated
+`nt_renko_bricks` unique key (migration 145: added `brick_size` to the
+key, one-time-pruned 129,583 → 62,530 orphaned-grid rows) plus a new
+nightly `renko_retention.py` pass. Verified end-to-end against a live
+TDVA fetch after the build (not just unit tests): real timestamps resolve
+to correct, sane real-world dates.
+
+**#4 — SQLite local cache: built, persistence verified via a real existing
+precedent.** `signal_stream_cache.py` at `config/signal_stream_cache.sqlite`
+— same convention as `tuning_registry.yaml`. Persistence across Studio
+restarts confirmed via `HF_HOME=/teamspace/studios/this_studio/hf_cache`
+(worklog 20260831_TIMESFM_3_UPGRADE_SCOPE.md), which already stores an
+883MB TimesFM checkpoint that survives Studio's frequent restarts today —
+proof the repo checkout lives on the persistent Studio volume, not
+ephemeral container disk, so a relative path within it persists the same
+way. `resync_from_supabase()` self-heals the cache from `nt_signal_sim` if
+ever wiped.
+
+**#5 — aggregation window: resolved by construction, not a config
+knob.** Per the correction that this isn't a fixed 4-hour block:
+`summarize_since_last_transition` reports "how long has the current state
+held" directly from the fitted Viterbi state sequence — there is no
+duration parameter to tune or let drift stale, because the boundary is
+the data's own last real transition, not a wall clock.
+
+**Follow-up #1 — signal cooldown now restarts on resolution, not on a
+pure wall-clock timer.** The exact fix requested from the XAUUSD example:
+a qualified signal can no longer get a same-direction sibling while still
+open, regardless of elapsed cooldown minutes. Since the batch resolver
+only runs once daily, "has it resolved" is checked live at
+qualification time by reusing `eod_resolver.resolve_signal_outcome`
+directly (a single-bar call, not a reimplementation) against the current
+price, falling back to the DB record or 48h-expiry when neither the live
+check nor the DB has an answer yet. Known accepted gap: a brief intraday
+spike that touched TP/SL and reverted before the next tick won't be
+caught until the nightly batch resolves it — flagged, not solved, since
+solving it fully would mean resolving intraday rather than checking live
+at qualification time only.
+
+**Follow-up #2 — sweep cadence: 5 → 15 minutes, unified (not
+differentiated by asset class).** TimesFM's own cache TTL is 900s (15
+min) — at 5-min sweep cadence, 2 of every 3 ticks were silently reusing a
+stale TimesFM value while everything else recomputed fresh, manufacturing
+tick-to-tick noise with no real new information behind it. Considered and
+rejected differentiating cadence for crypto/forex ("faster-moving"): the
+real bottleneck for every asset class today is the shared hourly-candle
+fetch, not sweep tick rate — a genuine fix there means upgrading data
+granularity, a separate unscoped effort. Confirms the 2026-08 cadence
+unification (migration 028) was the right call, not something to undo.
+
+**Not addressed this round**: the multivariate cross-symbol
+calibration/bucket methodology TimesFM 3.0 would eventually enable is
+noted but blocked on the existing non-commercial license restriction
+(worklog 20260831_TIMESFM_3_UPGRADE_SCOPE.md) — nothing to build there
+until that's resolved. Kept in mind as a reason not to design the
+per-symbol meta-model in a way that would need to be thrown away if/when
+cross-symbol modeling becomes possible.

@@ -46,6 +46,35 @@ BATCH_CHUNK_SIZE = 10
 MAX_429_RETRIES = 1
 RETRY_AFTER_CAP_SECONDS = 10.0
 
+# Epoch-unit heuristic for the raw candle "time"/"t" field (2026-09-09,
+# worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7): TDVA's
+# documented candle shape is {"time": ..., "open": ..., ..., "close": ...}
+# (confirmed via git history, commit c9484d8's docstring) but the unit
+# (seconds vs. milliseconds) has never been consumed anywhere downstream
+# until now, so it isn't verified against a live response. 1e12 is a
+# standard seconds-vs-milliseconds discriminator (any real-world date is
+# below 1e12 as Unix seconds — that threshold is year ~33658 — but above
+# 1e12 as Unix milliseconds for every date since 2001), not a fitted or
+# guessed constant, so a raw value in either unit normalises correctly.
+_EPOCH_MS_THRESHOLD = 1e12
+
+
+def _normalize_epoch_seconds(raw: Any) -> float | None:
+    """Best-effort: coerce a raw candle timestamp field to Unix seconds.
+
+    Returns ``None`` when ``raw`` is missing or not numeric — callers must
+    treat that as "timestamp unavailable for this bar", not as epoch 0.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value > _EPOCH_MS_THRESHOLD:
+        value /= 1000.0
+    return value
+
 
 # ─── TradingView Batch API (TDVA — sole data source) ─────────────
 
@@ -54,7 +83,8 @@ async def fetch_tradingview_batch(
     symbols: list[dict[str, Any]],
     hours: int = LIGHT_CANDLE_BARS,
     interval: str = "1h",
-) -> dict[str, list[float]]:
+    include_timestamps: bool = False,
+) -> dict[str, list[float]] | tuple[dict[str, list[float]], dict[str, list[float | None]]]:
     """Fetch candles for multiple TradingView symbols in batched API calls.
 
     Uses POST /api/price/batch — sends up to BATCH_CHUNK_SIZE (10) symbol
@@ -71,12 +101,25 @@ async def fetch_tradingview_batch(
         Heavy sweep passes 2160 (90 days × 24h).
     interval : str
         Candle interval — "1h" or "1D".
+    include_timestamps : bool
+        Default False — preserves the original return shape for every
+        existing caller (eod_resolver, heavy_sweep, macro_filter,
+        bracket_reachability, the backfill scripts, ...). When True,
+        returns a ``(prices, timestamps)`` tuple instead; ``timestamps``
+        is index-aligned with ``prices`` per symbol, with ``None`` for any
+        bar whose raw payload had no parseable time field (2026-09-09,
+        worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7
+        — added so the Renko brick capture can use real per-bar timestamps
+        instead of a fabricated reconstruction; see orchestrator.py's
+        brick-capture block and supabase_client.log_renko_bricks).
 
     Returns
     -------
     dict[str, list[float]]
         Maps internal symbol name → list of close prices (ascending ts).
-        Symbols that failed are omitted from the dict.
+        Symbols that failed are omitted from the dict. (default shape)
+    tuple[dict[str, list[float]], dict[str, list[float | None]]]
+        ``(prices, timestamps)`` when ``include_timestamps=True``.
     """
     from regime_platform.core.settings import settings
 
@@ -113,6 +156,12 @@ async def fetch_tradingview_batch(
     tv_to_internal = {s["tradingview_symbol"]: s["symbol"] for s in tv_symbols}
 
     results: dict[str, list[float]] = {}
+    # Index-aligned with `results[sym]`; only populated/consulted when
+    # include_timestamps=True. Kept separate from `results` rather than
+    # folded into a richer per-symbol structure so the default return
+    # shape (dict[str, list[float]]) is byte-for-byte unchanged for every
+    # caller that doesn't ask for timestamps.
+    results_ts: dict[str, list[float | None]] = {}
 
     # Chunk into BATCH_CHUNK_SIZE groups (TV hard-limits per request)
     chunks = [
@@ -224,21 +273,36 @@ async def fetch_tradingview_batch(
             )
 
             prices: list[float] = []
+            # bar_timestamps stays index-aligned with `prices` (appended
+            # together, one entry per accepted bar — including `None` when
+            # a bar has no parseable time field) so a caller can zip() them
+            # safely rather than trusting positional luck.
+            bar_timestamps: list[float | None] = []
             if bars and isinstance(bars, list):
                 if isinstance(bars[0], dict):
-                    prices = [
-                        float(b.get("close", b.get("c", 0)))
-                        for b in bars
-                        if b.get("close") is not None or b.get("c") is not None
-                    ]
+                    for b in bars:
+                        close = b.get("close", b.get("c"))
+                        if close is None:
+                            continue
+                        prices.append(float(close))
+                        bar_timestamps.append(
+                            _normalize_epoch_seconds(b.get("time", b.get("t")))
+                        )
                 elif isinstance(bars[0], (list, tuple)):
-                    prices = [float(b[4]) if len(b) > 4 else 0.0 for b in bars]
+                    for b in bars:
+                        prices.append(float(b[4]) if len(b) > 4 else 0.0)
+                        bar_timestamps.append(
+                            _normalize_epoch_seconds(b[0]) if len(b) > 0 else None
+                        )
 
             # Fallback to "current" if no history
             if not prices and isinstance(data_obj, dict):
                 current = data_obj.get("current", {})
                 if isinstance(current, dict) and current.get("close") is not None:
                     prices = [float(current["close"])]
+                    bar_timestamps = [
+                        _normalize_epoch_seconds(current.get("time", current.get("t")))
+                    ]
 
             # ── ORDER NORMALISATION (2026-08-11) ──────────────────────────
             # TDVA /api/price/batch returns `history` in DESCENDING time
@@ -250,9 +314,11 @@ async def fetch_tradingview_batch(
             # close → wrong entry/SL/TP levels (see worklog [9.2.0]).
             # Reverse here ONCE so all consumers stay correct.
             prices.reverse()
+            bar_timestamps.reverse()
 
             if prices:
                 results[internal_sym] = prices
+                results_ts[internal_sym] = bar_timestamps
                 logger.info(
                     "TradingView batch %s (%s): %d candles",
                     internal_sym, tv_sym, len(prices),
@@ -268,6 +334,8 @@ async def fetch_tradingview_batch(
         "(%d chunk(s), timeframe=%s, range=%s)",
         len(results), len(tv_symbols), len(chunks), tv_timeframe, range_bars,
     )
+    if include_timestamps:
+        return results, results_ts
     return results
 
 
@@ -278,12 +346,20 @@ async def fetch_candles_for_symbols(
     symbols: list[dict[str, Any]],
     n_bars: int = LIGHT_CANDLE_BARS,
     interval: str = "1h",
-) -> dict[str, list[float]]:
+    include_timestamps: bool = False,
+) -> dict[str, list[float]] | tuple[dict[str, list[float]], dict[str, list[float | None]]]:
     """Thin wrapper around fetch_tradingview_batch for callers that don't
     need to know about the TV-specific implementation.
 
     Used by:
       • Light sweep (_sweep_group): n_bars=200, interval="1h"
       • Heavy sweep (_heavy_sweep_group): n_bars=2160, interval="1h"
+
+    ``include_timestamps`` (default False): forwarded as-is to
+    ``fetch_tradingview_batch`` — see its docstring for the return-shape
+    change when True. Unset by every pre-existing caller, so this wrapper's
+    default return shape is unchanged.
     """
-    return await fetch_tradingview_batch(symbols, hours=n_bars, interval=interval)
+    return await fetch_tradingview_batch(
+        symbols, hours=n_bars, interval=interval, include_timestamps=include_timestamps,
+    )

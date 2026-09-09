@@ -21,7 +21,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -63,6 +63,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     log_renko_bricks,
     log_error,
     fetch_calibration_bias,
+    fetch_latest_qualified_signal,
 )
 from regime_platform.sweep_orchestrator.heavy_sweep import HeavySweepMixin, compute_atr
 
@@ -851,6 +852,121 @@ def _build_signal_sim_payload(
     return payload
 
 
+class CooldownRestartProbe(NamedTuple):
+    """Result of ``_probe_cooldown_restart`` (cooldown-restart fix,
+    2026-09-08, worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+    — user directive "after a sl/tp hits > the cooldown should restart").
+
+    ``status``:
+      * ``"open"`` — a prior qualified signal exists for this
+        ``(symbol, direction)`` and is still open (DB shows no outcome yet,
+        neither TP nor SL has been crossed by the current price, and
+        ``EXPIRY_BARS`` hours have not yet elapsed since entry). The
+        caller must block the new signal unconditionally, regardless of
+        elapsed wall-clock time.
+      * ``"resolved"`` — the prior signal has resolved, one of three ways:
+        the batch EOD resolver already recorded an outcome, the current
+        price has already crossed TP/SL (detected live, ahead of the
+        once-daily batch), or ``EXPIRY_BARS`` hours have elapsed with
+        neither level touched (time-expired). ``resolved_at`` is the
+        epoch-seconds moment the cooldown clock should restart from.
+      * ``"unknown"`` — no prior qualified signal was found, or the
+        Supabase lookup failed. The caller falls back to the existing
+        wall-clock-only cooldown behavior, unchanged.
+    """
+    status: str
+    resolved_at: float | None = None
+
+
+async def _probe_cooldown_restart(
+    symbol: str, direction: str, current_price: float | None,
+) -> CooldownRestartProbe:
+    """Is the last qualified ``(symbol, direction)`` signal still open?
+
+    The official record of resolution (``nt_signal_sim.outcome``) is only
+    populated once a day by ``eod_resolver.py``'s batch pass — waiting on
+    it here would leave a just-closed position looking "open" for up to
+    24h. Instead: check the DB-recorded outcome first, then fall back to
+    a REAL-TIME check using the exact same TP/SL-crossing comparison
+    ``eod_resolver.resolve_signal_outcome`` uses for the batch pass
+    (imported, not re-implemented, so the two never drift), applied to
+    just the current price rather than a full historical bar walk. This
+    is intentionally a lighter check than the batch resolver: no mfe/mae,
+    no exact hold_bars — just "would this already be closed."
+
+    Best-effort: any failure here must never block a signal from
+    qualifying — callers should catch and fall back to the existing
+    wall-clock-only cooldown on exception, matching this module's
+    pervasive "never break the sweep" convention.
+    """
+    row = await fetch_latest_qualified_signal(symbol, direction)
+    if not row:
+        return CooldownRestartProbe("unknown")
+
+    # Lazy import (matches this module's existing eod_resolver-import
+    # convention, e.g. `_run_eod_lookback` above) — avoids a module-level
+    # dependency on the EOD resolver from the hot per-tick sweep path.
+    from regime_platform.sweep_orchestrator.eod_resolver import (
+        EXPIRY_BARS,
+        resolve_signal_outcome,
+    )
+    from regime_platform.sweep_orchestrator.paper_book import _signal_epoch_ts
+
+    # 1. Already resolved by the daily batch resolver (tp_hit/sl_hit/expired
+    #    all count — a timed-out signal is not "still open" for cooldown
+    #    purposes either). Prefer exit_ts (the resolver's own entry+hold_bars
+    #    estimate of when it actually closed) over resolved_at (merely when
+    #    last night's batch happened to run) as the restart moment.
+    outcome = row.get("outcome")
+    if outcome:
+        resolved_ts = row.get("exit_ts") or row.get("resolved_at") or row.get("ts")
+        return CooldownRestartProbe("resolved", _signal_epoch_ts({"ts": resolved_ts}))
+
+    # 2. Not yet resolved in the DB. Figure out how old the entry is.
+    entry_epoch = _signal_epoch_ts(row)
+    age_hours = (time.time() - entry_epoch) / 3600.0
+
+    # 3. Time-based expiry — EXPIRY_BARS post-entry 1h bars with neither
+    #    level touched. The resolution moment is deterministic here
+    #    (entry + EXPIRY_BARS hours), unlike the live-crossing case below.
+    if age_hours >= EXPIRY_BARS:
+        return CooldownRestartProbe("resolved", entry_epoch + EXPIRY_BARS * 3600.0)
+
+    # 4. Live TP/SL-crossing check against the current price. Reuses
+    #    resolve_signal_outcome with a single-element closes window
+    #    (expiry_bars=1) — this is the SAME same-bar TP-priority
+    #    comparison eod_resolver.py runs, just over one bar instead of a
+    #    full historical walk, so "closed" can never mean something
+    #    subtly different here than it does in the batch pass. An
+    #    "expired" result from this 1-bar call means only "not crossed at
+    #    this instant" — real expiry is decided by step 3 above, not here.
+    entry_price = row.get("entry_price")
+    stop_loss = row.get("stop_loss")
+    take_profit = row.get("take_profit")
+    if current_price is not None and None not in (entry_price, stop_loss, take_profit):
+        try:
+            live = resolve_signal_outcome(
+                float(entry_price), float(stop_loss), float(take_profit),
+                [float(current_price)],
+                direction=row.get("signal") or direction,
+                expiry_bars=1,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[sweep:orch] %s: cooldown live TP/SL check failed (%s)",
+                symbol, exc,
+            )
+            live = None
+        if live is not None and live["outcome"] in ("tp_hit", "sl_hit"):
+            # The exact intra-window crossing moment isn't knowable from a
+            # single current-price sample — "now" is the documented
+            # fallback (spec: crossing time if determinable, else "now").
+            return CooldownRestartProbe("resolved", time.time())
+
+    # 5. Neither DB-resolved, expired-by-time, nor live-crossed: still open.
+    return CooldownRestartProbe("open")
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────
 
 
@@ -923,12 +1039,6 @@ class SweepOrchestrator(HeavySweepMixin):
         # each symbol's debouncer again) as everything else in this block.
         self._regime_debouncers: dict[str, RegimeLabelDebouncer] = {}
         self._regime_trend_ema: dict[str, dict[str, float]] = {}
-        # Per-symbol cache of the Bayesian-shrunk realized win rate
-        # (p_historical EV-blend source, R3) — same TTL pattern as
-        # _TIMESFM_CACHE, since calibration bias only actually changes on
-        # the 4h EOD-correction / daily EOD-resolver cadence, not every
-        # 5-minute sweep tick.
-        self._p_historical_cache: dict[str, tuple[Optional[float], float]] = {}
         # ── Signal cooldown tracking ──────────────────────────────────
         # Maps (symbol, direction) → timestamp of last PUBLISHED signal.
         # Used to suppress duplicate signals within the cooldown window.
@@ -1052,7 +1162,8 @@ class SweepOrchestrator(HeavySweepMixin):
         # then run the calibration self-correction audit. Daily 00:32 UTC —
         # after the market day closes (forex 22:00 UTC / equities 21:00 UTC)
         # and before the 05:00 UTC weekend heavy-sweep window. Offset 2
-        # minutes off the light sweep's `*/5 * * * *` grid (2026-08-24):
+        # minutes off the light sweep's grid (`*/15 * * * *` as of
+        # 2026-09-09, was `*/5 * * * *`; the :30 offset lands on both) (2026-08-24):
         # at :30 exactly, both jobs fired their own TradingView batch calls
         # concurrently and the resolver's requests got 429'd — confirmed
         # live. This doesn't guarantee no overlap (a slow resolver run can
@@ -1399,7 +1510,8 @@ class SweepOrchestrator(HeavySweepMixin):
         """EOD signal-lookback: resolve pending signals + self-correction.
 
         Scheduled daily 00:32 UTC (job id ``eod-lookback`` — offset 2 minutes
-        off the light sweep's `*/5 * * * *` grid, 2026-08-24, to avoid a
+        off the light sweep's grid (`*/15 * * * *` as of 2026-09-09, was
+        `*/5 * * * *`; the :30 offset lands on both), 2026-08-24, to avoid a
         guaranteed daily TradingView-request collision at the shared :30
         mark). Runs the two EOD modules in order:
 
@@ -1519,6 +1631,28 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] expiry-rate alert check failed: %s", exc)
+
+        # ── Part VI: renko brick retention (2026-09-09) ────────────────────
+        # Keep nt_renko_bricks bounded — see renko_retention.py's module
+        # docstring for the full root cause (worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7
+        # "Finding 2"): daily brick_size re-optimization orphans the
+        # previous grid's rows with nothing to ever clean them up. Deletes
+        # (1) rows whose brick_size no longer matches the symbol's current
+        # config/brick_params.yaml value, and (2) rows older than
+        # renko_brick_retention_days. Best-effort: failures are logged and
+        # counted, never raised (matching every other part of this method).
+        try:
+            from regime_platform.sweep_orchestrator.renko_retention import (
+                run_renko_brick_retention,
+            )
+            renko_retention_summary = await run_renko_brick_retention()
+            logger.info(
+                "[eod:lookback] renko brick retention done: %s",
+                renko_retention_summary,
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] renko brick retention failed: %s", exc)
 
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
         """Run emergency heavy sweeps for the given symbols (best-effort).
@@ -1935,9 +2069,18 @@ class SweepOrchestrator(HeavySweepMixin):
         # The fetcher auto-chunks into groups of 10 (TV hard limit per
         # request) and makes ⌈N/10⌉ HTTP calls for N symbols.
         valid_prices: dict[str, list[float]] = {}
+        # Real per-bar timestamps, index-aligned with valid_prices[symbol]
+        # (2026-09-09, worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7) —
+        # threaded through to the Renko brick capture below instead of the
+        # brick engine defaulting to a bare auto-incrementing index. Empty
+        # for a symbol if the fetch had no usable time field for any bar.
+        valid_timestamps: dict[str, list[float | None]] = {}
 
         try:
-            tv_results = await fetch_tradingview_batch(active, 200)
+            tv_results, tv_timestamps = await fetch_tradingview_batch(
+                active, 200, include_timestamps=True,
+            )
             for sym_name, prices in tv_results.items():
                 if len(prices) < 81:
                     logger.warning(
@@ -1946,6 +2089,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                     continue
                 valid_prices[sym_name] = prices
+                valid_timestamps[sym_name] = tv_timestamps.get(sym_name, [])
         except Exception as exc:
             logger.warning("TDVA batch fetch failed: %s", exc)
 
@@ -2036,7 +2180,10 @@ class SweepOrchestrator(HeavySweepMixin):
 
             result: dict[str, Any] = {"regime_label": "error", "kelly_f": 0}
             try:
-                result = await self._process_symbol(sym, prices, p_timesfm, source="sweep-light")
+                result = await self._process_symbol(
+                    sym, prices, p_timesfm, source="sweep-light",
+                    timestamps=valid_timestamps.get(symbol),
+                )
                 self._last_ok[symbol] = time.time()
                 await log_sweep_result({
                     "symbol": symbol,
@@ -2129,6 +2276,7 @@ class SweepOrchestrator(HeavySweepMixin):
         prices: list[float],
         p_timesfm: float | None = None,
         source: str = "sweep-light",
+        timestamps: list[float | None] | None = None,
     ) -> dict[str, Any]:
         """Run one light-sweep cycle for a single symbol.
 
@@ -2139,6 +2287,14 @@ class SweepOrchestrator(HeavySweepMixin):
             source: Sweep provenance — ``"sweep-light"`` (default, from
                 ``_sweep_group`` / stale-retry) or ``"sweep-heavy"``.
                 Stamped onto the ``nt_signal_sim`` capture row.
+            timestamps: Real per-bar epoch-seconds, index-aligned with
+                ``prices`` (2026-09-09, worklog
+                20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7).
+                Optional and defaults to ``None`` for backward compatibility
+                with existing callers/tests that invoke this synchronously
+                without a timestamp array — the Renko brick-capture block
+                below falls back to its own documented fallback when this
+                is ``None`` or incomplete.
 
         Returns a dict with sweep result fields for logging.
         """
@@ -2468,13 +2624,20 @@ class SweepOrchestrator(HeavySweepMixin):
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
         )
 
-        # ── 5. EV Engine (v6 — 4-source logit pool) ──
-        # p_historical (R3, 2026-08-23): Bayesian-shrunk realized win rate
-        # for this symbol, reusing the existing calibration-bias
-        # infrastructure as a first-class blend INPUT (replaces the old
-        # p_pattern source, which was always None server-side — pattern
-        # stats lived only in the agent's DuckDB, a single-user-era
-        # assumption that no longer holds; removed rather than kept null).
+        # ── 5. EV Engine (v6 — 3-source logit pool, live) ──
+        # p_historical (R3, 2026-08-23) was retired as a live blend input
+        # 2026-09-09 (worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md):
+        # it and calibration_enforcement.apply_calibration_adjustment() were
+        # two independently-computed mechanisms both trying to answer "is
+        # this symbol's confidence trustworthy," stacked on the same
+        # calibration-bias evidence. Consolidated to apply_calibration_adjustment
+        # (the hard, post-hoc mechanism, applied after compute_ev() below)
+        # as the sole calibration-correction path. compute_ev() still
+        # accepts an optional p_historical kwarg (used directly by the
+        # ad-hoc renko/router.py /ev/compute endpoint) — simply not fed by
+        # this production call site anymore; the blend renormalises over
+        # the remaining 3 sources exactly as it already does for any other
+        # missing source.
         #
         # Fix #3a (2026-08-22 audit): feed an EMA-smoothed P_markov_hold_N
         # into the blend instead of the raw per-tick T^N estimate — see
@@ -2536,7 +2699,6 @@ class SweepOrchestrator(HeavySweepMixin):
                     symbol, type(exc).__name__, exc,
                 )
 
-        _p_historical = await self._fetch_p_historical_cached(symbol)
         # R4: apply the non-convergence discount (empty dict = no-op, exact
         # pre-R4 behaviour) around the compute_ev() call itself, not a
         # separately-tracked parallel state.
@@ -2544,7 +2706,6 @@ class SweepOrchestrator(HeavySweepMixin):
             ev_result = self._ev_engine.compute_ev(
                 trend_probs=_smoothed_trend_probs,
                 direction=direction,
-                p_historical=_p_historical,
                 transition_matrix=_markov_T,
                 current_state=_markov_current_state,
                 p_timesfm=p_timesfm,
@@ -2621,7 +2782,6 @@ class SweepOrchestrator(HeavySweepMixin):
                         adjusted_ev_result = self._ev_engine.compute_ev(
                             trend_probs=_smoothed_trend_probs,
                             direction=direction,
-                            p_historical=_p_historical,
                             transition_matrix=_markov_T,
                             current_state=_markov_current_state,
                             p_timesfm=p_timesfm,
@@ -2632,7 +2792,7 @@ class SweepOrchestrator(HeavySweepMixin):
                             # Reuse the SAME smoothed values computed above —
                             # not fresh calls — so both compute_ev() calls in
                             # this tick agree on P_markov_hold_N (fix #3a) and
-                            # P_regime/P_historical (R1 fix #3 / R3).
+                            # P_regime (R1 fix #3).
                             p_markov_override=_smoothed_p_markov,
                         )
                     # In soft mode, the TimesFM gate always "passes" —
@@ -2868,23 +3028,71 @@ class SweepOrchestrator(HeavySweepMixin):
         # (symbol, direction) was published recently. This prevents the
         # same BUY/SELL from being published every 5 minutes when the
         # regime is stable.
+        #
+        # 2026-09-08 cooldown-restart fix (worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, user
+        # directive "after a sl/tp hits > the cooldown should restart"):
+        # pure wall-clock elapsed time has zero awareness of whether the
+        # ORIGINAL signal actually resolved — it could let a brand-new
+        # same-direction signal qualify while the original position was
+        # still open, tracking toward its own EXPIRY_BARS-hour deadline.
+        # Before applying the elapsed-time check, ask
+        # `_probe_cooldown_restart` whether the last qualified signal for
+        # this (symbol, direction) is still open. If it is, block
+        # unconditionally regardless of elapsed time. If it has resolved
+        # (DB-recorded outcome, a live TP/SL crossing, or time-based
+        # expiry), restart the cooldown clock from the resolution moment
+        # instead of the original qualification moment. Best-effort: any
+        # probe failure falls back to the original wall-clock-only check.
         cooldown_suppressed = False
         if qualified and SIGNAL_COOLDOWN_MINUTES > 0:
             cooldown_key = (symbol, trade_signal["signal"])
             last_ts = self._last_qualified_signal.get(cooldown_key, 0)
-            elapsed_min = (time.time() - last_ts) / 60.0
-            if elapsed_min < SIGNAL_COOLDOWN_MINUTES:
+
+            try:
+                restart_probe = await _probe_cooldown_restart(
+                    symbol, trade_signal["signal"], current_price,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[sweep:orch] {symbol}: cooldown-restart probe failed "
+                    f"({type(exc).__name__}: {exc}) — falling back to "
+                    f"wall-clock-only cooldown"
+                )
+                restart_probe = CooldownRestartProbe("unknown")
+
+            if restart_probe.status == "open":
                 cooldown_suppressed = True
                 logger.info(
                     f"[sweep:orch] {symbol}: COOLDOWN SUPPRESSED — "
                     f"{trade_signal['signal']} signal suppressed "
-                    f"({elapsed_min:.1f}min since last, cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
+                    f"(prior qualified signal for this direction is still "
+                    f"OPEN — neither TP/SL hit nor expired yet)"
                 )
-                # Mark as not qualified so it doesn't get published
                 qualified = False
                 gate_results["cooldown_ok"] = False
             else:
-                gate_results["cooldown_ok"] = True
+                if restart_probe.status == "resolved" and restart_probe.resolved_at is not None:
+                    # Restart the cooldown clock from the resolution
+                    # moment, not the original qualification moment — and
+                    # persist it so the elapsed-time check keeps working
+                    # unchanged on subsequent ticks.
+                    last_ts = restart_probe.resolved_at
+                    self._last_qualified_signal[cooldown_key] = last_ts
+
+                elapsed_min = (time.time() - last_ts) / 60.0
+                if elapsed_min < SIGNAL_COOLDOWN_MINUTES:
+                    cooldown_suppressed = True
+                    logger.info(
+                        f"[sweep:orch] {symbol}: COOLDOWN SUPPRESSED — "
+                        f"{trade_signal['signal']} signal suppressed "
+                        f"({elapsed_min:.1f}min since last, cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
+                    )
+                    # Mark as not qualified so it doesn't get published
+                    qualified = False
+                    gate_results["cooldown_ok"] = False
+                else:
+                    gate_results["cooldown_ok"] = True
         else:
             gate_results["cooldown_ok"] = True
 
@@ -3044,10 +3252,12 @@ class SweepOrchestrator(HeavySweepMixin):
             "p_regime": round(ev_result.p_regime, 4),
             "p_markov": round(ev_result.p_markov, 4),
             "p_timesfm": round(ev_result.p_timesfm, 4) if p_timesfm is not None else None,
-            # v6 (2026-08-23): p_pattern -> p_historical. Payload key
-            # renamed to match — the value is no longer a pattern win-rate
-            # placeholder (always null previously), so keeping the old key
-            # name would mislabel real data to any downstream consumer.
+            # v6 (2026-08-23): p_pattern -> p_historical. p_historical was
+            # retired as a live blend input 2026-09-09 (this call site no
+            # longer feeds compute_ev() a value — see the EV Engine call
+            # above), so this field is always None now; left in the
+            # payload shape rather than removed since downstream consumers
+            # (agent synthesizer) may still read the key.
             "p_historical": round(ev_result.p_historical, 4) if ev_result.p_historical else None,
             "sources_used": list(ev_result.sources_used),
             "weights_used": ev_result.weights_used or {},
@@ -3286,16 +3496,40 @@ class SweepOrchestrator(HeavySweepMixin):
                 # Best-effort: log_renko_bricks swallows failures; a missing
                 # event loop or zero bricks just skips. Uses the same
                 # brick_size the sweep already loaded for this symbol.
+                #
+                # 2026-09-09 real-timestamp fix (worklog
+                # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+                # §7, "Finding 1"): `timestamps` (threaded through from
+                # `_process_symbol`'s own param, sourced from
+                # price_fetcher.fetch_tradingview_batch(include_timestamps=
+                # True)) carries the REAL per-bar epoch-seconds for
+                # `prices`. Only trust it when it's a complete, same-length,
+                # all-non-None array — anything else (None entirely, a
+                # partial array, a length mismatch from a fallback fetch
+                # path that never populated it) is NOT a valid per-bar time
+                # axis, so build_from_prices falls back to its own
+                # auto-incrementing index and log_renko_bricks fabricates
+                # hourly spacing from sweep_ts instead (see its docstring
+                # for exactly when that fallback triggers — it is no longer
+                # the silent default).
                 try:
                     from renko.brick_engine import RenkoBrickEngine
+                    real_timestamps = (
+                        timestamps
+                        if timestamps is not None
+                        and len(timestamps) == len(prices)
+                        and all(t is not None for t in timestamps)
+                        else None
+                    )
                     engine = RenkoBrickEngine(brick_size=brick_size)
-                    bricks = engine.build_from_prices(prices)
+                    bricks = engine.build_from_prices(prices, timestamps=real_timestamps)
                     if bricks:
                         asyncio.create_task(log_renko_bricks(
                             symbol=symbol,
                             bricks=[b.to_dict() for b in bricks],
                             brick_size=brick_size,
                             sweep_ts=time.time(),
+                            has_real_timestamps=real_timestamps is not None,
                         ))
                 except Exception as exc:
                     logger.debug(
@@ -3392,8 +3626,11 @@ class SweepOrchestrator(HeavySweepMixin):
 
                 # Single-symbol batch fetch (TDVA — Phase B consolidation)
                 try:
-                    batch = await fetch_candles_for_symbols([sym], 200)
+                    batch, batch_ts = await fetch_candles_for_symbols(
+                        [sym], 200, include_timestamps=True,
+                    )
                     prices = batch.get(symbol, [])
+                    stale_timestamps = batch_ts.get(symbol)
                 except Exception as exc:
                     logger.warning(
                         "%s: stale retry — fetch failed: %s", symbol, exc
@@ -3411,7 +3648,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 await lock.acquire()
 
                 try:
-                    await self._process_symbol(sym, prices)
+                    await self._process_symbol(sym, prices, timestamps=stale_timestamps)
                     self._last_ok[symbol] = time.time()
                     logger.info("%s: stale retry successful", symbol)
                 except Exception as exc:
@@ -3539,7 +3776,3 @@ class SweepOrchestrator(HeavySweepMixin):
             smoothed = {k: v / total for k, v in blended.items()} if total > 0 else blended
         self._regime_trend_ema[symbol] = smoothed
         return smoothed
-
-    # _fetch_p_historical_cached lives on HeavySweepMixin (heavy_sweep.py)
-    # since both the light-sweep path (this class) and the heavy-sweep
-    # path (the mixin) call it — see that module for the implementation.

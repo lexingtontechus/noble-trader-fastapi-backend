@@ -72,6 +72,8 @@ _DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 24.0,
     },
     "calibration_bias_min_episodes": 2,
+    "signal_stream_meta_model_mode": "off",
+    "renko_brick_retention_days": 2,
 }
 
 _cache: dict[str, Any] | None = None
@@ -416,3 +418,28 @@ def get_calibration_bias_min_episodes() -> int:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["calibration_bias_min_episodes"]
+
+
+def get_signal_stream_meta_model_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — see this key's long comment in
+    feature_flags.yaml for the full rationale. Ships at ``off``;
+    ``live`` has no consumer yet (2026-09-09,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md)."""
+    return str(_load().get(
+        "signal_stream_meta_model_mode", _DEFAULTS["signal_stream_meta_model_mode"],
+    )).lower()
+
+
+def get_renko_brick_retention_days() -> int:
+    """Days of ``nt_renko_bricks`` ``session_date`` history to keep in the
+    nightly retention pass (``renko_retention.run_renko_brick_retention``,
+    Part VI of orchestrator.py's eod-lookback cycle). 2026-09-09, worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2".
+    Default 2 reuses migration 111's own precedent for this table ("Keep at
+    most 2 sessions (today + yesterday)"), not a new number."""
+    try:
+        return int(_load().get(
+            "renko_brick_retention_days", _DEFAULTS["renko_brick_retention_days"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["renko_brick_retention_days"]
