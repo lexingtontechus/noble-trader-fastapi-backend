@@ -855,3 +855,93 @@ same mistake this section corrects.
 
 Not yet deployed to Studio — pushed to git only, per this session's
 established push/notify pattern.
+
+## 14. TradeJournal.record — the deprecation gate itself deprecated (2026-09-09)
+
+User spotted a second instance of the same pattern this section just
+corrected, from the post-restart orchestrator log:
+
+```
+[WARNING] regime_platform.services.execution_deprecation: Execution gate
+BLOCKED — context=TradeJournal.record. noble-trader-fastapi-backend is
+not a trade executor. Use hermes agent (noble-trader-agent) for order
+placement.
+```
+
+**What "Trade closed"/"Position opened" logging is**: `renko/pipeline.py`'s
+`RenkoPipeline` logs one INFO line per simulated position
+open/close (`_handle_trade_close`, ~line 1071: `"Trade closed: %s
+PnL=%.2f bricks ($%.2f)"`; the open-side equivalent a few lines above).
+This is **backtest-internal logging, not live trading** — the sole
+caller of `RenkoPipeline` in the live pipeline is
+`heavy_sweep.py:_renko_grid_search_sync`'s grid search (up to 90 combos
+per symbol: 5 brick sizes × 3 SL × 6 TP), which constructs a fresh
+`RenkoPipeline` and replays up to 2160 hourly bars (90 days) through it
+per combo, purely to score which combo wins by Sharpe. Every simulated
+trade inside every combo's replay logs one of these two lines. **These
+messages "appearing new" is a direct, expected consequence of §13's own
+fix, not a separate issue**: yesterday's TimesFM-gate removal means all
+14 symbols now run their full grid search daily instead of ~9 (5 were
+being skipped) — same per-symbol log volume, ~1.5x more symbols
+actually running it.
+
+**Why the WARNING fired on every one of those simulated trades**: each
+simulated trade close calls `pipeline.journal.record(record)` →
+`TradeJournal.record()`, which (before this fix) attempted to schedule
+a live `nt_calibration_records` Supabase write on every call, gated
+behind `assert_execution_enabled()`. Traced fully before touching
+anything: `NOBLE_TRADER_DISABLE_EXECUTION` is permanently true for this
+backend (P5 architecture — hermes agent is the sole live executor and
+journal, not a temporary state awaiting re-enablement), and confirmed
+via search that **no caller anywhere in this repo** ever sets it to
+false, so this gate had been unconditionally, permanently blocking on
+every single call since P5 (2026-07-23) — an exception constructed and
+caught, and two WARNING log lines emitted, for something that can
+structurally never succeed. Separately confirmed the real, live
+`nt_calibration_records` writer for actual production signals is
+`eod_resolver.py` (self-documented as "mirrors renko/trade_journal.py")
+— this module's write path was always a parallel, backtest-only
+convenience, now provably dead weight, not a load-bearing calibration
+input.
+
+**Same root lesson as §13, explicitly named by the user**: "optimize &
+fully deprecate this including the warning msg" — a permanently-true
+condition doesn't need a runtime gate re-checked and logged on every
+call (here: potentially thousands of times per symbol per day across a
+90-combo grid search × 14 symbols), it needs the dead branch deleted.
+
+**Built** (`renko/trade_journal.py`):
+- `TradeJournal.record()` reduced to its actual job — append to the
+  in-memory deque, increment the counter. No gate check, no import, no
+  exception construction, no warning, on any call.
+- Deleted outright as unreachable: `_schedule_calibration_write`,
+  `_run_calibration_in_new_loop`, `_log_calibration_record` (the
+  ~100-line Supabase-write implementation, including its schema-drift
+  fallback logic), `_PENDING_CALIBRATION_TASKS`, `_normalize_aggression`
+  / `_NT_CALIBRATION_VALID_AGRESSIONS` (only ever called from the
+  deleted writer).
+- Cleaned up now-unused imports left behind by the deletion: `asyncio`,
+  `uuid`, `datetime`/`timezone`, `logging` (and its module-level `log`),
+  plus a pre-existing (unrelated to this change) unused `time` import
+  found while already touching the import block.
+- Module docstring rewritten: the old "deprecated, gated, still useful
+  for a research harness" framing replaced with a direct statement that
+  the write path was removed entirely and why.
+- `execution_deprecation.py` itself is untouched — its gate is still
+  genuinely load-bearing for its other 5 call sites (kill_switch,
+  reconciler, executor_factory, mode_manager, the operational HTTP
+  routes), all of which guard an actual attempted order/position action,
+  a fundamentally different kind of call site than a backtest journal
+  entry. Only `TradeJournal.record`'s use of it was the category error.
+- Full suite: 791 passed, 21 skipped, 0 failures, 0 tests referenced the
+  removed behavior (none existed to update or delete this time).
+
+**Not changed, flagged as a related but separate, smaller optimization**:
+the "Trade closed"/"Position opened" INFO lines themselves are still
+emitted at their original volume (now higher, per the explanation
+above) — they're harmless (no gate, no exception, no Supabase call
+behind them) but are pure per-simulated-trade noise inside a tight
+backtest loop with no operational reader. Worth considering a demotion
+to DEBUG level or removal in a future pass; not done here since it
+wasn't part of what was asked and doesn't share the "permanently-false
+gate" defect this section actually corrects.

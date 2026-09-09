@@ -2,37 +2,44 @@
 Trade Journal + Stats Engine - records every trade and computes
 performance metrics for strategy evaluation and Kelly sizing.
 
-.. deprecated:: P5 (2026-07-23)
+.. deprecated:: P5 (2026-07-23), fully deprecated 2026-09-09
     The Noble Trader backend (``noble-trader-fastapi-backend``) is the
     SWEEP ORCHESTRATOR ONLY — it does NOT execute trades (see P5
     execution-deprecation contract in
-    ``regime_platform/services/execution_deprecation.py``). Therefore:
+    ``regime_platform/services/execution_deprecation.py``). Live trade
+    execution AND live trade journaling both live in the agent
+    (``noble-trader-agent``), which writes its own ``trade_journal``
+    DuckDB table (see ``hermes/db/schema.sql:153`` +
+    ``hermes/agent/learning.py:336``) — that is the canonical trade
+    journal. Production calibration records
+    (``nt_calibration_records``) are written by
+    ``regime_platform/sweep_orchestrator/eod_resolver.py`` against real
+    resolved signals, not by this module.
 
-    * **Live recording is gated.** ``TradeJournal.record()`` calls
-      ``assert_execution_enabled()`` before scheduling the Supabase
-      calibration write. With ``NOBLE_TRADER_DISABLE_EXECUTION=true``
-      (the default since P5), the live calibration write is a no-op;
-      the trade is still appended to the in-memory deque for stats
-      purposes (so any local backtest harness that constructs a
-      ``TradeJournal`` directly still works).
-    * **Live trade execution lives in the agent.** The agent
-      (``noble-trader-agent``) writes its own ``trade_journal`` DuckDB
-      table (see ``hermes/db/schema.sql:153`` +
-      ``hermes/agent/learning.py:336``) — that is the canonical
-      trade journal. The agent also writes calibration records via
-      its own learning loop; the backend's calibration-record
-      fire-and-forget path (lines 495-645 below) is preserved only
-      for backtest/replay harnesses that still use this module.
+    ``TradeJournal.record()`` originally also scheduled an async
+    fire-and-forget write to ``nt_calibration_records`` on every closed
+    trade, gated behind ``assert_execution_enabled()`` so it no-op'd
+    (with a WARNING log) whenever the backend's execution gate was
+    closed — which is unconditionally, always, on every deployment of
+    this backend, forever, per the P5 architecture. That write path,
+    its gate check, and the two WARNING log lines it produced on every
+    single simulated trade close were removed entirely 2026-09-09 (not
+    just silenced) — worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md: a
+    permanently-true condition doesn't need a runtime gate re-checked
+    and logged on every call, it needs the dead branch deleted.
+    ``record()`` now only appends to the in-memory deque for stats
+    (win rate, profit factor, Sharpe, etc.) — the actual reason every
+    caller (heavy_sweep.py's grid-search backtests, this repo's own
+    replay tests) uses this class.
 
-    The module is NOT deleted because:
-      1. The ``TradeRecord`` dataclass + ``TradeJournal.get_stats()``
-         are used by ``tests/test_execution_modeling.py`` and
-         ``tests/test_statistical_rigor.py`` for backtest replay.
-      2. The calibration-record writer is still useful for any
-         backend-side research/simulation harness that wants to push
-         synthetic trades into Supabase for analysis.
-      3. Removing the module would break ``renko/__init__.py:18``
-         re-exports and the renko pipeline import chain.
+    The module is NOT deleted because the ``TradeRecord`` dataclass +
+    ``TradeJournal.get_stats()`` are used by
+    ``tests/test_execution_modeling.py``,
+    ``tests/test_statistical_rigor.py``, and ``heavy_sweep.py``'s grid
+    search for backtest replay/scoring, and removing the module would
+    break ``renko/__init__.py:18``'s re-export and the renko pipeline
+    import chain.
 
 Tracks:
   - Every signal, filter decision, and order result
@@ -45,12 +52,7 @@ Tracks:
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Deque, Dict, List, Optional
 
 from collections import deque
@@ -58,8 +60,6 @@ from collections import deque
 from renko.pattern_detector import PatternType, SignalDirection
 from renko.risk_manager import PositionStatus, TradeResult
 from renko.signal_filter import FilteredSignal
-
-log = logging.getLogger(__name__)
 
 # Sentinel cap for profit_factor when there are no losing trades (2026-08-24).
 # gross_profit / gross_loss is undefined at gross_loss == 0 — the previous
@@ -72,15 +72,6 @@ log = logging.getLogger(__name__)
 # different metric — same rationale, a finite cap here instead of a
 # rejection filter, since get_stats() reports rather than picks combos.
 _PROFIT_FACTOR_CAP = 999.0
-
-
-# ── Fire-and-forget task tracking ─────────────────────────────────────
-# When we schedule a calibration write via ``loop.create_task()``, we
-# must keep a reference to the Task or Python's garbage collector may
-# collect it mid-execution (this is explicitly called out in the
-# asyncio docs). We stash pending tasks here and discard them via a
-# done-callback once they complete.
-_PENDING_CALIBRATION_TASKS: set = set()
 
 
 # ── Data types ─────────────────────────────────────────────────────
@@ -215,102 +206,15 @@ class TradeJournal:
     # ── Public API ────────────────────────────────────────────────
 
     def record(self, trade: TradeRecord) -> None:
-        """Record a completed trade and fire calibration log.
+        """Record a completed trade into the in-memory stats deque.
 
-        This method is **synchronous** but schedules an **async** fire-and-
-        forget task to write the calibration record to Supabase. The
-        previous implementation called ``asyncio.create_task()`` directly,
-        which raises ``RuntimeError: no running event loop`` if invoked
-        from outside an async context (e.g. from a backtest thread, or
-        from any sync code path). That exception was silently swallowed
-        by callers, so calibration records were never written.
-
-        The fix handles three cases:
-          1. Running event loop available → schedule task normally
-          2. No running loop, but loop is set on this thread → use
-             ``run_coroutine_threadsafe`` (cross-thread safe)
-          3. No loop at all → log a warning (can't schedule)
-
-        .. deprecated:: P5 (2026-07-23)
-            The Supabase calibration write is gated behind
-            ``assert_execution_enabled()`` from
-            ``regime_platform/services/execution_deprecation.py``. When
-            the backend is in sweep-orchestrator-only mode (the default
-            since P5), the live write is a no-op and a WARNING is
-            logged. The trade is still appended to the in-memory deque
-            so local stats (win rate, profit factor, etc.) remain
-            correct for any backtest/replay harness that constructs a
-            ``TradeJournal`` directly. The canonical live trade
-            journal is in the agent repo's DuckDB ``trade_journal``
-            table — see module docstring.
+        No live write of any kind happens here — see module docstring
+        ("fully deprecated 2026-09-09") for why: this backend never
+        executes trades or journals live, on any deployment, ever, so
+        there was nothing left to gate.
         """
         self.trades.append(trade)
         self._trade_counter += 1
-
-        # P5 execution-deprecation gate: skip the Supabase calibration
-        # write when the backend is in sweep-orchestrator-only mode.
-        # The agent owns live trade execution + journaling now.
-        try:
-            from regime_platform.services.execution_deprecation import (
-                assert_execution_enabled,
-                ExecutionDisabledError,
-            )
-        except ImportError:
-            # If the deprecation module isn't importable (e.g. running
-            # this file outside the backend package), fall back to the
-            # pre-P5 behavior and attempt the write. This preserves
-            # backtest harness compatibility.
-            self._schedule_calibration_write(trade)
-            return
-
-        try:
-            assert_execution_enabled(context="TradeJournal.record")
-        except ExecutionDisabledError:
-            log.warning(
-                "calibration write skipped for %s — backend is in "
-                "sweep-orchestrator-only mode (P5 execution-deprecation). "
-                "Live trade journaling lives in the agent repo.",
-                trade.symbol,
-            )
-            return
-
-        # Execution enabled (research/simulation harness) → fire-and-forget.
-        self._schedule_calibration_write(trade)
-
-    def _schedule_calibration_write(self, trade: TradeRecord) -> None:
-        """Schedule the async calibration write, robust to sync contexts.
-
-        Avoids the ``RuntimeWarning: coroutine was never awaited`` that
-        would occur if we called ``asyncio.create_task(coro)`` and let it
-        raise — the partially-constructed Task leaves the coro dangling.
-        Instead, check for a running loop FIRST, and only construct the
-        coro in the branch we're actually going to use.
-        """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No running event loop in this thread.
-            # Spawn a daemon thread that runs a fresh loop just for this
-            # write. Heavier than create_task but guarantees the write
-            # actually happens when called from sync code.
-            import threading
-            thread = threading.Thread(
-                target=_run_calibration_in_new_loop,
-                args=(trade,),
-                name=f"calib-{trade.symbol}",
-                daemon=True,
-            )
-            thread.start()
-            return
-
-        # We have a running loop — schedule the coro as a task.
-        # NOTE: create_task() returns a Task that we should keep a
-        # reference to, otherwise Python's GC may collect it mid-run
-        # (CPython docs explicitly warn about this for fire-and-forget
-        # tasks). We stash refs in a module-level set.
-        task = loop.create_task(_log_calibration_record(trade))
-        _PENDING_CALIBRATION_TASKS.add(task)
-        task.add_done_callback(_PENDING_CALIBRATION_TASKS.discard)
 
     def create_record(
         self,
@@ -576,155 +480,3 @@ class TradeJournal:
     def total_trades(self) -> int:
         return len(self.trades)
 
-
-# ─── Calibration Record (fire-and-forget) ──────────────────────────────
-
-
-# DB schema constraint: aggression must be one of these values.
-# Anything else → HTTP 400 check-constraint violation.
-_NT_CALIBRATION_VALID_AGRESSIONS = frozenset({"passive", "mid", "aggressive"})
-
-
-def _normalize_aggression(value: str) -> str:
-    """Map any aggression string to a DB-valid value.
-
-    The DB has ``CHECK (aggression IN ('passive', 'mid', 'aggressive'))``.
-    If the EV engine ever emits a value outside this set (e.g. ``moderate``,
-    ``conservative``), the insert would fail. Map unknowns to ``mid``.
-    """
-    if value in _NT_CALIBRATION_VALID_AGRESSIONS:
-        return value
-    v = (value or "").lower()
-    if "passive" in v or "conservative" in v or "low" in v:
-        return "passive"
-    if "aggress" in v or "high" in v:
-        return "aggressive"
-    # Everything else (including None, "", "moderate", "medium") → mid
-    return "mid"
-
-
-def _run_calibration_in_new_loop(trade: "TradeRecord") -> None:
-    """Run the async calibration write in a fresh event loop.
-
-    Used as a thread target when no event loop is available in the
-    calling thread. The thread exits as soon as the write completes
-    (or fails — errors are logged inside ``_log_calibration_record``).
-    """
-    try:
-        asyncio.run(_log_calibration_record(trade))
-    except Exception as exc:
-        # Don't let the worker thread crash silently — log so we can
-        # diagnose. Use a print as well because logging may not be
-        # fully configured in worker threads.
-        log.warning(
-            "calibration write thread failed for %s: %s",
-            getattr(trade, "symbol", "?"), exc,
-        )
-
-
-async def _log_calibration_record(trade: TradeRecord) -> None:
-    """
-    Fire-and-forget: log a calibration record to Supabase.
-
-    Called from ``TradeJournal.record()`` on every closed trade.
-    Failures are logged at WARNING level (not DEBUG) so they're visible
-    in production — the previous implementation silently dropped errors
-    by logging at DEBUG, which made the "no calibration records" bug
-    invisible.
-    """
-    try:
-        from regime_platform.core.settings import settings
-
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
-            log.debug(
-                "calibration write skipped for %s — SUPABASE_URL/KEY not set",
-                trade.symbol,
-            )
-            return
-
-        import httpx
-
-        # Build the row. NOTE on column names:
-        #   - Migration 100 (initial) used 'p_imbalance'
-        #   - Migration 024 renamed it to 'p_ext_signal'
-        # If migration 024 hasn't been applied on the target Supabase,
-        # the column is still 'p_imbalance' and writing 'p_ext_signal'
-        # will fail with PGRST204. We try 'p_ext_signal' first; if that
-        # returns PGRST204, we retry once with 'p_imbalance'.
-        row = {
-            "id": str(uuid.uuid4()),
-            "symbol": trade.symbol,
-            "predicted_p_win": trade.predicted_p_win,
-            "outcome": "win" if trade.is_win else "loss",
-            # ── Normalize aggression to a DB-valid value ─────────────
-            # The DB has CHECK (aggression IN ('passive', 'mid', 'aggressive')).
-            # The EV engine emits these values directly, but if any other
-            # value leaks in (e.g. from a future code path), the insert
-            # would fail. Normalize defensively.
-            "aggression": _normalize_aggression(trade.aggression),
-            "actual_pnl": trade.pnl_dollars,
-            "error_source": trade.status.value if hasattr(trade.status, "value") else str(trade.status),
-            "entry_price": trade.entry_price,
-            "exit_price": trade.exit_price,
-            "p_regime": trade.p_regime,
-            # DB column is still named 'p_ext_signal' (migration 024) — keep
-            # the column name as-is on the wire, but source the value from
-            # the v5 ``p_pattern`` attribute (renamed from v4 p_ext_signal).
-            "p_ext_signal": trade.p_pattern,
-            "p_markov": trade.p_markov,
-            "p_timesfm": trade.p_timesfm,
-            "entered_at": datetime.fromtimestamp(trade.entry_ts, tz=timezone.utc).isoformat(),
-            "closed_at": datetime.fromtimestamp(trade.exit_ts, tz=timezone.utc).isoformat(),
-            # venue column (migration 031) — exchange where the trade was executed
-            "venue": getattr(trade, "venue", None),
-        }
-
-        headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            # Prefer: return=minimal tells PostgREST to NOT return the
-            # inserted row in the response body, which is faster and
-            # avoids issues with computed/virtual columns.
-            "Prefer": "return=minimal",
-        }
-
-        url = f"{settings.SUPABASE_URL}/rest/v1/nt_calibration_records"
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(url, headers=headers, json=row)
-
-            # ── Handle schema drift: p_ext_signal vs p_imbalance ──────
-            # If the column doesn't exist (migration 024 not applied),
-            # retry once with the old column name.
-            if resp.status_code == 400 and "p_ext_signal" in resp.text:
-                log.warning(
-                    "calibration write for %s: 'p_ext_signal' column not found "
-                    "— retrying with legacy 'p_imbalance' name. Apply migration "
-                    "024 to fix.",
-                    trade.symbol,
-                )
-                row["p_imbalance"] = row.pop("p_ext_signal")
-                resp = await client.post(url, headers=headers, json=row)
-
-            if resp.status_code not in (200, 201, 204):
-                # ── Log at WARNING so it's visible in production ───────
-                # The previous implementation logged at DEBUG, which made
-                # calibration failures invisible by default.
-                log.warning(
-                    "calibration record HTTP %s for %s: %s",
-                    resp.status_code, trade.symbol, resp.text[:200],
-                )
-            else:
-                log.debug(
-                    "calibration record OK for %s (predicted=%.3f, outcome=%s)",
-                    trade.symbol, trade.predicted_p_win,
-                    "win" if trade.is_win else "loss",
-                )
-
-    except Exception as exc:
-        # Same reasoning — WARNING, not DEBUG.
-        log.warning(
-            "calibration record failed (non-blocking) for %s: %s",
-            getattr(trade, "symbol", "?"), exc,
-        )
