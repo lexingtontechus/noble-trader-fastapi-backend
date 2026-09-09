@@ -289,3 +289,76 @@ def summarize_since_last_transition(
         "since_ts": since_ts,
         "n_transitions_total": n_transitions_total,
     }
+
+
+async def record_tick_and_update_shadow(
+    symbol: str,
+    ts: float,
+    direction: str,
+    regime_label: Optional[str],
+    regime_conf: Optional[float],
+    p_win: Optional[float],
+    kelly_f: Optional[float],
+) -> None:
+    """Single per-tick entry point wiring the whole pipeline together:
+    append this tick to the local lookback cache, and — if
+    ``signal_stream_meta_model_mode`` is not ``off`` and enough history
+    exists — fit, predict, and persist the current read to
+    ``nt_signal_stream_meta_shadow`` (migration 147).
+
+    This is the piece that was missing entirely before 2026-09-09
+    (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §11,
+    "what happened to all the shadow mode tracking?") — the model and the
+    cache existed, but nothing called either of them from the live sweep,
+    so no shadow data could ever have accumulated regardless of how long
+    the mode stayed off. Fits fresh every call rather than caching a
+    fitted model across ticks — deliberately simple: at the local cache's
+    realistic size (thousands of rows, not millions), a 2-state GaussianHMM
+    fit is sub-second, so a refit-interval/caching scheme would be
+    premature optimization until proven otherwise by real shadow-mode
+    load.
+
+    Best-effort throughout — every failure is caught and logged, never
+    raised into the sweep tick, matching every other fire-and-forget
+    capture in this codebase (``log_signal_sim``, ``log_renko_bricks``, …).
+    """
+    from regime_platform.core.feature_flags import get_signal_stream_meta_model_mode
+    from regime_platform.sweep_orchestrator.signal_stream_cache import (
+        append_tick,
+        fetch_history,
+    )
+
+    try:
+        await append_tick({
+            "symbol": symbol, "ts": ts, "direction": direction,
+            "regime_label": regime_label, "regime_conf": regime_conf,
+            "p_win": p_win, "kelly_f": kelly_f,
+        })
+    except Exception as exc:
+        logger.warning("record_tick_and_update_shadow: append_tick failed for %s: %s", symbol, exc)
+
+    if get_signal_stream_meta_model_mode() == "off":
+        return
+
+    try:
+        history = await fetch_history(symbol)
+        fitted = fit(history)
+        if fitted is None:
+            return
+        prediction = predict_latest(fitted, history)
+        summary = summarize_since_last_transition(fitted, history)
+        result = {
+            "state": prediction["state"],
+            "coherent_prob": prediction["coherent_prob"],
+            "noisy_prob": prediction["noisy_prob"],
+            "ticks_in_current_state": summary["ticks_in_current_state"],
+            "since_ts": summary["since_ts"],
+            "n_transitions_total": summary["n_transitions_total"],
+            "n_ticks_fit": fitted.n_ticks_fit,
+        }
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            record_signal_stream_meta_shadow,
+        )
+        await record_signal_stream_meta_shadow(symbol, result)
+    except Exception as exc:
+        logger.warning("record_tick_and_update_shadow: shadow update failed for %s: %s", symbol, exc)

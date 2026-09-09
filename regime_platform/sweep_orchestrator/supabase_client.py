@@ -2110,3 +2110,51 @@ async def record_expiry_rate_alert(symbol: str, expired_pct: float, resolved_n: 
                 )
     except Exception as exc:
         logger.error("record_expiry_rate_alert: failed for %s: %s", symbol, exc)
+
+
+NT_SIGNAL_STREAM_META_SHADOW_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "state", "coherent_prob", "noisy_prob", "ticks_in_current_state",
+    "since_ts", "n_transitions_total", "n_ticks_fit", "updated_at",
+})
+
+
+async def record_signal_stream_meta_shadow(symbol: str, result: dict[str, Any]) -> None:
+    """Upsert the meta-regime model's current read for ``symbol`` into
+    ``nt_signal_stream_meta_shadow`` (migration 147) — shadow tracking,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §11
+    (direct response to "what happened to all the shadow mode tracking" —
+    this is the table that was missing). ``result`` is whatever
+    ``meta_regime_model.update_shadow_for_symbol`` returns (a merge of
+    ``predict_latest``'s and ``summarize_since_last_transition``'s output
+    plus ``n_ticks_fit``). Best-effort, never raises."""
+    if not settings.SUPABASE_URL:
+        return
+    try:
+        row = _filter_payload({
+            "symbol": symbol,
+            "state": result.get("state"),
+            "coherent_prob": result.get("coherent_prob"),
+            "noisy_prob": result.get("noisy_prob"),
+            "ticks_in_current_state": result.get("ticks_in_current_state"),
+            "since_ts": result.get("since_ts"),
+            "n_transitions_total": result.get("n_transitions_total"),
+            "n_ticks_fit": result.get("n_ticks_fit"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, NT_SIGNAL_STREAM_META_SHADOW_COLUMNS)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{_url('nt_signal_stream_meta_shadow')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "record_signal_stream_meta_shadow: upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("record_signal_stream_meta_shadow: failed for %s: %s", symbol, exc)

@@ -147,10 +147,19 @@ calibration_bias_min_episodes: 2
 # regardless of budget; not blocking, prediction quality was still
 # correct on the validated example).
 #
-# Still `off`: a v2 fix, however well-validated on one real example, is
-# not the same as shadow-mode validation across many symbols and weeks --
-# that's the actual bar before considering `shadow`, let alone `live`.
-signal_stream_meta_model_mode: off
+# 2026-09-09: flipped off -> shadow. The blocker to shadow was never "the
+# fix needs more validation" -- shadow mode itself IS the validation
+# mechanism. The actual blocker was that nothing wired
+# signal_stream_cache.append_tick() into the live sweep or persisted a
+# comparison anywhere (nt_signal_stream_meta_shadow, migration 147) --
+# "weeks of shadow-mode data" was never going to accumulate on its own
+# without that plumbing existing. Now every non-neutral signal (qualified
+# or not) feeds the local lookback cache, and once >= MIN_TICKS_TO_FIT
+# (50) ticks of history exist per symbol, every tick updates
+# nt_signal_stream_meta_shadow with the current coherent/noisy read --
+# visible and queryable from the first fit onward, not after weeks.
+# Still zero effect on qualification or Kelly sizing (shadow, not live).
+signal_stream_meta_model_mode: shadow
 
 # MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,
 # FLAT} transition matrix. legacy_hmm (the separate, numerically-unstable

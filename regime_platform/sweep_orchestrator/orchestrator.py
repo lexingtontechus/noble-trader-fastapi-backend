@@ -3465,6 +3465,28 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                 else:
                     asyncio.create_task(log_signal_sim(sim_payload))
+                # ── 11a2. Signal-stream meta-regime shadow (2026-09-09) ──
+                # Fire-and-forget: append this tick to the local lookback
+                # cache and, once signal_stream_meta_model_mode != off,
+                # update nt_signal_stream_meta_shadow. Runs on EVERY
+                # non-neutral signal (qualified or not), same population
+                # as the signal-sim capture above — the meta-model needs
+                # the raw stream, not just what happened to qualify. See
+                # worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+                # §11 ("what happened to all the shadow mode tracking?" —
+                # this call is the piece that was missing).
+                from regime_platform.sweep_orchestrator.meta_regime_model import (
+                    record_tick_and_update_shadow,
+                )
+                asyncio.create_task(record_tick_and_update_shadow(
+                    symbol=symbol,
+                    ts=time.time(),
+                    direction=trade_signal["signal"],
+                    regime_label=regime_label,
+                    regime_conf=regime_conf,
+                    p_win=ev_result.p_win,
+                    kelly_f=kelly_f,
+                ))
                 # Part II paper portfolio: open a kelly-sized paper position
                 # for QUALIFIED signals (fire-and-forget; never breaks sweep).
                 if qualified:
