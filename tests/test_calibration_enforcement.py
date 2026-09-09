@@ -178,10 +178,19 @@ class TestFetchLatestEodActionRealFiltering:
 
 
 # ─── 2. apply_calibration_adjustment (async, mocked Supabase read) ─────
+#
+# 2026-09-09 (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+# SS16, item #6): apply_calibration_adjustment now reads the single
+# nt_symbol_calibration_state row via fetch_calibration_state instead of
+# reconstructing "the latest enforceable action" from nt_eod_actions via
+# fetch_latest_eod_action(actions=PENALTY_ACTIONS). Mocks below patch
+# fetch_calibration_state; state rows use "computed_at" (not "ts") and
+# carry status/n_records/kelly_reduction_override as top-level columns
+# rather than nested inside "detail".
 
 
-async def _run_apply(p_win=0.65, kelly=0.2, action_row=None, enforce=True):
-    """Drive apply_calibration_adjustment with a mocked EOD action fetch."""
+async def _run_apply(p_win=0.65, kelly=0.2, state_row=None, enforce=True):
+    """Drive apply_calibration_adjustment with a mocked state-table read."""
     with patch(
         "regime_platform.sweep_orchestrator.calibration_enforcement.settings"
     ) as mock_settings:
@@ -189,8 +198,8 @@ async def _run_apply(p_win=0.65, kelly=0.2, action_row=None, enforce=True):
         mock_settings.SUPABASE_KEY = "k"
         mock_settings.EOD_CALIBRATION_ENFORCE = enforce
         with patch(
-            "regime_platform.sweep_orchestrator.calibration_enforcement.fetch_latest_eod_action",
-            new=AsyncMock(return_value=action_row),
+            "regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",
+            new=AsyncMock(return_value=state_row),
         ) as mock_fetch:
             result = await apply_calibration_adjustment(
                 "XAUUSD", p_win=p_win, kelly_f=kelly,
@@ -201,7 +210,7 @@ async def _run_apply(p_win=0.65, kelly=0.2, action_row=None, enforce=True):
 def test_apply_noop_when_disabled():
     """EOD_CALIBRATION_ENFORCE=0 → no-op without even fetching."""
     async def run():
-        return await _run_apply(action_row={"action": "bayesian_penalty"}, enforce=False)
+        return await _run_apply(state_row={"action": "bayesian_penalty"}, enforce=False)
 
     result, mock_fetch = asyncio.run(run())
     assert result["applied"] is False
@@ -212,44 +221,44 @@ def test_apply_noop_when_disabled():
 
 
 def test_apply_noop_when_no_action():
-    """No EOD row for the symbol → no correction (EOD never classified it)."""
-    result, _ = asyncio.run(_run_apply(action_row=None))
+    """No state row for the symbol → no correction (never classified)."""
+    result, _ = asyncio.run(_run_apply(state_row=None))
     assert result["applied"] is False
     assert result["reason"] == "no_eod_action"
     assert result["p_win"] == 0.65
 
 
-def test_apply_noop_when_only_audit_only_action_exists():
-    """2026-08-24: fetch_latest_eod_action is now called with
-    actions=PENALTY_ACTIONS, so a real fetch never returns an audit-only
-    row (parameter_decay_check, regime_shift_alert) to this function in
-    the first place — it returns None when that's all that exists,
-    exactly like "no penalty action ever recorded" (see the real-fetch
-    regression test below for proof the filtering itself works)."""
-    result, mock_fetch = asyncio.run(_run_apply(action_row=None))
+def test_apply_noop_when_action_is_none():
+    """A state row with action="none" (CALIBRATED) → no correction — same
+    as "never classified" from the enforcement decision's point of view."""
+    result, _ = asyncio.run(_run_apply(state_row={
+        "action": "none", "bias": 0.02, "status": "CALIBRATED",
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+    }))
     assert result["applied"] is False
     assert result["reason"] == "no_eod_action"
     assert result["p_win"] == 0.65
 
 
-def test_apply_calls_fetch_with_penalty_actions_filter():
-    """Regression guard for the 2026-08-24 fix itself: the caller must
-    request the penalty-filtered fetch, not the latest-row-of-any-type
-    default — this is what makes the filtering in fetch_latest_eod_action
-    actually take effect for live enforcement."""
-    _, mock_fetch = asyncio.run(_run_apply(action_row=None))
-    mock_fetch.assert_awaited_once_with("XAUUSD", actions=PENALTY_ACTIONS)
+def test_apply_reads_calibration_state_not_eod_actions():
+    """Regression guard for the 2026-09-09 state/history split: enforcement
+    must read the single current-state row, not reconstruct it from the
+    nt_eod_actions log."""
+    _, mock_fetch = asyncio.run(_run_apply(state_row=None))
+    mock_fetch.assert_awaited_once_with("XAUUSD")
 
 
 def test_apply_penalty_active_shrinks_p_win_and_kelly():
-    """A fresh bayesian_penalty action → p_win shrunk toward 0.5, kelly × 0.5."""
-    action = {
+    """A fresh bayesian_penalty state row → p_win shrunk toward 0.5, kelly × 0.5."""
+    state = {
         "action": "bayesian_penalty",
         "bias": 0.18,
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "status": "OVERCONFIDENT",
+        "n_records": 20,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
         "detail": {"n": 20},
     }
-    result, _ = asyncio.run(_run_apply(action_row=action))
+    result, _ = asyncio.run(_run_apply(state_row=state))
     assert result["applied"] is True
     assert result["status"] == "OVERCONFIDENT"
     assert abs(result["p_win"] - 0.60) < 1e-9          # (0.65*20+5)/30
@@ -259,13 +268,15 @@ def test_apply_penalty_active_shrinks_p_win_and_kelly():
 
 def test_apply_underconfident_pulls_p_win_up():
     """UNDERCONFIDENT (bias < -0.10) → p_win pulled UP toward 0.5, kelly halved."""
-    action = {
-        "action": "kelly_reduction",
+    state = {
+        "action": "bayesian_penalty",
         "bias": -0.15,
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "status": "UNDERCONFIDENT",
+        "n_records": 30,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
         "detail": {"n": 30},
     }
-    result, _ = asyncio.run(_run_apply(p_win=0.44, kelly=0.25, action_row=action))
+    result, _ = asyncio.run(_run_apply(p_win=0.44, kelly=0.25, state_row=state))
     assert result["applied"] is True
     assert result["status"] == "UNDERCONFIDENT"
     assert result["p_win"] > 0.44
@@ -273,18 +284,20 @@ def test_apply_underconfident_pulls_p_win_up():
 
 
 def test_apply_stale_action_is_noop():
-    """An old EOD action (beyond the fresh window) must NOT be enforced."""
+    """An old state row (beyond the fresh window) must NOT be enforced."""
     stale_ts = (
         datetime.now(timezone.utc)
         - timedelta(hours=ACTION_FRESH_WINDOW_HOURS + 2)
     ).isoformat()
-    action = {
+    state = {
         "action": "bayesian_penalty",
         "bias": 0.18,
-        "ts": stale_ts,
+        "status": "OVERCONFIDENT",
+        "n_records": 20,
+        "computed_at": stale_ts,
         "detail": {"n": 20},
     }
-    result, _ = asyncio.run(_run_apply(action_row=action))
+    result, _ = asyncio.run(_run_apply(state_row=state))
     assert result["applied"] is False
     assert result["reason"] == "action_stale"
     assert result["p_win"] == 0.65

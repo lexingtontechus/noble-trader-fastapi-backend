@@ -1637,55 +1637,19 @@ async def fetch_calibration_bias_raw(
     }
 
 
-async def _clear_stale_eod_actions(symbol: str) -> None:
-    """DELETE stale enforcement-state actions for ``symbol`` from ``nt_eod_actions``.
-
-    Used at the start of each 4h intraday correction pass (raw-bias mode) to
-    reset the enforcement state before re-evaluating from raw p_win. Only
-    enforcement actions are cleared; ``parameter_decay_check`` / ``degeneracy_breaker``
-    rows are preserved (they are audit-only, not enforcement).
-
-    ``stagnation_kill_switch`` (2026-08-22 audit fix #3c) is included so a
-    symbol whose bias has returned to CALIBRATED gets its Tier 2 hard block
-    lifted immediately at the next cycle boundary — the stagnation streak
-    is recomputed fresh from the (now-improving) bias history, so the kill
-    switch is only re-written if the symbol is still genuinely stuck.
-
-    ``bayesian_penalty`` is deliberately NOT included here (2026-08-23 fix,
-    see worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2). This call runs
-    unconditionally every cycle for every symbol; ``bayesian_penalty`` rows
-    are also the sole history source ``fetch_recent_action_bias`` reads for
-    ``_stagnation_streak`` in the SAME cycle they'd be deleted, which made
-    the streak reset to 1 every single cycle — Tier 1/2 escalation could
-    never fire. ``_clear_stagnation_history`` below clears bayesian_penalty
-    specifically, and only on genuine recovery to CALIBRATED, restoring the
-    originally-documented auto-recovery behavior without destroying the
-    streak's own history in the process.
-
-    Best-effort: failures are logged, never raised.
-    """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
-        return
-    url = _url("nt_eod_actions")
-    params = {
-        "action": "in.(kelly_reduction,emergency_heavy_sweep,stagnation_kill_switch)",
-        "symbol": f"eq.{symbol}",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.delete(url, headers=_headers(), params=params)
-            if not resp.is_success and resp.status_code != 204:
-                logger.warning(
-                    "_clear_stale_eod_actions %s: HTTP %d — %s",
-                    symbol, resp.status_code, resp.text[:200],
-                )
-            elif resp.status_code == 204:
-                logger.info(
-                    "_clear_stale_eod_actions %s: cleared stale enforcement actions",
-                    symbol,
-                )
-    except Exception as exc:
-        logger.warning("_clear_stale_eod_actions %s failed: %s", symbol, exc)
+# _clear_stale_eod_actions -- REMOVED 2026-09-09 (worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16, item #6).
+# Deleted enforcement-state rows from nt_eod_actions at the start of each
+# 4h intraday cycle to reset stale state before re-evaluating. That whole
+# "clear, then maybe re-add" dance is now unnecessary: upsert_calibration_state
+# fully overwrites the single current-state row every cycle a verdict is
+# computed (see eod_correction.run_eod_correction's CALIBRATED and
+# OVERCONFIDENT/UNDERCONFIDENT branches), and the one case that used to
+# need an explicit clear even without a computed verdict -- insufficient
+# calibration data -- now gets its own explicit upsert_calibration_state
+# (action="none") call at that exact point instead. nt_eod_actions itself
+# is untouched by any of this and no longer has anything deleted from it
+# for enforcement purposes -- it is a genuinely permanent audit log now.
 
 
 async def _clear_stagnation_history(symbol: str) -> None:
@@ -1785,6 +1749,122 @@ async def fetch_recent_action_bias(
             except (TypeError, ValueError):
                 pass
     return out
+
+
+# ── Calibration current-state (2026-09-09, worklog
+# 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16, item #6:
+# nt_eod_actions state/history split) ───────────────────────────────────
+#
+# ``nt_eod_actions`` stays exactly what it always was: a permanent AUDIT
+# log, multiple writers (eod_correction nightly/intraday, drift_monitor,
+# orchestrator._write_regime_shift_alert), multiple readers (including
+# _stagnation_streak's own history lookup above via
+# fetch_recent_action_bias) — nothing about that role changes here.
+#
+# ``nt_symbol_calibration_state`` is the new, separate answer to a
+# DIFFERENT question: "what is the CURRENTLY enforceable calibration
+# verdict for symbol X, right now." One row per symbol, one writer.
+# ``upsert_calibration_state`` below is THE ONLY function anywhere in
+# this codebase permitted to write to this table — every verdict-
+# computing pass (eod_correction nightly, eod_correction intraday,
+# drift_monitor) calls INTO it rather than writing directly. This is
+# what actually prevents the clashing/contamination the old design was
+# vulnerable to: not locking or precedence math, but the simple fact
+# that there is exactly one code path capable of performing the write,
+# so every writer produces a row of the same consistent shape, and a
+# reader never has to disambiguate between rows from different sources
+# — there is only ever the one, current row.
+
+
+async def upsert_calibration_state(
+    symbol: str,
+    *,
+    action: str,
+    bias: Optional[float],
+    status: Optional[str],
+    n_records: Optional[int],
+    source: str,
+    detail: Optional[dict[str, Any]] = None,
+    kelly_reduction_override: Optional[float] = None,
+    stagnation_tier: int = 0,
+) -> bool:
+    """THE SOLE WRITER to ``nt_symbol_calibration_state`` — see module
+    note above. Every caller passes its own ``source`` tag
+    (``"eod_correction_nightly"``, ``"eod_correction_intraday"``, or
+    ``"drift_monitor"``) purely for observability; this function does not
+    arbitrate between sources — each caller already decides FOR ITSELF
+    whether to write this cycle (e.g. drift_monitor's own "don't churn"
+    freshness guard, unchanged), so by the time this is called, the
+    caller's verdict is authoritative and simply overwrites the row.
+
+    ``action`` must be one of ``"none"`` (no active penalty — CALIBRATED,
+    or a cycle reset when calibration data is insufficient),
+    ``"bayesian_penalty"`` (the canonical name for an active shrink
+    penalty — enforcement treats ``bayesian_penalty``/``kelly_reduction``/
+    ``emergency_heavy_sweep`` identically, see
+    ``calibration_enforcement.apply_calibration_adjustment``; those three
+    distinct labels still get written to ``nt_eod_actions`` for audit,
+    since ``emergency_heavy_sweep`` also drives the SAME-CYCLE, in-memory
+    emergency-sweep dispatch in ``orchestrator.py`` — a different
+    consumer entirely, unaffected by this table), or
+    ``"stagnation_kill_switch"`` (Tier 2 hard block).
+
+    Returns ``True`` on success, ``False`` on any failure — best-effort,
+    never raises (a failed state write should not break the sweep tick;
+    the next cycle's write will self-heal it).
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return False
+    row = {
+        "symbol": symbol,
+        "action": action,
+        "bias": bias,
+        "status": status,
+        "n_records": n_records,
+        "kelly_reduction_override": kelly_reduction_override,
+        "stagnation_tier": stagnation_tier,
+        "source": source,
+        "detail": detail or {},
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        url = _url("nt_symbol_calibration_state") + "?on_conflict=symbol"
+        headers = {**_headers(), "Prefer": "resolution=merge-duplicates"}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, headers=headers, json=row)
+            if resp.status_code not in (200, 201, 204):
+                logger.warning(
+                    "upsert_calibration_state %s: HTTP %d — %s",
+                    symbol, resp.status_code, resp.text[:200],
+                )
+                return False
+            return True
+    except Exception as exc:
+        logger.warning("upsert_calibration_state %s failed: %s", symbol, exc)
+        return False
+
+
+async def fetch_calibration_state(symbol: str) -> dict[str, Any] | None:
+    """Fetch ``symbol``'s single current-state row from
+    ``nt_symbol_calibration_state``. Returns ``None`` if the symbol has
+    never had a verdict computed, or on any failure — never raises.
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return None
+    try:
+        url = _url("nt_symbol_calibration_state")
+        params = {"symbol": f"eq.{symbol}", "select": "*", "limit": "1"}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=_headers(), params=params)
+            resp.raise_for_status()
+            data: list[dict] = resp.json()
+    except Exception as exc:
+        logger.warning("fetch_calibration_state %s failed: %s", symbol, exc)
+        return None
+    if not isinstance(data, list) or len(data) == 0:
+        return None
+    return data[0]
 
 
 async def fetch_latest_tuning_param(param_name: str) -> dict[str, Any] | None:

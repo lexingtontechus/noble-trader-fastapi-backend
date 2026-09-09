@@ -360,13 +360,14 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
     the standard 0.10 thresholds — unchanged behaviour.
     """
     summary: dict[str, Any] = {"checked": 0, "actions": [], "errors": 0, "raw_bias_mode": raw_bias_mode}
+    source_tag = "eod_correction_intraday" if raw_bias_mode else "eod_correction_nightly"
     try:
         from regime_platform.sweep_orchestrator.supabase_client import (
             fetch_active_symbols,
             fetch_calibration_bias,
             fetch_calibration_bias_raw,
-            _clear_stale_eod_actions,
             _clear_stagnation_history,
+            upsert_calibration_state,
         )
         from regime_platform.sweep_orchestrator.orchestrator import _derive_venue
 
@@ -382,25 +383,6 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
         summary["checked"] += 1
         try:
             venue = _derive_venue(sym)
-
-            # ── 4h cycle reset: clear stale enforcement actions for ALL symbols ──
-            # At each 4h intraday correction boundary, stale enforcement actions
-            # (kelly_reduction/emergency_heavy_sweep/stagnation_kill_switch) from
-            # the previous cycle must be cleared before re-evaluation. This is a
-            # true reset: symbols with insufficient calibration records
-            # (< EOD_BIAS_MIN_RECORDS) previously entered the degeneracy path
-            # where clearing was skipped entirely, leaving actions from Aug 18-19
-            # persisting indefinitely. See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
-            #
-            # NOTE (2026-08-23): does NOT include bayesian_penalty — that's the
-            # stagnation breaker's own bias history, cleared separately (and only
-            # on genuine recovery) by _clear_stagnation_history below, once this
-            # cycle's status is known. See _clear_stale_eod_actions's docstring
-            # and worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2 — clearing
-            # it unconditionally here made the stagnation streak reset to 1 every
-            # cycle, silently disabling Tier 1/2 escalation entirely.
-            if raw_bias_mode:
-                await _clear_stale_eod_actions(symbol)
 
             if raw_bias_mode:
                 # ── 4h intraday correction pass — raw-bias mode ──
@@ -462,6 +444,21 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                         "[eod:correction] %s: degeneracy check failed (%s: %s)",
                         symbol, type(exc).__name__, exc,
                     )
+                # ── Cycle reset for insufficient data (2026-09-09) ──────
+                # Replaces the old unconditional _clear_stale_eod_actions
+                # call for exactly this case: only the intraday pass ever
+                # cleared stale enforcement state (the nightly pass relies
+                # on the ACTION_FRESH_WINDOW_HOURS freshness check to age
+                # old state out naturally, unchanged). A symbol that drops
+                # below the record floor this cycle should stop being
+                # enforced immediately, not linger until its last
+                # successful verdict ages past the freshness window.
+                if raw_bias_mode:
+                    await upsert_calibration_state(
+                        symbol, action="none", bias=None, status=None,
+                        n_records=0, source=source_tag,
+                        detail={"reason": "insufficient_data_cycle_reset"},
+                    )
                 continue
 
             # ── Classification (2026-09-09, worklog
@@ -480,13 +477,21 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             # see worklog/20260824_STAGNATION_STREAK_SOURCE_FILTER.md.
             detail: dict[str, Any] = {"bias": bias, "status": status, "source": "eod_correction"}
 
-            # ── Stale action clearing moved to unconditional 4h cycle reset ──
-            # At: eod_correction.py L240 (before bias computation)
-            # Previously cleared here only when status == "CALIBRATED" — but symbols
-            # with insufficient records never reached this branch. Now cleared for ALL
-            # symbols at the 4h boundary. See: worklog/20260822_STALE_ACTION_CLEARING_SCOPE.md
-
             if status == "CALIBRATED":
+                # ── Current-state reset (2026-09-09) ────────────────────
+                # Every classification cycle fully overwrites this
+                # symbol's nt_symbol_calibration_state row — a CALIBRATED
+                # verdict means action="none", which is itself the
+                # "cycle reset" (replaces the old unconditional
+                # _clear_stale_eod_actions call; see this function's
+                # module-level note for the one remaining case — bias is
+                # None — that needed its own explicit reset).
+                await upsert_calibration_state(
+                    symbol, action="none", bias=bias, status=status,
+                    n_records=int(cal.get("n") or 0), source=source_tag,
+                    detail=detail,
+                )
+
                 # ── Stagnation-history auto-recovery (2026-08-23 fix) ──
                 # Genuine recovery: clear this symbol's bayesian_penalty
                 # history so a *future* stagnation streak starts fresh
@@ -494,6 +499,11 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 # Only fires here (on CALIBRATED), not every cycle — see
                 # _clear_stagnation_history's docstring and
                 # worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2.
+                # NOTE: this still operates on nt_eod_actions (the audit
+                # log's bayesian_penalty history), unrelated to the
+                # current-state table above — that history lookup is
+                # explicitly out of scope for the state/history split
+                # (worklog SS16 item #6).
                 if raw_bias_mode:
                     await _clear_stagnation_history(symbol)
 
@@ -584,6 +594,23 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 await _write_eod_action(symbol, action, bias, detail)
                 summary["actions"].append({"symbol": symbol, "action": action, "bias": bias})
 
+            # ── Current-state write (2026-09-09) ────────────────────────
+            # nt_eod_actions still gets all three labeled rows above
+            # (audit, unchanged — emergency_heavy_sweep is what
+            # orchestrator.py's in-memory emergency-sweep dispatch reads
+            # from THIS function's own return value, a different consumer
+            # entirely, unaffected by this table). For live enforcement
+            # purposes the three are identical (calibration_enforcement
+            # only branches on stagnation_kill_switch vs everything else)
+            # — "bayesian_penalty" is the canonical state-table action
+            # name for "a shrink penalty is active."
+            await upsert_calibration_state(
+                symbol, action="bayesian_penalty", bias=bias, status=status,
+                n_records=n_records, source=source_tag, detail=detail,
+                kelly_reduction_override=detail.get("kelly_reduction_override"),
+                stagnation_tier=tier,
+            )
+
             if tier == 2:
                 # Written LAST so it's the "latest" row fetch_latest_eod_action
                 # reads — forces kelly_f=0.0 in enforcement (blocks publishing
@@ -596,6 +623,15 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                     "[eod:correction] %s: STAGNATION Tier 2 (streak=%d) — "
                     "KILL SWITCH, kelly forced to 0.0",
                     symbol, streak,
+                )
+                # Explicit override — not implicit "written last wins" the
+                # way nt_eod_actions' "latest row" reconstruction worked.
+                # One more full upsert makes stagnation_kill_switch the
+                # current state, unambiguously.
+                await upsert_calibration_state(
+                    symbol, action=STAGNATION_KILL_SWITCH_ACTION, bias=bias,
+                    status=status, n_records=n_records, source=source_tag,
+                    detail=detail, stagnation_tier=tier,
                 )
 
             logger.warning(

@@ -130,7 +130,13 @@ class TestCalibrationEnforcementBayesianPriorRegistryOverride:
 # ─── calibration_enforcement KELLY_REDUCTION default ────────────────────
 
 class TestApplyCalibrationAdjustmentKellyReductionRegistryOverride:
-    async def _run(self, action):
+    """2026-09-09 (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+    SS16, item #6): apply_calibration_adjustment reads
+    nt_symbol_calibration_state via fetch_calibration_state instead of
+    fetch_latest_eod_action — state rows use "computed_at" and carry
+    kelly_reduction_override as a top-level column."""
+
+    async def _run(self, state_row):
         from unittest.mock import AsyncMock, patch
 
         with patch(
@@ -140,8 +146,8 @@ class TestApplyCalibrationAdjustmentKellyReductionRegistryOverride:
             mock_settings.SUPABASE_KEY = "k"
             mock_settings.EOD_CALIBRATION_ENFORCE = True
             with patch(
-                "regime_platform.sweep_orchestrator.calibration_enforcement.fetch_latest_eod_action",
-                new=AsyncMock(return_value=action),
+                "regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",
+                new=AsyncMock(return_value=state_row),
             ):
                 return await calibration_enforcement.apply_calibration_adjustment(
                     "XAUUSD", p_win=0.65, kelly_f=0.20,
@@ -150,31 +156,37 @@ class TestApplyCalibrationAdjustmentKellyReductionRegistryOverride:
     def test_tuned_kelly_reduction_used_when_no_tier1_override(self):
         from datetime import datetime, timezone
 
-        action = {
+        state = {
             "action": "bayesian_penalty",
             "bias": 0.18,
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": "OVERCONFIDENT",
+            "n_records": 20,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
             "detail": {"n": 20},  # no kelly_reduction_override key
         }
         asyncio.run(_seed("KELLY_REDUCTION", 0.30))
-        result = asyncio.run(self._run(action))
+        result = asyncio.run(self._run(state))
         assert result["applied"] is True
         assert result["kelly_f"] == pytest.approx(0.20 * 0.30, abs=1e-9)
 
     def test_tier1_override_in_detail_still_wins_over_registry(self):
-        """detail.kelly_reduction_override (Tier-1 escalation, fix #3c)
-        must still take precedence over the registry-tuned default --
-        preserves the stagnation breaker's own escalation contract."""
+        """kelly_reduction_override (Tier-1 escalation, fix #3c), now a
+        top-level column on nt_symbol_calibration_state, must still take
+        precedence over the registry-tuned default -- preserves the
+        stagnation breaker's own escalation contract."""
         from datetime import datetime, timezone
 
-        action = {
+        state = {
             "action": "bayesian_penalty",
             "bias": 0.18,
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": "OVERCONFIDENT",
+            "n_records": 20,
+            "kelly_reduction_override": 0.15,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
             "detail": {"n": 20, "kelly_reduction_override": 0.15},
         }
         asyncio.run(_seed("KELLY_REDUCTION", 0.30))
-        result = asyncio.run(self._run(action))
+        result = asyncio.run(self._run(state))
         assert result["kelly_f"] == pytest.approx(0.20 * 0.15, abs=1e-9)
 
 
@@ -190,7 +202,7 @@ class TestDriftMonitorRegistryOverride:
             with (
                 patch("regime_platform.sweep_orchestrator.drift_monitor.settings", settings_mock),
                 patch(
-                    "regime_platform.sweep_orchestrator.calibration_enforcement.fetch_latest_eod_action",
+                    "regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",
                     new=AsyncMock(return_value=None),
                 ),
                 patch(
@@ -199,6 +211,10 @@ class TestDriftMonitorRegistryOverride:
                 ),
                 patch(
                     "regime_platform.sweep_orchestrator.supabase_client._insert_row",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch(
+                    "regime_platform.sweep_orchestrator.supabase_client.upsert_calibration_state",
                     new=AsyncMock(return_value=True),
                 ),
             ):

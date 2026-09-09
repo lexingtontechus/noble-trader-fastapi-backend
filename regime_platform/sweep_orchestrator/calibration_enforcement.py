@@ -40,7 +40,6 @@ Design rules (mirror eod_correction.py):
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional
 
@@ -148,25 +147,34 @@ async def fetch_latest_eod_action(
 ) -> Optional[dict[str, Any]]:
     """Fetch the most recent ``nt_eod_actions`` row for ``symbol``.
 
+    NOT used for live enforcement decisions anymore (2026-09-09, worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16, item
+    #6): ``apply_calibration_adjustment`` and ``drift_monitor.check_drift``
+    both read ``nt_symbol_calibration_state`` (the single current-state
+    row) instead — see that function's docstring for why "reconstruct
+    current state from the latest matching audit-log row" was itself the
+    problem, not just the specific ``regime_shift_alert``-interference bug
+    described below. Kept as a general read helper against the permanent
+    ``nt_eod_actions`` audit log (multiple writers, multiple readers, by
+    design) for any observability/debugging use that genuinely wants "the
+    latest logged event of any/some type," not "what's currently
+    enforceable."
+
     Returns the row dict (or ``None`` on failure / no rows).
 
     ``actions``, when given, restricts the query to those action types
-    server-side (``action=in.(...)``) — pass ``PENALTY_ACTIONS`` to get the
-    latest ENFORCEABLE row specifically, ignoring audit-only rows written
-    by other subsystems in between. This matters as of 2026-08-23: Layer
-    2's ``regime_shift_alert`` (and the older ``parameter_decay_check``)
-    write to the SAME table, and without this filter, whichever one of
-    those happens to be the true latest row silently defeats BOTH real
-    callers of this function — ``apply_calibration_adjustment`` (reads
-    "no penalty active" and skips enforcement entirely) and
-    ``drift_monitor.check_drift`` (its "don't churn" freshness check reads
-    "no fresh penalty" and re-fires even though one exists underneath).
+    server-side (``action=in.(...)``) — historically ``PENALTY_ACTIONS``
+    was passed here to get the latest ENFORCEABLE row specifically,
+    ignoring audit-only rows written by other subsystems in between. This
+    mattered as of 2026-08-23: Layer 2's ``regime_shift_alert`` (and the
+    older ``parameter_decay_check``) write to the SAME table, and without
+    this filter, whichever one of those happens to be the true latest row
+    silently defeated BOTH real callers of this function at the time.
     Confirmed live: USDCAD had 9 consecutive ``regime_shift_alert`` rows
     with zero penalty actions interspersed across a 2-hour span, during
-    which any active penalty for it was invisible to both call sites. Both
-    real callers pass ``actions=PENALTY_ACTIONS``; ``actions=None``
-    (default) preserves the original "latest row of any type" behavior for
-    any future caller that genuinely wants that.
+    which any active penalty for it was invisible to both call sites —
+    the incident that motivated moving both callers off this
+    reconstruction entirely rather than adding a third special case.
     """
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         log.debug("Supabase not configured — no EOD action for %s", symbol)
@@ -230,10 +238,24 @@ async def apply_calibration_adjustment(
 ) -> dict[str, Any]:
     """Compute the calibration correction for one symbol.
 
-    Reads the latest ``nt_eod_actions`` row. When a penalty is active (and
-    fresh), returns adjusted ``p_win`` (Bayesian shrink toward 0.5) and
-    ``kelly_f`` (× 0.5), plus the status/bias for stamping. Otherwise
-    returns the inputs unchanged.
+    Reads ``symbol``'s single current-state row from
+    ``nt_symbol_calibration_state`` (2026-09-09, worklog
+    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16, item
+    #6 — the nt_eod_actions state/history split). When a penalty is
+    active (and fresh), returns adjusted ``p_win`` (Bayesian shrink
+    toward 0.5) and ``kelly_f`` (× 0.5), plus the status/bias for
+    stamping. Otherwise returns the inputs unchanged.
+
+    This no longer reads ``nt_eod_actions`` at all — that table remains
+    the permanent, multi-writer audit log (eod_correction
+    nightly/intraday, drift_monitor, regime_shift_alert all still write
+    to it, unchanged), but reconstructing "what's currently enforceable"
+    from its latest matching row was the exact fragility that caused two
+    confirmed incidents (see ``fetch_latest_eod_action``'s docstring,
+    kept below for its own remaining callers/history). The single
+    current-state row structurally cannot have that problem: there is
+    nothing else in that table for a different writer's row to be
+    mistaken for.
 
     Returns:
         {
@@ -246,7 +268,7 @@ async def apply_calibration_adjustment(
         }
 
     ``venue`` is accepted for API symmetry with fetch_calibration_bias but
-    the EOD actions table is keyed by symbol only (no venue column).
+    the calibration-state table is keyed by symbol only (no venue column).
     """
     noop = {
         "applied": False,
@@ -260,48 +282,30 @@ async def apply_calibration_adjustment(
         return noop
 
     try:
-        # actions=PENALTY_ACTIONS (2026-08-24 fix): fetch the latest
-        # ENFORCEABLE row specifically, not the latest row of any type.
-        # Without this, an audit-only row (regime_shift_alert,
-        # parameter_decay_check) written after a still-fresh penalty would
-        # be seen here instead, silently no-op'ing enforcement for a
-        # symbol that has an active, fresh penalty underneath it — see
-        # fetch_latest_eod_action's docstring for the live-confirmed case.
-        action = await fetch_latest_eod_action(symbol, actions=PENALTY_ACTIONS)
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            fetch_calibration_state,
+        )
+        state = await fetch_calibration_state(symbol)
     except Exception as exc:
         log.warning("calibration adjustment %s failed: %s", symbol, exc)
         return {**noop, "reason": f"fetch_error:{type(exc).__name__}"}
 
-    if not action:
+    if not state or state.get("action") in (None, "none"):
         return {**noop, "reason": "no_eod_action"}
 
-    action_name = action.get("action")
+    action_name = state.get("action")
 
-    if not _action_is_fresh(action):
+    if not _action_is_fresh({"ts": state.get("computed_at")}):
         return {
             **noop,
             "status": None,
-            "bias": _num(action.get("bias")),
+            "bias": _num(state.get("bias")),
             "reason": "action_stale",
         }
 
-    # Penalty active → apply Bayesian shrink + Kelly reduction.
-    # The EOD row's detail carries the n used to compute the penalty.
-    # Accept dict (current writer) OR legacy double-encoded JSON string
-    # (pre-H2 rows) so enforcement works on both.
-    _raw_detail = action.get("detail")
-    detail = {}
-    if isinstance(_raw_detail, dict):
-        detail = _raw_detail
-    elif isinstance(_raw_detail, str):
-        try:
-            _parsed = json.loads(_raw_detail)
-            if isinstance(_parsed, dict):
-                detail = _parsed
-        except Exception:
-            detail = {}
-    n_records = _num(detail.get("n")) or _num(action.get("count")) or 0
-    bias = _num(action.get("bias"))
+    detail = state.get("detail") if isinstance(state.get("detail"), dict) else {}
+    n_records = _num(state.get("n_records")) or 0
+    bias = _num(state.get("bias"))
 
     if action_name == "stagnation_kill_switch":
         # Tier 2 hard block (fix #3c, 2026-08-22 audit): the symbol has been
@@ -331,18 +335,24 @@ async def apply_calibration_adjustment(
             "reason": f"penalty:{action_name}",
         }
 
-    # Tier 1 (fix #3c) writes a deeper kelly_reduction_override in detail
-    # when the symbol has been stagnant for 2+ cycles; otherwise falls back
-    # to the standard KELLY_REDUCTION (0.5).
-    kelly_reduction = _num(detail.get("kelly_reduction_override")) or _settings_number(
+    # Tier 1 (fix #3c) writes a deeper kelly_reduction_override (its own
+    # column on nt_symbol_calibration_state now, mirrored into detail for
+    # audit) when the symbol has been stagnant for 2+ cycles; otherwise
+    # falls back to the standard KELLY_REDUCTION (0.5).
+    kelly_reduction = _num(state.get("kelly_reduction_override")) or _settings_number(
         "KELLY_REDUCTION", KELLY_REDUCTION
     )
 
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
     adjusted_kelly = float(kelly_f) * kelly_reduction
-    status = "OVERCONFIDENT" if (bias is not None and bias > OVERCONFIDENT_BIAS) else (
-        "UNDERCONFIDENT" if (bias is not None and bias < UNDERCONFIDENT_BIAS) else "PENALTY"
-    )
+    # status: read directly from the state row (2026-09-09) — it was
+    # already classified via eod_correction._classify_bias/drift_monitor
+    # at write time using the real canonical thresholds; re-deriving a
+    # third time here from bias vs OVERCONFIDENT_BIAS/UNDERCONFIDENT_BIAS
+    # was itself a small instance of the "one arbiter" problem this
+    # session's review found (worklog SS16). "PENALTY" fallback preserved
+    # for the defensive case where an older/malformed row has no status.
+    status = state.get("status") or "PENALTY"
     log.info(
         "[calibration:enforce] %s: %s bias=%s n=%s → p_win %.4f→%.4f, kelly %.6f→%.6f "
         "(kelly_reduction=%.2f)",

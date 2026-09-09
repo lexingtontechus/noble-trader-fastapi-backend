@@ -5,10 +5,16 @@ Covers:
      falls back to predicted_p_win when raw IS NULL, returns avg_pred_raw.
   2. ``_classify_bias_raw`` — wider thresholds (0.30 / -0.20) for raw model output.
   3. ``run_eod_correction(raw_bias_mode=True)`` — dispatches to the raw fetcher,
-     clears stale penalty actions for CALIBRATED symbols, writes correction
-     actions for over/underconfident ones using raw p_win.
-  4. ``_clear_stale_eod_actions`` — DELETEs penalty actions, preserves audit-only
-     rows, best-effort (never raises).
+     writes correction actions for over/underconfident symbols using raw
+     p_win, and upserts nt_symbol_calibration_state (2026-09-09, worklog
+     20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16 item #6)
+     as the sole current-state write for both CALIBRATED (action="none",
+     the "cycle reset") and OVERCONFIDENT/UNDERCONFIDENT symbols.
+  4. ``_clear_stagnation_history`` — DELETEs bayesian_penalty history rows
+     on genuine recovery, best-effort (never raises). (The former
+     ``_clear_stale_eod_actions`` was removed 2026-09-09 — its job is now
+     done by the unconditional upsert_calibration_state call every cycle;
+     see item 3.)
   5. Orchestrator wiring: ``_run_eod_correction_only`` calls
      ``run_eod_correction(raw_bias_mode=True)``.
   6. Settings: EOD_BIAS_RAW_OVERCONFIDENT / EOD_BIAS_RAW_UNDERCONFIDENT defaults.
@@ -24,7 +30,6 @@ import pytest
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_calibration_bias_raw,
-    _clear_stale_eod_actions,
     _clear_stagnation_history,
     fetch_recent_action_bias,
 )
@@ -283,7 +288,7 @@ def _run_eod_correction_mocked(
     cal_raw=None,
     cal_enforced=None,
     insert_fn=None,
-    clear_fn=None,
+    state_fn=None,
     win_rates=None,
     symbols=None,
     raw_oc=0.30,
@@ -291,12 +296,16 @@ def _run_eod_correction_mocked(
 ):
     """Run run_eod_correction with all Supabase calls mocked.
 
-    Returns (result, insert_mock, clear_mock, raw_fetch_mock, enforced_fetch_mock).
+    Returns (result, insert_mock, state_mock, raw_fetch_mock, enforced_fetch_mock).
+    ``state_mock`` records every ``upsert_calibration_state`` call (2026-09-09,
+    worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16
+    item #6) — the single writer to nt_symbol_calibration_state, replacing
+    the former ``_clear_stale_eod_actions``/``clear_fn``.
     """
     raw_fetch_mock = AsyncMock(return_value=cal_raw)
     enforced_fetch_mock = AsyncMock(return_value=cal_enforced)
     insert_mock = insert_fn if insert_fn else AsyncMock(return_value=True)
-    clear_mock = clear_fn if clear_fn else AsyncMock()
+    state_mock = state_fn if state_fn else AsyncMock(return_value=True)
     win_rates_mock = AsyncMock(
         return_value=win_rates if win_rates else {"recent_3d_wr": None, "prior_3d_wr": None}
     )
@@ -332,8 +341,8 @@ def _run_eod_correction_mocked(
               new=enforced_fetch_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client._insert_row",
               new=insert_mock),
-        patch("regime_platform.sweep_orchestrator.supabase_client._clear_stale_eod_actions",
-              new=clear_mock),
+        patch("regime_platform.sweep_orchestrator.supabase_client.upsert_calibration_state",
+              new=state_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client._clear_stagnation_history",
               new=clear_stagnation_history_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_latest_sweep",
@@ -352,7 +361,7 @@ def _run_eod_correction_mocked(
             stack.enter_context(p)
         result = asyncio.run(run_eod_correction(raw_bias_mode=raw_bias_mode))
 
-    return result, insert_mock, clear_mock, raw_fetch_mock, enforced_fetch_mock
+    return result, insert_mock, state_mock, raw_fetch_mock, enforced_fetch_mock
 
 
 class TestRunEodCorrectionRawMode:
@@ -360,7 +369,7 @@ class TestRunEodCorrectionRawMode:
         """run_eod_correction(raw_bias_mode=True) calls fetch_calibration_bias_raw."""
         cal_raw = {"bias": 0.50, "n": 30, "win_rate": 0.30,
                    "avg_pred": 0.55, "avg_pred_raw": 0.90, "status": "OVERCONFIDENT"}
-        result, insert_mock, clear_mock, raw_mock, enforced_mock = _run_eod_correction_mocked(
+        result, insert_mock, state_mock, raw_mock, enforced_mock = _run_eod_correction_mocked(
             raw_bias_mode=True,
             cal_raw=cal_raw,
             symbols=[{"symbol": "EURUSD"}],
@@ -379,30 +388,36 @@ class TestRunEodCorrectionRawMode:
         )
         enforced_mock.assert_not_awaited()
 
-    def test_calibrated_symbol_clears_stale_actions(self):
-        """CALIBRATED symbols trigger _clear_stale_eod_actions (the cycle reset)."""
+    def test_calibrated_symbol_upserts_state_action_none(self):
+        """CALIBRATED symbols upsert nt_symbol_calibration_state with
+        action="none" (2026-09-09) — this IS the cycle reset now; there is
+        no separate clear step."""
         cal_raw = {"bias": 0.05, "n": 30, "win_rate": 0.80,
                    "avg_pred": 0.82, "avg_pred_raw": 0.85, "status": "CALIBRATED"}
         insert_mock = AsyncMock(return_value=True)
-        clear_mock = AsyncMock()
-        result, _, clear_mock_ret, _, _ = _run_eod_correction_mocked(
+        state_mock = AsyncMock(return_value=True)
+        result, _, state_mock_ret, _, _ = _run_eod_correction_mocked(
             raw_bias_mode=True,
             cal_raw=cal_raw,
             symbols=[{"symbol": "AUDUSD"}],
             insert_fn=insert_mock,
-            clear_fn=clear_mock,
+            state_fn=state_mock,
             win_rates={"recent_3d_wr": 0.80, "prior_3d_wr": 0.80},
         )
-        # With unconditional 4h cycle reset, clearing is called once unconditionally
-        # (the CALIBRATED path no longer calls it separately since it's already cleared)
-        clear_mock_ret.assert_awaited_once_with("AUDUSD")
+        state_mock_ret.assert_awaited_once()
+        call_kwargs = state_mock_ret.call_args.kwargs
+        assert state_mock_ret.call_args.args[0] == "AUDUSD"
+        assert call_kwargs["action"] == "none"
+        assert call_kwargs["status"] == "CALIBRATED"
+        assert call_kwargs["source"] == "eod_correction_intraday"
         insert_mock.assert_not_awaited()  # CALIBRATED → no penalty actions written
 
     def test_overconfident_writes_three_actions(self):
-        """Overconfident raw bias → 3 penalty actions + stale actions cleared first."""
+        """Overconfident raw bias → 3 audit rows in nt_eod_actions (unchanged)
+        + one nt_symbol_calibration_state upsert with action="bayesian_penalty"."""
         cal_raw = {"bias": 0.50, "n": 30, "win_rate": 0.30,
                    "avg_pred": 0.55, "avg_pred_raw": 0.90, "status": "OVERCONFIDENT"}
-        result, insert_mock, clear_mock, _, _ = _run_eod_correction_mocked(
+        result, insert_mock, state_mock, _, _ = _run_eod_correction_mocked(
             raw_bias_mode=True,
             cal_raw=cal_raw,
             symbols=[{"symbol": "EURUSD"}],
@@ -411,8 +426,11 @@ class TestRunEodCorrectionRawMode:
         assert len(actions) == 3
         action_names = {a["action"] for a in actions}
         assert action_names == {"emergency_heavy_sweep", "bayesian_penalty", "kelly_reduction"}
-        # Stale actions cleared unconditionally at 4h boundary BEFORE new actions written
-        clear_mock.assert_awaited_once_with("EURUSD")
+        state_mock.assert_awaited_once()
+        call_kwargs = state_mock.call_args.kwargs
+        assert state_mock.call_args.args[0] == "EURUSD"
+        assert call_kwargs["action"] == "bayesian_penalty"
+        assert call_kwargs["status"] == "OVERCONFIDENT"
 
     def test_bayesian_shrink_uses_raw_pwin(self):
         """In raw mode, the Bayesian penalty is applied to raw p_win, not enforced."""
@@ -452,64 +470,28 @@ class TestRunEodCorrectionRawMode:
         enforced_mock.assert_awaited_once()
 
 
-# ─── 4. _clear_stale_eod_actions ────────────────────────────────────────
+# ─── 4. upsert_calibration_state (the single writer, 2026-09-09) ────────
 
-def _run_clear(symbol="EURUSD"):
-    client = FakeAsyncClient()
-    mock_s = AsyncMock()
-    mock_s.SUPABASE_URL = "https://x.supabase.co"
-    mock_s.SUPABASE_KEY = "k"
-    with (
-        patch(
-            "regime_platform.sweep_orchestrator.supabase_client._url",
-            return_value="https://x.supabase.co/rest/v1/nt_eod_actions",
-        ),
-        patch(
-            "regime_platform.sweep_orchestrator.supabase_client._headers",
-            return_value={"apikey": "k", "Authorization": "Bearer k"},
-        ),
-        patch(
-            "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
-            return_value=client,
-        ),
-        patch(
-            "regime_platform.sweep_orchestrator.supabase_client.settings",
-            mock_s,
-        ),
-    ):
-        asyncio.run(_clear_stale_eod_actions(symbol))
-    return client
+from regime_platform.sweep_orchestrator.supabase_client import (
+    upsert_calibration_state,
+    fetch_calibration_state,
+)
 
 
-class TestClearStaleEodActions:
-    def test_deletes_penalty_actions_for_symbol(self):
-        client = _run_clear("EURUSD")
-        assert len(client.delete_calls) == 1
-        params = client.delete_calls[0]["params"]
-        assert params["symbol"] == "eq.EURUSD"
-        assert "action" in params
-        actions_str = params["action"]
-        for a in ("kelly_reduction", "emergency_heavy_sweep"):
-            assert a in actions_str
-        # 2026-08-23 fix: bayesian_penalty is deliberately NOT cleared here —
-        # it's the stagnation breaker's own history, and clearing it every
-        # cycle (unconditionally, like the other actions) reset the streak
-        # to 1 every time, silently disabling Tier 1/2 escalation. See
-        # _clear_stagnation_history (clears it only on genuine CALIBRATED
-        # recovery) and worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md §2.
-        assert "bayesian_penalty" not in actions_str
+class TestUpsertCalibrationState:
+    """worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+    SS16 item #6 — replaces the former _clear_stale_eod_actions DELETE
+    dance with a single upsert per verdict-computing pass."""
 
-    def test_best_effort_never_raises(self):
-        """A 500 from Supabase must not raise."""
+    def test_posts_upsert_with_on_conflict_symbol(self):
         client = FakeAsyncClient()
-        client.delete = AsyncMock(return_value=_FakeDeleteResp(status=500))
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
         mock_s.SUPABASE_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
-                return_value="https://x.supabase.co/rest/v1/nt_eod_actions",
+                return_value="https://x.supabase.co/rest/v1/nt_symbol_calibration_state",
             ),
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._headers",
@@ -519,12 +501,94 @@ class TestClearStaleEodActions:
                 "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
                 return_value=client,
             ),
-            patch(
-                "regime_platform.sweep_orchestrator.supabase_client.settings",
-                mock_s,
-            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
         ):
-            asyncio.run(_clear_stale_eod_actions("EURUSD"))
+            ok = asyncio.run(upsert_calibration_state(
+                "EURUSD", action="bayesian_penalty", bias=0.5, status="OVERCONFIDENT",
+                n_records=30, source="eod_correction_nightly", detail={"x": 1},
+            ))
+        assert ok is True
+        assert len(client.post_calls) == 1
+        assert "on_conflict=symbol" in client.post_calls[0]["url"]
+        payload = client.post_calls[0]["json"]
+        assert payload["symbol"] == "EURUSD"
+        assert payload["action"] == "bayesian_penalty"
+        assert payload["source"] == "eod_correction_nightly"
+
+    def test_best_effort_never_raises(self):
+        client = FakeAsyncClient()
+        client.post = AsyncMock(return_value=FakeResp([], status=500))
+        mock_s = AsyncMock()
+        mock_s.SUPABASE_URL = "https://x.supabase.co"
+        mock_s.SUPABASE_KEY = "k"
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._url",
+                return_value="https://x.supabase.co/rest/v1/nt_symbol_calibration_state",
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._headers",
+                return_value={"apikey": "k", "Authorization": "Bearer k"},
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                return_value=client,
+            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
+        ):
+            ok = asyncio.run(upsert_calibration_state(
+                "EURUSD", action="none", bias=None, status=None,
+                n_records=0, source="eod_correction_nightly",
+            ))
+        assert ok is False
+
+
+class TestFetchCalibrationState:
+    def test_returns_single_row(self):
+        client = FakeAsyncClient(get_rows=[{"symbol": "EURUSD", "action": "bayesian_penalty"}])
+        mock_s = AsyncMock()
+        mock_s.SUPABASE_URL = "https://x.supabase.co"
+        mock_s.SUPABASE_KEY = "k"
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._url",
+                return_value="https://x.supabase.co/rest/v1/nt_symbol_calibration_state",
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._headers",
+                return_value={"apikey": "k", "Authorization": "Bearer k"},
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                return_value=client,
+            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
+        ):
+            result = asyncio.run(fetch_calibration_state("EURUSD"))
+        assert result == {"symbol": "EURUSD", "action": "bayesian_penalty"}
+
+    def test_no_rows_returns_none(self):
+        client = FakeAsyncClient(get_rows=[])
+        mock_s = AsyncMock()
+        mock_s.SUPABASE_URL = "https://x.supabase.co"
+        mock_s.SUPABASE_KEY = "k"
+        with (
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._url",
+                return_value="https://x.supabase.co/rest/v1/nt_symbol_calibration_state",
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client._headers",
+                return_value={"apikey": "k", "Authorization": "Bearer k"},
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
+                return_value=client,
+            ),
+            patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_s),
+        ):
+            result = asyncio.run(fetch_calibration_state("EURUSD"))
+        assert result is None
 
 
 class TestClearStagnationHistory:

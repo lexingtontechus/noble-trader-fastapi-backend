@@ -1308,3 +1308,112 @@ needs one clean, authoritative "what do we currently believe about
 symbol X" record to read and update directly, not a log to re-derive
 state from on every decision. Not started; needs explicit go-ahead
 given it's a real schema change touching the live enforcement path.
+
+### Item #6 — built (2026-09-09, explicit approval: "new table is ok, still needs defined writer(s)... build option A")
+
+User's clarification, incorporated directly into the design before
+building: a new table alone isn't enough — it needs a **defined
+writer**, or the same multi-writer contamination just moves up one
+layer into the new table. And the two tables' roles needed to be stated
+precisely: **audit** = multiple read/writes (`nt_eod_actions`, unchanged
+— eod_correction nightly/intraday, drift_monitor, and
+`_write_regime_shift_alert` all still append to it; `_stagnation_streak`
+and any future debugging/observability query still read it); **state**
+(the new table) = single write, multiple reads — exactly one function
+in the entire codebase is permitted to write to it, everything else
+only reads.
+
+**Built**: migration 150 — `nt_symbol_calibration_state` (symbol PK,
+action/bias/status/n_records/kelly_reduction_override/stagnation_tier/
+source/detail/computed_at/updated_at, RLS as usual). `supabase_client.upsert_calibration_state`
+is THE single writer — every verdict-computing pass (`eod_correction`
+nightly, `eod_correction` intraday, `drift_monitor`) calls into it
+rather than writing directly; none of them ever issue their own INSERT/
+UPDATE/UPSERT against this table. `fetch_calibration_state` is the
+single read shape every consumer uses.
+
+**What changed in each caller**:
+- `eod_correction.run_eod_correction` — CALIBRATED now upserts
+  `action="none"` (this IS the "cycle reset," replacing the deleted
+  `_clear_stale_eod_actions`'s unconditional DELETE dance entirely).
+  OVERCONFIDENT/UNDERCONFIDENT upserts `action="bayesian_penalty"`
+  (the canonical name — enforcement already treated
+  `bayesian_penalty`/`kelly_reduction`/`emergency_heavy_sweep`
+  identically; those three distinct labels are still written to
+  `nt_eod_actions` for audit, since `emergency_heavy_sweep` is what
+  `orchestrator.py`'s in-memory, same-call emergency-sweep dispatch
+  reads from this function's own return value — a different consumer,
+  confirmed unaffected by any of this). Tier 2 stagnation writes a
+  second, explicit `action="stagnation_kill_switch"` upsert — a real
+  override, not the old implicit "written last in insertion order
+  wins." The one case that used to need an explicit clear even without
+  a computed verdict — insufficient calibration data, intraday only —
+  now gets its own explicit `upsert_calibration_state(action="none")`
+  call at that exact point, preserving the original prompt-recovery
+  property exactly.
+- `drift_monitor.check_drift` — freshness guard now reads
+  `fetch_calibration_state` instead of reconstructing "the latest
+  enforceable action" from `nt_eod_actions` via a `PENALTY_ACTIONS`
+  filter (the exact filter that was itself a patch for the live
+  USDCAD `regime_shift_alert`-masking incident). When it fires, it
+  still inserts its audit row into `nt_eod_actions` (unchanged) and
+  additionally calls the single writer.
+- `calibration_enforcement.apply_calibration_adjustment` — reads
+  `fetch_calibration_state` (one row) instead of `fetch_latest_eod_action`
+  + `PENALTY_ACTIONS` + `_action_is_fresh` reconstruction. As a direct
+  byproduct, also stopped re-deriving `status` a third time from
+  `bias` vs. thresholds — reads `state["status"]` directly, since it
+  was already correctly classified at write time by the same canonical
+  function (`_classify_bias`) `fetch_calibration_bias` now uses (§16
+  item #2). `fetch_latest_eod_action`/`_action_is_fresh`/`PENALTY_ACTIONS`
+  are NOT deleted — kept as general-purpose audit-log query helpers
+  (their docstrings updated to say so explicitly), since `nt_eod_actions`
+  is still a legitimate multiple-reader table for observability/
+  debugging use, just no longer for live-enforcement reconstruction.
+
+**A real, not hypothetical, second bug fixed as a side effect**:
+tracing `apply_calibration_adjustment`'s Bayesian-shrink helper before
+wiring the new table revealed `calibration_enforcement.bayesian_adjusted_p_win`
+and `eod_correction.bayesian_adjusted_p_win` — two functions with
+identical names and formulas, believed identical, guarded by a "mirror,
+don't share" sync test — had already silently drifted: the enforcement
+copy returns `p_win` unchanged at `n_records=0`; the correction copy
+shrinks fully to 0.5. Kept deliberately separate (not part of §16 item
+#3's constant-sharing, which only covered pure numeric constants) —
+documented explicitly in both docstrings rather than mechanically
+merged, which would have silently changed live risk-management
+behavior as a side effect of this refactor.
+
+**Verified end-to-end against real production Supabase** (not just
+unit tests): applied migration 150, ran `NOTIFY pgrst, 'reload schema'`
+immediately (the lesson from §11/§13's earlier PostgREST schema-cache
+incident, applied proactively this time instead of discovered after
+the fact), then exercised `upsert_calibration_state` /
+`fetch_calibration_state` directly against the live database with a
+throwaway symbol (`TESTSYM_SMOKE`): first upsert created the row,
+second upsert with different values fully overwrote it (confirmed via
+`fetched2` reflecting the new values, not a duplicate row) — proving
+the single-writer/upsert-on-conflict semantics work as designed, not
+just in mocked tests. Test row deleted after verification.
+
+**Test updates**: `test_raw_bias_cycle_reset.py` (removed the
+`TestClearStaleEodActions` class for the deleted function, added
+`TestUpsertCalibrationState`/`TestFetchCalibrationState`, updated the
+CALIBRATED/OVERCONFIDENT integration tests to assert on the state
+upsert instead of the clear call), `test_calibration_enforcement.py`,
+`test_drift_monitor.py` (rewrote the now-obsolete
+"`regime_shift_alert` masks a fresh penalty" integration test away —
+structurally impossible against the new table, since there's nothing
+else in it to be masked by), `test_stagnation_breaker.py`,
+`test_e2e_registry_wiring.py` — all updated to mock
+`fetch_calibration_state`/`upsert_calibration_state` in the new state
+shape (`computed_at`, top-level `n_records`/`kelly_reduction_override`)
+instead of `fetch_latest_eod_action`'s `nt_eod_actions` row shape
+(`ts`, nested-in-`detail`). 794 passed, 21 skipped, 0 failures (net +3
+tests: several removed for deleted functions, more added for the new
+ones).
+
+`nt_eod_actions`'s own writers/behavior are completely unchanged by
+this build — every row it wrote before, it still writes, on the same
+schedule, for the same reasons. Only the *read* side for live
+enforcement moved off it.

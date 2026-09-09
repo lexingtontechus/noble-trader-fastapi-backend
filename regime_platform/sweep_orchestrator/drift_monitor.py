@@ -56,12 +56,12 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
         from regime_platform.sweep_orchestrator.supabase_client import (
             _insert_row,
             fetch_calibration_bias,
+            fetch_calibration_state,
+            upsert_calibration_state,
         )
         from regime_platform.sweep_orchestrator.calibration_enforcement import (
-            PENALTY_ACTIONS,
             _action_is_fresh,
             _settings_number,
-            fetch_latest_eod_action,
         )
 
         window_h = float(getattr(settings, "EOD_DRIFT_WINDOW_HOURS", 48) or 48)
@@ -73,14 +73,20 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
         # A fresh penalty already exists → the scheduled passes own this
         # symbol; do not churn actions every 5 minutes.
         #
-        # actions=PENALTY_ACTIONS (2026-08-24 fix): without this, an
-        # audit-only row (regime_shift_alert, parameter_decay_check)
-        # written after a real penalty would be seen as "the latest
-        # action," fail the action-type check below, and let this
-        # function re-fire even though a fresh penalty exists underneath
-        # it — defeating the "don't churn" guard this block exists for.
-        latest = await fetch_latest_eod_action(symbol, actions=PENALTY_ACTIONS)
-        if latest and _action_is_fresh(latest):
+        # 2026-09-09 (worklog
+        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
+        # reads nt_symbol_calibration_state (the single current-state
+        # row) instead of reconstructing "the latest enforceable action"
+        # from nt_eod_actions via a PENALTY_ACTIONS filter. That filter
+        # was itself a patch for a real incident (an audit-only
+        # regime_shift_alert row masking a still-fresh penalty
+        # underneath it, live-confirmed for USDCAD) — reading the single
+        # state row instead makes that whole failure mode structurally
+        # impossible, since there is nothing else in that table for a
+        # different writer's row to be mistaken for.
+        current_state = await fetch_calibration_state(symbol)
+        is_active = bool(current_state and current_state.get("action") not in (None, "none"))
+        if is_active and _action_is_fresh({"ts": current_state.get("computed_at")}):
             return None
 
         bias_info = await fetch_calibration_bias(
@@ -113,6 +119,15 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
             log.info(
                 "drift monitor %s: OVERCONFIDENT bias=%.4f → bayesian_penalty (n=%s)",
                 symbol, bias, bias_info.get("n"),
+            )
+            # Current-state write (2026-09-09) — through the single
+            # writer (supabase_client.upsert_calibration_state), same as
+            # every other verdict-computing pass. The audit row above is
+            # unchanged/unaffected.
+            await upsert_calibration_state(
+                symbol, action="bayesian_penalty", bias=round(bias, 4),
+                status="OVERCONFIDENT", n_records=bias_info.get("n"),
+                source="drift_monitor", detail=row["detail"],
             )
             return row
         log.warning("drift monitor %s: nt_eod_actions insert failed", symbol)

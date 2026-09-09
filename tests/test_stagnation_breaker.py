@@ -91,7 +91,7 @@ def _run_eod_correction_mocked(
     raw_fetch_mock = AsyncMock(return_value=cal_raw)
     enforced_fetch_mock = AsyncMock(return_value=None)
     insert_mock = insert_fn if insert_fn else AsyncMock(return_value=True)
-    clear_mock = AsyncMock()
+    state_mock = AsyncMock(return_value=True)
     clear_stagnation_history_mock = AsyncMock()
     win_rates_mock = AsyncMock(return_value={"recent_3d_wr": None, "prior_3d_wr": None})
     fetch_latest_sweep_mock = AsyncMock(return_value=None)
@@ -107,8 +107,8 @@ def _run_eod_correction_mocked(
               new=enforced_fetch_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client._insert_row",
               new=insert_mock),
-        patch("regime_platform.sweep_orchestrator.supabase_client._clear_stale_eod_actions",
-              new=clear_mock),
+        patch("regime_platform.sweep_orchestrator.supabase_client.upsert_calibration_state",
+              new=state_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client._clear_stagnation_history",
               new=clear_stagnation_history_mock),
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_latest_sweep",
@@ -201,12 +201,20 @@ class TestStagnationBreakerIntegration:
 # ─── 4. apply_calibration_adjustment — enforcement side ────────────────────
 
 class TestEnforcementStagnationHandling:
+    """2026-09-09 (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+    SS16, item #6): apply_calibration_adjustment reads
+    nt_symbol_calibration_state via fetch_calibration_state, not
+    fetch_latest_eod_action — state rows use "computed_at" and carry
+    n_records/kelly_reduction_override as top-level columns."""
+
     def test_stagnation_kill_switch_forces_kelly_zero(self):
-        async def fake_fetch(symbol, actions=None):
+        async def fake_fetch(symbol):
             return {
                 "action": "stagnation_kill_switch",
                 "bias": 0.45,
-                "ts": None,
+                "status": "OVERCONFIDENT",
+                "n_records": 30,
+                "computed_at": None,
                 "detail": {"stagnation_streak": 4, "stagnation_tier": 2},
             }
 
@@ -216,7 +224,7 @@ class TestEnforcementStagnationHandling:
         with (
             patch("regime_platform.sweep_orchestrator.calibration_enforcement.settings",
                   mock_settings),
-            patch("regime_platform.sweep_orchestrator.calibration_enforcement.fetch_latest_eod_action",
+            patch("regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",
                   new=fake_fetch),
         ):
             result = asyncio.run(
@@ -228,13 +236,16 @@ class TestEnforcementStagnationHandling:
         assert result["status"] == "STAGNATION_KILL_SWITCH"
 
     def test_kelly_reduction_override_respected(self):
-        """A Tier 1 bayesian_penalty row with kelly_reduction_override=0.25
+        """A Tier 1 bayesian_penalty state row with kelly_reduction_override=0.25
         must apply that factor instead of the default 0.5."""
-        async def fake_fetch(symbol, actions=None):
+        async def fake_fetch(symbol):
             return {
                 "action": "bayesian_penalty",
                 "bias": 0.45,
-                "ts": None,
+                "status": "OVERCONFIDENT",
+                "n_records": 30,
+                "kelly_reduction_override": 0.25,
+                "computed_at": None,
                 "detail": {"n": 30, "kelly_reduction_override": 0.25},
             }
 
@@ -244,7 +255,7 @@ class TestEnforcementStagnationHandling:
         with (
             patch("regime_platform.sweep_orchestrator.calibration_enforcement.settings",
                   mock_settings),
-            patch("regime_platform.sweep_orchestrator.calibration_enforcement.fetch_latest_eod_action",
+            patch("regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",
                   new=fake_fetch),
         ):
             result = asyncio.run(
@@ -256,48 +267,6 @@ class TestEnforcementStagnationHandling:
 
     def test_stagnation_kill_switch_in_penalty_actions(self):
         assert "stagnation_kill_switch" in PENALTY_ACTIONS
-
-
-# ─── 5. _clear_stale_eod_actions clears the kill switch too ───────────────
-
-def test_clear_stale_actions_includes_kill_switch():
-    from regime_platform.sweep_orchestrator.supabase_client import _clear_stale_eod_actions
-
-    class _FakeResp:
-        status_code = 204
-        text = ""
-
-    class _FakeClient:
-        def __init__(self):
-            self.delete_calls = []
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def delete(self, url, headers=None, params=None):
-            self.delete_calls.append(params)
-            return _FakeResp()
-
-    client = _FakeClient()
-    mock_settings = AsyncMock()
-    mock_settings.SUPABASE_URL = "https://x.supabase.co"
-    mock_settings.SUPABASE_KEY = "k"
-
-    with (
-        patch("regime_platform.sweep_orchestrator.supabase_client._url",
-              return_value="https://x.supabase.co/rest/v1/nt_eod_actions"),
-        patch("regime_platform.sweep_orchestrator.supabase_client._headers",
-              return_value={"apikey": "k", "Authorization": "Bearer k"}),
-        patch("regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
-              return_value=client),
-        patch("regime_platform.sweep_orchestrator.supabase_client.settings", mock_settings),
-    ):
-        asyncio.run(_clear_stale_eod_actions("AAPL"))
-
-    assert STAGNATION_KILL_SWITCH_ACTION in client.delete_calls[0]["action"]
 
 
 # ─── 6. Real cross-cycle interaction (2026-08-23 clear-order bug) ──────────
