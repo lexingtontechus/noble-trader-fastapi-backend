@@ -125,14 +125,31 @@ calibration_bias_min_episodes: 2
 # Ships at `off` deliberately, same shadow-first discipline as every
 # other new mechanism this session (heavy_sweep_atr_anchored_bricks_mode,
 # heavy_sweep_deadline_aware_scoring_mode, regime_label_debounce_mode).
-# A real-data smoke test at build time found an honest v1 limitation: the
-# model's binary label-persistence feature dominates the Gaussian fit
-# over the more continuous confidence-deviation feature, so it reliably
-# catches regime-label flip-flopping but under-weights a confidence SPIKE
-# that occurs without an accompanying label change (exactly the pattern
-# in the XAUUSD 2026-09-07 13:01 example that originally motivated this
-# work) -- needs a rolling-confidence-variance feature added in a v2
-# before this is trustworthy enough to gate anything live.
+#
+# v1 (build time) found a real limitation via real-data smoke test: the
+# model's binary label-persistence feature dominated the fit over the
+# more continuous columns, so it reliably caught regime-label
+# flip-flopping but missed a confidence SPIKE with no label change --
+# exactly the XAUUSD 2026-09-07 13:01 case that motivated this work
+# (regime_conf spiked 0.477->0.896, label never changed).
+#
+# v2 (same day) fixed it: added regime_conf_volatility (rolling std of
+# regime_conf, NOT p_win -- the real spike was in regime_conf) as a 4th
+# feature. Re-validated on the same real XAUUSD data: the 13:01 moment
+# now reads 97.9% noisy (was 100% coherent), a genuinely resolves case,
+# while a genuinely calm moment (11:30) still correctly reads coherent.
+# See worklog section 10 for the full detail, including a test-
+# construction lesson (a deterministic period-2 value alternation is NOT
+# a valid "noisy" test case -- a 2-state Markov chain represents that
+# perfectly, it isn't noise) and an investigated-not-just-noted
+# convergence warning on the real 1000-tick fit (raising n_iter does not
+# fix it -- EM's own monotonicity check stops it at iteration 6
+# regardless of budget; not blocking, prediction quality was still
+# correct on the validated example).
+#
+# Still `off`: a v2 fix, however well-validated on one real example, is
+# not the same as shadow-mode validation across many symbols and weeks --
+# that's the actual bar before considering `shadow`, let alone `live`.
 signal_stream_meta_model_mode: off
 
 # MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,

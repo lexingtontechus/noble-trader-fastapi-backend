@@ -80,6 +80,16 @@ class MetaRegimeFit:
     n_ticks_fit: int
 
 
+# v2 (2026-09-09): window for the rolling confidence-volatility feature
+# (column 3, below). Short enough to localize a brief spike to roughly
+# where it happened, long enough to have more than one sample to take a
+# standard deviation over. Not tuned against a grid — a small, defensible
+# starting point (a spike lasting 1 tick surrounded by calm ticks should
+# stand out clearly at this window size); revisit with real shadow-mode
+# data once this ships past `off`.
+CONFIDENCE_VOLATILITY_WINDOW = 4
+
+
 def _build_features(history: list[dict[str, Any]]) -> np.ndarray:
     """Turn a symbol's tick history (oldest-first, as returned by
     ``signal_stream_cache.fetch_history``) into a feature matrix.
@@ -93,16 +103,39 @@ def _build_features(history: list[dict[str, Any]]) -> np.ndarray:
       2. ``label_persistence`` — 1.0 if this tick's ``regime_label``
          equals the PREVIOUS tick's, else 0.0. The first tick (no
          predecessor) gets 1.0 (neutral — no evidence of instability yet).
+      3. ``regime_conf_volatility`` (v2, 2026-09-09) — rolling standard
+         deviation of column 1 (``regime_conf``, NOT column 0) over the
+         trailing ``CONFIDENCE_VOLATILITY_WINDOW`` ticks (including this
+         one). Added specifically because v1's real-data validation
+         (worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
+         §9) found label_persistence's clean binary 0/1 separation
+         dominated the Gaussian fit over the noisier, more continuous
+         columns — so a confidence SPIKE with no accompanying label
+         change went undetected. This is deliberately keyed off
+         ``regime_conf``, not ``confidence_deviation``/p_win: the exact
+         XAUUSD 2026-09-07 13:01 case that motivated this fix was a
+         ``regime_conf`` spike (0.477→0.896 in one tick) while p_win
+         barely moved (0.546→0.562) and the label held
+         "med_low_vol_strong_bear" throughout — volatility on the wrong
+         column would have missed the very case this exists to catch. A
+         local volatility spike is a clean, near-binary signal (elevated
+         during and briefly after a spike, ~0 in a calm stretch) — giving
+         the fit a SECOND separable axis instead of relying on
+         label_persistence alone. Fewer than 2 ticks of history available
+         for the window (i.e. the very first tick) get 0.0 (no evidence
+         of volatility yet, same "neutral" convention as
+         label_persistence's first-tick handling).
 
-    This is deliberately a small, cheap feature set for a first cut, not
-    the full brick-direction-persistence design in the worklog — brick
-    data is not yet trustworthy for this purpose (see worklog §7, Finding
-    1: fabricated timestamps) and needs its own fix before it's a safe
-    input here. Extending this feature set once that lands is expected,
-    not a redesign.
+    This is deliberately a small, cheap feature set, not the full
+    brick-direction-persistence design in the worklog — brick data is not
+    yet trustworthy for this purpose (see worklog §7, Finding 1:
+    fabricated timestamps, now fixed 2026-09-09 but not yet wired into
+    this feature set) and needs its own validation before it's a safe
+    input here. Extending this feature set further is expected, not a
+    redesign.
     """
     n = len(history)
-    features = np.zeros((n, 3), dtype=float)
+    features = np.zeros((n, 4), dtype=float)
     prev_label = None
     for i, row in enumerate(history):
         p_win = row.get("p_win")
@@ -112,6 +145,10 @@ def _build_features(history: list[dict[str, Any]]) -> np.ndarray:
         label = row.get("regime_label")
         features[i, 2] = 1.0 if (prev_label is None or label == prev_label) else 0.0
         prev_label = label
+
+        window_start = max(0, i - CONFIDENCE_VOLATILITY_WINDOW + 1)
+        window = features[window_start:i + 1, 1]  # regime_conf, not confidence_deviation
+        features[i, 3] = float(np.std(window)) if len(window) >= 2 else 0.0
     return features
 
 
@@ -123,17 +160,20 @@ def _label_components(
     caveat as RegimeHMM) — this re-derives the mapping fresh every fit
     rather than assuming an index convention.
 
-    Ranks components by their mean (regime_conf + label_persistence) in
-    ORIGINAL units (destandardized) — higher combined score means the
-    component represents ticks where confidence was high AND the label
-    was holding steady, which is the definition of "coherent" this module
-    uses.
+    Ranks components by mean (regime_conf + label_persistence -
+    regime_conf_volatility) in ORIGINAL units (destandardized) — higher
+    combined score means the component represents ticks where confidence
+    was high, the label was holding steady, AND confidence wasn't
+    whipsawing tick-to-tick, which is the definition of "coherent" this
+    module uses. ``regime_conf_volatility`` (v2, column 3) is SUBTRACTED —
+    it's a noisiness measure, so a high value should pull a component
+    toward STATE_NOISY, not away from it.
     """
     mu, sigma = scale
-    # means_ is in standardized space; destandardize columns 1 (regime_conf)
-    # and 2 (label_persistence) the same way RegimeHMM._destandardize_means does.
+    # means_ is in standardized space; destandardize the same way
+    # RegimeHMM._destandardize_means does.
     means_original = model.means_ * sigma + mu
-    scores = means_original[:, 1] + means_original[:, 2]
+    scores = means_original[:, 1] + means_original[:, 2] - means_original[:, 3]
     order = np.argsort(scores)  # ascending: lowest score first
     return {
         int(order[0]): STATE_NOISY,

@@ -381,3 +381,82 @@ noted but blocked on the existing non-commercial license restriction
 until that's resolved. Kept in mind as a reason not to design the
 per-symbol meta-model in a way that would need to be thrown away if/when
 cross-symbol modeling becomes possible.
+
+## 10. Meta-regime model v2 — the confidence-spike fix, detailed (2026-09-09)
+
+**The bug, precisely**: v1's real-data validation found it correctly
+called the 2026-09-07 13:01 XAUUSD moment "coherent" (100% `coherent_prob`)
+when it should have flagged it as noisy — that was the exact tick whose
+confidence spike produced a losing qualified signal. Root cause,
+re-examined carefully (an earlier draft of this explanation was
+imprecise): the spike that actually happened at 13:01 was in
+**`regime_conf`** (0.477 → 0.896 in one tick, staying elevated 0.88-0.96
+for the next 11 ticks), **not** in `p_win` (which moved only 0.546→0.562).
+v1's feature set had no column that measured *change* in `regime_conf` at
+all — only its instantaneous value, mixed in with the rest of a 1000-tick
+history where regime_conf's overall distribution overlaps enough between
+calm and volatile stretches that absolute level alone doesn't cleanly
+separate two states. `label_persistence` — a clean, always-exactly-0-or-1
+column — ended up carrying nearly all of the fit's discriminating power
+by default, and it had nothing to say about a spike that happened without
+a label change.
+
+**The fix**: a 4th feature, `regime_conf_volatility` — the rolling
+standard deviation of `regime_conf` (not `p_win`) over the trailing
+`CONFIDENCE_VOLATILITY_WINDOW=4` ticks. This gives the model a second,
+independent, near-binary discriminating signal (elevated during and
+briefly after a spike, ~0 in a calm stretch) instead of relying on
+`label_persistence` to carry the whole fit alone. `_label_components`'s
+ranking was updated to `regime_conf + label_persistence -
+regime_conf_volatility` (subtracted, since it's a noisiness measure).
+
+**Verified two ways, not just unit tests:**
+1. Real-data re-validation on the exact XAUUSD case: v2 now calls the
+   2026-09-07 13:01 moment 97.9% `noisy` (was 100% `coherent` under v1),
+   while still correctly calling a genuinely calm moment (11:30, mid a
+   stable bull run) 100% `coherent`. A complete reversal of the wrong
+   call, on the real data that exposed it.
+2. Regression tests (`tests/test_meta_regime_model.py`):
+   - `test_build_features_regime_conf_spike_has_elevated_volatility` —
+     feature-level, using the real recorded XAUUSD `regime_conf`
+     sequence from the worklog table directly (not round synthetic
+     numbers), proving the volatility column is correctly keyed off
+     `regime_conf` and flags the spike tick.
+   - `test_model_distinguishes_stable_from_oscillating_confidence_under_constant_label`
+     — full HMM regression: `regime_label` is held constant across the
+     *entire* synthetic history (zero discriminating power from
+     `label_persistence`, by construction) and both segments share
+     nearly the same mean `regime_conf` (~0.7), differing only in
+     stability vs. irregular jitter — the model still correctly calls
+     the stable segment coherent and the jittering one noisy, proving
+     the fix works even when the OTHER v1 features are deliberately
+     uninformative.
+
+**A test-construction lesson worth keeping**: the first attempt at test
+2 used a strict period-2 alternation (`0.5, 0.9, 0.5, 0.9, ...`) for the
+"noisy" segment and got the assertion backwards — the model confidently
+called it *coherent*, not noisy. Investigated rather than just flipping
+the assertion: a perfectly periodic 2-value alternation is exactly what
+a 2-state Markov chain represents best (it's maximally predictable, so
+genuinely not "noisy" from the model's perspective) — real noise needs
+to be irregular/unpredictable to be a valid test case. Switched to a
+fixed-seed random jitter (`random.Random(42).uniform(0.4, 0.95)`), which
+produced the expected result immediately. Kept the failed version's
+lesson in the test's own docstring so it isn't rediscovered the hard way
+again.
+
+**One honest open item, investigated not just noted**: fitting on the
+real 1000-tick history logs hmmlearn's "Model is not converging" warning
+(log-likelihood dips slightly, 71.01→70.61, at iteration 6). Checked
+whether raising `n_iter` (100→200→300→500) fixes it — it does not; EM
+still stops at iteration 6 regardless of budget, because hmmlearn's
+monotonicity check triggers on the small negative delta itself, not on
+running out of iterations. Not chased further: `_sanitize_model` already
+guards the degenerate-output case, and the prediction quality on the
+real validated example was excellent despite the warning. Left as a
+monitoring item for if/when this moves past `off` — not blocking, since
+nothing consumes this model's output yet.
+
+`config/feature_flags.yaml`'s `signal_stream_meta_model_mode` comment
+updated to reflect the v2 fix; the v1-limitation caveat there is now
+resolved, replaced with the convergence-monitoring note above.
