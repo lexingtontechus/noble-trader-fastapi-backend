@@ -412,7 +412,7 @@ async def _patch_signal(signal_id: Any, patch: dict[str, Any]) -> bool:
                 return False
             return True
     except Exception as exc:
-        logger.error("eod_resolver: PATCH signal %s failed: %s", signal_id, exc)
+        logger.error("eod_resolver: PATCH signal %s failed: %s: %r", signal_id, type(exc).__name__, exc)
         return False
 
 

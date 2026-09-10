@@ -294,7 +294,7 @@ async def _write_eod_action(symbol: str, action: str, bias: Optional[float], det
         }
         await _insert_row("nt_eod_actions", row)
     except Exception as exc:
-        logger.warning("[eod:correction] %s: nt_eod_actions insert failed: %s", symbol, exc)
+        logger.warning("[eod:correction] %s: nt_eod_actions insert failed: %s: %r", symbol, type(exc).__name__, exc)
 
 
 async def _fetch_recent_win_rates(symbol: str) -> dict[str, float]:

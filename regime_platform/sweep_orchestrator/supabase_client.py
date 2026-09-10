@@ -284,7 +284,7 @@ async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
             )
             return True
     except Exception as exc:
-        logger.error("%s insert failed: %s", table, exc)
+        logger.error("%s insert failed: %s: %r", table, type(exc).__name__, exc)
         return False
 
 
@@ -660,7 +660,7 @@ async def record_heavy_sweep_reachability_shadow(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_heavy_sweep_reachability_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_heavy_sweep_reachability_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_HEAVY_SWEEP_ATR_ANCHORED_SHADOW_COLUMNS: frozenset[str] = frozenset({
@@ -733,7 +733,7 @@ async def record_heavy_sweep_atr_anchored_shadow(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_heavy_sweep_atr_anchored_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_heavy_sweep_atr_anchored_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_HEAVY_SWEEP_DEADLINE_AWARE_SHADOW_COLUMNS: frozenset[str] = frozenset({
@@ -799,7 +799,7 @@ async def record_heavy_sweep_deadline_aware_shadow(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_heavy_sweep_deadline_aware_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_heavy_sweep_deadline_aware_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_MACRO_REGIME_COLUMNS: frozenset[str] = frozenset({
@@ -1077,7 +1077,7 @@ async def record_markov_shadow_compare(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_markov_shadow_compare: failed for %s: %s", symbol, exc)
+        logger.error("record_markov_shadow_compare: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_TREND_PROBS_GATE_SHADOW_COLUMNS: frozenset[str] = frozenset({
@@ -1142,7 +1142,7 @@ async def record_trend_probs_gate_shadow(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_trend_probs_gate_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_trend_probs_gate_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_REGIME_DEBOUNCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
@@ -1203,7 +1203,7 @@ async def record_regime_debounce_shadow(
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_regime_debounce_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_regime_debounce_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 async def log_error(symbol: str, fn_name: str, error_msg: str) -> None:
@@ -2209,7 +2209,7 @@ async def record_expiry_rate_alert(symbol: str, expired_pct: float, resolved_n: 
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_expiry_rate_alert: failed for %s: %s", symbol, exc)
+        logger.error("record_expiry_rate_alert: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
 
 
 NT_SIGNAL_STREAM_META_SHADOW_COLUMNS: frozenset[str] = frozenset({
@@ -2257,4 +2257,4 @@ async def record_signal_stream_meta_shadow(symbol: str, result: dict[str, Any]) 
                     resp.status_code, resp.text[:300],
                 )
     except Exception as exc:
-        logger.error("record_signal_stream_meta_shadow: failed for %s: %s", symbol, exc)
+        logger.error("record_signal_stream_meta_shadow: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
