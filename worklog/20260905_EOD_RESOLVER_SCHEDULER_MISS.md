@@ -1,5 +1,9 @@
 # 2026-09-05 — EOD resolver silently missed its daily fire, ~45h of zero resolutions
 
+> **Priority**: P1 · **Task**: Add scheduler catch-up check for the daily
+> EOD resolver job that silently missed its fire for ~45 hours ·
+> **Status**: resolved · **Date**: 2026-09-05 · **Roadmap refs**: RM-10
+
 ## Trigger
 
 Pulse check found `nt_signal_sim` had resolved **zero** rows since the

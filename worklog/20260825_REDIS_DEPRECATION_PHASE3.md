@@ -14,6 +14,12 @@ pushed to `origin/main`. Awaiting Studio restart + live verification.
 
 ---
 
+> **Priority**: P3 · **Task**: Redis deprecation Phase 3: migrate
+> operational services (mode_manager, kill_switch, reconciler) from Redis
+> to Supabase-only ·
+> **Status**: resolved (confirmed "already live" by the Phase 4 worklog) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 Three operational services each independently duplicated the same

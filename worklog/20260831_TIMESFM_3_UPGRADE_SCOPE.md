@@ -10,6 +10,14 @@ state" lookback. Investigated via two parallel read-only agents over
 Nothing below is built. No proposal here touches `compute_ev`'s blend
 formula itself, per the standing scope boundary on that function.
 
+> **Priority**: P2 · **Task**: Scope the TimesFM 2.5→3.0 upgrade (Phase A
+> model swap, Phase B multivariate/covariate wiring) for the EV engine's
+> `p_timesfm` source ·
+> **Status**: blocked (Phase A build attempt halted on TimesFM 3.0's
+> weights being non-commercial-licensed, unresolved as of this writing;
+> Phase B remains scope-only pending Phase A) ·
+> **Date**: 2026-08-31
+
 ## Correcting the framing: there is no 5-minute *data* horizon today
 
 Before answering the actual question, one premise needs correcting: **"5

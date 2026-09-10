@@ -11,6 +11,10 @@ unaffected. Not yet deployed.
 
 ---
 
+> **Priority**: P1 · **Task**: Add 429 retry-with-backoff to TradingView
+> batch fetch and offset eod-lookback cron off the light-sweep grid ·
+> **Status**: pending · **Date**: 2026-08-24
+
 ## Fix 1 — retry 429s with backoff instead of skipping outright
 
 `fetch_tradingview_batch` (`price_fetcher.py`) already parsed the `Retry-After`

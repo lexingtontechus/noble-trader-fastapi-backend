@@ -9,6 +9,10 @@ digging into "Finding 2" of the 2026-08-24 HMM-convergence investigation
 
 ---
 
+> **Priority**: P0 · **Task**: Fix calibration enforcement silently
+> defeated by non-penalty "latest" action rows ·
+> **Status**: pending · **Date**: 2026-08-24
+
 ## Problem — confirmed live, not theoretical
 
 `fetch_latest_eod_action(symbol)` fetched the single most recent `nt_eod_actions`

@@ -11,6 +11,10 @@ Nothing below can be checked before then.
 
 ## UPDATE — 05:xx UTC 2026-08-25: US500/USDCAD scoped in full — see dedicated worklog
 
+> **Priority**: P2 · **Task**: Pointer to dedicated US500/USDCAD
+> time-horizon scope worklog · **Status**: n/a ·
+> **Date**: 2026-08-25
+
 Full investigation, numerical brick-formation verification, ranked fix
 candidates for US500, and USDCAD's Aug 6-12 historical closure moved to
 `20260825_US500_USDCAD_TIME_HORIZON_SCOPE.md` (this entry was getting
@@ -27,6 +31,11 @@ US500's fix track. No code changed — scope only, nothing built or
 approved.
 
 ## UPDATE — 05:xx UTC 2026-08-25: US500 root cause found — backtest/live time-horizon mismatch
+
+> **Priority**: P1 · **Task**: Root-cause US500's ~78% expired
+> resolution rate as a backtest/live time-horizon mismatch ·
+> **Status**: n/a (investigation only, no fix decided) ·
+> **Date**: 2026-08-25
 
 Traced why US500 resolves ~78% `expired` (2657/3394 historically resolved),
 confirmed with real data + code, not just hypothesis:
@@ -82,6 +91,11 @@ not started.
 
 ## UPDATE — 04:42 UTC 2026-08-25: kill switch resolved for AAPL/XAGUSD, cleared for US500
 
+> **Priority**: P0 · **Task**: Resolve AAPL/US500/XAGUSD kill-switch
+> block via the 04:30 UTC intraday correction cycle ·
+> **Status**: resolved (crisis closed; US500's underlying frozen-bias
+> cause remains open, see other sections) · **Date**: 2026-08-25
+
 The 04:30 UTC intraday correction cycle (the checkpoint this whole
 checklist was waiting for) ran and mostly resolved the situation:
 
@@ -124,6 +138,10 @@ Remaining open items, in priority order:
 
 ## UPDATE — 00:56 UTC 2026-08-25: deployment gap closed, both items confirmed live
 
+> **Priority**: P1 · **Task**: Confirm 429-retry and cron-offset fixes
+> are deployed live on the Studio · **Status**: resolved ·
+> **Date**: 2026-08-25
+
 Studio restarted; deployed HEAD is now `fe6c598` (includes `62f54d7`).
 Verified directly against the deployed source on disk, not just git log:
 - `orchestrator.py`: `eod-lookback` trigger is `CronTrigger.from_crontab("32 0 * * *")`.
@@ -140,6 +158,11 @@ intraday correction cycle for the kill-switch question.
 ---
 
 ## UPDATE — 00:50 UTC 2026-08-25: the 00:30 UTC run happened — batching fix alone was enough
+
+> **Priority**: P1 · **Task**: Confirm the 00:30 UTC eod-lookback run
+> resolves cleanly on the batching fix alone · **Status**: resolved
+> (also surfaces a separate deployment gap, see prior section) ·
+> **Date**: 2026-08-25
 
 The daily `eod-lookback` run fired on schedule and resolved cleanly:
 ```
@@ -180,6 +203,11 @@ Genuinely unpredictable from here; needs a live check at/after 04:30 UTC.
 ---
 
 ## UPDATE — 20:34 UTC 2026-08-24: kill switch fired for AAPL/US500/XAGUSD
+
+> **Priority**: P0 · **Task**: Kill switch fires for AAPL/US500/XAGUSD
+> (kelly forced to 0.0, publishing blocked); assess whether a manual
+> backlog drain is warranted · **Status**: pending (decision: wait for
+> natural cron, not yet resolved) · **Date**: 2026-08-24
 
 12h calibration analysis (08:34→20:34 UTC) found the situation escalated
 past "frozen bias" while this checklist was open:
@@ -266,6 +294,11 @@ SSH check at that point, not a reason to intervene manually beforehand.
 
 ## 1. Confirm the batching fix actually eliminated the 429 collision
 
+> **Priority**: P2 · **Task**: Checklist item — verify batching fix
+> eliminated the 429 collision via log inspection ·
+> **Status**: resolved (confirmed zero 429s, see 00:50 UTC update
+> above) · **Date**: 2026-08-24
+
 Check `logs/orchestrator.log` around 2026-08-25 00:30 UTC for `regime.sweep.prices`
 lines from the resolver's candle fetch:
 
@@ -279,6 +312,10 @@ lines from the resolver's candle fetch:
   call-count-driven — see item 4 below.
 
 ## 2. Confirm AAPL/US500/US30USD's backlog actually drains
+
+> **Priority**: P2 · **Task**: Checklist item — confirm the PENDING
+> signal backlog for AAPL/US500/US30USD drains after the batching fix ·
+> **Status**: pending · **Date**: 2026-08-24
 
 Query (same as used to diagnose this):
 ```sql
@@ -302,6 +339,11 @@ group by symbol;
 
 ## 3. Check whether AAPL/US500 calibration bias actually moves
 
+> **Priority**: P1 · **Task**: Checklist item — determine whether
+> AAPL/US500's frozen OVERCONFIDENT bias moves after the resolver fix ·
+> **Status**: resolved (checked: AAPL moved, US500 did not — spun off
+> into the dedicated US500/USDCAD worklog) · **Date**: 2026-08-24
+
 This is the real open question from the original audit — today's fix removes
 one *confirmed* source of lost resolution attempts, but that isn't proven to
 be the full explanation for the frozen OVERCONFIDENT bias. After the 00:30
@@ -321,6 +363,10 @@ order by ts desc limit 10;
 
 ## 4. Retry-with-backoff + cron offset — DONE (commit `62f54d7`, same day)
 
+> **Priority**: P1 · **Task**: Track 429 retry-with-backoff + cron
+> offset build (deferred items from the batched-candle-fetch worklog) ·
+> **Status**: resolved · **Date**: 2026-08-24
+
 Both items originally deferred here were built later on 2026-08-24 — see
 `20260824_RESOLVER_429_RETRY_AND_CRON_OFFSET.md`:
 
@@ -336,6 +382,10 @@ succeeding or exhausting (`MAX_429_RETRIES=1`, i.e. 2 total attempts) rather
 than skipping immediately.
 
 ## 5. New live bug spotted, unrelated to anything fixed today
+
+> **Priority**: P1 · **Task**: Flag legacy Markov HMM producing NaN
+> startprob for AUDUSD/US500, falling back to FLAT regime ·
+> **Status**: pending (not investigated yet) · **Date**: 2026-08-24
 
 ```
 regime.hmm.model: hmm.emit: AUDUSD/US500 — predict failed
@@ -355,6 +405,10 @@ Not investigated yet. Worth determining:
   18,000x for BTCUSD features)?
 
 ## 6. Change B stability-window check-in
+
+> **Priority**: P2 · **Task**: Track Change A's live stability-window
+> observation gating Change B's start · **Status**: pending ·
+> **Date**: 2026-08-24
 
 Change A (`RegimeHMM` feature standardization, commit `5bf94b0`) has been
 live since ~00:55 UTC 2026-08-24. The approved plan

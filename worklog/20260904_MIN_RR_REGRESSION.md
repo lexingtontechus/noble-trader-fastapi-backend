@@ -1,5 +1,10 @@
 # 2026-09-04 — MIN_RR/MAX_SHARPE/MIN_TRADES silently tightened 08-30, fixed
 
+> **Priority**: P0 · **Task**: Fix silently tightened
+> MIN_RR/MAX_SHARPE/MIN_TRADES config values blocking forex/crypto
+> signal qualification ·
+> **Status**: resolved · **Date**: 2026-09-04
+
 ## Trigger
 
 User observation: no new qualified crypto or forex signals since

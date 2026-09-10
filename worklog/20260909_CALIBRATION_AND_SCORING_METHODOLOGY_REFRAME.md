@@ -29,6 +29,10 @@ Section 9 onward: built, per explicit approval — see that section.**
 
 ## 1. Calibration bias vs. scoring bias — the corrected mental model
 
+> **Priority**: P2 · **Task**: Establish the corrected mental model
+> distinguishing calibration bias from scoring bias · **Status**: n/a
+> (pure conceptual reframe, no build) · **Date**: 2026-09-09
+
 The user's framing, which is sharper than anything the codebase itself
 currently expresses:
 
@@ -54,6 +58,11 @@ it isn't one clean calibration-bias concept, it's two, undeclared, doing
 overlapping work.
 
 ## 2. The deeper root cause: raw signals are treated as independent trials, and they aren't
+
+> **Priority**: P1 · **Task**: Diagnose non-independence of raw 5-minute
+> signal sampling as a third instance of the same root statistical flaw ·
+> **Status**: n/a (diagnosis, "not yet touched by anything") ·
+> **Date**: 2026-09-09
 
 Direct quote, because it is the single most important sentence in this
 rethink: **"Treating the raw signal as independent only works in binary
@@ -107,6 +116,11 @@ different, essentially interchangeable moments.
 
 ## 3. Proposed reframe: a meta-state model over the signal-generation stream
 
+> **Priority**: P2 · **Task**: Propose a meta-HMM over the model's own
+> output stream to detect signal-generation coherence · **Status**: n/a
+> (proposal only, not yet applied) · **Date**: 2026-09-09 ·
+> **Roadmap refs**: RM-30
+
 This is not a new technique for this codebase — `regime_engine.py`'s
 `RegimeHMM` already is a `hmm.GaussianHMM` (via `hmmlearn`), fitting two
 4-state Gaussian HMMs (volatility, trend) fresh every 5-minute tick. It is
@@ -148,6 +162,11 @@ choppy" market states), just not yet applied at this layer here.
 
 ## 4. How many bars/bricks are needed to learn a pattern
 
+> **Priority**: P3 · **Task**: Determine training-window sizing
+> methodology for the meta-HMM (sequence length vs. independent
+> samples) · **Status**: n/a (methodology/scope, no build) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-30
+
 Two different questions get asked here, and conflating them is exactly the
 trap that produced the original bug:
 
@@ -182,6 +201,11 @@ fit, short-window read is the shape that avoids that.
 
 ## 5. Not a fixed 4-hour block — a configurable aggregation period, decoupled from training
 
+> **Priority**: P3 · **Task**: Redesign the aggregation/reporting window
+> as configurable and decoupled from the training window ·
+> **Status**: n/a (scope correction only) · **Date**: 2026-09-09 ·
+> **Roadmap refs**: RM-30
+
 Per the correction: the earlier "4hr block" framing was a specific example,
 not the design. The right shape has two independently-configurable
 durations that should not be conflated:
@@ -199,6 +223,11 @@ durations that should not be conflated:
   actually moving.
 
 ## 6. Local lookback dataset — should the backend cache instead of querying Supabase every time
+
+> **Priority**: P2 · **Task**: Scope a local SQLite rolling cache for
+> meta-HMM training data, contingent on verifying Studio filesystem
+> persistence · **Status**: blocked (persistence not yet verified) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-30
 
 Yes, worth building, with a real caveat flagged rather than assumed away.
 
@@ -233,6 +262,11 @@ with a periodic full resync from Supabase so a wiped cache self-heals rather
 than silently going stale or empty.
 
 ## 7. Brick-data hygiene — dug in, and it's a bigger problem than "hygiene"
+
+> **Priority**: P1 · **Task**: Diagnose fabricated Renko-brick timestamps
+> and unbounded orphaned-grid accumulation in `nt_renko_bricks` ·
+> **Status**: pending (scoped, not yet built here — see §9 item #3) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-26
 
 Asked to investigate why `nt_renko_bricks` showed multiple overlapping
 `brick_index` sequences for the same symbol in the same time window. Root
@@ -303,6 +337,13 @@ No code has been written. Waiting on direction on which of the above to
 scope into an actual build plan next.
 
 ## 9. Built (2026-09-09, same day, following explicit approval)
+
+> **Priority**: P1 · **Task**: Build all five open decisions (calibration-
+> bias consolidation, meta-HMM v1, brick-timestamp fix, SQLite cache,
+> aggregation-by-construction) plus two follow-ups (signal-cooldown
+> restart, 15-min sweep cadence) · **Status**: resolved (built and
+> tested; pushed to git, not yet deployed to Studio) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-26, RM-30, RM-24, RM-28
 
 All five open decisions above were resolved and built the same day, plus
 two more items from a follow-up conversation. Three independent builds ran
@@ -400,6 +441,12 @@ cross-symbol modeling becomes possible.
 
 ## 10. Meta-regime model v2 — the confidence-spike fix, detailed (2026-09-09)
 
+> **Priority**: P1 · **Task**: Fix meta-HMM v1's confidence-spike blind
+> spot via a new `regime_conf_volatility` feature (v2) ·
+> **Status**: resolved (built and validated; shipped at mode `off`
+> pending further monitoring) · **Date**: 2026-09-09 · **Roadmap refs**:
+> RM-30
+
 **The bug, precisely**: v1's real-data validation found it correctly
 called the 2026-09-07 13:01 XAUUSD moment "coherent" (100% `coherent_prob`)
 when it should have flagged it as noisy — that was the exact tick whose
@@ -479,6 +526,12 @@ resolved, replaced with the convergence-monitoring note above.
 
 ## 11. Deployment verified (2026-09-09) — caught and fixed a real regression, plus the actual P0 fix
 
+> **Priority**: P0 · **Task**: Verify Studio deployment; fix the
+> PostgREST schema-cache regression on `log_renko_bricks`; fix the
+> TimesFM-confidence-gate indefinite-deferral bug via a force-refresh
+> override · **Status**: resolved · **Date**: 2026-09-09 · **Roadmap
+> refs**: RM-18, RM-29
+
 Studio deployed and restarted. Verified rather than assumed clean:
 
 **Deployment confirmed**: Studio `git log -1` matches local HEAD
@@ -540,6 +593,11 @@ honest read of the numbers rather than a claim it fires tonight for
 certain.
 
 ## 12. Fixed nominal lot-size P/L convention — built (2026-09-09)
+
+> **Priority**: P1 · **Task**: Implement the fixed nominal 0.01-lot P/L
+> convention (`pnl_001_lot`) across the per-symbol scorecard views ·
+> **Status**: resolved (marked resolved in `nt_roadmap`) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-23
 
 Closes `pnl_methodology_three_conventions` in `nt_roadmap`: of the
 convention proposals discussed there, the user confirmed the intended
@@ -625,6 +683,12 @@ insert time — a future consideration, not built now, since `nt_symbol`
 inserts are rare and manual today).
 
 ## 13. The TimesFM confidence gate — a sinking foundation, traced and rescoped (2026-09-09)
+
+> **Priority**: P0 · **Task**: Trace the full history of the TimesFM
+> confidence gate and remove it outright (rather than further patching)
+> since its founding compute-cost premise was falsified ·
+> **Status**: resolved (scoped then built same day, 791 tests passing) ·
+> **Date**: 2026-09-09 · **Roadmap refs**: RM-32, RM-29
 
 **SCOPE ONLY — nothing built yet, per this session's standing discipline.**
 User pushback, verbatim: "this is a flawed methodology using time to
@@ -858,6 +922,11 @@ established push/notify pattern.
 
 ## 14. TradeJournal.record — the deprecation gate itself deprecated (2026-09-09)
 
+> **Priority**: P3 · **Task**: Remove the permanently-dead execution-
+> gate check and Supabase-write path from `TradeJournal.record`
+> (backtest-only logging) · **Status**: resolved (791 tests passing) ·
+> **Date**: 2026-09-09
+
 User spotted a second instance of the same pattern this section just
 corrected, from the post-restart orchestrator log:
 
@@ -947,6 +1016,13 @@ wasn't part of what was asked and doesn't share the "permanently-false
 gate" defect this section actually corrects.
 
 ## 15. EOD resolver / lookback / drift / calibration — fresh-eyes review (2026-09-09)
+
+> **Priority**: P1 · **Task**: Fresh-eyes review and decoupling of the
+> EOD resolver/correction/drift/retention pipeline (5 quick items), plus
+> scoping and building a state/history split for `nt_eod_actions`
+> (item 6) · **Status**: resolved (all six items built same day, 794
+> tests passing) · **Date**: 2026-09-09 · **Roadmap refs**: RM-34,
+> RM-35
 
 **SCOPE ONLY — explanation and findings, nothing built yet.** User
 request: "review the eod resolver, lookback, drift process with fresh

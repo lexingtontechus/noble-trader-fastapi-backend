@@ -1,5 +1,9 @@
 # 2026-09-04 — Kelly sizing is direction-blind: scope
 
+> **Priority**: P0 · **Task**: Make Kelly position sizing direction-aware
+> (fix always-long-shaped `mu` zeroing legitimate short edge) ·
+> **Status**: resolved · **Date**: 2026-09-04 · **Roadmap refs**: RM-9
+
 ## Trigger
 
 Triage of "no qualified signals for forex/commodities"

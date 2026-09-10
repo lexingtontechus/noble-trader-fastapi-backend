@@ -1,5 +1,8 @@
 # 2026-08-22 — Raw-Bias Cycle Reset — Plan & Architecture
 
+> **Priority**: P1 · **Task**: Design and deploy raw-bias cycle reset for the 4h intraday calibration correction pass ·
+> **Status**: resolved (deployed to live Studio, commit `3fa607d`, verified live across 5 correction passes over a 12h window) · **Date**: 2026-08-22
+
 **Scope:** `noble-trader-fastapi-backend` only  
 **Type:** Assessment + implementation plan  
 **Date:** 2026-08-22  

@@ -1,5 +1,8 @@
 # 2026-08-23 — AAPL/US500 Exception Deep-Dive: Root Causes
 
+> **Priority**: P0 · **Task**: Root-cause AAPL/US500's persistent severe overconfidence (0-11% realized win rate vs 56-68% predicted) and build fixes (R1-R4) ·
+> **Status**: pending (R1-R4 deployed to live Studio, but real-market validation is explicitly outstanding — "wait for Monday market open") · **Date**: 2026-08-23
+
 **Origin:** follow-up to `20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md`. That audit
 found and fixed two mechanisms (Markov T^N flapping, negative-mu Kelly floor) and
 confirmed both fixes are now live (Studio process restarted, verified via SSH — see

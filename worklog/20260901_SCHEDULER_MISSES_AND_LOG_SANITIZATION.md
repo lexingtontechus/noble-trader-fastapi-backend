@@ -5,6 +5,11 @@ health checks. Nothing built yet.
 
 ## Issue 1: fixed-time-of-day jobs silently skip across restarts
 
+> **Priority**: P1 · **Task**: Fix APScheduler fixed-time-of-day jobs
+> silently skipping their fire across restarts (macro regime / bracket
+> reachability catch-up) ·
+> **Status**: resolved · **Date**: 2026-09-01 · **Roadmap refs**: RM-16
+
 **Confirmed symptom**: `nt_macro_regime` stuck 3.5 days stale (last
 successful run 2026-08-29 06:00 UTC); `nt_bracket_reachability`/
 `nt_calibration_bias_by_bucket` stuck 6 days stale (last run 2026-08-26
@@ -67,6 +72,11 @@ function + ~10 lines at each of 2 call sites + tests for the staleness
 threshold logic (pure function, easy to unit test).
 
 ## Issue 2: log truncation — root cause is size, not restart, and the real fix is volume
+
+> **Priority**: P3 · **Task**: Reduce orchestrator log volume/noise
+> (httpx INFO spam, per-rejection gate-details dump, stale markov diag
+> line) ·
+> **Status**: resolved · **Date**: 2026-09-01
 
 **Correcting my own earlier read**: I'd attributed log truncation to
 "the restart wipes the log." That's not quite what's happening — the

@@ -8,6 +8,10 @@ from digging into "Finding 2" of the 2026-08-24 HMM-convergence investigation.
 
 ---
 
+> **Priority**: P0 · **Task**: Filter drift_monitor's bayesian_penalty
+> writes out of the stagnation-streak calculation ·
+> **Status**: pending · **Date**: 2026-08-24
+
 ## Problem
 
 `_stagnation_streak` (fix #3c, 2026-08-22) reads a symbol's last 8

@@ -21,6 +21,13 @@ pushed to `origin/main`. Awaiting Studio restart + live verification.
 
 ---
 
+> **Priority**: P3 · **Task**: Redis deprecation Phase 4 (final): remove
+> Redis infra/dependency declarations, orphaned dev scripts, and stale
+> Redis-era docs/comments ·
+> **Status**: pending (committed and pushed; own text says "not yet
+> verified live," no later file confirms deployment) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 After Phases 0-3, every real Redis *consumer* was gone, but the

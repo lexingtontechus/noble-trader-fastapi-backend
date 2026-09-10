@@ -1,5 +1,8 @@
 # Stale Action Clearing for 5 Low-Volume Symbols
 
+> **Priority**: P1 · **Task**: Clear stale kelly_reduction/penalty actions for 5 low-volume FX symbols stuck in `nt_eod_actions` ·
+> **Status**: resolved (fix implemented per `20260822_RAW_BIAS_CYCLE_RESET_PLAN.md` §12, commit `ca414e1`, verified live) · **Date**: 2026-08-22
+
 **Date**: 2026-08-22  
 **Author**: Ultron (Developer Agent)  
 **Status**: Proposed  

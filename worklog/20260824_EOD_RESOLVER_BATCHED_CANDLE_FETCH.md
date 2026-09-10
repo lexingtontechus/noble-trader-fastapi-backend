@@ -7,6 +7,10 @@
 
 ---
 
+> **Priority**: P1 · **Task**: Batch EOD resolver's per-symbol candle
+> fetch into one call to stop self-inflicted 429s ·
+> **Status**: pending · **Date**: 2026-08-24
+
 ## Problem
 
 Investigated why AAPL/US500's calibration bias has stayed frozen OVERCONFIDENT —

@@ -15,6 +15,12 @@ pushed to `origin/main`. Awaiting Studio restart + live verification.
 
 ---
 
+> **Priority**: P3 · **Task**: Redis deprecation Phase 2: remove main.py's
+> Redis-dependent lifespan services (StreamSplitter, SignalAggregator,
+> ExternalWebhookService, BacktestCache, RedisPersistence) ·
+> **Status**: resolved (confirmed "already live" by Phase 3/4 worklogs) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 Five services wired into `main.py`'s FastAPI lifespan all depended on

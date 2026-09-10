@@ -1,5 +1,8 @@
 # Independent Audit — EV Engine & Calibration Bias (2026-08-22)
 
+> **Priority**: P1 · **Task**: Independent audit of EV engine correctness and calibration-bias pipeline ·
+> **Status**: pending (4 candidate fixes code-complete, tested, pushed to `origin/main` — explicitly not yet deployed to the live Studio) · **Date**: 2026-08-22
+
 **Scope:** `noble-trader-fastapi-backend` — EV engine math, signal-determination gates,
 calibration bias pipeline.
 **Type:** Read-only audit (code review + live Supabase queries + live SSH log/data

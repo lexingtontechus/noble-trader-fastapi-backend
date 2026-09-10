@@ -3,6 +3,10 @@
 Scope only (found during the shadow-to-live check-in against
 `worklog/20260831_SHADOW_TO_LIVE_ROADMAP.md`), not built yet.
 
+> **Priority**: P1 · **Task**: Fix `nt_macro_regime` frozen since 08-29
+> due to a missing `computed_at` key in the upsert payload ·
+> **Status**: resolved · **Date**: 2026-09-02 · **Roadmap refs**: RM-3
+
 ## Finding
 
 `nt_macro_regime` has been serving the SAME row for every symbol since

@@ -64,6 +64,12 @@ once a day.
 
 ## Phase A — reachability-gated bracket selection (closes the sizing gap)
 
+> **Priority**: P1 · **Task**: Propose reachability-gated (ATR-anchored)
+> bracket-selection widening to fix wide-TP/unreachable-bracket sizing ·
+> **Status**: superseded (retired 2026-09-08 once deadline-unaware
+> scoring was found to be the real root cause) · **Date**: 2026-09-07 ·
+> **Roadmap refs**: RM-5
+
 **Current state** (`heavy_sweep.py`, confirmed by direct read + the 2026-08-25
 worklog's live simulation, re-confirmed live this session via
 `nt_heavy_sweep_reachability_shadow`):
@@ -128,6 +134,10 @@ worklog's live simulation, re-confirmed live this session via
 ---
 
 ## Phase B — live (non-batch) resolution in the signal engine
+
+> **Priority**: P2 · **Task**: Scope a live TDVA-tick-driven signal
+> resolver to supplement the once-daily EOD batch resolution ·
+> **Status**: pending (scope only, not built) · **Date**: 2026-09-07
 
 **Current state:**
 
@@ -195,6 +205,11 @@ worklog's live simulation, re-confirmed live this session via
 ---
 
 ## Phase C — user-facing signal-quality report (W/L% + P/L%, no resolution jargon)
+
+> **Priority**: P2 · **Task**: Scope a user-facing W/L% + P/L% signal
+> report, sequenced after Phase A/B so the numbers aren't biased/stale ·
+> **Status**: blocked (hard dependency on Phase A+B, not built) ·
+> **Date**: 2026-09-07
 
 **The ask**: "past 7 days, 1000 signals generated, W/L% + P/L%." Users don't
 see or care about `expired`/pending states — they want to know the signals
@@ -273,6 +288,11 @@ production) → A.2 (flip reachability mode to live) → B (live)**.
 
 ## Phase A.1 build notes (2026-09-07)
 
+> **Priority**: P1 · **Task**: Build ATR-anchored brick-size widening
+> behind `heavy_sweep_atr_anchored_bricks_mode` ·
+> **Status**: superseded (retired 2026-09-08, see Phase A above) ·
+> **Date**: 2026-09-07 · **Roadmap refs**: RM-5
+
 Built as scoped above, with one addition agreed during implementation: a
 dedicated `heavy_sweep_atr_anchored_bricks_mode` gate (`off|shadow|live`,
 `config/feature_flags.yaml`, default `off`) rather than widening the grid
@@ -343,6 +363,11 @@ ships at `off` — this commit changes zero live trading behavior on its own;
 someone still has to deliberately flip it.
 
 ## Observation window, detailed (2026-09-07), then closed out (2026-09-07)
+
+> **Priority**: P2 · **Task**: Design the two-stage (selection-level then
+> outcome-level) shadow validation plan for the ATR-anchored picker ·
+> **Status**: superseded (same retired mechanism, see Phase A above) ·
+> **Date**: 2026-09-07 · **Roadmap refs**: RM-5
 
 **Gap found while detailing this, now closed**: Phase A.1 as originally
 built only logged the baseline-vs-widened comparison via `logger.info` — it
@@ -508,6 +533,12 @@ same asymmetry as the Stage 1 joint-review gate above, which is exactly why
 that gate is conservative by design.
 
 ## Phase A.2 build notes (2026-09-07) — closing the observation-window gap
+
+> **Priority**: P1 · **Task**: Build persisted
+> `nt_heavy_sweep_atr_anchored_shadow` table + recorder so the
+> observation window is queryable, not log-only ·
+> **Status**: superseded (same retired mechanism, see Phase A above) ·
+> **Date**: 2026-09-07 · **Roadmap refs**: RM-5
 
 Built same day as the detail above, once the persisted-table gap was
 identified as the one remaining piece of code (not calendar time, not a

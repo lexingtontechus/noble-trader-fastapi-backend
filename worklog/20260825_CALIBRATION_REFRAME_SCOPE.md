@@ -11,6 +11,12 @@ and Part 2 Stream A/C (`.claude/plans/goofy-rolling-swing.md`) but is its
 own thread — it reframes the calibration *measurement* itself, not the
 Markov derivation or the decay-weighting math.
 
+> **Priority**: P1 · **Task**: Reframe calibration measurement around
+> bracket reachability (ATR-bucketed hit-rate/expectancy), Phases 1-3 ·
+> **Status**: pending (Phases 1-2 built and deployed; Phase 3 remains
+> scope-only, awaiting a build instruction) ·
+> **Date**: 2026-08-25
+
 ---
 
 ## How we got here

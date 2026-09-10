@@ -1,5 +1,8 @@
 ## [ASSESSMENT] - 2026-08-13 — EOD / recalibration deep-dive: nt_eod_actions, resolver artifact root cause, backlog
 
+> **Priority**: P1 · **Task**: Root-cause EOD/recalibration deep-dive (nt_eod_actions empty, resolver stale-price artifact, nt_signal_sim backlog) ·
+> **Status**: n/a · **Date**: 2026-08-13
+
 **Type:** Assessment + root-cause investigation. **No code changed** (recommendations
 only; awaits "build code" before any implementation).
 
@@ -190,6 +193,9 @@ probability model, or p_win inflation), worth a separate look.
 
 ## [BUILD] - 2026-08-13 — Backlog fixes (authorized "build code - backlog fixes")
 
+> **Priority**: P1 · **Task**: Drain nt_signal_sim backlog, raise nightly EOD resolve cap, and fix retention resolved-delete HTTP 400 ·
+> **Status**: resolved · **Date**: 2026-08-13
+
 ### Action 1 — Drain the ENTIRE backlog NOW (process running)
 
 `scripts/drain_signal_backlog.py --limit 3000 --max-passes 30` launched 2026-08-13
@@ -261,6 +267,9 @@ letting the nightly take the remainder. Final counters to be appended on complet
 ---
 
 ## [PLAN + BUILD] — 2026-08-13 — Intraday recalibration cadence (user-approved plan)
+
+> **Priority**: P1 · **Task**: Add 4-hour intraday recalibration cadence (rolling bias window, correction-only passes, drift monitor) ·
+> **Status**: resolved · **Date**: 2026-08-13
 
 **Problem:** bias is computed nightly (00:30 UTC) and enforcement applies the same
 action for up to 26h. A mid-day regime shift leaves un-flagged symbols trading on
@@ -389,6 +398,9 @@ table). Awaiting user approval to execute:
 
 ## ✅ EXECUTED (user: "run purge and predicted_p_win_raw fixes")
 
+> **Priority**: P0 · **Task**: Purge contaminated calibration records and add predicted_p_win_raw capture ·
+> **Status**: resolved · **Date**: 2026-08-13
+
 ### 1. PURGE — executed + verified live (2026-08-13 ~23:10 UTC)
 - `DELETE nt_calibration_records WHERE entered_at < '2026-08-11T14:00:00Z'` → **14,248 rows deleted** (204).
 - `DELETE nt_eod_actions WHERE ts <= 2026-08-13T01:00:00` → **27 contaminated actions deleted**.
@@ -414,6 +426,9 @@ table). Awaiting user approval to execute:
 ---
 
 ## POST-PUSH (2026-08-13/14) — migration rename + LightningAI deploy verification
+
+> **Priority**: P2 · **Task**: Rename calibration migration to sequence convention and verify LightningAI deploy of recalibration fixes ·
+> **Status**: resolved · **Date**: 2026-08-13
 
 ### Migration file renamed to match sequence
 `supabase/migrations/20260813_add_predicted_p_win_raw.sql` →

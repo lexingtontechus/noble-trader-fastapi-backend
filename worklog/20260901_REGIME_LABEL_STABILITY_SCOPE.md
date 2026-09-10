@@ -4,6 +4,12 @@ Scope only. Continues the `regime_shift_alert` triage from the health-
 check thread — this is the "not a one-off, how do we actually fix it"
 follow-up.
 
+> **Priority**: P1 · **Task**: Stabilize `RegimeHMM` `regime_label`
+> flapping (EM warm-start fit + label debounce) ·
+> **Status**: pending (debounce built and real-data verified,
+> recommended for shadow rollout next; warm-start shelved, mode stays
+> `off`) · **Date**: 2026-09-01 · **Roadmap refs**: RM-6, RM-7
+
 ## Root cause, confirmed against the actual code (not assumed)
 
 `RegimeHMM.fit()` (`regime_engine.py:311-315`) constructs a brand new

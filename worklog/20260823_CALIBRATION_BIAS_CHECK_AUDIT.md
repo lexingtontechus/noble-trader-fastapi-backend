@@ -1,5 +1,8 @@
 # 2026-08-23 — Calibration Bias Check (Independent Verification of R1–R4 + Fixes #1–#3c)
 
+> **Priority**: P1 · **Task**: Independent live-data verification of the R1-R4 and fix #1-3c calibration/EV work against production ·
+> **Status**: n/a (read-only verification audit — no code changed, no data written; findings addressed by `20260823_CALIBRATION_BIAS_FIXES_APPLIED.md`) · **Date**: 2026-08-23
+
 **Scope:** `noble-trader-fastapi-backend` — cross-check of the 2026-08-22/23 audit
 worklogs and the R1–R4 recommendations against the **live** system: production
 Supabase (`NobleTrading`, project `pcvscowltlrxzgxjurcr`), the local test suite,

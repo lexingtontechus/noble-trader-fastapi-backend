@@ -5,6 +5,14 @@ together the assessment from the previous exchange into concrete target
 dates and decision metrics, plus the one new capture this actually
 requires (Tier 1/2's outcome-linked evidence gap).
 
+> **Priority**: P2 · **Task**: Scope and build outcome-linked capture
+> columns for Tier 1/2 HMM shadow accuracy, and lay out the shadow-to-live
+> decision roadmap ·
+> **Status**: resolved (capture columns + analysis module built, migration
+> applied, deployed and confirmed live; the roadmap's own go/no-go
+> decisions are future review dates, not open work in this document) ·
+> **Date**: 2026-08-31
+
 ## Why this is needed: shadow tables measure disagreement, not accuracy
 
 `nt_markov_source_shadow`/`nt_trend_probs_gate_shadow` (Tier 1/2) tell you

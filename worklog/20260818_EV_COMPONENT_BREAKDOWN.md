@@ -1,5 +1,8 @@
 # EV Engine Component Breakdown & Regime Confidence Analysis (Aug 18, 2026)
 
+> **Priority**: P1 · **Task**: Verify TimesFM fix in production and diagnose regime-confidence overconfidence root cause ·
+> **Status**: pending · **Date**: 2026-08-18
+
 ## Task
 Verify the TimesFM confidence fix is active in Studio production runtime, then evaluate
 the EV engine for sample symbols to confirm Markov and regime components produce correct

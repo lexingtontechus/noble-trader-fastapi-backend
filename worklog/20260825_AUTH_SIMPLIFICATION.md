@@ -15,6 +15,12 @@ tested, committed (`8c363b0`), pushed to `origin/main`.
 
 ---
 
+> **Priority**: P3 · **Task**: Replace JWT/Clerk/per-user auth with a
+> single shared API key gate across all routers ·
+> **Status**: pending (committed and pushed; own text says "not yet
+> verified live") ·
+> **Date**: 2026-08-25
+
 ## Problem / design decision
 
 "jwt and auth are no longer supported. scope for cleanup." → scoped via

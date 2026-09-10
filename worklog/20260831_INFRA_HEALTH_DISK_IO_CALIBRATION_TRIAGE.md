@@ -26,6 +26,14 @@ be the more durable source of truth for anything more than a few hours old.
 
 ## Disk-IO investigation
 
+> **Priority**: P1 · **Task**: Diagnose and fix the Supabase disk-IO/
+> latency spike reported via Edge request stats ·
+> **Status**: resolved (root cause found — `v_talaria_latest_signals`
+> missing composite indexes — migration 130 applied and confirmed;
+> `nt_signal_sim`'s separate elevated seq-scan count remains
+> un-root-caused, flagged for a future pass) ·
+> **Date**: 2026-08-31
+
 User-reported symptom: Supabase Edge request stats showing high hit counts
 on several `/rest/v1/*` paths (`nt_signal_sim` 11,315, `nt_eod_actions`
 6,728, `nt_markov_source_shadow`/`nt_trend_probs_gate_shadow` 6,509 each,
@@ -90,6 +98,14 @@ confirmed; flagging for a future pass rather than guessing further.
 
 ## `nt_calibration_records` stall — triaged live, not a code bug
 
+> **Priority**: P1 · **Task**: Triage the 25+ hour stall in
+> `nt_calibration_records` writes ·
+> **Status**: resolved (insert path confirmed not broken; manual drain
+> restored fresh calibration data immediately; exact cause of the
+> original interruption not fully reconstructed, log window already
+> rotated away) ·
+> **Date**: 2026-08-31
+
 **Symptom**: last row written 2026-08-30 19:00 UTC — 25+ hours stale —
 despite 1,401 win/loss resolutions (1,045 SL + 356 TP) happening in the
 last 24h that should each trigger a `_write_calibration_record` insert.
@@ -126,6 +142,13 @@ this manual drain: ~7,400+ pending signals, left for the regular cron
 (user's call on whether to drain further manually).
 
 ## Backlog / `drain_signal_backlog.py` / connection-pool — scoped, not built
+
+> **Priority**: P2 · **Task**: Scope a shared `httpx.AsyncClient`
+> connection-pooling refactor across Supabase call sites (and assess
+> whether the signal backlog is pool-related) ·
+> **Status**: pending (scoped only, including the 2026-09-01 addendum's
+> full level-of-effort estimate; awaiting a build instruction) ·
+> **Date**: 2026-08-31
 
 User's question: is the backlog related to why the drain script exists,
 because of DB pool/connection limitations — asked to scope a fix.

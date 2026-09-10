@@ -12,6 +12,11 @@ since the Redis connection started failing (~05:07 UTC 2026-08-25).
 
 ---
 
+> **Priority**: P0 · **Task**: Redis deprecation Phase 0: remove the sweep
+> orchestrator's hard Redis start-gate that left production fully idle ·
+> **Status**: resolved (confirmed "already live" by Phase 2/3/4 worklogs) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 `SweepOrchestrator.start()` treated a failed Redis connection as fatal:

@@ -15,6 +15,11 @@ verification.
 
 ---
 
+> **Priority**: P3 · **Task**: Redis deprecation Phase 1: remove renko/'s
+> own dead Redis machinery (L1 cache, heartbeat, config-cache, publish) ·
+> **Status**: resolved (confirmed "already live" by Phase 2/3/4 worklogs) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 `renko/`'s live tick path (`/renko/tick`, `/renko/tick/batch`) was

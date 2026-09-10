@@ -10,6 +10,10 @@ separately and starts only after this change is confirmed stable in production.
 
 ---
 
+> **Priority**: P1 · **Task**: Standardize RegimeHMM features to fix
+> near-universal HMM non-convergence ·
+> **Status**: pending · **Date**: 2026-08-24
+
 ## Problem
 
 `hmmlearn.base: Model is not converging` fired on **~99% of light-sweep ticks for 13/14

@@ -1,5 +1,8 @@
 # 2026-08-23 — Calibration Bias Fixes Applied + Real-Data Validation
 
+> **Priority**: P0 · **Task**: Fix the stagnation-breaker clear-order bug and the EOD-resolver premature-expiry defect found in `20260823_CALIBRATION_BIAS_CHECK_AUDIT.md` ·
+> **Status**: pending (code-complete, tested, validated against live production data — explicitly not deployed to the live Studio) · **Date**: 2026-08-23
+
 **Scope:** `noble-trader-fastapi-backend` — fixes for the issues found in
 `20260823_CALIBRATION_BIAS_CHECK_AUDIT.md`.
 **Type:** Code changes + live-data validation (no synthetic-only trust).

@@ -12,6 +12,9 @@ See full scope + fix plan in `docs/scopes/M4_OPEN_POSITION_ORPHAN_FIX.md`.
 positions** — up from 330 at the 2026-08-12 audit. Oldest open position:
 2026-08-06T21:05:15 UTC.
 
+> **Priority**: P1 · **Task**: Fix M4 open-position orphan bug in paper book reconciliation (912 stuck open positions) ·
+> **Status**: resolved · **Date**: 2026-08-15
+
 ---
 
 ### Live data (verified via Supabase REST, 2026-08-15 ~02:00 UTC)

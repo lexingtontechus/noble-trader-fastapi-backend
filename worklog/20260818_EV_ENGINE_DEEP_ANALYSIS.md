@@ -1,5 +1,8 @@
 # EV Engine Deep Analysis & Fixes (2026-08-18)
 
+> **Priority**: P0 · **Task**: Fix EV engine overconfidence (regime confidence cap, Markov degenerate-state handling, bootstrap log-returns filter) ·
+> **Status**: resolved · **Date**: 2026-08-18
+
 ## Plain-Language Summary
 
 ### What Was Broken

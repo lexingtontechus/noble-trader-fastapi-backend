@@ -12,6 +12,10 @@ wrong variable.
 
 ## Why Phase A (ATR-anchoring) is superseded, not just paused
 
+> **Priority**: P1 · **Task**: Retire ATR-anchored brick widening (Phase
+> A) after real-data proof it solved the wrong variable ·
+> **Status**: resolved · **Date**: 2026-09-08 · **Roadmap refs**: RM-5
+
 Phase A's premise: the grid search's candidate brick sizes never got
 close enough to a symbol's ATR to reach the historically-good "0.5-1"/
 "1-2" distance/ATR buckets, so widening the candidate set with
@@ -49,6 +53,12 @@ its own once it's actually in production.
 
 ## Root cause 1 — deadline-unaware backtest scoring
 
+> **Priority**: P0 · **Task**: Diagnose deadline-unaware Sharpe scoring
+> in heavy-sweep grid search (root cause of gold-family near-100%
+> expiry) · **Status**: pending (proven in simulation only, per this
+> section's own status line) · **Date**: 2026-09-08 · **Roadmap refs**:
+> RM-19
+
 **Status: proven in simulation, NOT yet built into production.**
 
 `heavy_sweep._renko_grid_search_sync`/`pick_best_combo` score every
@@ -78,6 +88,12 @@ this changes what gets selected for every symbol immediately once live
 (no per-symbol carve-out, per the earlier global-flag decision).
 
 ## Root cause 2 — expired scored as fictional $0
+
+> **Priority**: P0 · **Task**: Fix expired-signal PnL fabrication
+> (hardcoded $0) in `eod_resolver.compute_pnl` · **Status**: pending
+> (fixed in code, not yet deployed, historical data not yet remediated,
+> per this section's own status line) · **Date**: 2026-09-08 ·
+> **Roadmap refs**: RM-8
 
 **Status: fixed in code, tests passing, NOT yet deployed, historical data
 NOT yet remediated.**
@@ -113,6 +129,11 @@ below.
 
 ## Decision — expired stays out of win/loss, permanently pending a fix
 
+> **Priority**: P2 · **Task**: Decide expired signals stay excluded from
+> win/loss/calibration counts; require an expiry-rate threshold alert
+> instead · **Status**: blocked (alert mechanism and threshold not yet
+> decided/built) · **Date**: 2026-09-08 · **Roadmap refs**: RM-14
+
 User decision, 2026-09-08: even with real mark-to-market PnL now
 computed, `expired` does **not** get folded into win/loss/calibration
 counts as a loss (or a win). It stays excluded from
@@ -135,6 +156,10 @@ Scoped, not built.
 
 ## Decision — `config/brick_params.yaml` git-tracking bug, fixed
 
+> **Priority**: P3 · **Task**: Untrack `config/brick_params.yaml` (live-
+> mutated runtime file wrongly committed, same anti-pattern as
+> `tuning_registry.yaml`) · **Status**: resolved · **Date**: 2026-09-08
+
 User was told the orchestrator updates this file; user's intuition said
 that was wrong. Both were half-right: the orchestrator does rewrite it —
 on Studio's local disk. The committed copy in this repo does not receive
@@ -153,6 +178,11 @@ time Y" is answerable from real data, not from this file.
 
 ## Decision — historical contamination gets recomputed, not deleted
 
+> **Priority**: P1 · **Task**: Decide to recompute (not delete) 59,913
+> contaminated expired-signal rows via real historical-price backfill ·
+> **Status**: pending ("Not yet built. Next concrete step.") ·
+> **Date**: 2026-09-08 · **Roadmap refs**: RM-8
+
 All 59,913 expired `nt_signal_sim` rows are within TDVA's ~208-day
 history depth (earliest 2026-08-06, latest 2026-09-06 — zero rows beyond
 recoverable range, checked directly). Deleting them destroys recoverable,
@@ -165,6 +195,11 @@ in place — same rows, same signal_id, real numbers instead of fiction.
 
 ## Build notes (2026-09-08, later same day)
 
+> **Priority**: P0 · **Task**: Backfill the 59,913 contaminated expired-
+> signal rows and ship `heavy_sweep_deadline_aware_scoring_mode` (off) ·
+> **Status**: resolved (both built/verified; Studio deploy tracked
+> separately) · **Date**: 2026-09-08 · **Roadmap refs**: RM-8, RM-19
+
 **Priority 1 (historical remediation) — done.** `scripts/backfill_expired_mark_to_market.py`: fetched real TDVA history per symbol, recomputed `exit_price`/`pnl_bricks`/`pnl_dollars` for all 59,913 contaminated rows via the fixed `compute_pnl`. 59,912 patched cleanly; 1 hit a transient Cloudflare 502 and was retried individually. **Verified: 0 of 59,913 `outcome='expired'` rows have `exit_price IS NULL` post-run** (was 59,913 of 59,913 before). Real historical data, not deletion — nothing was discarded.
 
 **Priority 2 (deadline-aware scoring in production) — built, not deployed.** `heavy_sweep_deadline_aware_scoring_mode` (`off|shadow|live`, default `off`) added to `config/feature_flags.yaml`. `ComboResult` gains `deadline_aware_sharpe` (always computed — cheap, reuses the trade list already in hand); `EXPIRY_BARS` imported directly from `eod_resolver` (not duplicated, no circular import — confirmed before importing). New pure functions `deadline_aware_sharpe()` and `select_best_combo_deadline_aware()` (same shape/discipline as Phase A's `select_best_combo_with_atr_anchoring` — off is byte-identical to before, shadow logs+persists without changing the real pick, live applies the corrected pick). Wired into `run_heavy_sweep_for_symbol` right after the (now-deprioritized) ATR-anchoring block, operating on the same `grid_results`. New shadow table `nt_heavy_sweep_deadline_aware_shadow` (migration 136, applied) + `record_heavy_sweep_deadline_aware_shadow()`, mirroring the ATR-anchoring shadow table exactly. 14 new tests (`tests/test_heavy_sweep_deadline_aware_scoring.py`), full suite 714 passed / 0 failed / 21 pre-existing skips.
@@ -172,6 +207,10 @@ in place — same rows, same signal_id, real numbers instead of fiction.
 **Explicitly not done yet**: Studio deployment (nothing above has any live effect until this ships to the running orchestrator process); the multi-window historical validation this worklog said should substitute for a multi-week organic shadow wait (same method as `scripts/backfill_atr_anchored_bricks_shadow.py`, applied to scoring instead of candidate width); the threshold alert for expiry rate (Discord-based, not yet built); `nt_calibration_bias_by_bucket`/`nt_bracket_reachability` still need recomputing now that the underlying `nt_signal_sim` population has real expired PnL instead of fictional zeros.
 
 ## Build notes — roadmap infrastructure (2026-09-08, same day)
+
+> **Priority**: P1 · **Task**: Build `nt_roadmap` table and rewrite
+> `pulse-check` to query it instead of stale hand-maintained prose ·
+> **Status**: resolved · **Date**: 2026-09-08
 
 Audit of the prior two weeks (triggered by this session) found the
 pattern behind everything above: `pulse-check`'s `SKILL.md` had
@@ -229,6 +268,11 @@ check reports.
 
 ## Priority #3 built — expiry-rate threshold alert
 
+> **Priority**: P1 · **Task**: Build the per-symbol expiry-rate
+> threshold alert (Discord, cooldown-gated) · **Status**: resolved
+> (built, tested, live-smoke-tested; Studio deploy tracked separately) ·
+> **Date**: 2026-09-08 · **Roadmap refs**: RM-14
+
 `regime_platform/sweep_orchestrator/expiry_rate_alert.py`: checked once
 daily at the end of `_run_eod_lookback` (after the resolver batch
 produces fresh numbers), reads `v_symbol_signal_scorecard_7d` (migration
@@ -259,6 +303,12 @@ whole document is about scoring and recording against that fixed
 deadline, not moving it).
 
 ## Follow-up pulse check (2026-09-08, next morning) — deploy confirmed, one new bug found and fixed
+
+> **Priority**: P1 · **Task**: Verify Studio deployment, run Tier1/2
+> diagnostics, and fix the `nt_hmm_shadow_accuracy.computed_at` freeze
+> bug found during verification · **Status**: resolved (fix committed/
+> pushed; will self-verify on next weekly run) · **Date**: 2026-09-08 ·
+> **Roadmap refs**: RM-17, RM-11, RM-16
 
 Git pushed (`f0be810`) end of prior session; user deployed to Studio
 overnight. Ran `pulse-check` (rewritten version, §0 `nt_roadmap` first)
@@ -332,6 +382,11 @@ All of the above reflected in `nt_roadmap` (rows updated/added:
 
 ## Resolution reached (2026-09-08, later same day) — deadline-aware scoring flipped to live
 
+> **Priority**: P0 · **Task**: Flip `heavy_sweep_deadline_aware_scoring_mode`
+> to `live` after 70-anchor multi-window real-data validation ·
+> **Status**: resolved (flipped live same day; Studio deploy tracked
+> separately) · **Date**: 2026-09-08 · **Roadmap refs**: RM-19, RM-20
+
 User directive: stop waiting for calendar review dates once evidence is
 strong; test and verify continuously; work toward a self-learning
 platform. Applied directly to `heavy_sweep_deadline_aware_scoring_mode`,
@@ -376,6 +431,11 @@ the deployment step itself.
 
 ## Config-centralization fix — 8 more parameters migrated (2026-09-08)
 
+> **Priority**: P2 · **Task**: Migrate 8 `os.getenv()` qualification-gate
+> parameters into `feature_flags.yaml` · **Status**: resolved
+> (migrated, tests pass; Studio deploy tracked separately) ·
+> **Date**: 2026-09-08
+
 Parallel agent audit (launched alongside the above, per the user's
 "run parallel subagents" instruction) found 8 qualification-gate
 parameters still read via `os.getenv(...)` with an ACTIVE `.env.local`/
@@ -406,6 +466,11 @@ pushed, not yet deployed.
 
 ## Two more real findings from parallel agent investigation (2026-09-08)
 
+> **Priority**: P1 · **Task**: Root-cause the weekly-cron-never-firing
+> pattern (accepted as-is) and the USDCHF calibration-governor lockup
+> (found, not yet fixed) · **Status**: pending (USDCHF unresolved) ·
+> **Date**: 2026-09-08 · **Roadmap refs**: RM-16, RM-22
+
 **Weekly cron trigger — root cause found, decided not to fix.**
 `BRACKET_REACHABILITY_STALE_AFTER = 6.5 days` (orchestrator.py:604) is
 shorter than the job's own 7-day cadence, so the catch-up safety net
@@ -432,6 +497,15 @@ investigated further — added to `nt_roadmap` as
 genuinely quiet market, not a bug, no action taken.
 
 ## Studio deployment confirmed + three more findings (2026-09-08, continued)
+
+> **Priority**: P1 · **Task**: Confirm Studio deployment; fully root-
+> cause the USDCHF calibration lock; fix the `sweep_after_hours` hot-
+> reload gap; catalog the 3-convention P/L methodology split; ship the
+> per-symbol W/L scorecard views · **Status**: pending (deployment
+> confirmed and `sweep_after_hours`/scorecard shipped, but USDCHF and
+> the P/L methodology decision remain open — see report for the
+> ambiguity note) · **Date**: 2026-09-08 · **Roadmap refs**: RM-21,
+> RM-22, RM-23
 
 **Studio is current.** `ssh noble-trader-unified "cd /home/zeus/content/noble-trader && git log -1"` matches local HEAD (`5b917de`) exactly — the deadline-aware-scoring live flip and the 8-parameter config migration are both deployed and running.
 
@@ -518,6 +592,11 @@ month × symbol), same columns/caveats, migration 140.
 
 ## `sweep_after_hours` vs. cron scheduling — confirmed not redundant
 
+> **Priority**: P3 · **Task**: Confirm `sweep_after_hours`'s in-tick
+> market-hours filter is not redundant with APScheduler's own cron ·
+> **Status**: n/a (pure investigation, confirms existing design) ·
+> **Date**: 2026-09-08
+
 User asked whether APScheduler's own cron trigger already handles
 market hours, making the `sweep_after_hours` in-tick filter redundant.
 Traced definitively: no. Every symbol's `regime_cron` is a flat,
@@ -534,6 +613,11 @@ symbol list spans multiple sessions) — not redundant, doing necessary
 work the schedule itself doesn't do.
 
 ## USDCHF calibration governor — reclassified: not a design gap, a poisoned-sample problem
+
+> **Priority**: P1 · **Task**: Reclassify the USDCHF calibration lock as
+> a non-independent-sample poisoning problem in the bias-counting view,
+> not a design gap · **Status**: pending ("pending an explicit decision
+> on scope") · **Date**: 2026-09-08 · **Roadmap refs**: RM-22
 
 Deeper dig (per user pushback: "not a design gap, it's a data issue
 now — is there a way to correct or sanitize the data?") found the exact
@@ -572,6 +656,11 @@ minutes" pattern going forward regardless of whether it fixes the
 already-poisoned historical window.
 
 ## Heavy sweep: weekly → daily, light/heavy mutex added (2026-09-08)
+
+> **Priority**: P1 · **Task**: Change heavy-sweep cadence weekly→daily
+> and add a light/heavy sweep mutex to prevent concurrent
+> `brick_params.yaml` writes · **Status**: resolved (730 tests passing) ·
+> **Date**: 2026-09-08 · **Roadmap refs**: RM-25
 
 User pushback: doesn't APScheduler's own cron already handle market
 hours, making `sweep_after_hours` redundant, and shouldn't heavy sweep
@@ -623,6 +712,13 @@ rather than racing on `config/brick_params.yaml`. No new lock type —
 reused the existing mechanism. 730 tests passing after both changes.
 
 ## Calibration-bias counting fix — built (2026-09-08)
+
+> **Priority**: P0 · **Task**: Replace the calendar-day clustering-
+> discount proxy with real episode-based interval-merge counting for
+> calibration bias (both `fetch_calibration_bias` and
+> `v_eod_calibration_bias_latest`) · **Status**: resolved (verified live
+> against production, 730 tests passing; resolves the USDCHF lockup) ·
+> **Date**: 2026-09-08 · **Roadmap refs**: RM-22
 
 User: "not a design gap, it's a data issue — is there a way to correct
 or sanitize the data? Follow my intuition, it is not wrong." Built the

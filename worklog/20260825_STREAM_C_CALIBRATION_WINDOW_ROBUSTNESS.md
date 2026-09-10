@@ -15,6 +15,14 @@ unaffected. Not yet deployed.
 
 ---
 
+> **Priority**: P1 · **Task**: Add calibration-window decay weighting and
+> burst-clustering discount to `fetch_calibration_bias` (Stream C of the
+> brick-timing/calibration hardening plan) ·
+> **Status**: blocked (code deployed to Studio, but live behavioral
+> verification is deferred until the orchestrator's Redis connection
+> issue is resolved — unrelated external dependency) ·
+> **Date**: 2026-08-25
+
 ## Problem
 
 `fetch_calibration_bias`/`fetch_calibration_bias_raw` compute bias over a

@@ -1,5 +1,8 @@
 ## [9.2.0] - 2026-08-11
 
+> **Priority**: P0 · **Task**: Fix TDVA candle history reversed order corrupting entry/SL/TP, HMM, TimesFM, and EOD resolution ·
+> **Status**: resolved · **Date**: 2026-08-11
+
 ### Fixed — TDVA candle history order: prices were time-reversed (newest-first) in every sweep consumer
 
 **Incident:** USDJPY signal showed Entry $162.8705 while the TradingView chart
@@ -79,6 +82,9 @@ resolver) are fixed by this one change.
 ---
 
 ## [7.7.2] - 2026-08-11
+
+> **Priority**: P2 · **Task**: Add plan-scoped Realtime broadcast channels and rename realtime:paper to realtime:portfolio ·
+> **Status**: resolved · **Date**: 2026-08-11
 
 ### Changed — Plan-scoped Realtime broadcast channels + `realtime:portfolio` rename
 

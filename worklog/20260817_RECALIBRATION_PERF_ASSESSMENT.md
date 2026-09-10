@@ -6,6 +6,9 @@
 **Date:** 2026-08-17  \
 **Context:** Review of cron job outputs + recalibration performance analysis. SQL migration 114 applied; `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW=True` in LightningAI Studio.
 
+> **Priority**: P1 · **Task**: Recalibration performance deep assessment and EV engine overconfidence fixes (MIN_RR split, TimesFM sigmoid/clamp) ·
+> **Status**: resolved · **Date**: 2026-08-17
+
 ---
 
 ## 1. Cron Job Status Summary

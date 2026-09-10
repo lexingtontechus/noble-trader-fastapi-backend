@@ -12,6 +12,12 @@
 (unchanged behavior) until `MARKOV_SOURCE_MODE=trend_hmm_shadow` is set
 on the Studio.
 
+> **Priority**: P1 · **Task**: Derive p_markov_hold_n from RegimeHMM's
+> transition matrix (Change B, shadow mode) ·
+> **Status**: pending (built, tested, shadow mode live since 2026-08-25;
+> cutover to `trend_hmm_live` not yet decided) ·
+> **Date**: 2026-08-25 · **Roadmap refs**: RM-1
+
 ---
 
 ## Trigger

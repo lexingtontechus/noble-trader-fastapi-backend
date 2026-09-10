@@ -1,5 +1,8 @@
 ## [9.3.0] - 2026-08-12
 
+> **Priority**: P0 · **Task**: Fix nt_signal_sim/EOD resolver health (window anchoring, throughput, retention, capture trim) ·
+> **Status**: resolved · **Date**: 2026-08-12
+
 ### Fixed — nt_signal_sim DB health: resolver window anchoring, throughput, retention, capture trim
 
 **Incident (2026-08-11/12 live verification):** `nt_eod_actions` was EMPTY

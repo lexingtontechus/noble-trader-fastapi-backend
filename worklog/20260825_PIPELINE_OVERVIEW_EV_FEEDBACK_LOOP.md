@@ -17,6 +17,19 @@ a session limit partway through signal-generation/qualification and was
 finished directly by re-reading `orchestrator.py` — the two full reports
 are the depth level throughout).
 
+> **Worklog header note**: this file bundles several distinct build
+> efforts worked over multiple days under one running thread, so each
+> major `##` section below carries its own header block instead of one
+> file-level header (following the same per-section convention used in
+> `20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md`). Sections
+> below without a header are connective narrative/checkpoint content, not
+> standalone deliverables.
+
+> **Priority**: P1 · **Task**: Map the full price-fetch-to-EV pipeline
+> end to end and identify the core feedback-loop gap ·
+> **Status**: n/a (pure investigation/mapping, no build) ·
+> **Date**: 2026-08-25
+
 ---
 
 ## The pipeline, stage by stage
@@ -496,6 +509,12 @@ both.
 
 ## HMM consolidation — build notes (2026-08-26)
 
+> **Priority**: P1 · **Task**: Consolidate the dual HMMs — default
+> `MARKOV_SOURCE_MODE` to `trend_hmm_shadow`, fix `heavy_sweep.py`'s
+> missing mode branch ·
+> **Status**: pending (built and verified, shadow mode; live cutover not
+> yet decided) · **Date**: 2026-08-26
+
 Built the "retire HMM + shadow mode" half of the path-forward decision.
 Files:
 
@@ -727,6 +746,12 @@ alongside the markov-shadow work.
 
 ## Tier 1 fix + config file migration — build notes (2026-08-26)
 
+> **Priority**: P1 · **Task**: Add a magnitude gate to RegimeHMM's 3-state
+> markov derivation; migrate mode/threshold flags to git-tracked
+> `config/feature_flags.yaml` ·
+> **Status**: pending (built and verified against real data, shadow mode
+> only) · **Date**: 2026-08-26
+
 Built both in one pass since the fix's own threshold needed a config
 home anyway. Files:
 
@@ -799,6 +824,11 @@ code path than Tier 1 touched — noted as a correlation, not claimed as
 caused by it.
 
 ## Tier 2 HMM fix — build (2026-08-27)
+
+> **Priority**: P1 · **Task**: Apply the same magnitude/sign gate to
+> `trend_probs`, feeding the already-live `p_regime` EV-blend input ·
+> **Status**: pending (shadow-gated; not yet flipped live) ·
+> **Date**: 2026-08-27
 
 Applies the identical magnitude/sign gate from Tier 1 to the OTHER
 consumer of `_label_states`' rank-only assignment: `trend_probs` itself,
@@ -1153,6 +1183,12 @@ adjudicate between two already-disagreeing ones.
 
 ## Root-cause classifier — build (2026-08-28)
 
+> **Priority**: P1 · **Task**: Replace rank-based HMM component labeling
+> with a direct occupancy + cross-feature-sign classifier (root causes A
+> and B) ·
+> **Status**: pending (shadow only, no live-mode change) ·
+> **Date**: 2026-08-28
+
 **Why this replaces Tier 1 + Tier 2's internals rather than adding a
 third gate.** Digging into AAPL/US500 specifically (per instruction) to
 find where the platform's regime label and the "correct" label actually
@@ -1296,6 +1332,12 @@ the "studio updated & restarted" review above should be measured from
 this timestamp, not the original Tier 1/2 ship date.
 
 ## Macro filter — build, with a w/l+PnL evidence extension (2026-08-28)
+
+> **Priority**: P1 · **Task**: Build the long-range macro-regime filter
+> (200d-SMA bull/bear/neutral + Kelly multiplier) and its win/loss+PnL
+> evidence layer ·
+> **Status**: pending (migrations not yet applied; `macro_regime_mode`
+> ships at `shadow`) · **Date**: 2026-08-28
 
 Built the macro filter scoped earlier (2026-08-26), plus a new
 win/loss+PnL evidence layer the user specifically asked to have detailed
@@ -1540,6 +1582,11 @@ Asked directly "did I miss anything" — full inventory:
 
 ## Phase 3a build + v_entry_drift admin view (2026-08-28)
 
+> **Priority**: P2 · **Task**: Build the reachability-aware heavy-sweep
+> combo shadow pick (Phase 3a) and the `v_entry_drift` admin view ·
+> **Status**: pending (migrations not applied;
+> `heavy_sweep_reachability_mode` stays `off`) · **Date**: 2026-08-28
+
 Built the two items flagged in the "what's outstanding" review above.
 
 ### Phase 3a — reachability-aware heavy-sweep combo pick (shadow only)
@@ -1634,6 +1681,12 @@ admin-surfaced object follows the same "view, not raw table" convention
 consistently. Migration 129 not yet applied.
 
 ## 36h checkpoint review + MIN_RR/MAX_SHARPE/MIN_TRADES config fix (2026-08-30)
+
+> **Priority**: P1 · **Task**: Fix `MIN_RR`/`MAX_SHARPE`/`MIN_TRADES`
+> config divergence risk between `orchestrator.py` and `heavy_sweep.py`
+> (previously caused a live `no_combo_passed_filters` incident) ·
+> **Status**: pending (fix written, not yet pushed) ·
+> **Date**: 2026-08-30
 
 Ran a full data check (studio logs still unreachable — see below;
 Supabase data only) covering signal-sim health, Tier 1/2 HMM shadow,

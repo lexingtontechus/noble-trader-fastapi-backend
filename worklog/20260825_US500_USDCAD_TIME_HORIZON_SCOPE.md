@@ -8,6 +8,11 @@ build). Candidate fixes ranked below; none built or approved yet.
 
 ## US500 — confirmed root cause
 
+> **Priority**: P1 · **Task**: Root-cause US500's expiry-dominant
+> resolution via backtest/live time-horizon mismatch; rank candidate
+> fixes · **Status**: n/a (scope only, no fix built/approved) ·
+> **Date**: 2026-08-25
+
 ### The mismatch
 
 - Live's resolver (`eod_resolver.py`) enforces a hard **48 real-hour**
@@ -113,6 +118,10 @@ discipline as the rest of this session).
 ---
 
 ## USDCAD — historical episode explained, no new fix needed
+
+> **Priority**: P2 · **Task**: Explain USDCAD's Aug 6-12 historical
+> loss episode and current OVERCONFIDENT flag ·
+> **Status**: resolved · **Date**: 2026-08-25
 
 Two separate threads were originally tangled together as "USDCAD ~1% win
 rate":
