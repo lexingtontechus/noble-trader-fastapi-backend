@@ -247,3 +247,155 @@ it."
 Nothing above is built. Waiting on direction on which phase(s) to
 scope further or start building, and answers to the open questions
 before Phase 1 specifically.
+
+## 3. Revision (same day) — Layer 2's trigger mechanism, DB placement, and a redesigned Phase 1
+
+Three pieces of user feedback, incorporated directly:
+
+### 3.1 Layer 2 item 3 replaced: APScheduler, not an external Hermes trigger
+
+Correct call — `PARAMETER_TUNING_PLAYBOOK.md`'s own Layer 2 item 3 (a
+Hermes cron job polling `nt_eod_actions` for unactioned alerts and
+spinning up an agent session) has sat unbuilt since 2026-08-23 (3+
+weeks) precisely because it depends on configuration **outside this
+repo** — a real dead link, not a live design.
+
+**Replacement**: this repo's orchestrator already runs an in-process
+`AsyncIOScheduler` doing exactly this shape of work today — light
+sweep (`*/15 * * * *`), heavy sweep (`0 20 * * *`), eod-lookback
+(`32 0 * * *`), eod-correction-intraday (4h), auto-tuner (daily
+01:30). The self-learning trigger belongs on the **same scheduler, in
+the same process** — a new job, e.g. `_run_self_learning_triage`,
+proposed at 02:00 UTC daily (after eod-lookback/auto-tuner have fresh
+post-correction data, before the next trading day starts in earnest).
+No new platform, no new credentials, no cross-system trigger to
+configure and forget. Logic, cheap-first:
+1. Run Phase 2's statistical detectors (pure Python/SQL) across active
+   symbols — fast, no model inference.
+2. Nothing fires → log one line, exit. This is the common case; no
+   embedding or LLM cost most nights.
+3. Something fires → for each anomaly, query the local knowledge index
+   (§3.3) for related code/worklog context, then call a local
+   reasoning LLM once with the anomaly + retrieved context, asking for
+   a root-cause narrative + a proposed fix outline.
+4. Write the output somewhere a human reviews on their own schedule
+   (§3.2) — never auto-applied, same discipline as every other
+   mechanism in this codebase.
+
+This is a strictly smaller, more reliable design than the original —
+fewer moving parts, no dependency on a system this repo doesn't
+control, and it reuses infrastructure already proven to run reliably
+(the same scheduler has been running daily jobs without incident all
+session).
+
+### 3.2 Database placement — separate the knowledge index, keep `nt_roadmap` where it is
+
+Agreed that a large embeddings table doesn't belong mixed in with live
+trading telemetry — but "nt_roadmap, worklogs etc." aren't all the
+same kind of data, and shouldn't all move the same way:
+
+- **The knowledge index (code + worklog + roadmap-note embeddings)** —
+  genuinely large (potentially tens of thousands of chunk rows once the
+  full codebase + all worklogs are embedded), write-heavy only during
+  re-index, and only ever read **from the Studio box itself** (that's
+  where the local embedding model and the self-learning job both run —
+  there's no reason for this data to leave the box at all). **Recommend:
+  move this to a local store on the Studio persistent volume** — SQLite
+  + the `sqlite-vec` extension, same file (`config/knowledge_index.sqlite`
+  or similar) and the same persistence guarantee already proven this
+  session for `signal_stream_cache.sqlite`/`tuning_registry.yaml`/
+  `brick_params.yaml`, and the same precedent that justified the local
+  TimesFM model cache (`HF_HOME`) in the first place. Zero new Supabase
+  load from this table, ever — this alone addresses most of "the
+  database is growing larger" for the piece that would actually be
+  large.
+- **`nt_roadmap`** — small (dozens of rows), and its entire value this
+  session came from being **remotely queryable via the Supabase MCP
+  tool from wherever an agent session happens to be running** — every
+  "what's left on the priority list" check, every pulse check, every
+  daily-checkin update this whole session was a direct
+  `execute_sql` call against it. Moving it to a Studio-local file would
+  mean every future session needs SSH + a script to read it instead of
+  one MCP call — a real workflow regression for a table that isn't
+  actually contributing to the growth problem. **Recommend: leave
+  `nt_roadmap` in Supabase.** If the underlying worry is more about
+  logical/visual clutter than actual size, a cheaper fix than a new
+  database is a dedicated Postgres **schema** (e.g. `ops.nt_roadmap`
+  instead of `public.nt_roadmap`) in the same project — same MCP
+  queryability, zero new credentials, real namespace separation. Not
+  proposing this now, just noting it exists as a middle option if "one
+  more table in `public`" is the actual complaint rather than raw size.
+- **Worklogs** — already files in the git repo, not database rows.
+  Nothing to move; they just become a second **source** the knowledge
+  index reads from (alongside code), living in the same local SQLite
+  file as everything else in this section.
+- **New self-learning trigger output** (§3.1 step 4) — small, one row
+  per detected anomaly, needs the same cross-session remote
+  visibility `nt_roadmap` already has (a human — or a future session —
+  should be able to read yesterday's triage report without SSHing in).
+  **Recommend a small new Supabase table**, e.g.
+  `nt_self_learning_reports` (`id`, `detector_name`, `symbol`,
+  `summary`, `proposed_fix`, `created_at`, `reviewed boolean`) — this
+  is exactly `nt_roadmap`'s profile (small, operational, remotely
+  read), not the knowledge index's profile (large, local-only).
+
+Net effect: the thing that would actually make the database bigger
+never lands in it in the first place, while the things that are
+already small and already benefit from remote queryability stay put.
+
+### 3.3 Phase 1, redesigned: local embedding model + local vector store
+
+Per "embedding a small local LLM model is ok — we already do this for
+TimesFM (800mb)" — this resolves the embedding-provider open question
+from §2 outright: **local, not an external API**. Concrete design:
+
+- **Embedding model**: `BAAI/bge-small-en-v1.5` (~130MB, 384-dim) as
+  the default — small enough to run on CPU even while the GPU is busy
+  with TimesFM, well-proven for retrieval, comfortably inside the
+  800MB budget the TimesFM precedent already established.
+  `nomic-embed-text-v1.5` (~550MB, 768-dim, up to 8192-token context vs.
+  bge-small's 512) is the upgrade path if code chunks prove too long
+  for bge-small's window in practice — still smaller than TimesFM.
+  Loaded via `sentence-transformers`, on the same Lightning Studio GPU
+  box already running TimesFM's inference gateway.
+- **Vector store**: SQLite + `sqlite-vec` (the maintained successor to
+  `sqlite-vss`) — one new local file, no new service/server, reuses
+  the exact convention this codebase already has for local mutable
+  state. Two tables: `knowledge_chunks` (path, source_type, chunk_text,
+  content_hash, updated_at) and a `sqlite-vec` virtual table for the
+  embedding vectors, joined by rowid.
+- **Sources indexed**: `.py` under `regime_platform/`, `renko/`,
+  `scripts/` (tests/ excluded from v1 — lower signal-to-noise for a
+  root-cause-retrieval use case, revisit if needed), all of
+  `worklog/*.md`, and `nt_roadmap`'s `current_state`/`notes` columns
+  (pulled fresh from Supabase at index time — this is the one place the
+  local index still talks to Supabase, as a read-only source, not a
+  destination).
+- **Indexing**: incremental, content-hash-based (skip re-embedding
+  unchanged chunks), triggered by the **same new APScheduler job
+  family** as §3.1 rather than a separate on-push/CI mechanism — one
+  scheduling story, not two. A nightly `_run_knowledge_reindex` job
+  (e.g. 01:45 UTC, before the 02:00 triage job consumes it) keeps the
+  index fresh from the latest deployed commit + latest `nt_roadmap`
+  state.
+- **Query interface**: `semantic_search(query, k=5, source_type=None)`
+  — embeds the query with the same local model, KNN search via
+  `sqlite-vec`, returns chunk text + path + source. This is the only
+  thing the §3.1 triage job calls into.
+- **Reasoning LLM (Phase 3, separate sizing decision from the
+  embedder)**: a small local instruct model (e.g. Qwen2.5-3B-Instruct
+  or Phi-3.5-mini, ~2-4GB) for the actual root-cause narrative
+  generation — meaningfully bigger than the embedder, so proposed to
+  load **on-demand only when Phase 2 actually flags something**
+  (step 2 of §3.1), not kept resident alongside TimesFM continuously —
+  a GPU-memory management call worth its own review once Phase 2's
+  real trigger frequency is known, not decided now.
+
+Still nothing built. This section resolves 2 of the original 4 open
+questions (embedding provider: local; DB placement: split by data
+profile, not all-or-nothing) and replaces the Layer 2 trigger design
+outright. Remaining open: re-index cadence is now proposed as nightly
+APScheduler (folded into the "no new trigger mechanism" decision, not
+a separate open question anymore), and Phase 2's v1 detector scope
+(all three shapes vs. just the AAPL-motivated one) is still an open
+call.
