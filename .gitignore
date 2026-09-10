@@ -147,3 +147,15 @@ config/brick_params.yaml
 # brick_params.yaml above. See worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §6.
 config/signal_stream_cache.sqlite
+
+# Local knowledge index (2026-09-10, Phase 1 of worklog
+# 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md §3,
+# regime_platform/services/self_learning/knowledge_index.py) — a local
+# SQLite semantic index over the codebase + worklogs + nt_roadmap notes.
+# Deliberately never a Supabase table (see that worklog section for why);
+# rebuilt nightly on Studio, not meaningful to commit. Same
+# live-mutated-runtime-state shape as tuning_registry.yaml/
+# signal_stream_cache.sqlite above.
+config/knowledge_index.sqlite
+config/knowledge_index.sqlite-wal
+config/knowledge_index.sqlite-shm

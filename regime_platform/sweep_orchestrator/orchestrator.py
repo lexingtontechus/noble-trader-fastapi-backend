@@ -30,6 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
+    get_knowledge_index_enabled,
     get_markov_source_mode,
     get_min_ev,
     get_min_kelly,
@@ -1210,6 +1211,29 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Self-learning knowledge index (2026-09-10, Phase 1 of worklog/
+        # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md §3):
+        # nightly, 01:45 UTC — after the auto-tuner (01:30) so that day's
+        # registry writes are captured too, and on the SAME in-process
+        # scheduler as everything else. This replaces the original Layer 2
+        # item 3 design (a Hermes cron job triggering an external agent
+        # session on detected anomalies, PARAMETER_TUNING_PLAYBOOK.md
+        # §2.5.3) — that design sat unbuilt for 3+ weeks because it
+        # depended on configuration outside this repo; a job on the
+        # scheduler this repo already runs has no such dependency. Purely
+        # additive/local: indexes the codebase + worklogs + nt_roadmap
+        # notes into a local SQLite file, never reads or writes anything
+        # that influences a live signal or parameter.
+        if get_knowledge_index_enabled():
+            self._scheduler.add_job(
+                self._run_knowledge_reindex,
+                trigger=CronTrigger.from_crontab("45 1 * * *"),
+                id="knowledge-index-nightly",
+                name="Self-learning knowledge index (nightly)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
         # after the 05:00 UTC weekend heavy-sweep window so that week's
@@ -1748,6 +1772,28 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[auto-tuner] failed: %s", exc)
+
+    async def _run_knowledge_reindex(self) -> None:
+        """Self-learning local knowledge-index rebuild (daily, 01:45 UTC).
+
+        See ``regime_platform/services/self_learning/knowledge_index.py``
+        and worklog
+        20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md §3.
+        Indexes the codebase + worklogs + ``nt_roadmap`` notes into a
+        local SQLite file (never Supabase — see that worklog section for
+        why) for future root-cause retrieval. The heavy work
+        (chunking/embedding/SQLite writes) already runs off the event
+        loop via ``asyncio.to_thread`` inside ``build_index`` itself.
+        Purely additive/local, read-only w.r.t. trading. Best-effort:
+        failures are logged, never raised.
+        """
+        from regime_platform.services.self_learning.knowledge_index import build_index
+
+        try:
+            summary = await build_index()
+            logger.info("[self-learning] knowledge index rebuilt: %s", summary)
+        except Exception as exc:
+            logger.error("[self-learning] knowledge index rebuild failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

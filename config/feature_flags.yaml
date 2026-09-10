@@ -457,6 +457,16 @@ regime_label_debounce_ticks: 3
 # instead of a one-time migration DELETE.
 renko_brick_retention_days: 2
 
+# knowledge_index_enabled (2026-09-10, Phase 1 of worklog
+# 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS3): gates the
+# nightly local knowledge-index rebuild (regime_platform/services/
+# self_learning/knowledge_index.py) that indexes the codebase + worklogs +
+# nt_roadmap notes into a local SQLite file for future root-cause
+# retrieval. Purely additive, read-only w.r.t. trading -- never influences
+# a live signal or parameter. Simple on/off (not off/shadow/live): there's
+# no live-baseline comparison for a search index to shadow-test against.
+knowledge_index_enabled: true
+
 # heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was
 # a 72h timer bounding how long the TimesFM confidence gate in

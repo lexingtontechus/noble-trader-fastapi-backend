@@ -74,6 +74,7 @@ _DEFAULTS: dict[str, Any] = {
     "calibration_bias_min_episodes": 2,
     "signal_stream_meta_model_mode": "off",
     "renko_brick_retention_days": 2,
+    "knowledge_index_enabled": True,
 }
 
 _cache: dict[str, Any] | None = None
@@ -428,6 +429,22 @@ def get_signal_stream_meta_model_mode() -> str:
     return str(_load().get(
         "signal_stream_meta_model_mode", _DEFAULTS["signal_stream_meta_model_mode"],
     )).lower()
+
+
+def get_knowledge_index_enabled() -> bool:
+    """Whether the nightly local knowledge-index rebuild job runs
+    (2026-09-10, Phase 1 of worklog
+    20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md §3). Purely
+    additive/local — read-only w.r.t. trading, indexes the codebase +
+    worklogs + nt_roadmap notes into a local SQLite file for future
+    root-cause retrieval. Default on; a simple on/off switch rather than
+    the off/shadow/live convention used elsewhere, since there's no
+    "correctness comparison against a live baseline" for a search index
+    — it either helps future investigation or it's off."""
+    value = _load().get(
+        "knowledge_index_enabled", _DEFAULTS["knowledge_index_enabled"],
+    )
+    return bool(value)
 
 
 def get_renko_brick_retention_days() -> int:

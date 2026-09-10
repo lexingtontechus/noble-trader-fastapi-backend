@@ -399,3 +399,106 @@ APScheduler (folded into the "no new trigger mechanism" decision, not
 a separate open question anymore), and Phase 2's v1 detector scope
 (all three shapes vs. just the AAPL-motivated one) is still an open
 call.
+
+## 4. Phase 1 — built (2026-09-10, explicit approval: "approve to start building phase 1")
+
+**Hardware facts corrected before picking a model, not assumed.** SSH'd
+into the Studio box directly rather than trusting a stale "T4 w/GPU"
+comment elsewhere in this codebase: no `nvidia-smi`, no
+`/proc/driver/nvidia`, `torch` reports no CUDA device, and TimesFM's own
+gateway `/health` endpoint reports `"device":"cpu"` — **this instance
+has no GPU at all**, 4 CPU cores, 346GB free disk (more generous than
+even the 200GB the user cited). This changed the model recommendation
+from the earlier (GPU-assumed) draft: CPU-efficient, modest-sized models
+instead of anything requiring VRAM.
+
+**Embedding model**: `jinaai/jina-embeddings-v2-base-code` (~640MB,
+768-dim, 8192-token context, code+docstring domain-tuned) — comfortably
+inside the 800MB/200GB budget, CPU-only inference is fine for a nightly
+background job with no latency requirement. Loaded via
+`sentence-transformers`, which reuses this repo's *already-installed*
+`torch`/`huggingface-hub` (both already dependencies for TimesFM) — one
+new package, not a new dependency stack. Points its HuggingFace cache at
+the exact same `<repo_root>/.cache/huggingface` directory `server.py`
+(the TimesFM gateway) already uses, so the two processes share one
+on-disk model cache.
+
+**Storage: local, not Supabase**, per §3.2's split — `regime_platform/services/self_learning/knowledge_index.py`,
+a new local SQLite file (`config/knowledge_index.sqlite`, gitignored,
+same convention as `signal_stream_cache.sqlite`/`tuning_registry.yaml`).
+
+**Simplified away from the original sqlite-vec plan**: on reflection
+while building, decided the vector-extension dependency wasn't
+justified at this corpus's actual scale. A plain BLOB column holding
+each chunk's serialized embedding, with cosine similarity computed via
+numpy at query time, has zero C-extension packaging/compatibility risk
+between the Windows dev box and the Linux Studio deployment, and is not
+meaningfully slower — confirmed by the real smoke test below (loading
+1,864 vectors and searching is well under a second). Revisit only if
+the corpus grows by orders of magnitude. This is the same "don't reach
+for a dependency the actual scale doesn't justify" judgment call this
+session made repeatedly elsewhere today.
+
+**Built**:
+- `_chunk_python_source` — AST-based splitting on top-level
+  function/class boundaries (semantically meaningful chunks, not
+  arbitrary fixed windows), with a fixed-window fallback for files that
+  fail to parse or have no top-level defs.
+- `_chunk_markdown` — splits worklogs on `#`/`##` headings (one finding/
+  decision per chunk), same fixed-window fallback. Caught and fixed a
+  real bug here during testing: the original implementation's "no
+  headings found" check was always false (the trailing flush of
+  accumulated lines produces one non-empty "section" even when zero
+  headings existed), so the fallback path was unreachable — fixed by
+  tracking whether a heading was actually seen, not whether the
+  sections list ended up empty.
+- `build_index` — incremental (content-hash-based skip for unchanged
+  chunks), prunes rows for deleted files/removed sections/sections that
+  shrank, so the index never accumulates stale content. Fetches
+  `nt_roadmap`'s `current_state`/`notes` as a third source (the one
+  place this module still talks to Supabase — read-only). Refactored
+  during the build to run the blocking chunking/embedding/SQLite work
+  via `asyncio.to_thread` — the first draft called blocking work
+  directly inside an `async def`, which would have stalled the same
+  event loop the live 15-minute sweep ticks run on during every nightly
+  rebuild, worst-case for the entire first full-corpus build. Caught
+  and fixed before this ever ran for real, not after.
+- `semantic_search(query, k, source_type)` — the only query interface;
+  embeds the query with the same model, ranks by cosine similarity.
+- Wired as a new APScheduler job (`_run_knowledge_reindex`, orchestrator.py,
+  01:45 UTC daily) on the SAME in-process scheduler as light/heavy sweep,
+  eod-lookback, and the auto-tuner — the Layer-2-replacement decision
+  from §3.1, now actually in place. Gated by `knowledge_index_enabled`
+  (`config/feature_flags.yaml`, default `true`) — a plain on/off switch,
+  not the off/shadow/live convention used elsewhere, since there's no
+  live-baseline comparison for a search index to shadow against.
+
+**Verified two ways, not just synthetic unit tests**:
+1. 21 new tests (chunking edge cases, incremental re-index behavior,
+   pruning on file deletion/shrinkage, source-type filtering, the
+   roadmap fetch, and the orchestrator wrapper's best-effort error
+   handling) — all using an injected fake embedder, never the real
+   model or network, so CI never needs to download a 640MB model.
+2. **Real smoke test against the actual codebase** (fake embedder,
+   avoiding the real download for a quick structural check): 211 real
+   files (`regime_platform/`, `renko/`, `scripts/`, `worklog/`), 1,864
+   chunks, **0 errors**, ~1 second — proves the AST/markdown chunkers
+   handle every real file in this repo cleanly, not just small
+   synthetic fixtures.
+
+815 passed, 21 skipped, 0 failures (full suite, +21 from this build).
+Real embedding-model download and the first real production index
+build happen on Studio deployment, per this session's established
+"code-complete vs. deployed are different states" gate — not forced in
+this session, matching how the TimesFM checkpoint itself was first
+populated by a real deployment run, not pre-staged.
+
+**Phase 2 methodology guidance received, not yet built**: "start with
+AAPL as a test case then backtest/regression test against more
+symbols" — captured for when the regime-vs-price-mismatch detector
+(§2, Phase 2) is actually built: validate it correctly flags the real
+AAPL case first, then run it against the other 13 symbols' historical
+data to check for false positives (a symbol correctly staying in one
+regime for a legitimately trending week) and false negatives, before
+trusting it in the nightly triage job. Not started this turn — only
+Phase 1 was approved.

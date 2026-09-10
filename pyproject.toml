@@ -46,6 +46,10 @@ dependencies = [
     "safetensors>=0.6",
     "gunicorn>=26.0.0",
     "apscheduler>=3.10.0",
+    # Self-learning local knowledge index (2026-09-10, Phase 1 of worklog
+    # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md) — reuses
+    # the torch/huggingface-hub already installed above for TimesFM.
+    "sentence-transformers>=3.0.0",
 ]
 
 [project.optional-dependencies]
