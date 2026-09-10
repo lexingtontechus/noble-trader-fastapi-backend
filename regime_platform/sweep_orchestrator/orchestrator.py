@@ -1153,19 +1153,29 @@ class SweepOrchestrator(HeavySweepMixin):
         )
 
         # EOD signal-lookback: forward-resolve pending nt_signal_sim rows
-        # then run the calibration self-correction audit. Daily 00:32 UTC —
-        # after the market day closes (forex 22:00 UTC / equities 21:00 UTC)
-        # and before the 05:00 UTC weekend heavy-sweep window. Offset 2
-        # minutes off the light sweep's grid (`*/15 * * * *` as of
-        # 2026-09-09, was `*/5 * * * *`; the :30 offset lands on both) (2026-08-24):
-        # at :30 exactly, both jobs fired their own TradingView batch calls
-        # concurrently and the resolver's requests got 429'd — confirmed
-        # live. This doesn't guarantee no overlap (a slow resolver run can
-        # still run into the next light-sweep tick), but removes the
-        # guaranteed every-single-day collision at the shared :30 mark.
+        # then run the calibration self-correction audit. Daily 01:17 UTC
+        # (was 00:32 UTC until 2026-09-10) — moved to land just after the
+        # 01:12 UTC Studio restart (see harmonize note below) instead of 40
+        # minutes before it, so a restart no longer routinely kills this job
+        # mid-run. Still offset 2 minutes off the light sweep's grid
+        # (`*/15 * * * *`, the :15 mark) for the same reason as the original
+        # 00:32 choice (2026-08-24): landing exactly on the shared :00/:15/
+        # :30/:45 marks caused concurrent TradingView batch calls and 429s.
+        #
+        # Studio restart harmonization (2026-09-10,
+        # worklog/20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md):
+        # Lightning AI free-plan Studio sleeps after ~4h and is restarted on
+        # a fixed schedule (PDT): 06:00, 10:04, 14:08, 18:12, 22:16, 02:24
+        # (= 13:00, 17:04, 21:08, 01:12, 05:16, 09:24 UTC). A restart kills
+        # any in-flight asyncio work with no resume — a job scheduled near
+        # the END of a ~4h window gets almost no runway before being killed;
+        # one scheduled just AFTER a restart gets the full ~4h window. This
+        # was root-caused as the real reason XAUAUD's heavy sweep went 4+
+        # days stale (heavy-sweep was firing 20:00 UTC, only 68 minutes
+        # before the 21:08 UTC restart) — see the same worklog section.
         self._scheduler.add_job(
             self._run_eod_lookback,
-            trigger=CronTrigger.from_crontab("32 0 * * *"),
+            trigger=CronTrigger.from_crontab("17 1 * * *"),
             id="eod-lookback",
             name="EOD signal lookback (resolve + correct)",
             misfire_grace_time=3600,

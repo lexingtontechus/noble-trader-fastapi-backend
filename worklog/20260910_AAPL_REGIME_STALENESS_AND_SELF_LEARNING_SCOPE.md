@@ -579,3 +579,65 @@ methodology already captured in `self_learning_phase_2_detectors`
 above. Not started this turn — this section is scope only, per
 "scope in worklog, get honest review, build only on explicit
 instruction."
+
+## 6. XAUAUD deep-dive → Studio restart schedule harmonization (2026-09-10)
+
+**Root cause found**: reconstructed the full 09-09 20:00 UTC heavy-sweep
+batch from the log. Only ~10 of 14 symbols ever completed it (5 by
+20:08, another 5 in a suspicious tight cluster at 22:22-22:25 after a
+2h14m dead silence); 4 (US30USD, USDJPY, XAGUSD, XAUAUD) never
+completed that day. Per-symbol duration was wildly inconsistent (24s
+to 471s for the *same* 72-combo grid search) — consistent with
+`HEAVY_SWEEP_MAX_CONCURRENCY=4` running CPU-bound numpy/hmmlearn work
+via `asyncio.to_thread` on this box's 4 real cores (no GPU, confirmed
+earlier) — GIL contention, not the stale docstring's "T4 GPU: 14
+symbols <30s" assumption.
+
+The actual trigger: the user shared Studio's real free-plan restart
+schedule (confirmed via a screenshot of 6 active scheduled restarts,
+PDT) — Studio sleeps after ~4h and is kept alive by a fixed restart
+cycle: **06:00, 10:04, 14:08, 18:12, 22:16, 02:24 PDT** (=
+**13:00, 17:04, 21:08, 01:12, 05:16, 09:24 UTC**, with the last window
+shortened to realign back to 13:00). A restart kills any in-flight
+`asyncio` work with zero resume. Heavy sweep was firing `0 20 * * *`
+(20:00 UTC) — inside the 17:04-21:08 UTC window, but only **68 minutes**
+before that window's restart. `eod-lookback` (`32 0 * * *`, 00:32 UTC)
+was inside the 21:08-01:12 UTC window with only **40 minutes** before
+its restart — and had 2 confirmed `PATCH signal ... failed` errors
+logged 2026-09-09 22:09, consistent with this.
+
+XAUAUD (position 12 of 14 in `nt_symbol`'s list order, alongside
+XAUEUR/XAUUSD/XAGUSD at the tail) is structurally the most exposed to
+losing its turn in the 4-way-concurrent queue every time a restart
+lands mid-batch, while early-list symbols (AAPL, AUDUSD, BTCUSD,
+EURUSD, GBPUSD) reliably finish first and every day. Other tail
+symbols missed a day too but recovered on a later attempt; XAUAUD's
+4-day streak looks like bad luck compounding across multiple restarts,
+not a symbol-specific defect.
+
+**Fix applied 2026-09-10** — align both jobs to fire just *after* a
+restart instead of near the *end* of a window, so each gets close to
+the full ~4h runway instead of a random tail-end scrap:
+- `nt_symbol.sweep_cron`: `0 20 * * *` → **`6 17 * * *`** (17:06 UTC,
+  2 min after the 17:04 UTC restart) for all 14 active symbols. This is
+  a **DB-only change** — `heavy_sweep.py`'s job-refresh logic derives
+  the APScheduler job ID from the cron string itself and both adds the
+  new job and removes the stale one on the next 5-minute symbol-registry
+  refresh, already confirmed by reading that code path. Took effect on
+  the currently-running Studio process immediately, no deploy needed.
+- `orchestrator.py` `eod-lookback`: `32 0 * * *` → **`17 1 * * *`**
+  (01:17 UTC, 5 min after the 01:12 UTC restart), preserving the
+  original ":XX offset from the light-sweep's :00/:15/:30/:45 grid"
+  collision-avoidance trick from the original 2026-08-24 fix. This is a
+  **code change**, needs a Studio deploy to take effect (not yet
+  deployed as of this writing).
+
+**Deliberately not touched this pass**: `eod-correction-intraday`
+(currently 04:30/08:30/12:30/16:30/20:30 UTC) also lands with a tight
+30-50 minute runway before its window's restart in all 5 slots — but
+there's no direct failure evidence for it this session (unlike
+heavy-sweep's concrete 4-day XAUAUD staleness and eod-lookback's 2
+confirmed PATCH failures), and a clean fix needs a fully custom
+5-times-a-day offset table (the restart cadence isn't a uniform 4h —
+minute offsets drift +4,+4,+4,+4,+8) rather than a simple formula
+tweak. Flagged in `nt_roadmap` for a future pass, not built now.
