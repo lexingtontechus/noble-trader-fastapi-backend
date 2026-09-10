@@ -8,7 +8,24 @@
 > [[project_optimize_then_self_learn]]. Query `nt_roadmap` for anything
 > that gets built out of this later.
 
+> **Worklog header convention (2026-09-10)**: this file bundles several
+> distinct tasks worked across one session, so each `##` section below
+> carries its own **Priority / Task / Status / Date / Roadmap refs**
+> block instead of one file-level header. `Roadmap refs` cite
+> `nt_roadmap` rows by their new `id` column (added 2026-09-10) as
+> `RM-<id>` — short, stable, typeable, in place of the longer
+> `mechanism` string. Going forward, every new worklog file or section
+> should open with this same block. Status vocabulary matches
+> `nt_roadmap.status` (`pending` / `blocked` / `resolved` /
+> `superseded`) plus `n/a` for sections that are pure investigation with
+> no tracked roadmap row.
+
 ## 1. AAPL — issue or non-issue: **issue**, but not the one it looks like
+
+> **Priority**: P1 · **Task**: Diagnose AAPL qualification drought ·
+> **Status**: resolved (diagnosis only; the underlying gap is tracked
+> separately, see §5/§7) · **Date**: 2026-09-10 · **Roadmap refs**:
+> RM-40
 
 **The symptom**: AAPL has not qualified a single signal since
 2026-09-02 (8 days). `v_symbol_signal_scorecard_7d` shows 0 qualified,
@@ -104,6 +121,10 @@ similar in shape to (but distinct from) the warm-start/debounce issues
 already found and shadow-tested for other symbols this session.
 
 ## 2. Self-learning — scope, informed directly by the AAPL case above
+
+> **Priority**: P2 · **Task**: Scope 4-phase self-learning direction ·
+> **Status**: superseded by §3's revision · **Date**: 2026-09-10 ·
+> **Roadmap refs**: RM-36
 
 **Grounding first: this isn't a green field.** Before proposing
 anything new, here's what the codebase already has, so nothing below
@@ -249,6 +270,11 @@ scope further or start building, and answers to the open questions
 before Phase 1 specifically.
 
 ## 3. Revision (same day) — Layer 2's trigger mechanism, DB placement, and a redesigned Phase 1
+
+> **Priority**: P2 · **Task**: Revise self-learning scope (Layer 2 →
+> APScheduler, DB placement split, local embedding redesign) ·
+> **Status**: resolved (superseded §2, itself built in §4) ·
+> **Date**: 2026-09-10 · **Roadmap refs**: RM-36
 
 Three pieces of user feedback, incorporated directly:
 
@@ -402,6 +428,11 @@ call.
 
 ## 4. Phase 1 — built (2026-09-10, explicit approval: "approve to start building phase 1")
 
+> **Priority**: P1 · **Task**: Build Phase 1 local knowledge index
+> (codebase + worklogs + nt_roadmap) · **Status**: resolved (built,
+> tested, deployed-verification tracked separately) · **Date**:
+> 2026-09-10 · **Roadmap refs**: RM-36, RM-38
+
 **Hardware facts corrected before picking a model, not assumed.** SSH'd
 into the Studio box directly rather than trusting a stale "T4 w/GPU"
 comment elsewhere in this codebase: no `nvidia-smi`, no
@@ -505,6 +536,11 @@ Phase 1 was approved.
 
 ## 5. AAPL — a fresh view, not another point-fix (2026-09-10)
 
+> **Priority**: P1 · **Task**: Reframe AAPL regime-staleness as a
+> coverage gap (medium-term trend confirmation), not a point-fix ·
+> **Status**: blocked (scope only, awaiting approval — see §7 for the
+> full build scope) · **Date**: 2026-09-10 · **Roadmap refs**: RM-40
+
 Explicit instruction received: don't patch the staleness symptom again
 (§1's two candidate directions, `regime_conf` debounce, warm-start,
 etc.) — instead take a fresh look at whether the platform's regime
@@ -582,6 +618,13 @@ instruction."
 
 ## 6. XAUAUD deep-dive → Studio restart schedule harmonization (2026-09-10)
 
+> **Priority**: P0 · **Task**: Root-cause XAUAUD's 4+ day heavy-sweep
+> staleness; harmonize APScheduler cron times with Studio's free-plan
+> restart schedule · **Status**: resolved (fix applied and deployed —
+> `nt_symbol.sweep_cron` is DB-driven and took effect live; the
+> `eod-lookback` code change is pushed) · **Date**: 2026-09-10 ·
+> **Roadmap refs**: RM-41, RM-42, RM-43
+
 **Root cause found**: reconstructed the full 09-09 20:00 UTC heavy-sweep
 batch from the log. Only ~10 of 14 symbols ever completed it (5 by
 20:08, another 5 in a suspicious tight cluster at 22:22-22:25 after a
@@ -641,3 +684,140 @@ confirmed PATCH failures), and a clean fix needs a fully custom
 5-times-a-day offset table (the restart cadence isn't a uniform 4h —
 minute offsets drift +4,+4,+4,+4,+8) rather than a simple formula
 tweak. Flagged in `nt_roadmap` for a future pass, not built now.
+
+## 7. Macro filter refinement — full build scope (2026-09-10)
+
+> **Priority**: P1 · **Task**: Fully scope a medium-term (10-50 day)
+> trend-confirmation module, sibling to `macro_filter.py`, per §5's
+> proposal · **Status**: blocked (scope only, nothing built, awaiting
+> approval) · **Date**: 2026-09-10 · **Roadmap refs**: RM-40
+
+Fleshing out §5's proposal into a concrete, buildable spec. Nothing in
+this section has been implemented.
+
+### 7.1 Problem restated
+
+The platform has live-short (`RegimeHMM`, ~1.25 days, pure return/vol,
+no price level) and shadow-long (`macro_filter.py`, 200-day SMA, a
+single static level check) trend features. Nothing covers the
+10-to-50-day scale, and nothing does **crossover-based reversal
+detection** — exactly the mechanism the user's external AAPL read used
+(10-day MA re-crossing above the 50-day MA on 08-28) and exactly what a
+confidence-saturated hourly HMM cannot produce on its own.
+
+### 7.2 Design — new sibling module, not a `macro_filter.py` rewrite
+
+New file `regime_platform/sweep_orchestrator/trend_filter.py`, same
+shape as `macro_filter.py` (pure-calc function + async refresh + a
+`get_*` live-read wrapper), **not** a change to `macro_filter.py`
+itself — the two modules answer genuinely different questions (200-day
+structural position vs. 10-50-day momentum/reversal) and
+`macro_filter.py`'s own docstring already establishes the
+"deliberately separate, not blended into one metric" convention this
+should follow.
+
+**Inputs** (daily closes, reused — see 7.5 for the fetch-sharing plan):
+- `SMA_10`, `SMA_20`, `SMA_50` — three windows, not just the one pair
+  the external read used, so the crossover-pair choice (7.7) can be
+  validated empirically instead of guessed.
+- `RSI_14` — reuse `services/hmm/model.py::_compute_rsi` (Wilder's
+  smoothing, already implemented and tested there) rather than writing
+  a second implementation. That function currently only takes a plain
+  `np.ndarray` and returns an array with no DB/async coupling, so it
+  can be imported directly with no refactor.
+- Crossover state: on each refresh, compare today's `SMA_10 - SMA_50`
+  sign against yesterday's (stored, same `prev_*` continuity pattern
+  `compute_macro_regime` already uses for its EMA) to detect a sign
+  flip = a crossover event *today*. Track `days_since_crossover` and
+  `last_crossover_direction` (bullish/bearish) so "how fresh is this
+  signal" is answerable, not just "which side are we on right now."
+
+**Output fields** (mirrors `compute_macro_regime`'s return shape):
+```
+trend_label: "reversal_up" | "reversal_down" | "trending_up" |
+             "trending_down" | "consolidating"
+trend_strength: float 0-1 (normalized |SMA_10 - SMA_50| / SMA_50,
+                same saturation-clamp pattern as macro_strength)
+rsi_14: float
+rsi_state: "overbought" | "oversold" | "neutral" (classic 70/30
+           thresholds as the starting default, tunable — see 7.7)
+sma_10, sma_20, sma_50: float (raw, for debugging/backtest reuse)
+days_since_crossover: int
+last_crossover_direction: "bullish" | "bearish" | null
+```
+`trend_label` derivation: `reversal_up`/`reversal_down` when
+`days_since_crossover` is small (e.g. ≤3, tunable) and the direction
+matches; otherwise `trending_up`/`trending_down` from the crossover
+side alone; `consolidating` when RSI is neutral AND no recent
+crossover — this is the AAPL 09-10 case today (RSI ~50, past the 08-28
+crossover) and should read `consolidating`, not `trending_up`, matching
+the external read's own framing ("cooled off... cleanly consolidating")
+rather than just re-deriving the same "still bull" read macro_filter
+already gives.
+
+### 7.3 Storage — new table `nt_trend_regime`, not new columns on `nt_macro_regime`
+
+Same reasoning as 7.2: separate concerns, separate table. Shape mirrors
+`nt_macro_regime` exactly (`symbol` PK, one row per symbol reflecting
+the latest computed state, no history retained in this table — history
+lives in the raw daily-bar source, re-derivable on demand for
+backtesting, same as `nt_macro_regime` today).
+
+### 7.4 Feature flag — `trend_regime_mode`, same 3-stage discipline
+
+`off` (build-time default) → `shadow` (compute + capture to
+`nt_trend_regime`, no Kelly impact) → `live` (a new
+`kelly_trend_multiplier()`, same `[0.25, 1.5]` hard safety band as
+every other multiplier in this codebase — `kelly_macro_multiplier`,
+`stagnation_kill_switch`). Config-file-first via `tuning_registry`'s
+existing YAML pattern, per [[config_centralization_preference]] — no
+new `os.getenv()` flag.
+
+### 7.5 Refresh cadence and fetch reuse
+
+Daily, piggybacked onto `macro_filter.refresh_macro_regime`'s existing
+daily-bar batch fetch (`fetch_tradingview_batch(active, n_bars, "1D")`)
+rather than a second independent TradingView batch call for the same
+symbols on the same cadence — `n_bars` just needs to cover the largest
+of the two modules' windows (`max(200, 50) + buffer`, so 200-day SMA
+still gets its full window). Whether this becomes a literal shared
+call or two modules each reading from one shared fetch result is an
+implementation detail to settle at build time, not scope now — the
+important constraint is: don't fetch the same daily bars twice.
+
+### 7.6 Test plan
+
+- Unit tests for `SMA`/RSI/crossover-detection correctness against
+  small deterministic fixture price series with a known, hand-computed
+  crossover point (same style as `test_knowledge_index.py`'s injected
+  fixtures — no real network/model dependency).
+- **AAPL real-data validation** (the methodology already captured in
+  `self_learning_phase_2_detectors`, applied here first): fetch AAPL's
+  real daily closes for the relevant window, confirm
+  `last_crossover_direction` flips to `bullish` on 2026-08-28 and
+  `trend_label` reads `consolidating` by 2026-09-10 with `rsi_state:
+  neutral` — a direct regression test against the exact external read
+  that motivated this section, not a synthetic fixture.
+- **13-symbol backtest** after AAPL passes: run the same computation
+  against the other 13 symbols' historical daily bars, specifically
+  checking for false positives (a symbol correctly trending for weeks
+  gets mislabeled `reversal_*` on ordinary noise) and false negatives
+  (a real multi-week reversal never flagged) — before this touches
+  `shadow` mode in production, let alone `live`.
+
+### 7.7 Open parameters — decide during/after the 13-symbol backtest, not now
+
+- Crossover pair: default to 10/50 (matches the external read
+  verbatim); 20/50 is the fallback if 10/50 proves too noisy across the
+  13-symbol set.
+- `days_since_crossover` freshness threshold for `reversal_*` vs
+  `trending_*` (proposed default: 3 days).
+- RSI overbought/oversold thresholds (proposed default: classic 70/30).
+
+### 7.8 Non-goals
+
+Not a replacement for `RegimeHMM`. Not a general TA-indicator library.
+Does not touch win/loss/PnL (same separation `macro_filter.py` already
+draws from `calibration_bias_bucket.py`/`macro_edge.py`). Not building
+any of this now — scope only, per "scope in worklog, get honest
+review, build only on explicit instruction."
