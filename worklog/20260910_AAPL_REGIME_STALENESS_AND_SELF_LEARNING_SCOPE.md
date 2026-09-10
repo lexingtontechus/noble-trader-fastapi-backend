@@ -502,3 +502,80 @@ data to check for false positives (a symbol correctly staying in one
 regime for a legitimately trending week) and false negatives, before
 trusting it in the nightly triage job. Not started this turn — only
 Phase 1 was approved.
+
+## 5. AAPL — a fresh view, not another point-fix (2026-09-10)
+
+Explicit instruction received: don't patch the staleness symptom again
+(§1's two candidate directions, `regime_conf` debounce, warm-start,
+etc.) — instead take a fresh look at whether the platform's regime
+engine actually understands **multi-day market structure** at all. The
+user supplied a real external technical read on AAPL (21-day window,
+late Aug–mid Sep 2026): 10-day MA crossed back above 50-day MA on
+08-28 (bullish reversal), price structurally above its 20/50/200-day
+MAs ($303.79 / $281.72 / $284.11), RSI ~50.2 (cooled from overbought,
+consolidating not exhausted) — framed as the kind of read the
+platform's "short lookback + market pulse" direction has been aiming
+at.
+
+**What "short lookback" and "market pulse" actually are in this
+codebase today** (neither is a literal existing term — both are this
+session's shorthand for a real direction; verified by reading the
+code, not assumed):
+
+- **Short lookback, live**: `RegimeHMM` (`regime_engine.py`) — the
+  engine that actually drives Kelly sizing — fits on **hourly closes**,
+  purely return-derived features (rolling vol over 5h/20h windows,
+  trend = 1-bar return + cumsum over 10h/30h windows). Max lookback
+  ~30 hourly bars, **~1.25 calendar days**. No price level, no moving
+  average, no structural feature of any kind.
+- **Short lookback, newer**: `meta_regime_model.py` /
+  `signal_stream_cache.py` (built this session) — a 2-state HMM over
+  the platform's *own signal stream* (confidence deviation, label
+  persistence, regime_conf volatility), ~12.5h minimum window growing
+  with the cache's age. This answers "is my own process coherent," not
+  "what is the market doing" — it has no price input at all.
+- **Long lookback, built but never promoted**: `macro_filter.py` — a
+  genuine multi-month feature that already exists: last daily close vs.
+  its **200-day SMA**, EMA-smoothed, labeled bull/bear/neutral. Gated
+  `macro_regime_mode` (`off`/`shadow`/`live`), **currently `shadow`** —
+  explicitly forbidden from touching Kelly sizing by its own module
+  docstring. Checked its live output for AAPL right now: `macro_label:
+  bull, macro_score_smoothed: 0.132, macro_strength: 0.878, computed
+  2026-09-10 06:00 UTC` — **this already agrees with the user's own
+  external read** ("structurally above the 200-day MA"). The platform
+  has this piece of the picture correct; it just isn't wired to
+  anything.
+
+**The actual gap, stated precisely**: there is a full order of
+magnitude missing between "hours" (RegimeHMM's live trend feature,
+~1.25 days) and "200 days" (macro_filter, shadow-only, single
+timeframe, static level-check only) — nothing at the **10-to-50-day
+scale**, and nothing anywhere in the codebase does **crossover-based
+reversal detection** (a moving average crossing another, which is
+exactly what caught AAPL's 08-28 reversal in the user's external
+read and is exactly the kind of signal a saturated-confidence HMM
+structurally cannot produce on its own). RSI/MACD/ADX are separately
+computed (`services/hmm/model.py::_compute_ta_indicators_local`) and
+do feed the legacy 3-state `trend_hmm` (currently the live
+20%-weighted `p_markov_hold_n` component of the EV blend per
+`markov_source_mode: trend_hmm_shadow`) — but buried as one of 9 HMM
+emission inputs, never surfaced as a standalone momentum read the way
+the user's "RSI near 50.2 = consolidating" framing uses it.
+
+**Proposed direction (scope only, nothing built, awaiting approval)**:
+a new medium-term trend-confirmation module — a sibling to
+`macro_filter.py`, same shadow-first discipline (`off`/`shadow`/`live`,
+default `off` or `shadow`) — computing 10/20/50-day SMAs (or EMAs) on
+daily closes plus a crossover-based reversal flag (short MA re-crossing
+above/below a medium MA), captured to its own `nt_*` shadow table the
+same way `macro_filter` captures to `nt_macro_regime`. Framed as a
+genuine coverage gap fix (the platform gains a timeframe it currently
+lacks entirely), not a targeted AAPL patch — validated against AAPL
+first only because that is where a precise, dated ground-truth reversal
+(08-28) and a precisely diagnosed failure (stuck regime through
+09-01→09-10) both already exist, then backtested against the other 13
+symbols before any live wiring — the same AAPL-first-then-13-more
+methodology already captured in `self_learning_phase_2_detectors`
+above. Not started this turn — this section is scope only, per
+"scope in worklog, get honest review, build only on explicit
+instruction."
