@@ -14,6 +14,8 @@
 | P1-8 | P1 | Longitudinal enrichment framework + brick geometry review | n/a (review only) | 2026-09-10 | — |
 | P9 | P1 | Verify Part 5's brick-geometry-mismatch claim against live code | resolved — claim does not hold | 2026-09-11 | — |
 | P10 | P1 | Scope Tier 1 (context-alignment gate) as a buildable, EV-engine-safe mechanism | blocked (scope only, awaiting approval) | 2026-09-11 | RM-45 |
+| P11 | P2 | Scope dynamic/regime-conditional MIN_RR | blocked (scope only, awaiting approval) | 2026-09-11 | RM-46 |
+| P12 | P2 | Scope TimesFM k-adaptive dampening | blocked (scope only, awaiting approval; real sequencing complexity found) | 2026-09-11 | RM-47 |
 
 ## Session Summary
 
@@ -721,3 +723,229 @@ Does not touch `ev_engine.py`, `compute_ev()`, `p_win`, or
 Kelly multipliers — this is a second, independent check catching the
 gap those multipliers cannot reach. Not built — scope only, awaiting
 approval.
+
+## Part 11 — Dynamic/regime-conditional MIN_RR, scoped (2026-09-11)
+
+> **Priority**: P2 · **Task**: Fully scope Part 4's "MIN_RR interaction"
+> proposal as a concrete, buildable mechanism · **Status**: blocked
+> (scope only, nothing built, awaiting approval) · **Date**: 2026-09-11
+> · **Roadmap refs**: RM-46
+
+### 11.1 Where MIN_RR actually lives — traced, not assumed
+
+Part 4 cited `heavy_sweep.py:737` as the grid-search pre-filter — that
+line is actually just the `asyncio.to_thread` dispatch call; the real
+filter is `if tp / sl < MIN_RR: continue` at **`heavy_sweep.py:1423`**
+(stale line reference in the source doc, corrected here).
+
+Full call-site map (`get_min_rr()`, `feature_flags.py:271`):
+- `orchestrator.py:138` — `MIN_RR = get_min_rr()`, read once at module
+  load.
+- `orchestrator.py:1096` — `self._ev_engine.min_rr = MIN_RR`, set once
+  at `EVEngine` construction, never touched again.
+- `heavy_sweep.py:137` — same module-load pattern; `:1423` the grid
+  pre-filter; `:335/384/455` default params threaded into
+  `pick_best_combo()`.
+- `heavy_sweep_reachability.py:61,77,109` — a **separate, hardcoded**
+  `_MIN_RR_DEFAULT = 2.0`, not wired to `get_min_rr()` at all — a
+  second, independent MIN_RR source already silently diverged from the
+  configured value if that module is live. Worth fixing regardless of
+  whether this section gets built (see 11.5).
+
+**Confirmed independent of the EV blend**: `min_rr` is consulted only
+in `compute_ev()`'s Step 6 allow/deny gate (`ev_engine.py:708-715`,
+`allowed = (ev > self.min_ev) and (rr >= self.min_rr)`) and in
+`recompute_ev_fields()` — both strictly after and structurally separate
+from the Steps 1-3 logit-pool blend. Changing how `min_rr` is *chosen*
+per-tick does not touch blend logic.
+
+**Confirmed real limitation Part 4 flagged**: the light sweep has no
+independent RR check of its own — `gate_results["ev_allowed"]` is a
+pass-through of `effective_ev_result.allowed`, which was computed
+against whatever brick geometry heavy sweep already picked. The light
+sweep cannot reject a geometry for insufficient RR; it can only
+allow/deny the single geometry it inherited. So yes — heavy sweep and
+light sweep genuinely can (and currently do) operate against the same
+static `MIN_RR` value with no regime awareness in either, exactly as
+Part 4 describes. This part of Part 4's diagnosis holds up, unlike
+Part 5.
+
+### 11.2 Design — an explicit parameter, not shared mutable state
+
+The tempting implementation — mutate `self._ev_engine.min_rr` per-tick
+right before each symbol's `compute_ev()` call — is a real hazard: if
+`_process_symbol` calls ever run concurrently across symbols sharing
+one `EVEngine` instance (needs confirming, but the risk is real enough
+not to build around it), a per-tick mutation of shared state is a race
+condition — symbol A's freshly-set `min_rr` could be overwritten by
+symbol B before A's `compute_ev()` call actually executes.
+
+**Safe alternative**: add an optional parameter to `compute_ev()`'s
+signature — `min_rr: float | None = None`, falling back to
+`self.min_rr` when not supplied — used only inside the existing Step 6
+gate check, never touching the blend. This is an additive,
+backward-compatible signature change to the gate step, not a rework of
+`compute_ev()`'s actual logic, and eliminates the shared-state race
+entirely: each call passes its own resolved value.
+
+### 11.3 Computing the effective MIN_RR — reuse, don't refetch
+
+Reuses the SAME `macro_label`/`trend_label` already fetched for the
+Kelly multipliers and (if built) Part 10's gate — no new Supabase
+round-trip.
+
+```python
+def compute_effective_min_rr(
+    base_min_rr: float,
+    consolidation_min_rr: float,
+    macro_label: str | None,
+    trend_label: str | None,
+) -> float:
+    """Raise the RR floor when there is no directional edge to ride;
+    never lower it below base_min_rr. Deliberately one-directional —
+    a confirmed trend does not relax risk controls, it only avoids
+    tightening them unnecessarily."""
+    no_macro_edge = macro_label is None or macro_label == "neutral"
+    no_trend_edge = trend_label is None or trend_label == "consolidating"
+    if no_macro_edge and no_trend_edge:
+        return max(base_min_rr, consolidation_min_rr)
+    return base_min_rr
+```
+
+Applied in two places, closing the exact gap Part 4 identified:
+1. **Light sweep** (`orchestrator.py`): resolve `effective_min_rr` at
+   the same point macro/trend context is already fetched, pass it into
+   `compute_ev(..., min_rr=effective_min_rr)`.
+2. **Heavy sweep** (`heavy_sweep.py`): at grid-search time, look up the
+   symbol's current `nt_macro_regime`/`nt_trend_regime` rows (already
+   fetched elsewhere in this file for the macro-filter block) and use
+   the same `compute_effective_min_rr()` to set that day's grid
+   pre-filter threshold at line 1423, instead of the flat module-level
+   `MIN_RR` constant.
+
+### 11.4 Feature flag — `dynamic_min_rr_mode`, same 3-stage discipline
+
+`off` (default) → `effective_min_rr == base_min_rr` always, byte-
+identical to today. `shadow` → compute and log/capture what the
+effective value WOULD have been (e.g. on `nt_sweep_result`, a nullable
+column) without actually passing it to `compute_ev()`/the grid filter.
+`live` → actually applied in both call sites above.
+
+### 11.5 Also worth fixing regardless: `heavy_sweep_reachability.py`'s orphaned default
+
+Independent of whether this section gets built, `_MIN_RR_DEFAULT = 2.0`
+in `heavy_sweep_reachability.py` not being wired to `get_min_rr()` is
+the same "two independent sources of truth for one threshold" shape as
+the 2026-08-13 incident referenced in that module's own comments — a
+one-line fix (read `get_min_rr()` instead of a hardcoded literal)
+whenever this file is next touched, but not scoped as its own thing
+here.
+
+### 11.6 Test plan
+
+Pure-function tests for `compute_effective_min_rr` (both-neutral →
+raised; either has an edge → base; strength/label combinations mirror
+`test_trend_filter.py`'s style). Integration: confirm
+`compute_ev(min_rr=X)` produces the exact same `allowed` result as
+manually setting `self.min_rr = X` beforehand — a direct regression
+test that the new parameter path is equivalent to the old
+attribute-mutation path it replaces, not a silent behavior change.
+
+## Part 12 — TimesFM k-adaptive dampening, scoped (2026-09-11)
+
+> **Priority**: P2 · **Task**: Fully scope Part 3 Tier 2's TimesFM
+> sigmoid-k adaptation as a concrete, buildable mechanism · **Status**:
+> blocked (scope only, nothing built, awaiting approval; a real
+> sequencing complexity found, see 12.2) · **Date**: 2026-09-11 ·
+> **Roadmap refs**: RM-47
+
+### 12.1 Where the sigmoid mapping actually lives — confirmed upstream of the blend
+
+`orchestrator.py`'s `_fetch_timesfm_cached` (defined line 270, sigmoid
++ clamp at lines 461-478) computes `p_timesfm` from TimesFM's raw
+forecast using `TIMESFM_SIGMOID_K` (sourced line 255), then
+`TIMESFM_CLAMP_MIN`/`MAX`. The result is passed into
+`self._ev_engine.compute_ev(..., p_timesfm=p_timesfm, ...)` at line
+2837 as an already-computed, opaque float —
+`compute_ev()` (`ev_engine.py:656,668-669`) never sees the raw
+forecast or `k` at all. **Confirmed safe**: an adaptive-k change is
+entirely upstream of the blend; `ev_engine.py` needs zero edits.
+
+The clamp is separate code applied after the sigmoid, in the same
+function — an adaptive k wouldn't require changing the clamp itself,
+though clamp-hit frequency may shift empirically once k varies (a
+smaller adaptive-k in a strong trend could push more values toward the
+clamp's edges) — worth watching in shadow mode, not a code dependency.
+
+### 12.2 The real complexity: sequencing, not the EV blend
+
+`_fetch_timesfm_cached` runs early in `_process_symbol` (feeding the EV
+blend inputs); the trend-filter block (`orchestrator.py:3058-3094`)
+that produces `trend_strength` runs much later, right before gate
+evaluation. **`trend_strength` is not yet available at the point the
+TimesFM sigmoid currently runs.** Making k adaptive to it requires
+hoisting the trend-context fetch earlier in `_process_symbol` — before
+the TimesFM call — not just adding an isolated new block the way every
+other mechanism built this session has (`trend_filter.py`,
+`macro_filter.py`'s own integration, Part 10's proposed gate). This is
+a real, moderate reordering of existing control flow, not a pure
+addition, and is the main reason this section is scored P2/more
+cautious than Part 10 or Part 11.
+
+**Mitigation**: fetch `nt_trend_regime` once, early, and thread that
+SAME already-fetched row through to both the (now-earlier) TimesFM
+k-adaptation and the later Kelly-multiplier/gate logic that already
+reads it today — a net-zero change in the number of Supabase round-trips
+per tick (one fetch, moved earlier and reused, not a second fetch
+added).
+
+### 12.3 Design
+
+```python
+def compute_adaptive_timesfm_k(
+    base_k: float,
+    trend_strength: float | None,
+    floor_k: float,
+    ceiling_k: float,
+) -> float:
+    """Stronger trend -> lower k -> sharper, more confident probability
+    mapping (trust the forecast). No trend context (None) or a
+    consolidating/zero-strength read -> higher k -> compress toward
+    0.5 (don't manufacture conviction from noise). Clamped to
+    [floor_k, ceiling_k] so a near-zero trend_strength can't blow k up
+    to an extreme that behaves pathologically in the sigmoid."""
+    strength = trend_strength if trend_strength is not None else 0.0
+    epsilon = 0.05  # prevents divide-by-near-zero when strength -> 0
+    k = base_k / (strength + epsilon)
+    return max(floor_k, min(ceiling_k, k))
+```
+
+### 12.4 Feature flag — `timesfm_k_adaptive_mode`, same 3-stage discipline
+
+`off` (default) → `k == TIMESFM_SIGMOID_K` always, byte-identical to
+today (also the fallback if `nt_trend_regime` has no row yet for a
+symbol — never worse than today's static behavior). `shadow` → compute
+`k_adaptive` and capture the resulting `p_timesfm_adaptive` alongside
+the real `p_timesfm` for comparison (a new nullable field, same pattern
+as `raw_p_regime`/`gated_p_regime`), without it affecting the actual EV
+blend input. `live` → the adaptive value is what actually feeds
+`compute_ev()`.
+
+### 12.5 Test plan
+
+Pure-function tests for `compute_adaptive_timesfm_k` (strong trend →
+low k within floor; no/neutral trend → high k at ceiling; the
+floor/ceiling clamp itself). Shadow-mode validation: compare
+`p_timesfm` vs `p_timesfm_adaptive` against realized outcomes over a
+real trailing window — same shape of validation as the trend-filter's
+own 14-symbol backtest, checking whether the adaptive version is
+better *calibrated* (Brier score), not just directionally different.
+
+### 12.6 What both Part 11 and Part 12 deliberately do NOT do
+
+Neither touches `ev_engine.py`'s blend logic (Steps 1-3, the
+logit-pooling/renormalization) — confirmed by tracing both proposals to
+their exact call sites before writing this scope, not assumed safe
+because the framing sounded plausible (the same discipline applied to
+Part 5, which did NOT survive that check). Not built — both are scope
+only, awaiting approval.
