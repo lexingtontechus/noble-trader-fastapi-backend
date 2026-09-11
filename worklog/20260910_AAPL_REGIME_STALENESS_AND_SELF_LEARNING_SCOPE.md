@@ -8,17 +8,30 @@
 > [[project_optimize_then_self_learn]]. Query `nt_roadmap` for anything
 > that gets built out of this later.
 
-> **Worklog header convention (2026-09-10)**: this file bundles several
-> distinct tasks worked across one session, so each `##` section below
-> carries its own **Priority / Task / Status / Date / Roadmap refs**
-> block instead of one file-level header. `Roadmap refs` cite
-> `nt_roadmap` rows by their new `id` column (added 2026-09-10) as
-> `RM-<id>` — short, stable, typeable, in place of the longer
-> `mechanism` string. Going forward, every new worklog file or section
-> should open with this same block. Status vocabulary matches
+> **Worklog convention (2026-09-10, revised)**: this file bundles
+> several distinct tasks worked across one session. Each still carries
+> its own **Priority / Task / Status / Date / Roadmap refs** blockquote
+> under its `##` heading (kept for in-place context while reading a
+> section), but as of this revision, **new worklogs put a summary table
+> of these same fields FIRST, immediately after the title** — one row
+> per section — so the whole file's state is readable at a glance
+> without scrolling. The table below was added retroactively to this
+> file to match. `Roadmap refs` cite `nt_roadmap` rows by their `id`
+> column (added 2026-09-10) as `RM-<id>`. Status vocabulary matches
 > `nt_roadmap.status` (`pending` / `blocked` / `resolved` /
 > `superseded`) plus `n/a` for sections that are pure investigation with
 > no tracked roadmap row.
+
+| # | Priority | Task | Status | Date | Roadmap refs |
+|---|---|---|---|---|---|
+| §1 | P1 | Diagnose AAPL qualification drought | resolved | 2026-09-10 | RM-40 |
+| §2 | P2 | Scope 4-phase self-learning direction | superseded | 2026-09-10 | RM-36 |
+| §3 | P2 | Revise self-learning scope (Layer 2 → APScheduler, DB split, embedding redesign) | resolved | 2026-09-10 | RM-36 |
+| §4 | P1 | Build Phase 1 local knowledge index | resolved | 2026-09-10 | RM-36, RM-38 |
+| §5 | P1 | Reframe AAPL staleness as a coverage gap, not a point-fix | blocked → resolved by §8 | 2026-09-10 | RM-40 |
+| §6 | P0 | Root-cause XAUAUD staleness; harmonize APScheduler with Studio's restart schedule | resolved | 2026-09-10 | RM-41, RM-42, RM-43 |
+| §7 | P1 | Fully scope the medium-term trend-confirmation module | blocked → resolved by §8 | 2026-09-10 | RM-40 |
+| §8 | P1 | Build the trend-confirmation module scoped in §7 | resolved (deploy-verification pending) | 2026-09-10 | RM-40, RM-44 |
 
 ## 1. AAPL — issue or non-issue: **issue**, but not the one it looks like
 
@@ -821,3 +834,79 @@ Does not touch win/loss/PnL (same separation `macro_filter.py` already
 draws from `calibration_bias_bucket.py`/`macro_edge.py`). Not building
 any of this now — scope only, per "scope in worklog, get honest
 review, build only on explicit instruction."
+
+## 8. Trend filter — built (2026-09-10, explicit approval: "build macro filter refinement")
+
+> **Priority**: P1 · **Task**: Build the medium-term trend-confirmation
+> module scoped in §7 · **Status**: resolved (built, tested, real-data
+> validated locally; deploy verification tracked separately) ·
+> **Date**: 2026-09-10 · **Roadmap refs**: RM-40, RM-44
+
+Built exactly to §7's spec, no scope drift:
+
+- **`regime_platform/sweep_orchestrator/trend_filter.py`** (new) —
+  `compute_trend_regime()` (pure, SMA-10/20/50 + RSI-14 via
+  `services/hmm/model.py::_compute_rsi`, crossover-recency derived
+  directly from the closes array — no `prev_*` continuity argument
+  needed, unlike `compute_macro_regime`'s EMA), `kelly_trend_multiplier()`
+  (same `[0.25, 1.5]` clamp band as `kelly_macro_multiplier`),
+  `refresh_trend_regime()` / `get_trend_regime()` (own daily TradingView
+  batch fetch — fetch-sharing with `macro_filter` deliberately deferred,
+  per §7.5).
+- **`nt_trend_regime`** (new table, migration `add_nt_trend_regime`) —
+  one row per symbol, mirrors `nt_macro_regime`'s shape.
+  `nt_signal_sim.trend_label`/`trend_strength` (new columns, same
+  migration) — captured regardless of mode, same nullable-when-off
+  pattern as `macro_label`/`macro_strength`.
+- **`trend_regime_mode`** (`config/feature_flags.yaml` +
+  `feature_flags.py`) — `off` (shipped default) / `shadow` / `live`,
+  plus a `trend` sub-config (window days, RSI thresholds, freshness
+  days, boost/penalty scale) — all in the committed YAML, no new
+  `os.getenv()` flag, per [[config_centralization_preference]].
+- **Wiring** — mirrors `macro_filter`'s exact integration shape in both
+  sweep paths: `orchestrator.py::_process_symbol` (light sweep) and
+  `heavy_sweep.py::run_heavy_sweep_for_symbol` (heavy sweep) each read
+  `nt_trend_regime`, capture `trend_label`/`trend_strength` to
+  `nt_signal_sim` whenever the signal is qualifiable, and apply
+  `kelly_trend_multiplier()` only when `trend_regime_mode=live`.
+  `_build_signal_sim_payload` (shared by both paths) takes the two new
+  fields. A new daily job (`trend-regime-daily`, `10 6 * * *` — right
+  after `macro-regime-daily`, inside the same Studio-restart-safe
+  05:16-09:20 UTC window as §6's harmonization work) is registered
+  **unconditionally**, same as `macro-regime-daily` — deliberately NOT
+  gated on `trend_regime_mode` at registration time, since
+  `feature_flags.yaml` is meant to hot-reload with no restart required;
+  gating registration on the mode would silently need a restart to pick
+  up an `off`→`shadow` flip, which would have broken that guarantee.
+  (Caught and fixed during this build, not after — the first draft did
+  gate registration on the mode.)
+
+**Verified two ways**:
+1. 16 new unit tests (`tests/test_trend_filter.py`) — pure-function
+   coverage of `compute_trend_regime`/`kelly_trend_multiplier` against
+   hand-constructed deterministic price series (flat, established
+   uptrend/downtrend, a fresh crossover in either direction 1-2 days
+   post-flip, strength saturation, the clamp band) — same
+   no-mocked-Supabase precedent as `test_macro_filter.py` (its own
+   refresh/get functions are diagnostics, not unit-tested either).
+2. **Real AAPL data** (local `.env.local` TradingView credentials,
+   120 real daily closes fetched live): `compute_trend_regime` returned
+   `trend_label: consolidating`, `rsi_state: neutral` (`rsi_14: 56.05`),
+   `last_crossover_direction: bullish`, `days_since_crossover: 4`
+   (past the 3-day freshness window — correctly NOT still
+   `reversal_up`) — this is the *exact* target behavior §7.2 specified
+   for the 2026-09-10 read, independently matching the user's own
+   external technical analysis (10dma/50dma bullish cross 08-28,
+   RSI ~50.2 "cooled off... cleanly consolidating") against real,
+   independently-fetched data, not a synthetic fixture built to pass.
+
+831 passed, 21 skipped, 0 failures (full suite, +16 from this build).
+Shipped `off` by default — no live behavior change until `shadow` (then
+`live`) is explicitly turned on in `config/feature_flags.yaml`, same
+rollout discipline as `macro_regime_mode`. The 13-symbol backtest (§7.6)
+has not been run — that was scoped as a pre-`shadow` gate, not a
+pre-merge one, and doing it properly means pulling real daily history
+for all 14 symbols and reviewing false positive/negative rates by hand,
+which is its own piece of work, not a rubber stamp before flipping the
+flag. Not deployed to Studio yet (code-complete vs. deployed gate, same
+as every other build this session) — tracked as RM-44.

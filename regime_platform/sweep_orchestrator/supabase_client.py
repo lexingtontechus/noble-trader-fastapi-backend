@@ -225,6 +225,12 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # diagnostic (macro_edge.py). Nullable; absent when macro_regime_mode
     # is off or no nt_macro_regime row exists yet.
     "macro_label", "macro_strength",
+    # trend_label/trend_strength (2026-09-10, worklog
+    # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7): the
+    # medium-term (10-50 day) trend filter's read for this symbol at
+    # capture time — see trend_filter.py. Nullable; absent when
+    # trend_regime_mode is off or no nt_trend_regime row exists yet.
+    "trend_label", "trend_strength",
     # legacy_markov_state/trend_hmm_markov_state, raw_p_regime/
     # gated_p_regime (migration 131, 2026-08-31): Tier 1/2's own shadow-
     # comparison values at capture time — feed the outcome-linked
@@ -866,7 +872,76 @@ async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
             data = resp.json()
             return data[0] if isinstance(data, list) and data else None
     except Exception as exc:
-        logger.warning("fetch_macro_regime: %s: read failed: %s", symbol, exc)
+        logger.warning("fetch_macro_regime: %s: read failed: %s: %r", symbol, type(exc).__name__, exc)
+        return None
+
+
+NT_TREND_REGIME_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "sma_10", "sma_20", "sma_50", "rsi_14", "rsi_state",
+    "days_since_crossover", "last_crossover_direction",
+    "trend_label", "trend_strength", "computed_at",
+})
+
+
+async def upsert_trend_regime(rows: list[dict[str, Any]]) -> None:
+    """Upsert per-symbol rows into ``nt_trend_regime`` (best-effort).
+
+    Keyed on ``symbol`` (the table's PK) — a daily refresh REPLACES the
+    row rather than accumulating duplicates, same shape as
+    ``upsert_macro_regime``.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_TREND_REGIME_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_trend_regime: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_trend_regime')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_trend_regime: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_trend_regime: insert failed: %s: %r", type(exc).__name__, exc)
+
+
+async def fetch_trend_regime(symbol: str) -> dict[str, Any] | None:
+    """Single-row read of ``nt_trend_regime`` for one symbol — the live
+    per-tick read both sweep paths use right before applying the trend
+    Kelly multiplier. Returns ``None`` on any failure or missing row
+    (never raises — callers treat that as "no trend read yet, no-op").
+    """
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_trend_regime"),
+                headers=_headers(),
+                params={
+                    "select": "trend_label,trend_strength",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data[0] if isinstance(data, list) and data else None
+    except Exception as exc:
+        logger.warning("fetch_trend_regime: %s: read failed: %s: %r", symbol, type(exc).__name__, exc)
         return None
 
 

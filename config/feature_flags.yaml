@@ -227,6 +227,27 @@ macro:
   boost_scale: 0.3               # max +30% kelly at full strength when direction agrees
   penalty_scale: 0.5             # max -50% kelly at full strength when direction opposes
 
+# Medium-term (10-50 day) trend-confirmation filter (2026-09-10, worklog
+# 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7). Sibling
+# to macro_regime_mode above -- separate concern (SMA-10/20/50 crossover +
+# RSI momentum, not the 200-day structural level check), same off/shadow/
+# live discipline. off = build-time default: no Supabase round-trip, no
+# nt_trend_regime writes. shadow = compute + capture trend_label/
+# trend_strength on nt_signal_sim, no Kelly impact. live = additionally
+# multiply effective_kelly by kelly_trend_multiplier().
+trend_regime_mode: "off"
+trend:
+  sma_short_days: 10
+  sma_mid_days: 20
+  sma_long_days: 50
+  rsi_period: 14
+  rsi_overbought: 70.0
+  rsi_oversold: 30.0
+  crossover_freshness_days: 3    # days since a SMA-10/50 sign flip still counts as "reversal_*"; older -> "trending_*"
+  strength_saturation: 0.10      # |SMA_10 - SMA_50| / SMA_50 at/beyond this -> trend_strength=1.0
+  boost_scale: 0.3               # same [0.25, 1.5] hard clamp band as every other Kelly multiplier
+  penalty_scale: 0.5
+
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
 # simulation found the heavy sweep's Sharpe-only grid pick sometimes

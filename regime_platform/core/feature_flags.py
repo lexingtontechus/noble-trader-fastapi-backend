@@ -75,6 +75,19 @@ _DEFAULTS: dict[str, Any] = {
     "signal_stream_meta_model_mode": "off",
     "renko_brick_retention_days": 2,
     "knowledge_index_enabled": True,
+    "trend_regime_mode": "off",
+    "trend": {
+        "sma_short_days": 10,
+        "sma_mid_days": 20,
+        "sma_long_days": 50,
+        "rsi_period": 14,
+        "rsi_overbought": 70.0,
+        "rsi_oversold": 30.0,
+        "crossover_freshness_days": 3,
+        "strength_saturation": 0.10,
+        "boost_scale": 0.3,
+        "penalty_scale": 0.5,
+    },
 }
 
 _cache: dict[str, Any] | None = None
@@ -186,6 +199,65 @@ def get_macro_boost_scale() -> float:
 
 def get_macro_penalty_scale() -> float:
     return _macro_number("penalty_scale")
+
+
+def get_trend_regime_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (medium-term 10-50 day trend
+    filter — SMA crossover + RSI, worklog
+    20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7)."""
+    return str(_load().get(
+        "trend_regime_mode", _DEFAULTS["trend_regime_mode"],
+    )).lower()
+
+
+def _trend_number(key: str) -> float:
+    try:
+        trend_cfg = _load().get("trend", _DEFAULTS["trend"])
+        if not isinstance(trend_cfg, dict):
+            trend_cfg = _DEFAULTS["trend"]
+        return float(trend_cfg.get(key, _DEFAULTS["trend"][key]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["trend"][key]
+
+
+def get_trend_sma_short_days() -> int:
+    return int(_trend_number("sma_short_days"))
+
+
+def get_trend_sma_mid_days() -> int:
+    return int(_trend_number("sma_mid_days"))
+
+
+def get_trend_sma_long_days() -> int:
+    return int(_trend_number("sma_long_days"))
+
+
+def get_trend_rsi_period() -> int:
+    return int(_trend_number("rsi_period"))
+
+
+def get_trend_rsi_overbought() -> float:
+    return _trend_number("rsi_overbought")
+
+
+def get_trend_rsi_oversold() -> float:
+    return _trend_number("rsi_oversold")
+
+
+def get_trend_crossover_freshness_days() -> int:
+    return int(_trend_number("crossover_freshness_days"))
+
+
+def get_trend_strength_saturation() -> float:
+    return _trend_number("strength_saturation")
+
+
+def get_trend_boost_scale() -> float:
+    return _trend_number("boost_scale")
+
+
+def get_trend_penalty_scale() -> float:
+    return _trend_number("penalty_scale")
 
 
 def get_heavy_sweep_reachability_mode() -> str:

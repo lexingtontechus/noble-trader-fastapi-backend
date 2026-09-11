@@ -773,6 +773,8 @@ def _build_signal_sim_payload(
     atr: float | None = None,
     macro_label: str | None = None,
     macro_strength: float | None = None,
+    trend_label: str | None = None,
+    trend_strength: float | None = None,
     legacy_markov_state: str | None = None,
     trend_hmm_markov_state: str | None = None,
     raw_p_regime: float | None = None,
@@ -808,6 +810,14 @@ def _build_signal_sim_payload(
     (``macro_edge.py``). Nullable: absent when ``macro_regime_mode`` is
     ``off`` or no ``nt_macro_regime`` row exists yet for the symbol.
 
+    ``trend_label``/``trend_strength`` (2026-09-10, worklog
+    20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7) are
+    the trend filter's read for this symbol at capture time (see
+    ``trend_filter.py``) — a separate, medium-term (10-50 day SMA
+    crossover + RSI) concern from macro_label/macro_strength above.
+    Nullable: absent when ``trend_regime_mode`` is ``off`` or no
+    ``nt_trend_regime`` row exists yet for the symbol.
+
     ``legacy_markov_state``/``trend_hmm_markov_state`` and
     ``raw_p_regime``/``gated_p_regime`` (2026-08-31, migration 131,
     worklog 20260831_SHADOW_TO_LIVE_ROADMAP.md) are Tier 1/2's own
@@ -840,6 +850,8 @@ def _build_signal_sim_payload(
         "atr": round(float(atr), 6) if atr is not None else None,
         "macro_label": macro_label,
         "macro_strength": round(float(macro_strength), 4) if macro_strength is not None else None,
+        "trend_label": trend_label,
+        "trend_strength": round(float(trend_strength), 4) if trend_strength is not None else None,
         "legacy_markov_state": legacy_markov_state,
         "trend_hmm_markov_state": trend_hmm_markov_state,
         "raw_p_regime": round(float(raw_p_regime), 4) if raw_p_regime is not None else None,
@@ -1275,6 +1287,29 @@ class SweepOrchestrator(HeavySweepMixin):
                 misfire_grace_time=3600,
                 coalesce=True,
             )
+
+        # Trend filter daily refresh (2026-09-10, worklog
+        # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7):
+        # 06:10 UTC daily — right after macro-regime-daily, own cadence,
+        # inside the same 05:16-09:20 UTC Studio-restart window (see
+        # xauaud_heavy_sweep_stale_4d_force_refresh_not_firing) so it gets
+        # the same restart-safe runway. Registered unconditionally, same
+        # as macro-regime-daily above — NOT gated on trend_regime_mode at
+        # registration time, since feature_flags.yaml is meant to
+        # hot-reload with no restart required (see that module's own
+        # docstring); gating registration on the mode would silently
+        # require a restart to pick up an off->shadow flip, breaking that
+        # guarantee. Read-only price computation; nt_signal_sim capture /
+        # live Kelly application are gated separately by trend_regime_mode
+        # inside _process_symbol.
+        self._scheduler.add_job(
+            self._run_trend_regime_refresh,
+            trigger=CronTrigger.from_crontab("10 6 * * *"),
+            id="trend-regime-daily",
+            name="Trend regime refresh (daily)",
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
 
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
@@ -1914,6 +1949,23 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[macro-regime] done: %d symbol(s) refreshed", len(rows))
         except Exception as exc:
             logger.error("[macro-regime] failed: %s", exc)
+
+    async def _run_trend_regime_refresh(self) -> None:
+        """Trend filter daily refresh (2026-09-10, worklog
+        20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7).
+        Recomputes the SMA-10/20/50 crossover + RSI-14 read for every
+        active symbol and upserts nt_trend_regime. Best-effort: failures
+        are logged, never raised.
+        """
+        from regime_platform.sweep_orchestrator.trend_filter import (
+            refresh_trend_regime,
+        )
+
+        try:
+            rows = await refresh_trend_regime()
+            logger.info("[trend-regime] done: %d symbol(s) refreshed", len(rows))
+        except Exception as exc:
+            logger.error("[trend-regime] failed: %s", exc)
 
     async def _catch_up_stale_jobs(self) -> None:
         """Startup catch-up for fixed-time-of-day/week jobs an in-memory
@@ -3003,6 +3055,44 @@ class SweepOrchestrator(HeavySweepMixin):
                         symbol, type(exc).__name__, exc,
                     )
 
+        # ── 5b-2. Trend filter (2026-09-10, worklog
+        # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7) ──
+        # Medium-term (10-50 day SMA crossover + RSI) trend read — sibling
+        # to the macro filter above, separate concern (recent reversal/
+        # momentum, not the 200-day structural level), same nullable-
+        # capture-regardless-of-mode / apply-only-when-live shape.
+        trend_label: str | None = None
+        trend_strength: float | None = None
+        if signal_is_qualifiable:
+            from regime_platform.core.feature_flags import get_trend_regime_mode
+            trend_mode = get_trend_regime_mode()
+            if trend_mode != "off":
+                from regime_platform.sweep_orchestrator.trend_filter import (
+                    get_trend_regime,
+                    kelly_trend_multiplier,
+                )
+                try:
+                    trend_row = await get_trend_regime(symbol)
+                    if trend_row:
+                        trend_label = trend_row.get("trend_label")
+                        trend_strength = trend_row.get("trend_strength")
+                        if trend_mode == "live" and trend_label is not None:
+                            trend_mult = kelly_trend_multiplier(
+                                trend_label, trend_strength, trade_signal["signal"],
+                            )
+                            effective_kelly = effective_kelly * trend_mult
+                            logger.info(
+                                "[sweep:orch] %s: trend filter LIVE — label=%s "
+                                "strength=%.4f mult=%.4f, kelly→%.6f",
+                                symbol, trend_label, trend_strength or 0.0,
+                                trend_mult, effective_kelly,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:orch] %s: trend filter read failed (%s: %s), skipping",
+                        symbol, type(exc).__name__, exc,
+                    )
+
         # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────
         # Fast intraday bias-drift detection BETWEEN the scheduled passes:
         # when a symbol's short-window realized win rate lags its predicted
@@ -3548,6 +3638,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     atr=atr,
                     macro_label=macro_label,
                     macro_strength=macro_strength,
+                    trend_label=trend_label,
+                    trend_strength=trend_strength,
                     legacy_markov_state=_sim_legacy_markov_state,
                     trend_hmm_markov_state=_sim_trend_hmm_markov_state,
                     raw_p_regime=_sim_raw_p_regime,

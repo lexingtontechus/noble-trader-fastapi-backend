@@ -1177,6 +1177,45 @@ class HeavySweepMixin:
                             symbol, type(exc).__name__, exc,
                         )
 
+            # ── 8c. Trend filter (2026-09-10, worklog
+            # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md
+            # SS7) — mirror of the light sweep's trend read
+            # (orchestrator.py::_process_symbol), same mirroring
+            # discipline as the macro-filter block above. Medium-term
+            # (10-50 day SMA crossover + RSI) read, separate concern from
+            # macro_label/macro_strength above.
+            trend_label: str | None = None
+            trend_strength: float | None = None
+            if trade_signal["signal"] not in ("neutral", "unknown"):
+                from regime_platform.core.feature_flags import get_trend_regime_mode
+                trend_mode = get_trend_regime_mode()
+                if trend_mode != "off":
+                    from regime_platform.sweep_orchestrator.trend_filter import (
+                        get_trend_regime,
+                        kelly_trend_multiplier,
+                    )
+                    try:
+                        trend_row = await get_trend_regime(symbol)
+                        if trend_row:
+                            trend_label = trend_row.get("trend_label")
+                            trend_strength = trend_row.get("trend_strength")
+                            if trend_mode == "live" and trend_label is not None:
+                                trend_mult = kelly_trend_multiplier(
+                                    trend_label, trend_strength, trade_signal["signal"],
+                                )
+                                result.kelly_f = result.kelly_f * trend_mult
+                                logger.info(
+                                    "[sweep:heavy] %s: trend filter LIVE — label=%s "
+                                    "strength=%.4f mult=%.4f, kelly_f→%.6f",
+                                    symbol, trend_label, trend_strength or 0.0,
+                                    trend_mult, result.kelly_f,
+                                )
+                    except Exception as exc:
+                        logger.warning(
+                            "[sweep:heavy] %s: trend filter read failed (%s: %s), skipping",
+                            symbol, type(exc).__name__, exc,
+                        )
+
             # ── Calibration bias (display only) ───────────────────────
             # Only fetch when qualified — an extra Supabase round-trip
             # that's only useful for the push payload's calibration_bias/
@@ -1286,6 +1325,8 @@ class HeavySweepMixin:
                         atr=atr,
                         macro_label=macro_label,
                         macro_strength=macro_strength,
+                        trend_label=trend_label,
+                        trend_strength=trend_strength,
                         legacy_markov_state=sim_legacy_markov_state,
                         trend_hmm_markov_state=sim_trend_hmm_markov_state,
                         raw_p_regime=sim_raw_p_regime,
