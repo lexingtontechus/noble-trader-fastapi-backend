@@ -1216,6 +1216,38 @@ class HeavySweepMixin:
                             symbol, type(exc).__name__, exc,
                         )
 
+            # ── 8d. Context-alignment gate — Tier 1, corrected
+            # (2026-09-11, worklog
+            # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md
+            # Part 10) — mirror of the light sweep's gate
+            # (orchestrator.py::_process_symbol). Capture-only here, same
+            # as the macro/trend blocks above: heavy sweep's own
+            # `qualified` (line ~1130-1134) is decided BEFORE this point
+            # in the function, so — consistent with how
+            # kelly_macro_multiplier/kelly_trend_multiplier already only
+            # affect result.kelly_f here, never result.qualified — this
+            # gate is informational/diagnostic in the heavy-sweep path,
+            # not a live reject. The light sweep (re-evaluated every 15
+            # min against live conditions) is where this gate actually
+            # affects qualification.
+            context_aligned_ok: bool | None = None
+            if trade_signal["signal"] not in ("neutral", "unknown"):
+                from regime_platform.core.feature_flags import get_context_alignment_gate_mode
+                context_mode = get_context_alignment_gate_mode()
+                if context_mode != "off":
+                    from regime_platform.sweep_orchestrator.context_alignment import (
+                        compute_context_alignment,
+                    )
+                    context_aligned_ok = compute_context_alignment(
+                        trade_signal["signal"], macro_label, trend_label,
+                    )
+                    if not context_aligned_ok:
+                        logger.info(
+                            "[sweep:heavy] %s: context-alignment gate would reject "
+                            "(informational only here) — signal=%s macro=%s trend=%s",
+                            symbol, trade_signal["signal"], macro_label, trend_label,
+                        )
+
             # ── Calibration bias (display only) ───────────────────────
             # Only fetch when qualified — an extra Supabase round-trip
             # that's only useful for the push payload's calibration_bias/
@@ -1327,6 +1359,7 @@ class HeavySweepMixin:
                         macro_strength=macro_strength,
                         trend_label=trend_label,
                         trend_strength=trend_strength,
+                        context_aligned_ok=context_aligned_ok,
                         legacy_markov_state=sim_legacy_markov_state,
                         trend_hmm_markov_state=sim_trend_hmm_markov_state,
                         raw_p_regime=sim_raw_p_regime,

@@ -775,6 +775,7 @@ def _build_signal_sim_payload(
     macro_strength: float | None = None,
     trend_label: str | None = None,
     trend_strength: float | None = None,
+    context_aligned_ok: bool | None = None,
     legacy_markov_state: str | None = None,
     trend_hmm_markov_state: str | None = None,
     raw_p_regime: float | None = None,
@@ -818,6 +819,13 @@ def _build_signal_sim_payload(
     Nullable: absent when ``trend_regime_mode`` is ``off`` or no
     ``nt_trend_regime`` row exists yet for the symbol.
 
+    ``context_aligned_ok`` (2026-09-11, worklog
+    20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 10)
+    is the Tier 1 context-alignment gate's read at capture time (see
+    ``context_alignment.py``) — computed from the SAME macro_label/
+    trend_label above, never from p_win/ev_result. Nullable: absent
+    when ``context_alignment_gate_mode`` is ``off``.
+
     ``legacy_markov_state``/``trend_hmm_markov_state`` and
     ``raw_p_regime``/``gated_p_regime`` (2026-08-31, migration 131,
     worklog 20260831_SHADOW_TO_LIVE_ROADMAP.md) are Tier 1/2's own
@@ -852,6 +860,7 @@ def _build_signal_sim_payload(
         "macro_strength": round(float(macro_strength), 4) if macro_strength is not None else None,
         "trend_label": trend_label,
         "trend_strength": round(float(trend_strength), 4) if trend_strength is not None else None,
+        "context_aligned_ok": context_aligned_ok,
         "legacy_markov_state": legacy_markov_state,
         "trend_hmm_markov_state": trend_hmm_markov_state,
         "raw_p_regime": round(float(raw_p_regime), 4) if raw_p_regime is not None else None,
@@ -3093,6 +3102,39 @@ class SweepOrchestrator(HeavySweepMixin):
                         symbol, type(exc).__name__, exc,
                     )
 
+        # ── 5b-3. Context-alignment gate — Tier 1, corrected (2026-09-11,
+        # worklog 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md
+        # Part 10) ──────────────────────────────────────────────────────
+        # An independent 8th gate, computed from the SAME macro_label/
+        # trend_label already fetched above — no new Supabase round-trip.
+        # Never touches p_win/ev_result (per ev_engine_no_rework); only
+        # added to gate_results (and therefore able to affect `qualified`)
+        # when the mode is "live". In "shadow", computed and captured on
+        # nt_signal_sim for review, but excluded from the qualification
+        # decision — same shadow-first discipline as every other mode-
+        # gated mechanism this session.
+        context_aligned_ok: bool | None = None
+        context_alignment_live = False
+        if signal_is_qualifiable:
+            from regime_platform.core.feature_flags import get_context_alignment_gate_mode
+            context_mode = get_context_alignment_gate_mode()
+            if context_mode != "off":
+                from regime_platform.sweep_orchestrator.context_alignment import (
+                    compute_context_alignment,
+                )
+                context_aligned_ok = compute_context_alignment(
+                    trade_signal["signal"], macro_label, trend_label,
+                )
+                context_alignment_live = context_mode == "live"
+                if not context_aligned_ok:
+                    logger.info(
+                        "[sweep:orch] %s: context-alignment gate %s — "
+                        "signal=%s macro=%s trend=%s",
+                        symbol,
+                        "LIVE REJECT" if context_alignment_live else "would reject (shadow)",
+                        trade_signal["signal"], macro_label, trend_label,
+                    )
+
         # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────
         # Fast intraday bias-drift detection BETWEEN the scheduled passes:
         # when a symbol's short-window realized win rate lags its predicted
@@ -3157,6 +3199,10 @@ class SweepOrchestrator(HeavySweepMixin):
             # size. Above MIN_P_WIN: full kelly.
             "p_win_ok": p_win_ok,
         }
+        # Only participates in `qualified` (below) when live — see the
+        # "5b-3" block above for why shadow mode must not affect it.
+        if context_alignment_live:
+            gate_results["context_aligned_ok"] = bool(context_aligned_ok)
 
         passed_gates = {
             "signal": trade_signal["signal"],
@@ -3640,6 +3686,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     macro_strength=macro_strength,
                     trend_label=trend_label,
                     trend_strength=trend_strength,
+                    context_aligned_ok=context_aligned_ok,
                     legacy_markov_state=_sim_legacy_markov_state,
                     trend_hmm_markov_state=_sim_trend_hmm_markov_state,
                     raw_p_regime=_sim_raw_p_regime,

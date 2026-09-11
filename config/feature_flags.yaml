@@ -248,6 +248,16 @@ trend:
   boost_scale: 0.3               # same [0.25, 1.5] hard clamp band as every other Kelly multiplier
   penalty_scale: 0.5
 
+# Context-alignment gate -- Tier 1, corrected (2026-09-11, worklog
+# 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 10).
+# An independent 8th qualification gate that fails only when BOTH
+# macro_regime and trend_regime confidently oppose the trade direction
+# -- never touches p_win/ev_result/compute_ev() (per ev_engine_no_rework).
+# off = gate always passes, zero behavior change (default). shadow =
+# compute + capture context_aligned_ok on nt_signal_sim, does not affect
+# qualification. live = included in the qualification decision.
+context_alignment_gate_mode: "off"
+
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
 # simulation found the heavy sweep's Sharpe-only grid pick sometimes

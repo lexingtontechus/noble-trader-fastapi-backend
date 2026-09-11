@@ -231,6 +231,11 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # capture time — see trend_filter.py. Nullable; absent when
     # trend_regime_mode is off or no nt_trend_regime row exists yet.
     "trend_label", "trend_strength",
+    # context_aligned_ok (2026-09-11, worklog
+    # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
+    # 10): Tier 1 gate read at capture time — see context_alignment.py.
+    # Nullable; absent when context_alignment_gate_mode is off.
+    "context_aligned_ok",
     # legacy_markov_state/trend_hmm_markov_state, raw_p_regime/
     # gated_p_regime (migration 131, 2026-08-31): Tier 1/2's own shadow-
     # comparison values at capture time — feed the outcome-linked

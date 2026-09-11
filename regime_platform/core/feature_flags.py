@@ -76,6 +76,7 @@ _DEFAULTS: dict[str, Any] = {
     "renko_brick_retention_days": 2,
     "knowledge_index_enabled": True,
     "trend_regime_mode": "off",
+    "context_alignment_gate_mode": "off",
     "trend": {
         "sma_short_days": 10,
         "sma_mid_days": 20,
@@ -258,6 +259,17 @@ def get_trend_boost_scale() -> float:
 
 def get_trend_penalty_scale() -> float:
     return _trend_number("penalty_scale")
+
+
+def get_context_alignment_gate_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Tier 1 corrected — an
+    independent 8th qualification gate that fails only when BOTH macro
+    and trend filters confidently oppose the trade direction. Worklog
+    20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
+    10)."""
+    return str(_load().get(
+        "context_alignment_gate_mode", _DEFAULTS["context_alignment_gate_mode"],
+    )).lower()
 
 
 def get_heavy_sweep_reachability_mode() -> str:
