@@ -258,6 +258,19 @@ trend:
 # qualification. live = included in the qualification decision.
 context_alignment_gate_mode: "off"
 
+# Dynamic/regime-conditional MIN_RR (2026-09-11, worklog
+# 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 11).
+# Raises the RR floor (never lowers it) when neither macro_regime nor
+# trend_regime shows a directional edge -- confirmed via code trace that
+# min_rr only gates compute_ev()/recompute_ev_fields()'s post-blend
+# allow/deny check, never the blend itself. off = effective_min_rr ==
+# min_rr always, byte-identical (default). shadow = compute + log what
+# the effective value would have been. live = actually applied via
+# recompute_ev_fields(min_rr=...) (light sweep) and the heavy-sweep grid
+# pre-filter.
+dynamic_min_rr_mode: "off"
+dynamic_min_rr_consolidation_value: 2.0   # raised floor when both filters show no edge
+
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
 # simulation found the heavy sweep's Sharpe-only grid pick sometimes

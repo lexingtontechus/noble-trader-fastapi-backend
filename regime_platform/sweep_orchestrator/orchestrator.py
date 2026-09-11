@@ -3135,6 +3135,51 @@ class SweepOrchestrator(HeavySweepMixin):
                         trade_signal["signal"], macro_label, trend_label,
                     )
 
+        # ── 5b-4. Dynamic/regime-conditional MIN_RR (2026-09-11, worklog
+        # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
+        # 11) ────────────────────────────────────────────────────────────
+        # Reuses the SAME macro_label/trend_label already fetched above —
+        # no new Supabase round-trip. Recomputes ev_result's derived
+        # fields via the SAME recompute_ev_fields() pattern the
+        # calibration-enforcement block above already uses, with an
+        # explicit min_rr override rather than mutating the shared
+        # EVEngine instance's own min_rr attribute (would race across
+        # concurrently-processed symbols). Never touches p_win or the
+        # blend — only the post-blend allow/deny gate.
+        if signal_is_qualifiable:
+            from regime_platform.core.feature_flags import (
+                get_dynamic_min_rr_consolidation_value,
+                get_dynamic_min_rr_mode,
+            )
+            min_rr_mode = get_dynamic_min_rr_mode()
+            if min_rr_mode != "off":
+                from regime_platform.sweep_orchestrator.dynamic_min_rr import (
+                    compute_effective_min_rr,
+                )
+                effective_min_rr = compute_effective_min_rr(
+                    MIN_RR, get_dynamic_min_rr_consolidation_value(),
+                    macro_label, trend_label,
+                )
+                if effective_min_rr != MIN_RR:
+                    logger.info(
+                        "[sweep:orch] %s: dynamic MIN_RR %s — %.2f→%.2f "
+                        "(macro=%s trend=%s)",
+                        symbol,
+                        "LIVE" if min_rr_mode == "live" else "would apply (shadow)",
+                        MIN_RR, effective_min_rr, macro_label, trend_label,
+                    )
+                    if min_rr_mode == "live":
+                        _min_rr_recomputed = self._ev_engine.recompute_ev_fields(
+                            ev_result.p_win, ev_result.profit, ev_result.stake,
+                            min_rr=effective_min_rr,
+                        )
+                        ev_result.ev = _min_rr_recomputed["ev"]
+                        ev_result.ev_per_dollar = _min_rr_recomputed["ev_per_dollar"]
+                        ev_result.rr = _min_rr_recomputed["rr"]
+                        ev_result.allowed = _min_rr_recomputed["allowed"]
+                        ev_result.aggression = _min_rr_recomputed["aggression"]
+                        ev_result.ev_scale = _min_rr_recomputed["ev_scale"]
+
         # ── 5c. Drift monitor (2026-08-13 plan, D) ────────────────────
         # Fast intraday bias-drift detection BETWEEN the scheduled passes:
         # when a symbol's short-window realized win rate lags its predicted

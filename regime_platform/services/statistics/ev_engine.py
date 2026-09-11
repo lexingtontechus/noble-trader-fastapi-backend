@@ -745,7 +745,8 @@ class EVEngine:
     # §1 "New finding — stale derived fields after calibration enforcement".
 
     def recompute_ev_fields(
-        self, p_win: float, profit: float, stake: float
+        self, p_win: float, profit: float, stake: float,
+        min_rr: float | None = None,
     ) -> Dict[str, Any]:
         """Recompute ev/ev_per_dollar/rr/allowed/ev_scale/aggression for a
         p_win that changed after ``compute_ev()`` already ran.
@@ -756,14 +757,25 @@ class EVEngine:
         (``profit / stake``) is therefore also unchanged in value, but is
         returned for callers that want to overwrite the field consistently.
 
+        ``min_rr`` (2026-09-11, worklog
+        20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 11):
+        optional per-call override, falls back to ``self.min_rr`` when not
+        given. Added so a caller can recompute ``allowed`` against a
+        regime-conditional threshold WITHOUT mutating the shared
+        ``EVEngine`` instance's own ``min_rr`` attribute — a per-tick
+        mutation of shared state would race across symbols if calls to
+        this engine ever run concurrently. This does not touch ``p_win``
+        or the blend in any way — same non-goal as the rest of this method.
+
         Callers should overwrite ``EVFullResult.{ev, ev_per_dollar, rr,
         allowed, aggression, ev_scale}`` with this method's return values
         after mutating ``EVFullResult.p_win`` — never mutate ``p_win`` alone.
         """
+        effective_min_rr = self.min_rr if min_rr is None else min_rr
         ev = (p_win * profit) - ((1.0 - p_win) * stake)
         ev_per_dollar = ev / stake if stake > 0 else 0.0
         rr = profit / stake if stake > 0 else 0.0
-        allowed = (ev > self.min_ev) and (rr >= self.min_rr)
+        allowed = (ev > self.min_ev) and (rr >= effective_min_rr)
         aggression = self.compute_aggression(ev_per_dollar)
         ev_scale = self.compute_ev_scale(ev_per_dollar)
         return {

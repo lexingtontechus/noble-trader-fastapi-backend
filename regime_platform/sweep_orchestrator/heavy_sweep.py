@@ -729,11 +729,70 @@ class HeavySweepMixin:
                 ) if atr_anchored_sizes else "",
             )
 
+            # ── 3b. Dynamic/regime-conditional MIN_RR — early fetch
+            # (2026-09-11, worklog
+            # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md
+            # Part 11) ─────────────────────────────────────────────────
+            # Unlike the light sweep (where macro/trend context is
+            # already fetched for the Kelly multipliers, just later in
+            # the function), the grid search's MIN_RR pre-filter runs
+            # BEFORE this file's own 8b/8c macro/trend blocks — so
+            # applying regime context to the grid filter needs its own,
+            # earlier fetch. This means macro/trend get fetched TWICE in
+            # this function when dynamic_min_rr_mode is on (once here,
+            # once in 8b/8c for the Kelly multipliers) — accepted as a
+            # known, minor inefficiency: heavy sweep runs once/day/symbol,
+            # not a hot path, and the flag defaults off (zero cost until
+            # explicitly enabled). Unifying the two fetches is a
+            # follow-up, not a blocker for this build.
+            grid_min_rr = MIN_RR
+            from regime_platform.core.feature_flags import get_dynamic_min_rr_mode
+            min_rr_mode_early = get_dynamic_min_rr_mode()
+            if min_rr_mode_early != "off":
+                from regime_platform.core.feature_flags import (
+                    get_dynamic_min_rr_consolidation_value,
+                )
+                from regime_platform.sweep_orchestrator.dynamic_min_rr import (
+                    compute_effective_min_rr,
+                )
+                from regime_platform.sweep_orchestrator.macro_filter import (
+                    get_macro_regime as _get_macro_regime_early,
+                )
+                from regime_platform.sweep_orchestrator.trend_filter import (
+                    get_trend_regime as _get_trend_regime_early,
+                )
+                try:
+                    _macro_row_early = await _get_macro_regime_early(symbol)
+                    _trend_row_early = await _get_trend_regime_early(symbol)
+                    _effective_min_rr_early = compute_effective_min_rr(
+                        MIN_RR, get_dynamic_min_rr_consolidation_value(),
+                        (_macro_row_early or {}).get("macro_label"),
+                        (_trend_row_early or {}).get("trend_label"),
+                    )
+                    if _effective_min_rr_early != MIN_RR:
+                        logger.info(
+                            "[sweep:heavy] %s: dynamic MIN_RR %s — %.2f→%.2f",
+                            symbol,
+                            "LIVE" if min_rr_mode_early == "live" else "would apply (shadow)",
+                            MIN_RR, _effective_min_rr_early,
+                        )
+                        # Only "live" actually changes the grid filter — shadow
+                        # observes and logs without affecting the search.
+                        if min_rr_mode_early == "live":
+                            grid_min_rr = _effective_min_rr_early
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: dynamic MIN_RR early fetch failed "
+                        "(%s: %s), using base MIN_RR", symbol, type(exc).__name__, exc,
+                    )
+                    grid_min_rr = MIN_RR
+
             # ── 4. Grid + regime + Kelly in parallel ──────────────────
             # Each runs in asyncio.to_thread so the event loop stays
             # responsive (light-sweep ticks can fire concurrently).
             grid_task = asyncio.to_thread(
                 self._renko_grid_search_sync, prices, all_brick_sizes, symbol,
+                grid_min_rr,
             )
             regime_task = asyncio.to_thread(self._regime_sync, prices)
             kelly_task = asyncio.to_thread(
@@ -1433,6 +1492,7 @@ class HeavySweepMixin:
         prices: list[float],
         brick_sizes: list[float],
         symbol: str,
+        min_rr: float | None = None,
     ) -> list[ComboResult]:
         """CPU-bound renko grid search. Runs in asyncio.to_thread.
 
@@ -1444,16 +1504,24 @@ class HeavySweepMixin:
         just object init) and reset between runs.
 
         Total combos: 5 bricks × 3 SL × 6 TP = 90 per symbol.
+
+        ``min_rr`` (2026-09-11, worklog
+        20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
+        11): optional per-call override for the pre-filter below, falls
+        back to the module-level ``MIN_RR`` when not given. Lets a
+        caller apply a regime-conditional floor without mutating any
+        shared/module state.
         """
         from renko.config import RenkoConfig
         from renko.pipeline import RenkoPipeline
 
+        effective_min_rr = MIN_RR if min_rr is None else min_rr
         results: list[ComboResult] = []
         for brick in brick_sizes:
             for sl in SWEEP_SL_RANGE:
                 for tp in SWEEP_TP_RANGE:
                     # Pre-filter by MIN_RR — skip combos that can't pass
-                    if tp / sl < MIN_RR:
+                    if tp / sl < effective_min_rr:
                         continue
                     try:
                         config = RenkoConfig(

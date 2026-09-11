@@ -77,6 +77,8 @@ _DEFAULTS: dict[str, Any] = {
     "knowledge_index_enabled": True,
     "trend_regime_mode": "off",
     "context_alignment_gate_mode": "off",
+    "dynamic_min_rr_mode": "off",
+    "dynamic_min_rr_consolidation_value": 2.0,
     "trend": {
         "sma_short_days": 10,
         "sma_mid_days": 20,
@@ -270,6 +272,25 @@ def get_context_alignment_gate_mode() -> str:
     return str(_load().get(
         "context_alignment_gate_mode", _DEFAULTS["context_alignment_gate_mode"],
     )).lower()
+
+
+def get_dynamic_min_rr_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (regime-conditional MIN_RR floor.
+    Worklog 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md
+    Part 11)."""
+    return str(_load().get(
+        "dynamic_min_rr_mode", _DEFAULTS["dynamic_min_rr_mode"],
+    )).lower()
+
+
+def get_dynamic_min_rr_consolidation_value() -> float:
+    try:
+        return float(_load().get(
+            "dynamic_min_rr_consolidation_value",
+            _DEFAULTS["dynamic_min_rr_consolidation_value"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["dynamic_min_rr_consolidation_value"]
 
 
 def get_heavy_sweep_reachability_mode() -> str:
