@@ -271,6 +271,28 @@ context_alignment_gate_mode: "off"
 dynamic_min_rr_mode: "off"
 dynamic_min_rr_consolidation_value: 2.0   # raised floor when both filters show no edge
 
+# TimesFM k-adaptive dampening (2026-09-11, worklog
+# 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 12).
+# k_adaptive = TIMESFM_SIGMOID_K * (1 + trend_strength), clamped to
+# [timesfm_k_floor, timesfm_k_ceiling] -- stronger trend -> higher k ->
+# trust the forecast more (a sharper sigmoid pushes further from 0.5 for
+# the same input); no/missing trend context -> k stays at the base
+# value (today's unchanged behavior), never an extreme in either
+# direction. CORRECTED during implementation: the original scope
+# (Part 12.3) had this inverted (dividing by strength, which actually
+# FLATTENS the sigmoid toward 0.5 as strength rises) -- verified
+# directly (sigmoid(10*0.02)=0.5498 vs sigmoid(40*0.02)=0.6900, higher
+# k is more aggressive) before shipping the corrected version. Confirmed
+# via code trace the sigmoid mapping runs entirely upstream of
+# compute_ev() -- this never touches ev_engine.py. off = byte-identical
+# to today (default). shadow = logs the adaptive k and what p_timesfm
+# would have been (reusing the already-fetched forecast, no second
+# network call), does not affect the real p_timesfm. live = the
+# adaptive value is what actually feeds compute_ev().
+timesfm_k_adaptive_mode: "off"
+timesfm_k_floor: 5.0     # defensive lower bound (rarely binds -- k >= base_k always in the current formula)
+timesfm_k_ceiling: 60.0  # defensive upper bound -- caps k at 3x the default base_k=20 at full trend strength
+
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
 # simulation found the heavy sweep's Sharpe-only grid pick sometimes

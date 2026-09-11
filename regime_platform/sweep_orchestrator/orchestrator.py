@@ -44,6 +44,7 @@ from regime_platform.core.feature_flags import (
     get_signal_cooldown_minutes,
     get_sweep_after_hours,
     get_timesfm_gate_mode,
+    get_timesfm_k_adaptive_mode,
     get_trend_probs_gate_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
@@ -267,7 +268,12 @@ TIMESFM_CLAMP_MAX = float(os.getenv("TIMESFM_CLAMP_MAX", "0.999"))
 _TIMESFM_CACHE: dict[str, tuple[float, float]] = {}  # symbol -> (p, timestamp)
 _TIMESFM_CACHE_TTL_S = 900  # 15 minutes
 
-async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float, float] | None:
+async def _fetch_timesfm_cached(
+    symbol: str,
+    prices: list[float],
+    k_override: float | None = None,
+    shadow_k: float | None = None,
+) -> tuple[float, float] | None:
     """
     Fetch TimesFM forecast for a symbol with a 15-minute cache.
 
@@ -281,6 +287,20 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
     unrecoverable error. Cache misses and cache hits share the same return
     shape (the previous implementation returned ``(p, age_seconds)`` on cache
     hits — a tuple-shape bug that broke downstream consumers).
+
+    ``k_override``/``shadow_k`` (2026-09-11, worklog
+    20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 12):
+    ``k_override`` replaces ``TIMESFM_SIGMOID_K`` for this call's sigmoid
+    mapping when given (``timesfm_k_adaptive_mode=live``) — the returned
+    ``p_timesfm`` (and what gets cached) is computed with this k.
+    ``shadow_k`` (``timesfm_k_adaptive_mode=shadow``) computes an
+    ADDITIONAL probability with a different k purely for logging/
+    comparison, reusing the same already-fetched forecast (no second
+    network call) — never affects the returned/cached value. Both only
+    apply on a fresh fetch (cache miss); a cache hit has no ``rel_change``
+    to recompute from, so shadow comparison is skipped on hits — a
+    known, accepted limitation given the cache TTL already matches the
+    sweep cadence closely.
 
     Uses the same inference URL as the edge function.
     """
@@ -465,18 +485,27 @@ async def _fetch_timesfm_cached(symbol: str, prices: list[float]) -> tuple[float
             )
             return None
         rel_change = (forecast_value - last_price) / last_price
-        # math.exp is faster than importing scipy; manual sigmoid is fine.
-        _k = TIMESFM_SIGMOID_K
-        _z = _k * rel_change
-        if _z >= 0:
-            p_timesfm = 1.0 / (1.0 + math.exp(-_z))
-        else:
-            ez = math.exp(_z)
-            p_timesfm = ez / (1.0 + ez)
+        from regime_platform.sweep_orchestrator.timesfm_k_adaptive import (
+            map_forecast_to_probability,
+        )
+        _k = TIMESFM_SIGMOID_K if k_override is None else k_override
         # Clamp to [TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX] so confidence is
         # never exactly 0 or 1 (avoids edge cases in downstream EV/Kelly math).
-        p_timesfm = max(TIMESFM_CLAMP_MIN, min(TIMESFM_CLAMP_MAX, p_timesfm))
+        p_timesfm = map_forecast_to_probability(
+            rel_change, _k, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX,
+        )
         confidence = abs(p_timesfm - 0.5)
+
+        if shadow_k is not None:
+            p_timesfm_shadow = map_forecast_to_probability(
+                rel_change, shadow_k, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX,
+            )
+            logger.info(
+                "[sweep:orch] %s: TimesFM k-adaptive SHADOW — base_k=%.2f "
+                "p=%.4f | adaptive_k=%.2f p_adaptive=%.4f (rel_change=%.4f)",
+                symbol, TIMESFM_SIGMOID_K, p_timesfm, shadow_k,
+                p_timesfm_shadow, rel_change,
+            )
 
         _TIMESFM_CACHE[symbol] = (p_timesfm, now)
         logger.info(
@@ -2303,8 +2332,56 @@ class SweepOrchestrator(HeavySweepMixin):
                 continue
             await lock.acquire()
 
+            # ── TimesFM k-adaptive dampening (2026-09-11, worklog
+            # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md
+            # Part 12) ────────────────────────────────────────────────
+            # Runs BEFORE `trade_signal`/`signal_is_qualifiable` exist —
+            # this point in the loop has no "is this signal qualifiable"
+            # concept yet (that's determined much later), so this fetch
+            # is gated only on the mode flag, not on signal qualifiability,
+            # unlike every other longitudinal-filter block in this
+            # function. Costs one extra nt_trend_regime read per symbol
+            # per light-sweep tick when the mode is on (off by default =
+            # zero cost) — architecturally consistent with
+            # _fetch_timesfm_cached's own unconditional fetch at this
+            # same point, not a new class of cost this function didn't
+            # already have.
+            timesfm_k_override: float | None = None
+            timesfm_shadow_k: float | None = None
+            k_adaptive_mode = get_timesfm_k_adaptive_mode()
+            if k_adaptive_mode != "off":
+                from regime_platform.core.feature_flags import (
+                    get_timesfm_k_ceiling,
+                    get_timesfm_k_floor,
+                )
+                from regime_platform.sweep_orchestrator.timesfm_k_adaptive import (
+                    compute_adaptive_timesfm_k,
+                )
+                from regime_platform.sweep_orchestrator.trend_filter import (
+                    get_trend_regime as _get_trend_regime_for_k,
+                )
+                try:
+                    _trend_row_for_k = await _get_trend_regime_for_k(symbol)
+                    _k_adaptive = compute_adaptive_timesfm_k(
+                        TIMESFM_SIGMOID_K,
+                        (_trend_row_for_k or {}).get("trend_strength"),
+                        get_timesfm_k_floor(), get_timesfm_k_ceiling(),
+                    )
+                    if k_adaptive_mode == "live":
+                        timesfm_k_override = _k_adaptive
+                    else:
+                        timesfm_shadow_k = _k_adaptive
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:orch] %s: TimesFM k-adaptive fetch failed "
+                        "(%s: %s), using base k", symbol, type(exc).__name__, exc,
+                    )
+
             # Fetch TimesFM (cached 15min)
-            p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
+            p_timesfm_result = await _fetch_timesfm_cached(
+                symbol, prices,
+                k_override=timesfm_k_override, shadow_k=timesfm_shadow_k,
+            )
 
             # Validate TimesFM result before processing
             if p_timesfm_result is None:

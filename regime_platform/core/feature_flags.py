@@ -79,6 +79,9 @@ _DEFAULTS: dict[str, Any] = {
     "context_alignment_gate_mode": "off",
     "dynamic_min_rr_mode": "off",
     "dynamic_min_rr_consolidation_value": 2.0,
+    "timesfm_k_adaptive_mode": "off",
+    "timesfm_k_floor": 5.0,
+    "timesfm_k_ceiling": 60.0,
     "trend": {
         "sma_short_days": 10,
         "sma_mid_days": 20,
@@ -291,6 +294,30 @@ def get_dynamic_min_rr_consolidation_value() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["dynamic_min_rr_consolidation_value"]
+
+
+def get_timesfm_k_adaptive_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (TimesFM sigmoid-k dampening
+    driven by trend_strength. Worklog
+    20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
+    12)."""
+    return str(_load().get(
+        "timesfm_k_adaptive_mode", _DEFAULTS["timesfm_k_adaptive_mode"],
+    )).lower()
+
+
+def get_timesfm_k_floor() -> float:
+    try:
+        return float(_load().get("timesfm_k_floor", _DEFAULTS["timesfm_k_floor"]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["timesfm_k_floor"]
+
+
+def get_timesfm_k_ceiling() -> float:
+    try:
+        return float(_load().get("timesfm_k_ceiling", _DEFAULTS["timesfm_k_ceiling"]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["timesfm_k_ceiling"]
 
 
 def get_heavy_sweep_reachability_mode() -> str:
