@@ -18,6 +18,7 @@
 | P12 | P2 | Scope TimesFM k-adaptive dampening | blocked (scope only, awaiting approval; real sequencing complexity found) | 2026-09-11 | RM-47 |
 | P13 | P1 | Build the Part 10 context-alignment gate | resolved (built, tested, shipped off) | 2026-09-11 | RM-45 |
 | P14 | P2 | Build the Part 11 dynamic MIN_RR mechanism | resolved (built, tested, shipped off; corrected an inaccurate 11.5 claim) | 2026-09-11 | RM-46 |
+| P15 | P2 | Build the Part 12 TimesFM k-adaptive mechanism | resolved (built, tested, shipped off; caught + fixed a backwards formula from 12.3) | 2026-09-11 | RM-47 |
 
 ## Session Summary
 
@@ -1056,3 +1057,74 @@ floor and flipping `allowed`, confirming the override never touches
 (841 baseline + 10 new).
 
 Shipped `off` by default. Not deployed to Studio yet.
+
+## Part 15 — TimesFM k-adaptive — built, with a real formula bug caught and fixed (2026-09-11, explicit approval: "continue build code")
+
+> **Priority**: P2 · **Task**: Build the Part 12 TimesFM k-adaptive
+> mechanism · **Status**: resolved (built, tested, shipped `off`; a
+> real directional bug in the original scope was caught and fixed
+> during implementation; not yet deployed to Studio) · **Date**:
+> 2026-09-11 · **Roadmap refs**: RM-47
+
+**A real bug in this worklog's own Part 12.3, caught before shipping,
+not after.** The original formula — `k_adaptive = base_k /
+(trend_strength + epsilon)` — is DECREASING in strength. In a sigmoid,
+a *smaller* k flattens the curve toward 0.5 for the same input; a
+*larger* k pushes it further from 0.5 (more confident). Verified
+directly rather than trusting the algebra by inspection:
+`sigmoid(10*0.02) = 0.5498` vs `sigmoid(40*0.02) = 0.6900` — higher k
+is unambiguously the more aggressive mapping. So the original formula
+made strong trends *less* confident and consolidation *more*
+confident — the exact opposite of Part 12's own stated intent
+("strong trend → more aggressive mapping... consolidation → compress
+toward 0.5"). Corrected to `k_adaptive = base_k * (1 + trend_strength)`
+— increasing in strength, and importantly: no/missing trend context
+now leaves k at exactly today's `base_k` (a genuine no-op default)
+rather than jumping to either extreme, which is a better safety
+property than the original formula had regardless of direction.
+
+**Built**:
+- **`regime_platform/sweep_orchestrator/timesfm_k_adaptive.py`** (new)
+  — `compute_adaptive_timesfm_k()` (corrected formula above),
+  `map_forecast_to_probability()` — the sigmoid+clamp mapping,
+  extracted from `_fetch_timesfm_cached`'s previously-inline code so
+  both the real (base-k) and shadow-mode (adaptive-k) probabilities can
+  be computed from the SAME already-fetched forecast, with no second
+  network call.
+- **`orchestrator.py`**: `_fetch_timesfm_cached` gained `k_override`/
+  `shadow_k` parameters. The call site runs before
+  `trade_signal`/`signal_is_qualifiable` even exist in `_process_symbol`
+  (confirmed while wiring this up — genuinely earlier than every other
+  longitudinal-filter integration point this session), so the new
+  `nt_trend_regime` fetch needed for k-adaptation is gated only on the
+  mode flag, not on signal qualifiability like every other block —
+  `off` (default) costs nothing extra; `shadow`/`live` cost one more
+  Supabase read per symbol per light-sweep tick (every 15 min), an
+  accepted cost architecturally consistent with `_fetch_timesfm_cached`'s
+  own already-unconditional fetch at this exact point.
+- **Shadow mode scoped down from 12.4's original spec**: logs the
+  adaptive k and what `p_timesfm` would have been (via the shared
+  `map_forecast_to_probability` reusing the real fetch's `rel_change`,
+  not a second API call), rather than persisting a new `nt_signal_sim`
+  column for Brier-score comparison as originally scoped. Deferred DB
+  capture to a follow-up once the logged behavior has been reviewed —
+  a smaller, honest scope-narrowing rather than silently dropping the
+  validation step. Also only works on a cache miss (fresh fetch); a
+  cache hit (most ticks, given the cache TTL already roughly matches
+  sweep cadence) has no `rel_change` to recompute shadow comparison
+  from — documented, accepted limitation.
+
+**Verified**: 12 new tests, including one that directly asserts the
+sigmoid-direction property (`sigmoid` output is closer to 0.5 for a
+smaller k, same input) — the exact fact whose absence let the original
+formula ship backwards in the first place. 863 tests passing, 0
+regressions (851 baseline + 12 new).
+
+Shipped `off` by default. Not deployed to Studio yet.
+
+**All three approved build items from this worklog (Tier 1, dynamic
+MIN_RR, TimesFM k-adaptive) are now built.** Part 5's correction stands
+as pure review (nothing to build there). Remaining open items: deploy
+verification for all three mechanisms, then the actual
+shadow-mode-observation period before any of them are considered for
+`live`.
