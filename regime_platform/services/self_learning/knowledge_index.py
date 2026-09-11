@@ -27,21 +27,53 @@ box and the Linux Studio deployment, and is not meaningfully slower:
 loading a few thousand 768-dim float32 vectors is a few milliseconds.
 Revisit only if the corpus grows by orders of magnitude.
 
-EMBEDDING MODEL: ``jinaai/jina-embeddings-v2-base-code`` (~640MB,
-768-dim, 8192-token context) — trained specifically on code +
-docstring pairs, a direct fit for a corpus that's mostly Python source
-and Markdown incident writeups. Runs on CPU: confirmed via direct SSH
-check (2026-09-10) that the Lightning Studio instance has no GPU at
-all — ``nvidia-smi``/``/proc/driver/nvidia`` absent, and the TimesFM
-gateway's own ``/health`` endpoint reports ``"device":"cpu"`` — rather
-than assumed from a stale "T4 w/GPU" docstring comment elsewhere in
-this codebase. Loaded via ``sentence-transformers``, which reuses this
-repo's EXISTING ``torch``/``huggingface-hub`` dependencies (both
-already installed for TimesFM) — no new heavy dependency stack, just
-the one new package. The HuggingFace cache directory is pointed at the
-same ``<repo_root>/.cache/huggingface`` path ``server.py`` (the TimesFM
-gateway) already uses, so the two processes share one on-disk model
-cache instead of each keeping a separate copy.
+EMBEDDING MODEL: ``sentence-transformers/all-MiniLM-L6-v2`` (~90MB,
+384-dim) — NOT ``jinaai/jina-embeddings-v2-base-code`` as originally
+chosen 2026-09-10. Swapped 2026-09-11 after the first real Studio
+deploy attempt: jina-embeddings-v2's custom ``modeling_bert.py``
+(loaded via HF's dynamic-module / trust-remote-code path) imports
+``find_pruneable_heads_and_indices`` from ``transformers.pytorch_utils``
+— a function ``transformers`` removed in its v5 major-version internal
+refactor. Studio has ``transformers==5.12.1`` (confirmed via SSH);
+pinning it down to accommodate one model risked breaking whatever else
+in the stack needs v5 (TimesFM's own dependency chain), so the model
+choice was changed instead of the shared dependency. ``all-MiniLM-L6-v2``
+is a standard, uncustomized architecture (official sentence-transformers
+reference model) — verified loading cleanly under the exact same
+Studio venv/transformers version before switching. Trade-off accepted
+knowingly: loses jina's code-domain fine-tuning in exchange for zero
+custom-code compatibility risk against future ``transformers`` upgrades.
+Not a build-blocking loss — semantic retrieval for "have we seen a bug
+shaped like this before" over Python/Markdown text works adequately
+with a general-purpose sentence embedding model; it doesn't need
+code-execution-level understanding.
+
+Runs on CPU: confirmed via direct SSH check (2026-09-10) that the
+Lightning Studio instance has no GPU at all — ``nvidia-smi``/
+``/proc/driver/nvidia`` absent, and the TimesFM gateway's own
+``/health`` endpoint reports ``"device":"cpu"``. Loaded via
+``sentence-transformers``, which reuses this repo's EXISTING ``torch``/
+``huggingface-hub`` dependencies (both already installed for TimesFM)
+— no new heavy dependency stack, just the one new package.
+
+HF_HUB_OFFLINE (2026-09-11 finding): Lightning Studio sets
+``HF_HUB_OFFLINE=1`` platform-wide (confirmed via
+``/proc/<pid>/environ`` on the live orchestrator process) — this blocks
+ANY first-time model download, network-reachability to huggingface.co
+notwithstanding (a plain ``curl`` succeeds; the block is
+huggingface_hub's own offline-mode gate, not a firewall). TimesFM's
+model predates this restriction (or was staged some other way) so it
+was never affected; a brand-new model never gets a chance to download
+under the live process's own environment. Worked around by manually
+running ``build_index()`` once over SSH with ``HF_HUB_OFFLINE=0``
+overridden for that single invocation — this populates the same
+on-disk cache (``HF_HOME=/teamspace/studios/this_studio/.cache/
+huggingface`` on the live process; confirmed the same physical storage
+this module's own repo-relative ``.cache/huggingface`` path resolves
+to) that the regular ``HF_HUB_OFFLINE=1`` nightly cron reads from, so
+every future scheduled run finds the model locally and never needs
+network access again. This is a one-time bootstrap, not a recurring
+manual step.
 """
 
 from __future__ import annotations
@@ -69,8 +101,8 @@ os.environ.setdefault("HF_HOME", str(_HF_CACHE_DIR))
 os.environ.setdefault("HF_HUB_CACHE", str(_HF_CACHE_DIR / "hub"))
 Path(os.environ["HF_HUB_CACHE"]).mkdir(parents=True, exist_ok=True)
 
-EMBEDDING_MODEL_NAME = "jinaai/jina-embeddings-v2-base-code"
-EMBEDDING_DIM = 768
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_DIM = 384
 
 DB_PATH = _REPO_ROOT / "config" / "knowledge_index.sqlite"
 
