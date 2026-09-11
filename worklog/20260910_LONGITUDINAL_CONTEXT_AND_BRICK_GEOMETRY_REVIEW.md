@@ -16,6 +16,7 @@
 | P10 | P1 | Scope Tier 1 (context-alignment gate) as a buildable, EV-engine-safe mechanism | blocked (scope only, awaiting approval) | 2026-09-11 | RM-45 |
 | P11 | P2 | Scope dynamic/regime-conditional MIN_RR | blocked (scope only, awaiting approval) | 2026-09-11 | RM-46 |
 | P12 | P2 | Scope TimesFM k-adaptive dampening | blocked (scope only, awaiting approval; real sequencing complexity found) | 2026-09-11 | RM-47 |
+| P13 | P1 | Build the Part 10 context-alignment gate | resolved (built, tested, shipped off) | 2026-09-11 | RM-45 |
 
 ## Session Summary
 
@@ -949,3 +950,48 @@ their exact call sites before writing this scope, not assumed safe
 because the framing sounded plausible (the same discipline applied to
 Part 5, which did NOT survive that check). Not built — both are scope
 only, awaiting approval.
+
+## Part 13 — Tier 1 context-alignment gate — built (2026-09-11, explicit approval: "build code")
+
+> **Priority**: P1 · **Task**: Build the Part 10 context-alignment gate
+> · **Status**: resolved (built, tested, shipped `off`; not yet
+> deployed to Studio) · **Date**: 2026-09-11 · **Roadmap refs**: RM-45
+
+Built exactly to Part 10's spec, no scope drift:
+
+- **`regime_platform/sweep_orchestrator/context_alignment.py`** (new) —
+  `compute_context_alignment(signal, macro_label, trend_label) -> bool`,
+  the pure function from 10.3, unchanged from the scoped design. Never
+  touches `p_win`/`ev_result`.
+- **`context_alignment_gate_mode`** (`off`/`shadow`/`live`, shipped
+  `off`) in `feature_flags.py`/`feature_flags.yaml`.
+- **`nt_signal_sim.context_aligned_ok`** (new nullable column).
+- **Wired into `orchestrator.py`** right after the trend-filter block:
+  computed from the SAME `macro_label`/`trend_label` already fetched
+  (zero new Supabase round-trips), added to the existing
+  `gate_results` dict **only when `live`** so it participates in
+  `qualified = all(...)` — in `off`/`shadow` the dict is untouched,
+  so `qualified`'s computation is byte-identical to before this change.
+- **Wired into `heavy_sweep.py`** too, but deliberately **capture-only**
+  there: tracing the code while wiring this up found that heavy
+  sweep's own `qualified` is decided (~line 1130) *before* any of the
+  macro/trend/context blocks run — meaning the existing
+  `kelly_macro_multiplier`/`kelly_trend_multiplier` calls already only
+  ever affect `result.kelly_f` there, never `result.qualified`, today.
+  Making the new gate capture-only in this file preserves that existing
+  behavior rather than introducing a new asymmetry — light sweep (the
+  path that actually re-evaluates every 15 minutes against live
+  conditions) is where this gate can actually reject a signal.
+
+**Verified**: 10 new unit tests (`tests/test_context_alignment.py`) —
+both-oppose fails, single-source-opposes still passes (the deliberate
+"don't veto on one noisy source" design), neutral/consolidating/missing
+reads never treated as opposition, neutral trade signal is always a
+no-op, return-type check (plain `bool`, not `numpy.bool_`/`None`, since
+this feeds a boolean DB column and a dict consumed by `all()`). 841
+tests passing, 0 regressions (831 baseline + 10 new).
+
+Shipped `off` by default — no live behavior change until `shadow`
+(then `live`) is explicitly turned on, same rollout discipline as
+every other mode-gated mechanism this session. Not deployed to Studio
+yet (code-complete vs. deployed gate).
