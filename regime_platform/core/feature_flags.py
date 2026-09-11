@@ -76,10 +76,10 @@ _DEFAULTS: dict[str, Any] = {
     "renko_brick_retention_days": 2,
     "knowledge_index_enabled": True,
     "trend_regime_mode": "off",
-    "context_alignment_gate_mode": "off",
-    "dynamic_min_rr_mode": "off",
+    "context_alignment_gate_mode": "shadow",
+    "dynamic_min_rr_mode": "shadow",
     "dynamic_min_rr_consolidation_value": 2.0,
-    "timesfm_k_adaptive_mode": "off",
+    "timesfm_k_adaptive_mode": "shadow",
     "timesfm_k_floor": 5.0,
     "timesfm_k_ceiling": 60.0,
     "trend": {

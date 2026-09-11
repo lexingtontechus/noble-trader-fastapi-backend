@@ -256,7 +256,7 @@ trend:
 # off = gate always passes, zero behavior change (default). shadow =
 # compute + capture context_aligned_ok on nt_signal_sim, does not affect
 # qualification. live = included in the qualification decision.
-context_alignment_gate_mode: "off"
+context_alignment_gate_mode: "shadow"
 
 # Dynamic/regime-conditional MIN_RR (2026-09-11, worklog
 # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 11).
@@ -268,7 +268,7 @@ context_alignment_gate_mode: "off"
 # the effective value would have been. live = actually applied via
 # recompute_ev_fields(min_rr=...) (light sweep) and the heavy-sweep grid
 # pre-filter.
-dynamic_min_rr_mode: "off"
+dynamic_min_rr_mode: "shadow"
 dynamic_min_rr_consolidation_value: 2.0   # raised floor when both filters show no edge
 
 # TimesFM k-adaptive dampening (2026-09-11, worklog
@@ -289,7 +289,7 @@ dynamic_min_rr_consolidation_value: 2.0   # raised floor when both filters show 
 # would have been (reusing the already-fetched forecast, no second
 # network call), does not affect the real p_timesfm. live = the
 # adaptive value is what actually feeds compute_ev().
-timesfm_k_adaptive_mode: "off"
+timesfm_k_adaptive_mode: "shadow"
 timesfm_k_floor: 5.0     # defensive lower bound (rarely binds -- k >= base_k always in the current formula)
 timesfm_k_ceiling: 60.0  # defensive upper bound -- caps k at 3x the default base_k=20 at full trend strength
 
