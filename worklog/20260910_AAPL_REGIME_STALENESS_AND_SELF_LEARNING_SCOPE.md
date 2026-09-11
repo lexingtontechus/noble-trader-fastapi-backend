@@ -32,6 +32,7 @@
 | §6 | P0 | Root-cause XAUAUD staleness; harmonize APScheduler with Studio's restart schedule | resolved | 2026-09-10 | RM-41, RM-42, RM-43 |
 | §7 | P1 | Fully scope the medium-term trend-confirmation module | blocked → resolved by §8 | 2026-09-10 | RM-40 |
 | §8 | P1 | Build the trend-confirmation module scoped in §7 | resolved (deploy-verification pending) | 2026-09-10 | RM-40, RM-44 |
+| §9 | P1 | Run the 14-symbol pre-shadow backtest on real data | resolved — result is a caution flag, not a clean pass (52% aggregate hit rate) | 2026-09-10 | RM-40 |
 
 ## 1. AAPL — issue or non-issue: **issue**, but not the one it looks like
 
@@ -910,3 +911,64 @@ for all 14 symbols and reviewing false positive/negative rates by hand,
 which is its own piece of work, not a rubber stamp before flipping the
 flag. Not deployed to Studio yet (code-complete vs. deployed gate, same
 as every other build this session) — tracked as RM-44.
+
+## 9. 14-symbol backtest — real result, NOT a clean pass (2026-09-10)
+
+> **Priority**: P1 · **Task**: Run §7.6's pre-shadow backtest against
+> all 14 symbols' real historical data · **Status**: resolved
+> (backtest run, result is a genuine caution flag — do not read as
+> "validated, safe to flip to shadow") · **Date**: 2026-09-10 ·
+> **Roadmap refs**: RM-40
+
+Studio deployed (`RM-44`'s subject) and the user asked for the
+13-symbol backtest to be run. Fetched real daily closes for all 14
+active symbols (`.env.local` TradingView creds) and ran
+`compute_trend_regime` in a rolling walk-forward over the trailing 90
+days per symbol (not just today's single read), counting label
+frequency and checking a 5-trading-day forward-return directional
+hit-rate for every `reversal_up`/`reversal_down` event.
+
+**Frequency — sane, not miscalibrated.** No symbol fires `reversal_*`
+more than 6-9 times in 90 days; `consolidating` dominates (50-76/90
+days for most symbols). This rules out the "hair-trigger, flags a
+reversal every few days" failure mode.
+
+**Directional edge at 5 days — weak, and highly inconsistent per
+symbol.** Aggregate hit rate across all 75 reversal events, all 14
+symbols: **39/75 = 52%** — barely above a coin flip. Per-symbol rates
+range from **0%** (USDCHF, 0/6 — every flagged reversal for this symbol
+went the wrong way) to **100%** (EURUSD 6/6, USDCAD 6/6 — but on small
+samples, 6 events each, not strong evidence either). This is real data,
+not a synthetic construction, and it does not support treating this
+module's `reversal_*` label as a standalone predictive edge at a 5-day
+horizon.
+
+**Read this correctly — it is not necessarily a bug.** A 10/50-day SMA
+crossover is a classic *lagging* confirmation signal by construction —
+by the time it fires, price has typically already moved partway through
+the reversal, so testing "does price keep moving the same direction for
+5 MORE days after confirmation" is a genuinely hard bar, not obviously
+the right validation horizon. This result doesn't prove the feature is
+useless; it means the naive "is this a standalone directional edge"
+framing this backtest checked is NOT supported by real data at 5 days,
+and needs one of: a longer forward horizon, a different crossover pair
+(10/20 vs 10/50 vs 20/50 — flagged as an open parameter in §7.7 for
+exactly this reason), or accepting the label as a coarse *contextual*
+input (paired with RSI state, or blended with macro_filter's own read)
+rather than a lone signal.
+
+**What this backtest did NOT check** (a real gap, not glossed over):
+false negatives — a genuine multi-week reversal that never got flagged
+— require actual chart-level review per symbol, not an automated
+count; not done here. §7.6's full validation is therefore still
+partial, not complete.
+
+**Recommendation, not a decision made unilaterally**: do NOT flip
+`trend_regime_mode` to `shadow` on the strength of this result alone.
+Worth deciding explicitly: (a) try a different crossover pair/horizon
+and re-run this exact backtest before reconsidering, (b) proceed to
+`shadow` anyway treating `trend_label` as a passive, non-authoritative
+context field (no different in kind from capturing `macro_label` today
+— shadow mode itself makes no Kelly claim), or (c) hold this module at
+`off` pending further tuning. Not decided here — this section reports
+the real result and the tradeoff, not a chosen path.
