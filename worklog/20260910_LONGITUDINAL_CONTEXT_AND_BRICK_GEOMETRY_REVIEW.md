@@ -17,6 +17,7 @@
 | P11 | P2 | Scope dynamic/regime-conditional MIN_RR | blocked (scope only, awaiting approval) | 2026-09-11 | RM-46 |
 | P12 | P2 | Scope TimesFM k-adaptive dampening | blocked (scope only, awaiting approval; real sequencing complexity found) | 2026-09-11 | RM-47 |
 | P13 | P1 | Build the Part 10 context-alignment gate | resolved (built, tested, shipped off) | 2026-09-11 | RM-45 |
+| P14 | P2 | Build the Part 11 dynamic MIN_RR mechanism | resolved (built, tested, shipped off; corrected an inaccurate 11.5 claim) | 2026-09-11 | RM-46 |
 
 ## Session Summary
 
@@ -995,3 +996,63 @@ Shipped `off` by default — no live behavior change until `shadow`
 (then `live`) is explicitly turned on, same rollout discipline as
 every other mode-gated mechanism this session. Not deployed to Studio
 yet (code-complete vs. deployed gate).
+
+## Part 14 — Dynamic MIN_RR — built (2026-09-11, explicit approval: "continue build code")
+
+> **Priority**: P2 · **Task**: Build the Part 11 dynamic MIN_RR
+> mechanism · **Status**: resolved (built, tested, shipped `off`; not
+> yet deployed to Studio) · **Date**: 2026-09-11 · **Roadmap refs**:
+> RM-46
+
+Built exactly to Part 11's spec, one correction found and fixed along
+the way:
+
+- **`regime_platform/sweep_orchestrator/dynamic_min_rr.py`** (new) —
+  `compute_effective_min_rr()`, unchanged from 11.3.
+- **`ev_engine.py`**: `recompute_ev_fields()` gained the optional
+  `min_rr` parameter from 11.2, exactly as scoped — falls back to
+  `self.min_rr`, never mutates the shared `EVEngine` instance.
+- **Light sweep** (`orchestrator.py`): built as scoped in 11.3 — reuses
+  the already-fetched `macro_label`/`trend_label`, calls
+  `recompute_ev_fields(min_rr=...)` when `live`, mirroring the existing
+  calibration-enforcement recompute pattern already in the file.
+- **Heavy sweep** (`heavy_sweep.py`): the real complexity flagged in
+  11.1 was confirmed while wiring this up — the grid search's
+  `MIN_RR` pre-filter runs *before* this file's own macro/trend blocks
+  (step 4 vs. steps 8b/8c), unlike the light sweep. Added a new, early
+  macro/trend fetch specifically for this purpose. This means macro/
+  trend get fetched twice in this function when the flag is on (once
+  early for the grid filter, once later for the Kelly multipliers) —
+  accepted as a known, minor inefficiency: heavy sweep runs once per
+  symbol per day, not a hot path, and the flag defaults `off` (zero
+  extra cost until explicitly enabled). `_renko_grid_search_sync` now
+  takes an explicit `min_rr` parameter instead of reading the
+  module-level `MIN_RR` constant directly.
+- **Correction to 11.5**: checked before "fixing" it —
+  `heavy_sweep_reachability.py`'s `_MIN_RR_DEFAULT = 2.0` is **not**
+  an orphaned/unwired divergence as the original scope claimed. Its own
+  module comment says production always passes an explicit value, and
+  `heavy_sweep.py:967` does exactly that (`min_rr=MIN_RR`) at its real
+  call site. No bug, no fix needed — 11.5's claim was based on an
+  incomplete grep that found the constant's definition but not its
+  caller. Left untouched.
+- **Not needed**: propagating the dynamic value into
+  `pick_best_combo()`'s own `min_rr` parameter downstream of the grid
+  search. Since the grid search's pre-filter already excludes any combo
+  below the (possibly raised) floor before `pick_best_combo()` ever
+  sees `grid_results`, and `compute_effective_min_rr()` is strictly
+  one-directional (only ever raises the floor, never lowers it),
+  `pick_best_combo()`'s own downstream check against the base `MIN_RR`
+  is redundant-but-harmless on an already-filtered set — not a
+  correctness gap.
+
+**Verified**: 10 new tests — 6 for `compute_effective_min_rr` (both
+no-edge raises the floor, either edge present keeps base, the
+one-directional guarantee even against a misconfigured lower
+consolidation value), 4 for `recompute_ev_fields`'s new parameter
+(backward-compat fallback, override raising/lowering the effective
+floor and flipping `allowed`, confirming the override never touches
+`ev`/`rr`/`aggression`/`ev_scale`). 851 tests passing, 0 regressions
+(841 baseline + 10 new).
+
+Shipped `off` by default. Not deployed to Studio yet.
