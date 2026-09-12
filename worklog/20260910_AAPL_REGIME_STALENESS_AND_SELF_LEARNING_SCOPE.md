@@ -1032,3 +1032,133 @@ diagnostic-only per the 4-phase design; there is no Phase 3 (LLM-
 assisted triage) built yet to consume this detector's output, so for
 now it's a tested, validated function a human (or a future session)
 can run on demand, not an automated nightly check.
+
+## 11. Phase 2 complete — detectors 2+3 built, all three wired into a nightly job, a real bug caught on first run (2026-09-12, explicit approval: "finish off detectors 2+3 then wire into a scheduled job")
+
+> **Priority**: P0 · **Task**: Build detectors 2+3, wire all three
+> Phase 2 detectors into a nightly scheduled job · **Status**: resolved
+> (built, tested, deployed; caught and fixed a real, live production
+> bug on the very first real run) · **Date**: 2026-09-12 · **Roadmap
+> refs**: RM-37
+
+### 11.1 Detector 2 — dead-mechanism detection
+
+`dead_mechanism_detector.py`: `detect_dead_mechanism(mechanism_name,
+mode, last_write_at, now, max_staleness)` — a mode-gated mechanism
+whose table has never been written, or gone stale beyond an expected
+cadence, gets flagged; `off` mechanisms are never flagged (nothing is
+expected to be writing). 7 new tests.
+
+### 11.2 Detector 3 — redundant-computation detection
+
+`redundant_computation_detector.py`: `detect_redundant_computation`
+reuses this codebase's OWN existing shadow-compare tables
+(`nt_markov_source_shadow`, `nt_regime_debounce_shadow`,
+`nt_heavy_sweep_atr_anchored_shadow`,
+`nt_heavy_sweep_deadline_aware_shadow`,
+`nt_heavy_sweep_reachability_shadow` — all already built to answer
+"do these two mechanisms differ" for a shadow→live decision) and asks
+the opposite question: if two computations agree almost every time on
+real data, one may be redundant. This is the exact shape of the
+2026-09-09 `p_historical`/`apply_calibration_adjustment` consolidation
+that was done by hand — this detector would have flagged that pair
+automatically had it existed then. 6 new tests.
+
+### 11.3 Orchestration + a new table
+
+`run_detectors.py`'s `run_all_detectors()` runs all three against real
+Supabase data (detector 1 aggregates `nt_sweep_result` to daily rows
+per active symbol; detector 2 walks a registry of 7 mode-gated
+mechanisms with a clean table+timestamp shape — `context_alignment_
+gate_mode`/`dynamic_min_rr_mode`/`timesfm_k_adaptive_mode` are
+excluded, log-only with no dedicated table, a documented limitation
+not an oversight; detector 3 walks the 5 existing shadow-compare
+tables) and writes findings to a new `nt_self_learning_findings` table
+(migration, diagnostic-only). Added a generic, paginated
+`fetch_all_rows()`/`insert_self_learning_finding()` to
+`supabase_client.py` rather than a near-duplicate one-off fetch per
+table — deliberately reusing one function across a diverse set of
+tables, the same principle detector 3 itself checks for.
+
+Wired as `self-learning-detectors-nightly` (02:00 UTC, right after
+knowledge-index-nightly, same restart-safe Studio window established
+in §6), gated by `self_learning_detectors_enabled` (default on, same
+simple on/off convention as `knowledge_index_enabled` — no
+live-baseline concept for a diagnostic sweep).
+
+### 11.4 A real bug, found on the very first live run
+
+The real smoke test (before wiring the scheduled job) immediately
+surfaced a genuine, currently-live production bug: detector 2 flagged
+`heavy_sweep_atr_anchored_bricks_mode: shadow/live but its shadow table
+has zero rows`. Investigated rather than assumed a false positive —
+root cause: **YAML 1.1 parses the unquoted bareword `off` as the
+Python boolean `False`, not the string `"off"`.**
+`config/feature_flags.yaml` had `heavy_sweep_atr_anchored_bricks_mode:
+off` (unquoted). `get_heavy_sweep_atr_anchored_bricks_mode()`'s
+`str(value).lower()` then returned `"false"`, not `"off"`.
+
+`heavy_sweep.py`'s own usage has two DIFFERENT check styles for the
+same variable:
+- Candidate generation (line 716): `if atr_anchored_mode != "off":` —
+  **permissive** — `"false" != "off"` is `True`, so this branch ran.
+  ATR-anchored brick-size candidates were being silently added to
+  `all_brick_sizes` on EVERY heavy sweep, despite the user having
+  configured this off, and were eligible for `pick_best_combo()` to
+  select as the live geometry.
+- Shadow/live application (lines 818/833): `atr_anchored_mode in
+  ("shadow", "live")` / `== "live"` — **strict** — both correctly
+  `False` for `"false"`, so the shadow table was never written and no
+  live multiplier was ever applied.
+
+Net effect: the *generation* half of this feature was silently active
+in production while the *recording/application* half correctly stayed
+inert — exactly why the table looked dead (matching detector 2's
+finding) while the actual behavior was NOT fully off (a second,
+independent problem the dead-mechanism framing alone wouldn't have
+revealed without reading the actual code, which was done before
+concluding anything).
+
+**Fixed**: quoted the value —
+`heavy_sweep_atr_anchored_bricks_mode: "off"`. Checked every other
+mode flag in the file exhaustively (not just this one) via
+`yaml.safe_load` + a type check: `regime_warm_start_mode` had the
+identical unquoted-bareword issue, but confirmed ZERO live effect —
+every one of its usage sites checks `== "live"` specifically, which is
+correctly `False` for `"false"` too. Quoted anyway for correctness.
+`sweep_after_hours`/`knowledge_index_enabled` are genuine booleans
+(correct as-is, not a bug). No other flags affected.
+
+### 11.5 Verification
+
+Real smoke test against live Supabase data (before wiring the job):
+`{'regime_price_mismatch': 5, 'dead_mechanism': 1, 'redundant_computation': 0, 'errors': 0}`
+— the 5 regime-price-mismatch findings exactly match §10's earlier
+14-symbol backtest (AAPL + the gold/silver family), confirming
+consistency between the standalone validation and the orchestrated
+run. The 1 dead-mechanism finding was the real bug above, now fixed.
+15 new tests (detector 2, detector 3, orchestration wiring), 894 total
+passing, 0 regressions.
+
+### 11.6 Also resolved this session: the deadline-aware-scoring "was this validated" question
+
+Asked directly whether Part 5's citation of `scripts/
+sim_deadline_aware_scoring.py` (worklog
+20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md line
+326-329, "10 expired -> 0 expired, one variable changed") was ever
+validated, and whether the fix retroactively corrected historical
+records. Checked with fresh real data rather than trusting the
+citation: **yes, validated, and more strongly confirmed than the
+original multi-window backfill predicted.** Split correctly by signal
+ENTRY time (not resolution time — resolution can lag entry by up to
+48h, which would misattribute pre-fix trades to the "after" cohort):
+9 of 14 symbols show **0.0% expired** for signals created since the
+2026-09-08 18:14 UTC deploy (down from before-rates of 1.5%-100%); the
+remaining 5 improved substantially but not to zero. **No, historical
+records are not and should not be retroactively rewritten** — a
+signal's outcome reflects whichever brick geometry was actually live
+when it was created; overwriting that would corrupt the audit trail.
+The improvement applies only to new signals going forward, which the
+data confirms cleanly. `nt_roadmap`
+(`heavy_sweep_deadline_aware_scoring_mode`) updated with this real
+reconfirmation.
