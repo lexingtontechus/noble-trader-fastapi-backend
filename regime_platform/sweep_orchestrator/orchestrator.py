@@ -32,6 +32,7 @@ from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, 
 from regime_platform.core.feature_flags import (
     get_knowledge_index_enabled,
     get_self_learning_detectors_enabled,
+    get_self_learning_triage_enabled,
     get_markov_source_mode,
     get_min_ev,
     get_min_kelly,
@@ -1316,6 +1317,26 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Self-learning Phase 3 MVP LLM-triage (2026-09-11, worklog
+        # 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md,
+        # self_learning_phase_3_4_forecasting_rescope, RM-50): nightly,
+        # 02:30 UTC — 30 min after the detectors job above so today's
+        # findings are already written. Reads untriaged
+        # nt_self_learning_findings rows, asks an LLM for a narrative +
+        # an optional bounded Tier D parameter proposal, writes both to
+        # nt_self_learning_reports — purely diagnostic, no write access
+        # to any live parameter. Requires the ANTHROPIC_API_KEY Studio
+        # secret; logs a warning and no-ops per finding without it.
+        if get_self_learning_triage_enabled():
+            self._scheduler.add_job(
+                self._run_self_learning_triage,
+                trigger=CronTrigger.from_crontab("30 2 * * *"),
+                id="self-learning-triage-nightly",
+                name="Self-learning Phase 3 MVP triage (nightly)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
         # after the 05:00 UTC weekend heavy-sweep window so that week's
@@ -1919,6 +1940,25 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[self-learning] detectors run: %s", summary)
         except Exception as exc:
             logger.error("[self-learning] detectors run failed: %s", exc)
+
+    async def _run_self_learning_triage(self) -> None:
+        """Phase 3 MVP LLM-triage (daily, 02:30 UTC).
+
+        See ``regime_platform/services/self_learning/triage.py`` and
+        worklog 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md
+        §2. Reads untriaged ``nt_self_learning_findings`` rows, asks an
+        LLM for a narrative + an optional bounded Tier D parameter
+        proposal, writes both to ``nt_self_learning_reports``. No write
+        access to any live parameter. Best-effort: failures are logged,
+        never raised.
+        """
+        from regime_platform.services.self_learning.triage import run_triage
+
+        try:
+            summary = await run_triage()
+            logger.info("[self-learning] triage run: %s", summary)
+        except Exception as exc:
+            logger.error("[self-learning] triage run failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

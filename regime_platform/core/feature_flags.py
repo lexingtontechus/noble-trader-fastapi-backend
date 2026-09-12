@@ -76,6 +76,7 @@ _DEFAULTS: dict[str, Any] = {
     "renko_brick_retention_days": 2,
     "knowledge_index_enabled": True,
     "self_learning_detectors_enabled": True,
+    "self_learning_triage_enabled": True,
     "trend_regime_mode": "off",
     "context_alignment_gate_mode": "shadow",
     "dynamic_min_rr_mode": "shadow",
@@ -591,6 +592,21 @@ def get_self_learning_detectors_enabled() -> bool:
     comparison for a diagnostic sweep)."""
     value = _load().get(
         "self_learning_detectors_enabled", _DEFAULTS["self_learning_detectors_enabled"],
+    )
+    return bool(value)
+
+
+def get_self_learning_triage_enabled() -> bool:
+    """Whether the nightly Phase 3 MVP LLM-triage job runs (2026-09-11,
+    self_learning_phase_3_4_forecasting_rescope, RM-50). Reads
+    untriaged rows from nt_self_learning_findings, asks an LLM for a
+    short narrative and an optional bounded Tier D parameter-change
+    proposal, writes both to nt_self_learning_reports for human
+    review. No write access to any live parameter — same simple
+    on/off convention as self_learning_detectors_enabled, for the same
+    reason (purely diagnostic, no live-baseline comparison needed)."""
+    value = _load().get(
+        "self_learning_triage_enabled", _DEFAULTS["self_learning_triage_enabled"],
     )
     return bool(value)
 

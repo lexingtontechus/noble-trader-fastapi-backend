@@ -1,0 +1,305 @@
+"""Tests for the Phase 3 MVP LLM-triage module
+(regime_platform/services/self_learning/triage.py), worklog
+20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md, RM-50.
+
+All LLM/Supabase/embedding I/O is mocked — no real network calls. These
+tests cover: JSON extraction from a raw model response, the Tier D
+allowlist validation/clamping (the actual safety mechanism, since
+nothing downstream reads this table to make a live decision but a
+stored proposal should still be honest about bounds), and the
+best-effort orchestration (one finding failing doesn't block the
+rest, a finding is only marked triaged once a report was actually
+produced).
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from regime_platform.services.self_learning import triage
+
+
+# ── _extract_json ────────────────────────────────────────────────────
+
+class TestExtractJson:
+    def test_plain_json(self):
+        text = '{"narrative": "hi", "proposed_param": null, "proposed_value": null}'
+        assert triage._extract_json(text) == {
+            "narrative": "hi", "proposed_param": None, "proposed_value": None,
+        }
+
+    def test_json_with_surrounding_prose(self):
+        text = 'Sure, here is my answer:\n{"narrative": "ok"}\nHope that helps!'
+        assert triage._extract_json(text) == {"narrative": "ok"}
+
+    def test_no_json_returns_none(self):
+        assert triage._extract_json("no json here at all") is None
+
+    def test_malformed_json_returns_none(self):
+        assert triage._extract_json("{not: valid json}") is None
+
+
+# ── _validate_proposal ───────────────────────────────────────────────
+
+class TestValidateProposal:
+    def test_valid_param_in_bounds_passes_through(self):
+        param, value = triage._validate_proposal("KELLY_REDUCTION", 0.5)
+        assert param == "KELLY_REDUCTION"
+        assert value == 0.5
+
+    def test_valid_param_out_of_bounds_gets_clamped(self):
+        # KELLY_REDUCTION bounds are (0.10, 0.75) per tuning_registry.PARAM_BOUNDS
+        param, value = triage._validate_proposal("KELLY_REDUCTION", 999.0)
+        assert param == "KELLY_REDUCTION"
+        assert value == 0.75
+
+    def test_out_of_scope_param_is_discarded(self):
+        param, value = triage._validate_proposal("MIN_RR", 2.0)  # Tier C, not in TIER_D_PILOT_PARAMS
+        assert param is None
+        assert value is None
+
+    def test_unknown_param_name_is_discarded(self):
+        param, value = triage._validate_proposal("SOMETHING_MADE_UP", 1.0)
+        assert param is None
+        assert value is None
+
+    def test_none_param_passes_through_as_none(self):
+        param, value = triage._validate_proposal(None, None)
+        assert param is None
+        assert value is None
+
+    def test_non_numeric_value_is_discarded(self):
+        param, value = triage._validate_proposal("KELLY_REDUCTION", "not a number")
+        assert param is None
+        assert value is None
+
+
+# ── _build_prompt ─────────────────────────────────────────────────────
+
+def test_build_prompt_includes_finding_and_allowed_params():
+    finding = {"detector": "dead_mechanism", "symbol": None, "summary": "X is stale", "details": {"a": 1}}
+    prompt = triage._build_prompt(finding, ["some code excerpt"], {"KELLY_REDUCTION": {"min": 0.1, "max": 0.75, "current": 0.3}})
+    assert "X is stale" in prompt
+    assert "some code excerpt" in prompt
+    assert "KELLY_REDUCTION" in prompt
+
+
+# ── _call_llm ─────────────────────────────────────────────────────────
+
+class TestCallLlm:
+    @pytest.mark.asyncio
+    async def test_missing_api_key_returns_none_without_network_call(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        triage._warned_missing_key = False
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            result = await triage._call_llm("some prompt")
+        assert result is None
+        mock_client_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_call_parses_json_from_response(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {
+            "content": [{"type": "text", "text": '{"narrative": "root cause", "proposed_param": null, "proposed_value": null}'}],
+        }
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await triage._call_llm("some prompt")
+        assert result == {"narrative": "root cause", "proposed_param": None, "proposed_value": None}
+
+    @pytest.mark.asyncio
+    async def test_http_failure_returns_none(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        mock_resp = MagicMock()
+        mock_resp.is_success = False
+        mock_resp.status_code = 500
+        mock_resp.text = "server error"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await triage._call_llm("some prompt")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_network_exception_returns_none(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await triage._call_llm("some prompt")
+        assert result is None
+
+
+# ── triage_finding ────────────────────────────────────────────────────
+
+class TestTriageFinding:
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_report_dict(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={"KELLY_REDUCTION": {"min": 0.1, "max": 0.75, "current": 0.3}})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value={
+                "narrative": "root cause narrative",
+                "proposed_param": "KELLY_REDUCTION",
+                "proposed_value": 0.4,
+            })),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report["narrative"] == "root cause narrative"
+        assert report["proposed_param"] == "KELLY_REDUCTION"
+        assert report["proposed_value"] == 0.4
+        assert report["current_value"] == 0.3
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_returns_none(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value=None)),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report is None
+
+    @pytest.mark.asyncio
+    async def test_missing_narrative_returns_none(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value={"narrative": "", "proposed_param": None, "proposed_value": None})),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report is None
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_param_dropped_from_final_report(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value={
+                "narrative": "n", "proposed_param": "MIN_RR", "proposed_value": 2.0,
+            })),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report["proposed_param"] is None
+        assert report["proposed_value"] is None
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_failure_still_proceeds(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", side_effect=RuntimeError("index missing")),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value={"narrative": "n", "proposed_param": None, "proposed_value": None})),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report["narrative"] == "n"
+
+
+# ── run_triage ────────────────────────────────────────────────────────
+
+class TestRunTriage:
+    @pytest.mark.asyncio
+    async def test_aggregates_counts_and_writes_reports(self):
+        findings = [{"id": 1, "summary": "a"}, {"id": 2, "summary": "b"}]
+        with (
+            patch.object(triage, "fetch_untriaged_findings", new=AsyncMock(return_value=findings)),
+            patch.object(triage, "triage_finding", new=AsyncMock(side_effect=[
+                {"narrative": "n1", "proposed_param": None, "proposed_value": None, "current_value": None},
+                {"narrative": "n2", "proposed_param": None, "proposed_value": None, "current_value": None},
+            ])),
+            patch.object(triage, "insert_self_learning_report", new=AsyncMock(return_value=True)) as mock_insert,
+            patch.object(triage, "mark_finding_triaged", new=AsyncMock(return_value=True)) as mock_mark,
+        ):
+            summary = await triage.run_triage()
+        assert summary["findings_seen"] == 2
+        assert summary["reports_written"] == 2
+        assert summary["skipped"] == 0
+        assert summary["errors"] == 0
+        assert mock_insert.await_count == 2
+        assert mock_mark.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skipped_finding_is_not_marked_triaged(self):
+        findings = [{"id": 1, "summary": "a"}]
+        with (
+            patch.object(triage, "fetch_untriaged_findings", new=AsyncMock(return_value=findings)),
+            patch.object(triage, "triage_finding", new=AsyncMock(return_value=None)),
+            patch.object(triage, "insert_self_learning_report", new=AsyncMock(return_value=True)) as mock_insert,
+            patch.object(triage, "mark_finding_triaged", new=AsyncMock(return_value=True)) as mock_mark,
+        ):
+            summary = await triage.run_triage()
+        assert summary["skipped"] == 1
+        assert summary["reports_written"] == 0
+        mock_insert.assert_not_awaited()
+        mock_mark.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_finding_failing_does_not_block_the_others(self):
+        findings = [{"id": 1, "summary": "a"}, {"id": 2, "summary": "b"}]
+        with (
+            patch.object(triage, "fetch_untriaged_findings", new=AsyncMock(return_value=findings)),
+            patch.object(triage, "triage_finding", new=AsyncMock(side_effect=[
+                RuntimeError("boom"),
+                {"narrative": "n2", "proposed_param": None, "proposed_value": None, "current_value": None},
+            ])),
+            patch.object(triage, "insert_self_learning_report", new=AsyncMock(return_value=True)),
+            patch.object(triage, "mark_finding_triaged", new=AsyncMock(return_value=True)),
+        ):
+            summary = await triage.run_triage()  # must not raise
+        assert summary["errors"] == 1
+        assert summary["reports_written"] == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_returns_error_summary_without_raising(self):
+        with patch.object(triage, "fetch_untriaged_findings", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            summary = await triage.run_triage()  # must not raise
+        assert summary["errors"] == 1
+        assert summary["findings_seen"] == 0
+
+
+# ── Orchestrator wiring ───────────────────────────────────────────────
+
+class TestOrchestratorSelfLearningTriageWiring:
+    """_run_self_learning_triage is a thin, best-effort wrapper around
+    run_triage -- same shape as _run_self_learning_detectors's own
+    wrapper around run_all_detectors."""
+
+    def _orch(self):
+        from regime_platform.sweep_orchestrator.orchestrator import SweepOrchestrator
+        return object.__new__(SweepOrchestrator)
+
+    @pytest.mark.asyncio
+    async def test_calls_run_triage(self):
+        run_mock = AsyncMock(return_value={"findings_seen": 1})
+        orch = self._orch()
+        with patch(
+            "regime_platform.services.self_learning.triage.run_triage",
+            new=run_mock,
+        ):
+            await orch._run_self_learning_triage()
+        run_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_is_best_effort_never_raises(self):
+        run_mock = AsyncMock(side_effect=RuntimeError("boom"))
+        orch = self._orch()
+        with patch(
+            "regime_platform.services.self_learning.triage.run_triage",
+            new=run_mock,
+        ):
+            await orch._run_self_learning_triage()  # must not raise

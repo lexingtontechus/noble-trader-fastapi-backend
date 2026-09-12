@@ -374,6 +374,66 @@ async def insert_self_learning_finding(
     })
 
 
+async def fetch_untriaged_findings(limit: int = 20) -> list[dict[str, Any]]:
+    """Rows from ``nt_self_learning_findings`` where ``triaged_at IS
+    NULL``, oldest first — feeds the Phase 3 MVP LLM-triage job
+    (``regime_platform/services/self_learning/triage.py``, RM-50)."""
+    return await fetch_all_rows(
+        "nt_self_learning_findings",
+        "id,detector,symbol,summary,details,detected_at",
+        filters={"triaged_at": "is.null"},
+        order="detected_at.asc",
+        max_rows=limit,
+    )
+
+
+async def mark_finding_triaged(finding_id: int) -> bool:
+    """PATCH one ``nt_self_learning_findings`` row's ``triaged_at`` to
+    now, once the Phase 3 triage job has produced a report for it (or
+    given up on it) — so the job doesn't reprocess the same row every
+    night. Best-effort: returns False on any failure, never raises."""
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.patch(
+                _url("nt_self_learning_findings"),
+                headers={**_headers(), "Prefer": "return=minimal"},
+                params={"id": f"eq.{finding_id}"},
+                json={"triaged_at": datetime.now(timezone.utc).isoformat()},
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "mark_finding_triaged %s: HTTP %d — %s",
+                    finding_id, resp.status_code, resp.text[:200],
+                )
+                return False
+            return True
+    except Exception as exc:
+        logger.warning("mark_finding_triaged %s failed: %s", finding_id, exc)
+        return False
+
+
+async def insert_self_learning_report(
+    finding_id: int,
+    narrative: str,
+    proposed_param: str | None = None,
+    proposed_value: float | None = None,
+    current_value: float | None = None,
+) -> bool:
+    """Insert one row into ``nt_self_learning_reports`` (best-effort).
+    Written-report-only output from the Phase 3 MVP LLM-triage job —
+    nothing reads this table to make a live decision; a human reads it
+    and manually actions any proposed Tier D parameter change."""
+    return await _insert_row("nt_self_learning_reports", {
+        "finding_id": finding_id,
+        "narrative": narrative,
+        "proposed_param": proposed_param,
+        "proposed_value": proposed_value,
+        "current_value": current_value,
+    })
+
+
 async def log_sweep_result(payload: dict[str, Any]) -> None:
     """Persist sweep KPIs to ``nt_sweep_result``.
 

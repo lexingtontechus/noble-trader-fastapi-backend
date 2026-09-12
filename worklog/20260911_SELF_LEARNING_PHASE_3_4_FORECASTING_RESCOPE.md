@@ -1,25 +1,29 @@
-# Self-Learning Phase 3+4 — Rescoped Around Forward/Lookback Forecasting (TimesFM + JinaAI)
+# Self-Learning Phase 3 — MVP LLM-Assisted Triage
 
-> **Status: scope only, nothing built.** Per "scope in worklog, get
-> honest review, build only on explicit instruction." This document
-> moves Phase 3 ("LLM-assisted triage") and Phase 4 ("explicitly not
-> recommended") out of
+> **Status: scope revised 2026-09-11, then built same day.** Per "scope
+> in worklog, get honest review, build only on explicit instruction."
+> This document moves Phase 3 ("LLM-assisted triage") and Phase 4
+> ("explicitly not recommended") out of
 > `worklog/20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md`
-> §2 (left there verbatim, now annotated as moved) and widens Phase 3's
-> design to combine a **lookback** axis (Phase 1's semantic index +
-> Phase 2's detector findings, both already built) with a **forward**
-> axis (TimesFM 2.5/3.0 quantitative forecasting + the 12-month
-> commodity macro model) and reopens the **JinaAI** retrieval-embedding
-> question that was explicitly closed in the opposite direction on
-> 2026-09-11 (see §2 below). Phase 1/Phase 2 (`RM-36`, `RM-37`) are
-> untouched by this document.
+> §2 (left there verbatim, now annotated as moved). Phase 1/Phase 2
+> (`RM-36`, `RM-37`) are untouched by this document.
+>
+> **Revision history**: the first version of this file (same day)
+> widened Phase 3 with a TimesFM 2.5/3.0 forward-forecasting axis and
+> reconsidered JinaAI for retrieval. **JinaAI was a mistake — the user
+> flagged it and asked for all references removed**, and on reflection
+> the forecasting axis was scope creep for a first cut. This version
+> replaces that draft entirely with an **MVP**: minimum-effort LLM
+> triage over what Phase 1/2 already produce, no new retrieval infra,
+> no forecasting integration. The forecasting idea isn't wrong, just
+> not v1 — noted at the end as a possible follow-up, not built.
 
 | # | Priority | Task | Status | Date | Roadmap refs |
 |---|---|---|---|---|---|
 | §1 | P2 | Restate Phase 3/4 as originally scoped, for reference | n/a | 2026-09-11 | RM-36 |
-| §2 | P2 | Widen Phase 3: lookback + forward forecasting, reconsider JinaAI | blocked | 2026-09-11 | RM-50 |
+| §2 | P2 | MVP design: LLM triage + bounded param-tuning proposal | resolved — built | 2026-09-11 | RM-50 |
 | §3 | P2 | Phase 4 — carried forward unchanged | n/a | 2026-09-11 | n/a |
-| §4 | P2 | Open questions needing a decision before anything is built | n/a | 2026-09-11 | n/a |
+| §4 | P3 | Deferred: forecasting-grounded triage (not in MVP) | n/a | 2026-09-11 | n/a |
 
 ---
 
@@ -40,168 +44,164 @@ Phase 1 (pgvector-style local index — **built**, `RM-36`) and Phase 2
   any live parameter at this phase.**
 - **Phase 4 — explicitly NOT recommended soon.** Any LLM or auto-tuner
   component with *write* access to a live trading/sizing parameter.
-  Should only be considered, if ever, after Phases 1-3 have run long
-  enough on real data to build trust — and even then through the same
-  shadow-mode → real-data comparison → explicit human promotion
-  pipeline every other mechanism in this codebase has gone through.
 
-`RM-37`'s own notes already flagged Phase 3 as "the next real milestone
-if desired, not yet scoped in detail" — this document is that detailed
-scoping, widened per the current request rather than left narrow.
+`RM-37`'s own notes flagged Phase 3 as "the next real milestone if
+desired, not yet scoped in detail" — this document is that scoping,
+kept deliberately narrow.
 
 ---
 
-## 2. What's widening, and why
+## 2. MVP design: LLM triage + bounded param-tuning proposal
 
-### 2.1 The narrow version was retrieval-only over past events
+### 2.1 Goal
 
-As originally scoped, Phase 3 only looked *backward*: a detector fires
-on something that already happened (a regime/price mismatch, a dead
-mechanism, a redundant computation), and the LLM's only job is to
-explain it using code/worklog history. That's useful, but it can never
-anticipate anything — it's diagnosis, not forecasting. The request
-this document responds to is to widen that: fold in an actual
-**forward-looking numerical forecast** (TimesFM) and a **long-horizon
-structured macro narrative** (the 12-month commodity model), and use
-both together, alongside the existing lookback machinery, to (a)
-produce richer triage narratives and (b) let the written proposal
-suggest specific parameter values to tune — not just describe a bug.
+Let the user actually run and evaluate LLM-assisted triage — "so we
+can test/backtest, possibly tune a limited set of params" — with the
+least new infrastructure possible. Concretely: one nightly job reads
+whatever Phase 2 hasn't triaged yet, asks an LLM for a short narrative
+and (optionally) a bounded parameter-change suggestion, and writes both
+to a new table for a human to read. Nothing new to build for retrieval
+(reuses Phase 1's existing `semantic_search`), nothing new for
+detection (reuses Phase 2's existing `nt_self_learning_findings`), and
+the tunable surface is not a new decision — it's the exact
+`TIER_D_PILOT_PARAMS` allowlist `auto_tuner.py` (Layer 1) already uses
+and enforces via `tuning_registry.PARAM_BOUNDS`.
 
-### 2.2 Forward axis, source 1 — TimesFM 2.5 (live) / 3.0 (license-blocked)
+### 2.2 What's genuinely new
 
-Two already-scoped, separate pieces of work become inputs to this
-Phase 3 rather than parallel unrelated tracks:
+1. **`nt_self_learning_findings.triaged_at`** (new nullable column) —
+   marks a finding as already sent through triage, so the nightly job
+   doesn't reprocess the same rows forever.
+2. **`nt_self_learning_reports`** (new table) — one row per triage
+   result: `finding_id` (FK), `narrative`, `proposed_param` (nullable,
+   must be in `TIER_D_PILOT_PARAMS` or it's discarded before storage),
+   `proposed_value` (nullable, clamped into `PARAM_BOUNDS` before
+   storage), `current_value` (nullable snapshot of the param's live
+   value at triage time, for human comparison), `reviewed` (bool,
+   default false, mirrors `nt_self_learning_findings`).
+3. **`regime_platform/services/self_learning/triage.py`** — the actual
+   LLM call. One finding in, one report dict out (or `None` on any
+   failure — best-effort, matches `run_detectors.py`'s per-item
+   pattern). Steps per finding:
+   - `semantic_search(finding["summary"], k=3)` — reuse Phase 1
+     unchanged, small `k` to keep the prompt short/cheap.
+   - Build a prompt: the finding's `summary`/`details`, the 3 retrieved
+     chunks, and the full `TIER_D_PILOT_PARAMS` list with each
+     parameter's current value (`tuning_registry.read_param_async`)
+     and bounds (`PARAM_BOUNDS`). System prompt states plainly: this is
+     diagnostic only, nothing is applied automatically, propose a
+     parameter change **only** from the given list or leave it null.
+   - Raw `httpx` POST to the Anthropic Messages API (no SDK dependency
+     — matches how `TIMESFM_API_KEYS` is called directly via
+     `httpx`/env var rather than through `settings.py`), model
+     `claude-haiku-4-5-20251001` (cheapest available — MVP cost
+     discipline), asking for a JSON-only response:
+     `{"narrative": str, "proposed_param": str|null, "proposed_value": number|null}`.
+   - Parse the JSON leniently (first `{` to last `}`); on any parse
+     failure, missing key, or HTTP error, log and return `None` for
+     that finding rather than raising.
+   - **Validate before storing, not just before applying**: if
+     `proposed_param` isn't in `TIER_D_PILOT_PARAMS`, drop it (log a
+     warning — the model proposed something out of scope) and null out
+     `proposed_value` too. If it is in scope, clamp `proposed_value`
+     into `PARAM_BOUNDS[proposed_param]` via `tuning_registry.clamp()`
+     before storing — belt-and-suspenders even though nothing reads
+     this table to make a live decision.
+4. **`supabase_client.py`** additions — `fetch_untriaged_findings()`,
+   `mark_finding_triaged()`, `insert_self_learning_report()`, following
+   the exact `_insert_row`/`fetch_all_rows`/PATCH-by-id patterns
+   already in that file (e.g. `update_tuning_param_cycle_result`).
+5. **New job**: `self-learning-triage-nightly`, 02:30 UTC (after the
+   02:00 UTC detectors job, so today's findings are already written),
+   gated by `self_learning_triage_enabled` (default `true`, mirrors
+   `self_learning_detectors_enabled` — same risk class: read-only
+   diagnostic output, no live effect regardless of on/off).
 
-- **TimesFM 2.5** is already live in the signal-qualification path
-  (`_fetch_timesfm_cached`, univariate, one call per symbol,
-  `timesfm_k_adaptive.py` for the sigmoid-k mapping). Its per-symbol
-  point/quantile forecast is a forward signal Phase 3 can read
-  directly — it already exists, nothing new to build to get access to
-  it.
-- **TimesFM 3.0** multivariate covariate forecasting is separately
-  scoped and marked **"Approved for full implementation"** in
-  `worklog/20260915_TIMESFM3_IMPLEMENTATION_SCOPE.md` — full variate
-  attention across correlated commodity clusters (energy/agricultural/
-  metals), conditioned on the 12-month forecast ranges as static
-  covariates, shadow-mode-gated (`timesfm3_mode`), blocked on the
-  non-commercial weights license per
-  `[[timesfm_3_license_blocker]]`. **That document's implementation
-  sequence is independent of this one** — it stands on its own as a
-  signal-qualification improvement regardless of whether Phase 3 uses
-  its output. This document treats it as an available *input* once
-  built: a self-learning triage or tuning proposal grounded in "TimesFM
-  says HO and CL diverged from their historical correlation this week"
-  is a materially different (and stronger) kind of finding than
-  anything Phase 2's detectors can produce today.
+### 2.3 What's explicitly NOT in the MVP
 
-### 2.3 Forward axis, source 2 — the 12-month commodity macro model
+- No TimesFM forecast grounding, no commodity macro model input — see
+  §4.
+- No new embedding model/provider — Phase 1's existing local
+  `sentence-transformers/all-MiniLM-L6-v2` index is reused as-is.
+- No auto-apply path of any kind — `proposed_param`/`proposed_value`
+  are written for a human to read and manually action (e.g. by hand-
+  editing `config/tuning_registry.yaml`, same as any other Tier D
+  change today). This module has no import of, or call into,
+  `tuning_registry.write_param()`.
+- No retry/backoff logic, no rate limiting, no streaming — a single
+  `httpx` call per finding with a plain timeout, best-effort.
 
-`docs/LLM/commodity_12m_forecast_model_2027.md` (13 symbols, Q4 2026 →
-Q3 2027, structured quarterly ranges + named risk drivers) and its
-companion `docs/LLM/commodity_macro_context_scope.md` (assessment-only,
-no code) already scope a path to get this content into the live
-pipeline as `nt_macro_forecast`, read by `macro_filter.py` and
-`context_alignment.py` in shadow mode. That scope is **not itself part
-of this rescope** — it's a separate, already-designed piece of work
-(own implementation sequence, own open questions, e.g. TradingView
-symbol availability for FCPO/VGT/JX/SI). What *is* relevant here: once
-`nt_macro_forecast` exists, it's a second forward-looking, long-horizon
-input Phase 3 can ground a narrative in — "the detector flagged HO's
-regime/price mismatch, and the 12-month model independently predicts
-record diesel cracks through Q4" is a genuinely richer triage output
-than code/worklog retrieval alone can produce.
+### 2.4 A real, unavoidable data-boundary note (not the same as the Jina question)
 
-### 2.4 Retrieval axis — reopening the JinaAI question
+Unlike the Jina retrieval question — which had a genuine local
+alternative and was reopened/closed as an actual choice — LLM-assisted
+triage has no local alternative that fits "minimum effort": the entire
+point of Phase 3 is a model call. Concretely, this means the finding's
+`summary`/`details` and up to 3 short code/worklog excerpts (from this
+repo's own semantic index) get sent to Anthropic's API per triage run.
+No trading credentials, prices, or account data are in that payload —
+only the same code/worklog text already sitting in the local knowledge
+index — but it is a new category of external call this repo didn't
+have before, worth naming plainly rather than leaving implicit.
 
-Phase 1's original build (`RM-36`) tried
-`jinaai/jina-embeddings-v2-base-code` first, specifically for its
-code+docstring domain tuning, then **swapped it out same-day** after
-the first real Studio deploy failed: that model's custom
-`modeling_bert.py` (loaded via HF's trust-remote-code path) imports
-`find_pruneable_heads_and_indices` from `transformers.pytorch_utils`,
-which doesn't exist under Studio's `transformers==5.12.1`. The fix was
-`sentence-transformers/all-MiniLM-L6-v2` run locally — a real,
-already-resolved incompatibility, not a preference.
+### 2.5 New Studio secret required
 
-Bringing JinaAI back in for this rescope means being explicit about
-what's actually different this time: the original failure was specific
-to loading Jina's *custom code* locally under a fixed transformers
-version. A **hosted Jina API call** (their embeddings endpoint,
-paid/rate-limited) sidesteps that exact failure mode entirely — no
-local model code, no transformers-version coupling — but reopens the
-tradeoff this repo's own [[config_centralization_preference]] and
-`RM-36`'s notes already closed once, explicitly, in the *opposite*
-direction: "we already do this for timesfm, 800mb" (i.e., local/
-self-hosted was the user's deliberate call, not an oversight to
-correct). Widening Phase 3 to use Jina again — whether for embedding
-the forecast narrative text, the commodity model's prose, or news-style
-context beyond what's in this repo's own worklogs — is **not a decided
-change**; it's flagged here as the concrete tradeoff it actually is
-(§4.1).
-
-### 2.5 Rescoped Phase 3 definition
-
-LLM-assisted triage **and tuning-proposal**, grounded in four sources
-instead of one:
-
-1. Phase 1's semantic index (code, worklogs, `nt_roadmap.notes`) — lookback, built.
-2. Phase 2's detector findings (`nt_self_learning_findings`) — lookback, built.
-3. TimesFM 2.5 (live) / 3.0 (blocked) forecasts — forward, quantitative, per-symbol or per-cluster.
-4. The 12-month commodity macro model (`nt_macro_forecast`, once built per its own scope) — forward, long-horizon, narrative.
-
-Output is still, unchanged from the original scope, **a written
-report/proposal only** — landing as a new row in
-`nt_self_learning_reports` or a scoped worklog draft, read and approved
-by a human before anything is built. The widening to "tune params"
-means the written proposal is now allowed to name a *specific*
-parameter and a *specific* proposed value (e.g. "raise
-`timesfm_k_floor` from 8 to 10" rather than only "the k-floor may be
-too conservative") — this is a change in the *specificity* of the
-written output, not a change in write authority. It still requires the
-same explicit human read-and-approve step as every other mechanism in
-this codebase, and the same Tier-D-only boundary
-`auto_tuner.py`/Layer 1 already enforces should be the starting
-assumption for what's in-bounds to *propose*, pending §4.3.
+`ANTHROPIC_API_KEY` — read directly via `os.getenv()` inside
+`triage.py` (same pattern as `TIMESFM_API_KEYS` in `orchestrator.py`),
+**not** added to `settings.py`. Not set by this session — the user
+needs to add it to Lightning Studio's secret manager for the job to
+actually call the LLM. Missing key is handled the same way missing
+`TIMESFM_API_KEYS` already is: a clear one-time warning log, then the
+job no-ops for that run instead of crashing.
 
 ---
 
 ## 3. Phase 4 — carried forward unchanged
 
-Nothing about widening Phase 3's inputs changes the case against Phase
-4. Restated verbatim in spirit: any LLM or auto-tuner component with
-*write* access to a live trading/sizing parameter is **explicitly not
-recommended soon**, regardless of how good the forecasting/retrieval
-inputs get. If ever revisited, it goes through the same shadow-mode →
-real-data comparison → explicit human promotion pipeline as every other
-mechanism here — a stronger forecast is not an exception.
+Nothing here changes the case against Phase 4: any LLM or auto-tuner
+component with *write* access to a live trading/sizing parameter is
+**explicitly not recommended soon**, MVP or not. `triage.py` never
+imports `tuning_registry.write_param()` — enforced structurally, not
+just by convention.
 
 ---
 
-## 4. Open questions needing a decision before any of this is built
+## 4. Deferred: forecasting-grounded triage (not in MVP)
 
-1. **JinaAI: local (again) vs hosted API vs stay on MiniLM** — the
-   local-custom-code failure that forced the 2026-09-11 swap is
-   avoidable via a hosted API call, but that reopens the
-   external-API-cost/data-leaves-boundary tradeoff already closed once
-   in favor of local-only. No default assumed.
-2. **Is TimesFM-3 a hard dependency, or does 2.5 + the static
-   12-month-model text suffice to start?** `20260915_TIMESFM3_..._SCOPE.md`
-   is separately approved but blocked on the non-commercial license;
-   this Phase 3 rescope doesn't need to wait for it — TimesFM 2.5's
-   existing per-symbol forecast plus the commodity model's prose is
-   enough to prototype the "forward-grounded narrative" idea. Confirm
-   whether to proceed on that basis or wait for TimesFM-3.
-3. **Scope of "tune params" in the written proposal** — Tier D
-   calibration/enforcement constants only (matching `auto_tuner.py`'s
-   existing bounded scope), or wider (e.g. gate thresholds, k-adaptive
-   floor/ceiling, `min_rr`)? Wider is a bigger trust ask given nothing
-   here has write access yet regardless.
-4. **Relationship to `nt_macro_forecast`** (from
-   `commodity_macro_context_scope.md`) — is building that table a
-   prerequisite for Phase 3's forward axis, or should Phase 3 start
-   with just TimesFM 2.5 and treat the commodity model as a manually
-   pasted-in reference for now, deferring `nt_macro_forecast` to its
-   own separate approval?
+The first draft of this document proposed grounding Phase 3 in TimesFM
+2.5 (live)/3.0 (separately approved, license-blocked per
+`worklog/20260915_TIMESFM3_IMPLEMENTATION_SCOPE.md`) forecasts and the
+12-month commodity macro model
+(`docs/LLM/commodity_12m_forecast_model_2027.md`,
+`docs/LLM/commodity_macro_context_scope.md`). That idea isn't wrong,
+just bigger than "minimum effort" — noted here so it isn't lost, not
+scoped further. If the MVP proves useful, a natural next step is
+passing the relevant symbol's current TimesFM forecast into the prompt
+alongside the finding, before reaching for the full multivariate/
+macro-model integration those other two documents separately describe.
 
-Nothing above is built. Waiting on direction on these four questions
-before any code is written.
+---
+
+## 5. Built 2026-09-11
+
+- Migration: `nt_self_learning_findings.triaged_at` column added;
+  `nt_self_learning_reports` table created.
+- `regime_platform/services/self_learning/triage.py` — `triage_finding()`,
+  `run_triage()`, prompt construction, JSON extraction, Tier D
+  allowlist validation + bounds clamping.
+- `supabase_client.py` — `fetch_untriaged_findings()`,
+  `mark_finding_triaged()`, `insert_self_learning_report()`.
+- `feature_flags.py`/`feature_flags.yaml` — `self_learning_triage_enabled`
+  (default `true`).
+- `orchestrator.py` — `self-learning-triage-nightly` job (02:30 UTC) +
+  `_run_self_learning_triage()`.
+- Tests: `tests/test_self_learning_triage.py`, 26 new tests (JSON
+  extraction, Tier D allowlist validation/clamping, prompt building,
+  mocked LLM call success/HTTP-failure/network-failure/missing-key
+  paths, `triage_finding`/`run_triage` best-effort orchestration,
+  orchestrator wiring). Full suite: 920 passed, 21 skipped (was 894
+  before this change).
+- **Not yet verified live** — needs `ANTHROPIC_API_KEY` added to Studio
+  secrets, then a real deploy + first real nightly run to confirm
+  end-to-end (mirrors how `self-learning-detectors-nightly` was
+  verified after its own first deploy).

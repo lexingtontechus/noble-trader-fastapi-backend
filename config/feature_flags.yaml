@@ -565,6 +565,18 @@ knowledge_index_enabled: true
 # knowledge_index_enabled above.
 self_learning_detectors_enabled: true
 
+# self_learning_triage_enabled (2026-09-11, MVP Phase 3,
+# self_learning_phase_3_4_forecasting_rescope, RM-50): gates the nightly
+# LLM-triage job (regime_platform/services/self_learning/triage.py) --
+# reads untriaged nt_self_learning_findings rows, asks an LLM for a
+# narrative + an optional bounded Tier D parameter-change proposal
+# (from auto_tuner.py's own TIER_D_PILOT_PARAMS list), writes both to
+# nt_self_learning_reports for human review. No write access to any
+# live parameter. Requires the ANTHROPIC_API_KEY Studio secret to
+# actually call the LLM -- missing key logs a warning and no-ops.
+# Simple on/off, same reasoning as self_learning_detectors_enabled above.
+self_learning_triage_enabled: true
+
 # heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was
 # a 72h timer bounding how long the TimesFM confidence gate in
