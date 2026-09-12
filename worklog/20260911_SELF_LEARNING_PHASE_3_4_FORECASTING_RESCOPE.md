@@ -133,6 +133,11 @@ and enforces via `tuning_registry.PARAM_BOUNDS`.
 - No retry/backoff logic, no rate limiting, no streaming — a single
   `httpx` call per finding with a plain timeout, best-effort.
 
+TIER_D_PILOT_PARAMS = ("EOD_BIAS_ENFORCED_THRESHOLD", "EOD_BIAS_RAW_OVERCONFIDENT",
+    "EOD_BIAS_RAW_UNDERCONFIDENT", "EOD_DRIFT_THRESHOLD", "BAYES_PRIOR_COUNT",
+    "KELLY_REDUCTION", "STAGNATION_EPSILON", "STAGNATION_TIER1_CYCLES",
+    "STAGNATION_TIER2_CYCLES", "STAGNATION_RESET_CYCLES", "STAGNATION_KELLY_REDUCTION_TIER1")
+
 ### 2.4 A real, unavoidable data-boundary note (not the same as the Jina question)
 
 Unlike the Jina retrieval question — which had a genuine local

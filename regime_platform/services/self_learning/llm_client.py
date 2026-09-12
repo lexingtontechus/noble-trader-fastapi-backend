@@ -27,11 +27,17 @@ logger = logging.getLogger("regime.self_learning.llm_client")
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
-# Free-tier model IDs shift over time on both platforms — these match
-# what nobletradingapp verified working directly against both APIs on
-# 2026-09-05. Re-verify (or override via env var) if these start
-# failing.
-_OPENROUTER_MODEL_DEFAULT = "minimax/minimax-m3:free"
+# 2026-09-12: minimax/minimax-m3:free (nobletradingapp's original
+# default, matched here 2026-09-11) was retired -- OpenRouter now 404s
+# with "This model is unavailable for free... use minimax/minimax-m3"
+# (the paid slug). Switched to "openrouter/auto", OpenRouter's own
+# meta-router -- it picks a suitable underlying model per request and
+# respects the account-level default/fallback model configured in the
+# OpenRouter dashboard (set to their free-models router as of
+# 2026-09-12), so this default shouldn't go stale the same way a
+# specific free-tier model ID does. NVIDIA NIM's default is unaffected
+# by this issue -- still verified working.
+_OPENROUTER_MODEL_DEFAULT = "openrouter/auto"
 _NVIDIA_NIM_MODEL_DEFAULT = "meta/llama-3.2-11b-vision-instruct"
 
 _REQUEST_TIMEOUT = 30.0
@@ -129,7 +135,10 @@ async def call_llm_with_provider(
                 return parsed, "openrouter"
             logger.warning("llm_client: OpenRouter response wasn't valid JSON, falling back to NVIDIA NIM")
         except Exception as exc:
-            logger.warning("llm_client: OpenRouter call failed, falling back to NVIDIA NIM: %s", exc)
+            logger.warning(
+                "llm_client: OpenRouter call failed, falling back to NVIDIA NIM: %s: %r",
+                type(exc).__name__, exc,
+            )
 
     if nim_key:
         try:
@@ -142,7 +151,7 @@ async def call_llm_with_provider(
                 return parsed, "nvidia_nim"
             logger.warning("llm_client: NVIDIA NIM response wasn't valid JSON either — giving up")
         except Exception as exc:
-            logger.warning("llm_client: NVIDIA NIM call failed: %s", exc)
+            logger.warning("llm_client: NVIDIA NIM call failed: %s: %r", type(exc).__name__, exc)
 
     return None
 

@@ -43,7 +43,12 @@ logger = logging.getLogger("regime.self_learning.macro_forecast_agent")
 
 # Matches commodity_macro_context_scope.md §1.1's "what goes into
 # nt_symbol" table — 12 commodities, DAP excluded (no live feed / no
-# liquid futures contract, per that doc §1.2).
+# liquid futures contract, per that doc §1.2). These bare tickers match
+# nt_symbol.symbol exactly (registered 2026-09-12, active=false —
+# migration register_commodity_symbols_inactive) — NOT
+# nt_symbol.tradingview_symbol's "EXCHANGE:SYMBOL" form, matching every
+# other per-symbol table in this schema (nt_signal_sim, nt_sweep_result,
+# nt_macro_regime, ...), all of which key on the bare ticker too.
 SYMBOLS: tuple[str, ...] = (
     "B", "RB", "HO", "JX", "VGT", "FCPO", "CT", "SB", "RR", "ZC", "ZW", "SI",
 )
