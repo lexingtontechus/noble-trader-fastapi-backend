@@ -13,6 +13,7 @@ orchestration.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -101,7 +102,11 @@ class TestClassifySymbol:
         assert result is None
 
 
-# ── run_macro_forecast ────────────────────────────────────────────────
+# ── run_macro_forecast (single source) ────────────────────────────────
+
+def _source(name="test_source", symbols=("HO", "CL")):
+    return mfa.ForecastSource(name=name, doc_path=Path(f"/fake/{name}.md"), symbols=symbols)
+
 
 class TestRunMacroForecast:
     @pytest.mark.asyncio
@@ -114,7 +119,7 @@ class TestRunMacroForecast:
             ])),
             patch.object(mfa, "upsert_macro_forecast", new=AsyncMock()) as mock_upsert,
         ):
-            summary = await mfa.run_macro_forecast(symbols=("HO", "CL"))
+            summary = await mfa.run_macro_forecast(sources=(_source(),))
         assert summary["symbols_seen"] == 2
         assert summary["classified"] == 1
         assert summary["skipped"] == 1
@@ -134,14 +139,14 @@ class TestRunMacroForecast:
             ])),
             patch.object(mfa, "upsert_macro_forecast", new=AsyncMock()),
         ):
-            summary = await mfa.run_macro_forecast(symbols=("HO", "CL"))  # must not raise
+            summary = await mfa.run_macro_forecast(sources=(_source(),))  # must not raise
         assert summary["errors"] == 1
         assert summary["classified"] == 1
 
     @pytest.mark.asyncio
     async def test_doc_load_failure_returns_error_summary_without_raising(self):
         with patch.object(mfa, "_load_forecast_doc", side_effect=RuntimeError("boom")):
-            summary = await mfa.run_macro_forecast(symbols=("HO", "CL"))  # must not raise
+            summary = await mfa.run_macro_forecast(sources=(_source(),))  # must not raise
         assert summary["errors"] == 2
 
     @pytest.mark.asyncio
@@ -151,9 +156,60 @@ class TestRunMacroForecast:
             patch.object(mfa, "classify_symbol", new=AsyncMock(return_value=None)),
             patch.object(mfa, "upsert_macro_forecast", new=AsyncMock()) as mock_upsert,
         ):
-            summary = await mfa.run_macro_forecast(symbols=("HO",))
+            summary = await mfa.run_macro_forecast(sources=(_source(symbols=("HO",)),))
         assert summary["classified"] == 0
         mock_upsert.assert_not_awaited()
+
+
+# ── run_macro_forecast (multi-source registry) ────────────────────────
+
+class TestRunMacroForecastMultiSource:
+    @pytest.mark.asyncio
+    async def test_two_sources_both_run_and_aggregate(self):
+        source_a = _source(name="a", symbols=("HO",))
+        source_b = _source(name="b", symbols=("AAPL",))
+        with (
+            patch.object(mfa, "_load_forecast_doc", return_value="doc text"),
+            patch.object(mfa, "classify_symbol", new=AsyncMock(side_effect=[
+                {"narrative": "n1", "current_trend_label": "trending_up", "current_macro_label": "bull", "current_macro_strength": 0.6, "model_provider": "openrouter"},
+                {"narrative": "n2", "current_trend_label": "consolidating", "current_macro_label": "neutral", "current_macro_strength": 0.2, "model_provider": "nvidia_nim"},
+            ])),
+            patch.object(mfa, "upsert_macro_forecast", new=AsyncMock()) as mock_upsert,
+        ):
+            summary = await mfa.run_macro_forecast(sources=(source_a, source_b))
+        assert summary["symbols_seen"] == 2
+        assert summary["classified"] == 2
+        rows = mock_upsert.await_args.args[0]
+        assert {r["symbol"] for r in rows} == {"HO", "AAPL"}
+
+    @pytest.mark.asyncio
+    async def test_one_sources_doc_failure_does_not_block_the_other_source(self):
+        source_a = _source(name="a", symbols=("HO",))
+        source_b = _source(name="b", symbols=("AAPL",))
+
+        def _load_doc(path):
+            if path == source_a.doc_path:
+                raise RuntimeError("boom")
+            return "doc text"
+
+        with (
+            patch.object(mfa, "_load_forecast_doc", side_effect=_load_doc),
+            patch.object(mfa, "classify_symbol", new=AsyncMock(return_value={
+                "narrative": "n2", "current_trend_label": "consolidating", "current_macro_label": "neutral", "current_macro_strength": 0.2, "model_provider": "nvidia_nim",
+            })),
+            patch.object(mfa, "upsert_macro_forecast", new=AsyncMock()) as mock_upsert,
+        ):
+            summary = await mfa.run_macro_forecast(sources=(source_a, source_b))
+        assert summary["symbols_seen"] == 2
+        assert summary["errors"] == 1  # source_a's one symbol counted as errored
+        assert summary["classified"] == 1  # source_b's symbol still classified
+        rows = mock_upsert.await_args.args[0]
+        assert [r["symbol"] for r in rows] == ["AAPL"]
+
+    @pytest.mark.asyncio
+    async def test_default_registry_contains_commodities_source(self):
+        names = [s.name for s in mfa.FORECAST_SOURCES]
+        assert "commodities_12m" in names
 
 
 # ── Orchestrator wiring ───────────────────────────────────────────────

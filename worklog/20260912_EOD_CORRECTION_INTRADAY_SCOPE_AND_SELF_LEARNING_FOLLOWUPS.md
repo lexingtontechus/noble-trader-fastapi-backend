@@ -16,6 +16,8 @@
 | §5 | P1 | Fix OpenRouter default model (both repos) | resolved — built | 2026-09-12 | RM-50, `llm_client_openrouter_free_model_retired` |
 | §6 | P2 | Investigate the recurring 504 Gateway Timeout errors | investigated | 2026-09-12 | new row, see §6 |
 | §7 | n/a | Record decision: let self-learning data accumulate before acting on "closest available lever" | recorded | 2026-09-12 | RM-50 |
+| §8 | P2 | Scope a macro-forecast doc for existing (active) symbols | scoped only, doc not written | 2026-09-12 | RM-50 |
+| §9 | P2 | Build: RM-42 Option B catch-up guard, `nt_macro_forecast` FK enforcement, multi-source registry | resolved — built | 2026-09-12 | RM-42, RM-50 |
 
 ---
 
@@ -327,3 +329,130 @@ mislabeled HMM regime). Let `nt_self_learning_reports` and
 the impact of actually applying a "closest available lever" change once
 there's enough of it. No action needed now beyond keeping both nightly
 jobs running.
+
+---
+
+## 8. Scope: a macro-forecast doc for existing (active) symbols
+
+Per §3.1's open question, resolved partway: **yes, worth scoping** — but
+scoping the document's requirements, not writing its content, which is
+a separate research/authoring task from the code changes in §9.
+
+### 8.1 Symbol scope
+
+The 14 currently-active `nt_symbol` rows, grouped the same way the
+commodity doc is grouped (by economic relationship, not asset-class
+label alone):
+
+| Group | Symbols |
+|---|---|
+| Precious metals (already have XAU/XAG rows, but no *forward* doc) | XAUUSD, XAUEUR, XAUAUD, XAGUSD |
+| Forex majors | AUDUSD, EURUSD, GBPUSD, USDCAD, USDCHF, USDJPY |
+| Equities/indices | AAPL, US30USD, US500 |
+| Crypto | BTCUSD |
+
+### 8.2 Structure — mirror the commodity doc, adapted per group
+
+The commodity doc's shape (summary matrix → per-symbol quarterly
+ranges → named drivers → bear/bull case → cross-commodity correlation
+notes) doesn't transfer 1:1 — commodities are driven by supply/demand
+fundamentals with clean quarterly seasonality; these four groups need
+different framing:
+
+- **Forex majors**: driven by central-bank rate-differential
+  expectations, not seasonal supply/demand — the doc's per-symbol
+  section would need *rate-decision calendar context* (next FOMC/ECB/
+  BOE/BOJ/RBA/BOC meeting dates within the 12-month window) and
+  relative-strength narrative (which side of the pair is expected to
+  diverge, and why) instead of a physical-commodity supply story.
+- **Equities** (AAPL, US30USD/US500 as indices): driven by
+  earnings-cycle expectations and sector/macro positioning, not a
+  quarterly price range in the same sense — would need next-earnings-
+  date context (for AAPL specifically) and a broader market-regime
+  read (rate-cut/hike cycle, index-level valuation) for the two index
+  proxies.
+- **Precious metals**: closest to the commodity doc's own shape
+  (already has real-world drivers: real-rate expectations, safe-haven
+  demand, central-bank buying) — reuse that section's structure most
+  directly.
+- **Crypto (BTCUSD)**: driven by a different mix again (liquidity
+  cycle, regulatory calendar, halving-cycle position where relevant) —
+  needs its own framing, not force-fit into either of the above.
+
+### 8.3 What this means concretely
+
+Given the four groups need genuinely different narrative inputs (rate
+calendars vs. earnings calendars vs. commodity fundamentals vs. crypto-
+specific drivers), **this is closer to four small documents than one
+uniform one** — though they can live in a single file (matching the
+commodity doc's own one-file-many-symbols shape) as long as each
+symbol's section pulls from the right kind of driver.
+
+### 8.4 Explicitly not done here
+
+Writing the actual document (the real researched quarterly
+ranges/drivers/dates, the way the commodity doc has real IMF/USDA/ING/
+SocGen-sourced content) is a substantial research task, not a code
+task — not attempted in this pass. §9 builds the code side (the
+`ForecastSource` registry) so that whenever this document exists —
+whether authored by hand or via a dedicated research pass — it plugs
+in as one line, no further code change needed.
+
+---
+
+## 9. Built: RM-42 catch-up guard, FK enforcement, multi-source registry
+
+### 9.1 RM-42 Option B — catch-up guard
+
+Added to `_catch_up_stale_jobs()` (`orchestrator.py`), matching the
+exact pattern already proven for `nt_macro_regime`/
+`nt_bracket_reachability`/`nt_signal_sim`. Staleness signal:
+`nt_symbol_calibration_state.computed_at` — checked, not assumed, that
+this table is upserted **per-symbol on every single
+`run_eod_correction()` pass**, intraday or nightly, `action="none"`/
+`CALIBRATED` included, not only on an anomaly (confirmed live: 12
+fresh `action="none"` rows from a catch-up-triggered nightly pass at
+22:22 UTC today). This makes it a reliable "did a correction pass
+actually run" signal regardless of which of the two callers produced
+it — no new marker table needed.
+
+`EOD_CORRECTION_INTRADAY_STALE_AFTER = timedelta(hours=3.5)` — tighter
+than the 4h interval, same reasoning as the other three thresholds.
+Gated on the same `settings.EOD_CORRECTION_INTRADAY_ENABLED` flag the
+job registration itself uses. 2 new tests (threshold value + "shorter
+than the full cycle" check, matching this file's existing convention
+of unit-testing the pure pieces and verifying the live wiring via a
+real restart, same as the other three checks).
+
+**Not yet verified live** — needs the next Studio restart to land more
+than 3.5h after the last correction pass to actually exercise the new
+branch; will confirm via `[startup-catchup] nt_symbol_calibration_state
+last computed_at=... stale, running the intraday EOD correction pass
+now` in the log.
+
+### 9.2 `nt_macro_forecast` symbol consistency — FK-enforced, not just conventional
+
+Added `nt_symbol_symbol_key` (unique constraint on `nt_symbol.symbol` —
+none existed before) and `nt_macro_forecast_symbol_fkey` (foreign key
+from `nt_macro_forecast.symbol` to `nt_symbol.symbol`). Checked for
+duplicate `nt_symbol.symbol` values before adding the unique
+constraint — none found. This makes "symbols match `nt_symbol`" a
+database-enforced invariant, not just a convention two pieces of code
+happen to agree on.
+
+### 9.3 Multi-source registry
+
+`macro_forecast_agent.py` refactored from one hardcoded
+(doc-path, symbol-tuple) pair to a `ForecastSource` registry
+(`FORECAST_SOURCES: tuple[ForecastSource, ...]`) — `run_macro_forecast()`
+now iterates every registered source independently, so **one source's
+doc-load failure no longer blocks another source's symbols** (a real
+robustness improvement over the previous single-pair design, not just
+groundwork for §8's future doc). The existing 12-commodity behavior is
+unchanged — `FORECAST_SOURCES` currently has exactly one entry
+(`commodities_12m`). Adding the existing-symbols doc from §8 later is a
+one-line addition to this tuple, no other code change.
+
+5 new/updated tests covering multi-source aggregation and per-source
+failure isolation. Full suite: 948 passed, 21 skipped (was 943).
+

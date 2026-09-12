@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from regime_platform.sweep_orchestrator.orchestrator import (
     BRACKET_REACHABILITY_STALE_AFTER,
+    EOD_CORRECTION_INTRADAY_STALE_AFTER,
     EOD_LOOKBACK_STALE_AFTER,
     MACRO_REGIME_STALE_AFTER,
     _is_stale,
@@ -74,3 +75,15 @@ def test_eod_lookback_stale_after_matches_documented_20_hours():
 
 def test_eod_lookback_threshold_shorter_than_full_daily_cycle():
     assert EOD_LOOKBACK_STALE_AFTER < timedelta(hours=24)
+
+
+def test_eod_correction_intraday_stale_after_matches_documented_3_5_hours():
+    assert EOD_CORRECTION_INTRADAY_STALE_AFTER == timedelta(hours=3.5)
+
+
+def test_eod_correction_intraday_threshold_shorter_than_full_4h_cycle():
+    # RM-42 (worklog 20260912_..._SCOPE_AND_SELF_LEARNING_FOLLOWUPS.md
+    # §1.4, Option B): the whole point is catching a skipped :30 slot
+    # before the NEXT one is due, same logic as the other three checks
+    # above just on a 4h cycle instead of daily/weekly.
+    assert EOD_CORRECTION_INTRADAY_STALE_AFTER < timedelta(hours=4)

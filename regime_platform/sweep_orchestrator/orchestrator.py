@@ -671,6 +671,21 @@ BRACKET_REACHABILITY_STALE_AFTER = timedelta(hours=6.5 * 24)
 # threshold as MACRO_REGIME_STALE_AFTER.
 EOD_LOOKBACK_STALE_AFTER = timedelta(hours=20)
 
+# eod-correction-intraday (RM-42, 2026-09-12, worklog
+# 20260912_EOD_CORRECTION_INTRADAY_SCOPE_AND_SELF_LEARNING_FOLLOWUPS.md
+# §1.4 Option B): the 5 fixed :30 slots (04:30/08:30/12:30/16:30/20:30
+# UTC) were found landing 30-50 minutes before a Studio restart on the
+# day this was first scoped — but the restart cadence itself DRIFTS
+# (confirmed live: re-phases after every deploy, so a static offset
+# table would itself go stale). A catch-up guard is robust to that
+# drift by construction, matching the 3 checks above — it doesn't care
+# WHEN restarts happen, only whether a correction pass has actually run
+# recently. Tighter than the 4h interval (not 20h like the others,
+# which run once a day/week) so a genuinely-skipped slot is caught well
+# before the next one is due, without re-triggering a routine restart's
+# worth of "not actually stale yet."
+EOD_CORRECTION_INTRADAY_STALE_AFTER = timedelta(hours=3.5)
+
 
 def _is_stale(
     last_computed_at: datetime | None,
@@ -2226,6 +2241,30 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.warning(
                 "[startup-catchup] eod-lookback staleness check failed: %s", exc,
             )
+
+        # eod-correction-intraday (RM-42, 2026-09-12) — nt_symbol_calibration_state
+        # is upserted per-symbol on EVERY run_eod_correction() pass (intraday
+        # OR nightly, action="none"/CALIBRATED included, not just on an
+        # anomaly) — so its max(computed_at) is a reliable "did a correction
+        # pass run recently" signal regardless of which of the two callers
+        # produced it.
+        if settings.EOD_CORRECTION_INTRADAY_ENABLED:
+            try:
+                last = await fetch_max_computed_at("nt_symbol_calibration_state")
+                if _is_stale(last, EOD_CORRECTION_INTRADAY_STALE_AFTER, now):
+                    logger.warning(
+                        "[startup-catchup] nt_symbol_calibration_state last "
+                        "computed_at=%s — stale, running the intraday EOD "
+                        "correction pass now instead of waiting for the next "
+                        ":30 UTC slot",
+                        last,
+                    )
+                    asyncio.create_task(self._run_eod_correction_only())
+            except Exception as exc:
+                logger.warning(
+                    "[startup-catchup] eod-correction-intraday staleness check "
+                    "failed: %s", exc,
+                )
 
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,
