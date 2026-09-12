@@ -38,6 +38,12 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `worklog/20260813_CHANGELOG.md` | Full EOD recalibration build (4h passes + drift monitor + purge + `predicted_p_win_raw`) |
 || `worklog/20260815_CHANGELOG.md` | M4 open-position orphan fix (close pass rewrites, retroclose, monitoring) |
 || `worklog/20260817_RECALIBRATION_PERF_ASSESSMENT.md` | Recalibration perf deep assessment + MIN_RR split fix + TimesFM sigmoid/k/clamp env vars |
+|| `worklog/20260901_REGIME_LABEL_STABILITY_SCOPE.md` | Regime label stability investigation |
+|| `worklog/20260901_SCHEDULER_MISSES_AND_LOG_SANITIZATION.md` | Scheduler misses and log sanitization |
+|| `worklog/20260902_MACRO_REGIME_COMPUTED_AT_BUG.md` | Macro regime computed-at bug |
+|| `worklog/20260904_KELLY_DIRECTION_AWARE_SIZING.md` | Kelly sizing direction-blind fix (direction-aware returns negation) |
+|| `worklog/20260904_MIN_RR_REGRESSION.md` | MIN_RR/MAX_SHARPE/MIN_TRADES silently tightened 08-30, fixed |
+|| `worklog/20260904_SIGNAL_ENGINE_MATH_TRIAGE.md` | Full financial logic triage — Masaniello exponent inverted, fractional kelly cap bug, kelly_edge unbounded, orchestrator _mu direction-blind |
 || `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |
