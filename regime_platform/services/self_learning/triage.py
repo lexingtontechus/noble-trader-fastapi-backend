@@ -13,23 +13,22 @@ read — nothing here writes to ``tuning_registry`` or any other live
 parameter. Structurally enforced, not just by convention: this module
 never imports ``tuning_registry.write_param``.
 
-No new embedding model, no forecasting integration, no SDK dependency
-for the LLM call (raw ``httpx``, same pattern ``orchestrator.py`` uses
-for ``TIMESFM_API_KEYS``) — see the worklog for what was deliberately
-left out of this first cut.
+No new embedding model, no forecasting integration — see the worklog
+for what was deliberately left out of this first cut. LLM calls go
+through ``llm_client.call_llm`` (OpenRouter primary, NVIDIA NIM
+fallback) — NOT Anthropic, corrected 2026-09-11 per explicit
+instruction.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Optional
-
-import httpx
 
 from regime_platform.core import tuning_registry
 from regime_platform.services.self_learning.knowledge_index import semantic_search
+from regime_platform.services.self_learning.llm_client import call_llm
 from regime_platform.sweep_orchestrator.auto_tuner import TIER_D_PILOT_PARAMS
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_untriaged_findings,
@@ -39,12 +38,7 @@ from regime_platform.sweep_orchestrator.supabase_client import (
 
 logger = logging.getLogger("regime.self_learning.triage")
 
-_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-_ANTHROPIC_VERSION = "2023-06-01"
-# Cheapest available model — MVP cost discipline, not a quality decision.
-_MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS = 512
-_REQUEST_TIMEOUT = 30.0
 _CONTEXT_K = 3
 
 _SYSTEM_PROMPT = """You are a diagnostic assistant for a Renko-brick \
@@ -66,13 +60,6 @@ Respond with ONLY a single JSON object, no other text, no markdown \
 fencing, in exactly this shape:
 {"narrative": "...", "proposed_param": "NAME_OR_NULL", "proposed_value": 0.0_OR_NULL}
 """
-
-_warned_missing_key = False
-
-
-def _anthropic_api_key() -> str:
-    return os.getenv("ANTHROPIC_API_KEY", "").strip()
-
 
 async def _allowed_params_context() -> dict[str, dict[str, float]]:
     """Current value + bounds for every Tier D pilot param, for the
@@ -117,61 +104,8 @@ def _build_prompt(
     return "\n".join(lines)
 
 
-def _extract_json(text: str) -> Optional[dict[str, Any]]:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return None
-    try:
-        return json.loads(text[start : end + 1])
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-
 async def _call_llm(prompt: str) -> Optional[dict[str, Any]]:
-    global _warned_missing_key
-    api_key = _anthropic_api_key()
-    if not api_key:
-        if not _warned_missing_key:
-            logger.warning(
-                "ANTHROPIC_API_KEY env var not set — Phase 3 triage will "
-                "no-op for every finding until it's added as a Studio secret."
-            )
-            _warned_missing_key = True
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            resp = await client.post(
-                _ANTHROPIC_URL,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": _ANTHROPIC_VERSION,
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": _MODEL,
-                    "max_tokens": _MAX_TOKENS,
-                    "system": _SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            if not resp.is_success:
-                logger.warning(
-                    "triage: Anthropic API HTTP %d — %s",
-                    resp.status_code, resp.text[:300],
-                )
-                return None
-            data = resp.json()
-            text = "".join(
-                block.get("text", "")
-                for block in data.get("content", [])
-                if block.get("type") == "text"
-            )
-            return _extract_json(text)
-    except Exception as exc:
-        logger.warning("triage: LLM call failed: %s: %r", type(exc).__name__, exc)
-        return None
+    return await call_llm(_SYSTEM_PROMPT, prompt, max_tokens=_MAX_TOKENS)
 
 
 def _validate_proposal(

@@ -577,6 +577,19 @@ self_learning_detectors_enabled: true
 # Simple on/off, same reasoning as self_learning_detectors_enabled above.
 self_learning_triage_enabled: true
 
+# macro_forecast_agent_enabled (2026-09-11, worklog
+# 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md SS4/RM-50
+# follow-up): gates the nightly long-term (12-month) macro-forecast
+# agent (regime_platform/services/self_learning/macro_forecast_agent.py)
+# -- reads docs/LLM/commodity_12m_forecast_model_2027.md, classifies
+# each of the 12 commodities into structured trend/direction/strength
+# fields matching trend_filter.py/macro_filter.py's existing label
+# vocabularies, writes to nt_macro_forecast. Shadow-mode diagnostic --
+# nothing reads that table to make a live decision yet. Requires
+# OPENROUTER_API_KEY or NVIDIA_NIM_API_KEY. Simple on/off, same
+# reasoning as self_learning_detectors_enabled above.
+macro_forecast_agent_enabled: true
+
 # heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was
 # a 72h timer bounding how long the TimesFM confidence gate in

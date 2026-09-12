@@ -1016,6 +1016,51 @@ async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
         return None
 
 
+NT_MACRO_FORECAST_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "current_trend_label", "current_macro_label",
+    "current_macro_strength", "narrative", "model_provider", "updated_at",
+})
+
+
+async def upsert_macro_forecast(rows: list[dict[str, Any]]) -> None:
+    """Upsert per-symbol rows into ``nt_macro_forecast`` (best-effort).
+
+    Keyed on ``symbol`` (the table's PK) — a daily refresh REPLACES the
+    row rather than accumulating duplicates, same shape as
+    ``upsert_macro_regime``. Written by the Phase 3 macro-forecast agent
+    (``regime_platform/services/self_learning/macro_forecast_agent.py``,
+    worklog 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md) —
+    shadow-mode diagnostic output, nothing reads this table to make a
+    live decision yet.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_MACRO_FORECAST_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_macro_forecast: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_macro_forecast')}?on_conflict=symbol",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_macro_forecast: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_macro_forecast: insert failed: %s", exc)
+
+
 NT_TREND_REGIME_COLUMNS: frozenset[str] = frozenset({
     "symbol", "sma_10", "sma_20", "sma_50", "rsi_14", "rsi_state",
     "days_since_crossover", "last_crossover_direction",

@@ -77,6 +77,7 @@ _DEFAULTS: dict[str, Any] = {
     "knowledge_index_enabled": True,
     "self_learning_detectors_enabled": True,
     "self_learning_triage_enabled": True,
+    "macro_forecast_agent_enabled": True,
     "trend_regime_mode": "off",
     "context_alignment_gate_mode": "shadow",
     "dynamic_min_rr_mode": "shadow",
@@ -607,6 +608,23 @@ def get_self_learning_triage_enabled() -> bool:
     reason (purely diagnostic, no live-baseline comparison needed)."""
     value = _load().get(
         "self_learning_triage_enabled", _DEFAULTS["self_learning_triage_enabled"],
+    )
+    return bool(value)
+
+
+def get_macro_forecast_agent_enabled() -> bool:
+    """Whether the nightly long-term (12-month) macro-forecast agent
+    job runs (2026-09-11, self_learning_phase_3_4_forecasting_rescope,
+    RM-50 follow-up). Classifies each of the 12 commodities in
+    docs/LLM/commodity_12m_forecast_model_2027.md into structured
+    trend/direction/strength fields matching this codebase's existing
+    label vocabularies, writes to nt_macro_forecast. Shadow-mode
+    diagnostic only — nothing reads that table to make a live decision
+    yet (blending it into macro_filter.py is a separate, not-yet-built
+    step). Same simple on/off convention as
+    self_learning_detectors_enabled, for the same reason."""
+    value = _load().get(
+        "macro_forecast_agent_enabled", _DEFAULTS["macro_forecast_agent_enabled"],
     )
     return bool(value)
 

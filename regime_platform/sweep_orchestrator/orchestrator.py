@@ -33,6 +33,7 @@ from regime_platform.core.feature_flags import (
     get_knowledge_index_enabled,
     get_self_learning_detectors_enabled,
     get_self_learning_triage_enabled,
+    get_macro_forecast_agent_enabled,
     get_markov_source_mode,
     get_min_ev,
     get_min_kelly,
@@ -1325,14 +1326,35 @@ class SweepOrchestrator(HeavySweepMixin):
         # nt_self_learning_findings rows, asks an LLM for a narrative +
         # an optional bounded Tier D parameter proposal, writes both to
         # nt_self_learning_reports — purely diagnostic, no write access
-        # to any live parameter. Requires the ANTHROPIC_API_KEY Studio
-        # secret; logs a warning and no-ops per finding without it.
+        # to any live parameter. Requires OPENROUTER_API_KEY or
+        # NVIDIA_NIM_API_KEY (NOT Anthropic — corrected same day); logs
+        # a warning and no-ops per finding without either.
         if get_self_learning_triage_enabled():
             self._scheduler.add_job(
                 self._run_self_learning_triage,
                 trigger=CronTrigger.from_crontab("30 2 * * *"),
                 id="self-learning-triage-nightly",
                 name="Self-learning Phase 3 MVP triage (nightly)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
+        # Long-term (12-month) macro-forecast agent (2026-09-11, worklog
+        # 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md §4,
+        # RM-50 follow-up): nightly, 02:45 UTC — same self-learning
+        # window as the two jobs above. Reads docs/LLM/
+        # commodity_12m_forecast_model_2027.md, classifies each of the
+        # 12 commodities into structured trend/direction/strength
+        # fields matching trend_filter.py/macro_filter.py's existing
+        # label vocabularies, writes to nt_macro_forecast — shadow-mode
+        # diagnostic, nothing reads that table to make a live decision
+        # yet. Requires OPENROUTER_API_KEY or NVIDIA_NIM_API_KEY.
+        if get_macro_forecast_agent_enabled():
+            self._scheduler.add_job(
+                self._run_macro_forecast_agent,
+                trigger=CronTrigger.from_crontab("45 2 * * *"),
+                id="macro-forecast-agent-nightly",
+                name="Long-term macro-forecast agent (nightly)",
                 misfire_grace_time=3600,
                 coalesce=True,
             )
@@ -1959,6 +1981,25 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[self-learning] triage run: %s", summary)
         except Exception as exc:
             logger.error("[self-learning] triage run failed: %s", exc)
+
+    async def _run_macro_forecast_agent(self) -> None:
+        """Long-term (12-month) macro-forecast agent (daily, 02:45 UTC).
+
+        See ``regime_platform/services/self_learning/macro_forecast_agent.py``
+        and worklog 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md
+        §4. Classifies each of the 12 commodities in
+        ``docs/LLM/commodity_12m_forecast_model_2027.md`` into structured
+        trend/direction/strength fields, writes to ``nt_macro_forecast``.
+        Shadow-mode diagnostic — nothing reads that table to make a live
+        decision yet. Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.services.self_learning.macro_forecast_agent import run_macro_forecast
+
+        try:
+            summary = await run_macro_forecast()
+            logger.info("[self-learning] macro forecast agent run: %s", summary)
+        except Exception as exc:
+            logger.error("[self-learning] macro forecast agent run failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

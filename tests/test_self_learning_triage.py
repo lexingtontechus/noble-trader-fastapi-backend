@@ -14,31 +14,11 @@ produced).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from regime_platform.services.self_learning import triage
-
-
-# ── _extract_json ────────────────────────────────────────────────────
-
-class TestExtractJson:
-    def test_plain_json(self):
-        text = '{"narrative": "hi", "proposed_param": null, "proposed_value": null}'
-        assert triage._extract_json(text) == {
-            "narrative": "hi", "proposed_param": None, "proposed_value": None,
-        }
-
-    def test_json_with_surrounding_prose(self):
-        text = 'Sure, here is my answer:\n{"narrative": "ok"}\nHope that helps!'
-        assert triage._extract_json(text) == {"narrative": "ok"}
-
-    def test_no_json_returns_none(self):
-        assert triage._extract_json("no json here at all") is None
-
-    def test_malformed_json_returns_none(self):
-        assert triage._extract_json("{not: valid json}") is None
 
 
 # ── _validate_proposal ───────────────────────────────────────────────
@@ -86,59 +66,17 @@ def test_build_prompt_includes_finding_and_allowed_params():
     assert "KELLY_REDUCTION" in prompt
 
 
-# ── _call_llm ─────────────────────────────────────────────────────────
+# ── _call_llm (thin wrapper around llm_client.call_llm, tested there) ─
 
 class TestCallLlm:
     @pytest.mark.asyncio
-    async def test_missing_api_key_returns_none_without_network_call(self, monkeypatch):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        triage._warned_missing_key = False
-        with patch("httpx.AsyncClient") as mock_client_cls:
+    async def test_delegates_to_shared_llm_client(self):
+        with patch.object(triage, "call_llm", new=AsyncMock(return_value={"narrative": "n"})) as mock_call:
             result = await triage._call_llm("some prompt")
-        assert result is None
-        mock_client_cls.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_successful_call_parses_json_from_response(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
-        mock_resp = MagicMock()
-        mock_resp.is_success = True
-        mock_resp.json.return_value = {
-            "content": [{"type": "text", "text": '{"narrative": "root cause", "proposed_param": null, "proposed_value": null}'}],
-        }
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await triage._call_llm("some prompt")
-        assert result == {"narrative": "root cause", "proposed_param": None, "proposed_value": None}
-
-    @pytest.mark.asyncio
-    async def test_http_failure_returns_none(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
-        mock_resp = MagicMock()
-        mock_resp.is_success = False
-        mock_resp.status_code = 500
-        mock_resp.text = "server error"
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await triage._call_llm("some prompt")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_network_exception_returns_none(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(side_effect=RuntimeError("boom"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await triage._call_llm("some prompt")
-        assert result is None
+        assert result == {"narrative": "n"}
+        mock_call.assert_awaited_once()
+        args, kwargs = mock_call.await_args
+        assert args[1] == "some prompt"  # (system_prompt, user_prompt)
 
 
 # ── triage_finding ────────────────────────────────────────────────────

@@ -23,7 +23,8 @@
 | §1 | P2 | Restate Phase 3/4 as originally scoped, for reference | n/a | 2026-09-11 | RM-36 |
 | §2 | P2 | MVP design: LLM triage + bounded param-tuning proposal | resolved — built | 2026-09-11 | RM-50 |
 | §3 | P2 | Phase 4 — carried forward unchanged | n/a | 2026-09-11 | n/a |
-| §4 | P3 | Deferred: forecasting-grounded triage (not in MVP) | n/a | 2026-09-11 | n/a |
+| §4 | P3 | Deferred: forecasting-grounded triage (not in MVP) | partially built, see §6 | 2026-09-11 | n/a |
+| §6 | P2 | Provider correction (OpenRouter/NVIDIA NIM, not Anthropic) + macro-forecast agent | resolved — built | 2026-09-11 | RM-50 |
 
 ---
 
@@ -91,11 +92,12 @@ and enforces via `tuning_registry.PARAM_BOUNDS`.
      and bounds (`PARAM_BOUNDS`). System prompt states plainly: this is
      diagnostic only, nothing is applied automatically, propose a
      parameter change **only** from the given list or leave it null.
-   - Raw `httpx` POST to the Anthropic Messages API (no SDK dependency
-     — matches how `TIMESFM_API_KEYS` is called directly via
-     `httpx`/env var rather than through `settings.py`), model
-     `claude-haiku-4-5-20251001` (cheapest available — MVP cost
-     discipline), asking for a JSON-only response:
+   - ~~Raw `httpx` POST to the Anthropic Messages API~~ — **corrected
+     2026-09-11, see §6**: this repo does not use Anthropic. LLM calls
+     go through a shared `llm_client.py` (OpenRouter primary, NVIDIA
+     NIM fallback — the exact pattern already live in
+     `nobletradingapp`'s `eod-report-generate` edge function), asking
+     for a JSON-only response:
      `{"narrative": str, "proposed_param": str|null, "proposed_value": number|null}`.
    - Parse the JSON leniently (first `{` to last `}`); on any parse
      failure, missing key, or HTTP error, log and return `None` for
@@ -138,19 +140,22 @@ alternative and was reopened/closed as an actual choice — LLM-assisted
 triage has no local alternative that fits "minimum effort": the entire
 point of Phase 3 is a model call. Concretely, this means the finding's
 `summary`/`details` and up to 3 short code/worklog excerpts (from this
-repo's own semantic index) get sent to Anthropic's API per triage run.
-No trading credentials, prices, or account data are in that payload —
-only the same code/worklog text already sitting in the local knowledge
-index — but it is a new category of external call this repo didn't
-have before, worth naming plainly rather than leaving implicit.
+repo's own semantic index) get sent to whichever LLM provider answers
+(OpenRouter or NVIDIA NIM, see §6) per triage run. No trading
+credentials, prices, or account data are in that payload — only the
+same code/worklog text already sitting in the local knowledge index —
+but it is a new category of external call this repo didn't have
+before, worth naming plainly rather than leaving implicit.
 
-### 2.5 New Studio secret required
+### 2.5 New Studio secrets required
 
-`ANTHROPIC_API_KEY` — read directly via `os.getenv()` inside
-`triage.py` (same pattern as `TIMESFM_API_KEYS` in `orchestrator.py`),
-**not** added to `settings.py`. Not set by this session — the user
-needs to add it to Lightning Studio's secret manager for the job to
-actually call the LLM. Missing key is handled the same way missing
+~~`ANTHROPIC_API_KEY`~~ — **corrected 2026-09-11, see §6**:
+`OPENROUTER_API_KEY` and/or `NVIDIA_NIM_API_KEY`, read directly via
+`os.getenv()` inside the shared `llm_client.py` (same pattern as
+`TIMESFM_API_KEYS` in `orchestrator.py`), **not** added to
+`settings.py`. Not set by this session — the user needs to add at
+least one to Lightning Studio's secret manager for the job to actually
+call an LLM. Missing keys are handled the same way missing
 `TIMESFM_API_KEYS` already is: a clear one-time warning log, then the
 job no-ops for that run instead of crashing.
 
@@ -166,19 +171,20 @@ just by convention.
 
 ---
 
-## 4. Deferred: forecasting-grounded triage (not in MVP)
+## 4. Deferred: forecasting-grounded triage — **partially built same day, see §6**
 
 The first draft of this document proposed grounding Phase 3 in TimesFM
 2.5 (live)/3.0 (separately approved, license-blocked per
 `worklog/20260915_TIMESFM3_IMPLEMENTATION_SCOPE.md`) forecasts and the
 12-month commodity macro model
 (`docs/LLM/commodity_12m_forecast_model_2027.md`,
-`docs/LLM/commodity_macro_context_scope.md`). That idea isn't wrong,
-just bigger than "minimum effort" — noted here so it isn't lost, not
-scoped further. If the MVP proves useful, a natural next step is
-passing the relevant symbol's current TimesFM forecast into the prompt
-alongside the finding, before reaching for the full multivariate/
-macro-model integration those other two documents separately describe.
+`docs/LLM/commodity_macro_context_scope.md`). Deferred here as
+"bigger than minimum effort" — but the user asked the same day to
+resume it. §6 builds the commodity-macro-model half (the
+`commodity_macro_context_scope.md` §3.3 "inline LLM agent," in
+structured-output form) as a standalone agent, not folded into
+`triage.py`. **TimesFM forecast grounding is still not built** — that
+remains the actual deferred piece.
 
 ---
 
@@ -201,7 +207,80 @@ macro-model integration those other two documents separately describe.
   paths, `triage_finding`/`run_triage` best-effort orchestration,
   orchestrator wiring). Full suite: 920 passed, 21 skipped (was 894
   before this change).
-- **Not yet verified live** — needs `ANTHROPIC_API_KEY` added to Studio
-  secrets, then a real deploy + first real nightly run to confirm
-  end-to-end (mirrors how `self-learning-detectors-nightly` was
-  verified after its own first deploy).
+- **Not yet verified live** — needs an LLM provider key added to
+  Studio secrets, then a real deploy + first real nightly run to
+  confirm end-to-end (mirrors how `self-learning-detectors-nightly`
+  was verified after its own first deploy). Superseded same day —
+  see §6 for the corrected provider.
+
+---
+
+## 6. Follow-up, same day: provider correction + the macro-forecast agent
+
+User feedback, two items:
+
+1. **"we are not using anthropic - ask before assumptions are made."**
+   §2/§5 above shipped calling the Anthropic Messages API — a real
+   mistake, not caught before this turn. Corrected by extracting a
+   shared `regime_platform/services/self_learning/llm_client.py`
+   (`call_llm`/`call_llm_with_provider`) implementing **OpenRouter
+   primary, NVIDIA NIM fallback** — the exact pattern already live and
+   verified in the sibling `nobletradingapp` repo's
+   `supabase/functions/eod-report-generate/index.ts`
+   (`generateCommentary`/`callChatCompletions`): same two base URLs
+   (`openrouter.ai/api/v1`, `integrate.api.nvidia.com/v1`), same
+   OpenAI-compatible `/chat/completions` schema, same env-var-
+   overridable model defaults (`minimax/minimax-m3:free` /
+   `meta/llama-3.2-11b-vision-instruct`, verified working 2026-09-05),
+   same two Studio-secret names (`OPENROUTER_API_KEY`,
+   `NVIDIA_NIM_API_KEY`). `triage.py` now calls this shared client
+   instead of Anthropic directly — no other change to its behavior.
+2. **"we still want to build the long term forecasting"** + **"can we
+   enhance the llm response to include json like
+   [trend:"",direction:""] ... The semantic output is ok for human
+   users, not for system automation."** Per user's explicit answers to
+   3 clarifying questions (asked rather than assumed, per item 1):
+   build the `commodity_macro_context_scope.md` §3.3 inline agent
+   (not a triage-schema widening), with structured output matching
+   **both** `trend_filter.py`'s 5-value vocab (`current_trend_label`)
+   and `macro_filter.py`'s 3-value vocab (`current_macro_label`, the
+   "direction"), reusing the same OpenRouter/NVIDIA NIM models as (1).
+
+New: `regime_platform/services/self_learning/macro_forecast_agent.py`
+— for each of the 12 commodities in `commodity_macro_context_scope.md`
+§1.1 (DAP excluded), sends the full 12-month forecast doc + today's
+date to the LLM, asks it to determine the current quarter and
+classify `{narrative, trend, direction, strength}`. Validates against
+the exact enum vocab (out-of-vocab labels are discarded, not stored)
+and clamps `strength` to `[0, 1]`. Upserts to a new `nt_macro_forecast`
+table (`symbol` PK, `current_trend_label`, `current_macro_label`,
+`current_macro_strength`, `narrative`, `model_provider`,
+`updated_at`) — **shadow-mode diagnostic only**, matching
+`commodity_macro_context_scope.md`'s own design: nothing reads this
+table to make a live decision yet. Blending it into
+`macro_filter.py`/`context_alignment.py` (that doc's §3.4/§3.5,
+"Option A") is separate, not-yet-approved work.
+
+Wired as `macro-forecast-agent-nightly` (02:45 UTC, same self-learning
+window as the other two jobs), gated by `macro_forecast_agent_enabled`
+(default `true`, same risk class as the other self-learning flags).
+
+Built 2026-09-11:
+- `llm_client.py` (new, shared) + `triage.py` (provider swap only).
+- `macro_forecast_agent.py` (new).
+- Migration: `nt_macro_forecast` table.
+- `supabase_client.py` — `upsert_macro_forecast()`.
+- `feature_flags.py`/`feature_flags.yaml` — `macro_forecast_agent_enabled`.
+- `orchestrator.py` — `macro-forecast-agent-nightly` job + `_run_macro_forecast_agent()`.
+- Tests: `tests/test_llm_client.py` (10), `tests/test_macro_forecast_agent.py`
+  (15), `tests/test_self_learning_triage.py` updated (provider-swap
+  tests replaced, count unchanged net). Full suite: 943 passed, 21
+  skipped.
+- **Still not verified live** — needs `OPENROUTER_API_KEY` and/or
+  `NVIDIA_NIM_API_KEY` added to Studio secrets (separate secret store
+  from `nobletradingapp`'s Supabase Edge Function secrets — these are
+  Lightning Studio env vars), then a real deploy + first nightly run
+  for all three jobs (02:00/02:30/02:45 UTC).
+- **Still deferred, not built**: TimesFM forecast grounding for
+  `triage.py` (the other half of §4's original idea) and blending
+  `nt_macro_forecast` into the live `macro_filter.py` pipeline.
