@@ -391,7 +391,21 @@ heavy_sweep_grid:
 # NOT live by default — same discipline as every other mode flag in this
 # file, and the exact gating this key's own governing comment above
 # already called for before Phase 3b could ship.
-heavy_sweep_atr_anchored_bricks_mode: off
+#
+# QUOTED (2026-09-12, found by the Phase 2 dead-mechanism detector's
+# first real run): YAML 1.1 parses the unquoted bareword `off` as the
+# boolean False, not the string "off" -- get_heavy_sweep_atr_anchored_
+# bricks_mode()'s str(value).lower() then returned "false", not "off".
+# heavy_sweep.py's own candidate-generation check is `if
+# atr_anchored_mode != "off":` (permissive — true for "false"), while
+# its shadow/live application checks are `in ("shadow", "live")`/`==
+# "live"` (both false for "false") — so ATR-anchored brick candidates
+# were SILENTLY being added to every heavy-sweep grid search (and
+# eligible for pick_best_combo() to select) despite this being
+# configured off, while the shadow table correctly stayed empty
+# (explaining why it looked inert even though the grid search itself
+# was not). Quoting forces YAML to parse this as the string "off".
+heavy_sweep_atr_anchored_bricks_mode: "off"
 
 # heavy_sweep_deadline_aware_scoring_mode (2026-09-08, worklog
 # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md) — THE root-cause fix,
@@ -472,7 +486,15 @@ heavy_sweep_deadline_aware_scoring_mode: live
 # `off` rather than removed: harmless at rest, and the rebasing math
 # stays independently useful if a future need for warm-starting shows
 # up for a different reason.
-regime_warm_start_mode: off
+#
+# QUOTED (2026-09-12, same YAML-bareword-boolean issue found in
+# heavy_sweep_atr_anchored_bricks_mode above): unquoted `off` parses as
+# Python False, not the string "off". Confirmed this one had NO live
+# effect despite the bug -- every usage site (orchestrator.py:2537/2553)
+# checks `== "live"` specifically, which is correctly False for the
+# coerced "false" value too. Quoted anyway for correctness/hygiene, not
+# because a behavior bug was found here.
+regime_warm_start_mode: "off"
 
 # regime_label_debounce_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md "Fix 2"): off | shadow |
@@ -532,6 +554,16 @@ renko_brick_retention_days: 2
 # a live signal or parameter. Simple on/off (not off/shadow/live): there's
 # no live-baseline comparison for a search index to shadow-test against.
 knowledge_index_enabled: true
+
+# self_learning_detectors_enabled (2026-09-12, self_learning_phase_2_detectors,
+# RM-37): gates the nightly Phase 2 detector run (regime_platform/services/
+# self_learning/run_detectors.py) -- regime_price_mismatch,
+# dead_mechanism, redundant_computation against real data, writing
+# findings to nt_self_learning_findings for human review. Purely
+# diagnostic, read-only w.r.t. trading -- nothing reads that table to
+# make a live decision. Simple on/off, same reasoning as
+# knowledge_index_enabled above.
+self_learning_detectors_enabled: true
 
 # heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was

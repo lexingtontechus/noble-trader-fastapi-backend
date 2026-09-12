@@ -31,6 +31,7 @@ from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_knowledge_index_enabled,
+    get_self_learning_detectors_enabled,
     get_markov_source_mode,
     get_min_ev,
     get_min_kelly,
@@ -1294,6 +1295,27 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Self-learning Phase 2 detectors (2026-09-12, worklog
+        # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS10/
+        # SS11, self_learning_phase_2_detectors, RM-37): nightly, 02:00
+        # UTC — after knowledge-index (01:45), same restart-safe
+        # 01:12-05:16 UTC Studio window as auto-tuner/knowledge-index (see
+        # xauaud_heavy_sweep_stale_4d_force_refresh_not_firing for the
+        # restart-schedule background). Runs regime_price_mismatch/
+        # dead_mechanism/redundant_computation against real data and
+        # writes findings to nt_self_learning_findings — purely
+        # diagnostic, nothing downstream reads that table to make a live
+        # decision.
+        if get_self_learning_detectors_enabled():
+            self._scheduler.add_job(
+                self._run_self_learning_detectors,
+                trigger=CronTrigger.from_crontab("0 2 * * *"),
+                id="self-learning-detectors-nightly",
+                name="Self-learning Phase 2 detectors (nightly)",
+                misfire_grace_time=3600,
+                coalesce=True,
+            )
+
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
         # after the 05:00 UTC weekend heavy-sweep window so that week's
@@ -1877,6 +1899,26 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[self-learning] knowledge index rebuilt: %s", summary)
         except Exception as exc:
             logger.error("[self-learning] knowledge index rebuild failed: %s", exc)
+
+    async def _run_self_learning_detectors(self) -> None:
+        """Phase 2 self-learning detectors (daily, 02:00 UTC).
+
+        See ``regime_platform/services/self_learning/run_detectors.py``
+        and worklog
+        20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md
+        SS10/SS11. Runs all three detectors (regime-vs-price mismatch,
+        dead-mechanism staleness, redundant-computation agreement)
+        against real data and writes any findings to
+        ``nt_self_learning_findings``. Purely diagnostic, read-only
+        w.r.t. trading. Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.services.self_learning.run_detectors import run_all_detectors
+
+        try:
+            summary = await run_all_detectors()
+            logger.info("[self-learning] detectors run: %s", summary)
+        except Exception as exc:
+            logger.error("[self-learning] detectors run failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

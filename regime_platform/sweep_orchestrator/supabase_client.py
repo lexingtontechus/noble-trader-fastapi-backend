@@ -299,6 +299,81 @@ async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
         return False
 
 
+async def fetch_all_rows(
+    table: str,
+    select: str,
+    filters: dict[str, str] | None = None,
+    order: str | None = None,
+    max_rows: int = 5000,
+) -> list[dict[str, Any]]:
+    """Generic read: rows from ``table`` matching ``filters`` (PostgREST
+    operator syntax, e.g. ``{"symbol": "eq.AAPL", "ts": "gt.2026-09-01"}``),
+    paginated up to ``max_rows`` (best-effort, returns ``[]`` on any
+    failure — PostgREST caps a single response at 1000 rows regardless
+    of what's requested, so this loops via the ``Range`` header rather
+    than assuming one call returns everything).
+
+    Used by the Phase 2 self-learning detectors
+    (regime_platform/services/self_learning/), which read from a
+    diverse set of mode-gated shadow/regime tables (small, single-row-
+    per-symbol reads) AND large per-tick history (nt_sweep_result) —
+    one generic, paginated reader covers both rather than a near-
+    duplicate one-off per table (the exact "redundant computation"
+    shape detector 3 itself looks for).
+    """
+    if not settings.SUPABASE_URL:
+        return []
+    rows: list[dict[str, Any]] = []
+    page_size = 1000
+    offset = 0
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while len(rows) < max_rows:
+                params: dict[str, str] = {"select": select}
+                if filters:
+                    params.update(filters)
+                if order:
+                    params["order"] = order
+                resp = await client.get(
+                    _url(table),
+                    headers={
+                        **_headers(),
+                        "Range-Unit": "items",
+                        "Range": f"{offset}-{offset + page_size - 1}",
+                    },
+                    params=params,
+                )
+                resp.raise_for_status()
+                page = resp.json()
+                if not isinstance(page, list) or not page:
+                    break
+                rows.extend(page)
+                if len(page) < page_size:
+                    break
+                offset += page_size
+        return rows[:max_rows]
+    except Exception as exc:
+        logger.warning("fetch_all_rows: %s: read failed: %s: %r", table, type(exc).__name__, exc)
+        return rows
+
+
+async def insert_self_learning_finding(
+    detector: str,
+    summary: str,
+    symbol: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    """Insert one row into ``nt_self_learning_findings`` (best-effort).
+    Diagnostic-only output from the Phase 2 detectors — nothing reads
+    this to make a live decision."""
+    return await _insert_row("nt_self_learning_findings", {
+        "detector": detector,
+        "symbol": symbol,
+        "summary": summary,
+        "details": details,
+    })
+
+
 async def log_sweep_result(payload: dict[str, Any]) -> None:
     """Persist sweep KPIs to ``nt_sweep_result``.
 

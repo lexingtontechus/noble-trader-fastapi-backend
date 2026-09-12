@@ -75,6 +75,7 @@ _DEFAULTS: dict[str, Any] = {
     "signal_stream_meta_model_mode": "off",
     "renko_brick_retention_days": 2,
     "knowledge_index_enabled": True,
+    "self_learning_detectors_enabled": True,
     "trend_regime_mode": "off",
     "context_alignment_gate_mode": "shadow",
     "dynamic_min_rr_mode": "shadow",
@@ -575,6 +576,21 @@ def get_knowledge_index_enabled() -> bool:
     — it either helps future investigation or it's off."""
     value = _load().get(
         "knowledge_index_enabled", _DEFAULTS["knowledge_index_enabled"],
+    )
+    return bool(value)
+
+
+def get_self_learning_detectors_enabled() -> bool:
+    """Whether the nightly Phase 2 self-learning detector job runs
+    (2026-09-12, self_learning_phase_2_detectors, RM-37). Purely
+    diagnostic — runs regime_price_mismatch/dead_mechanism/
+    redundant_computation against real data and writes findings to
+    nt_self_learning_findings for human review; nothing reads that
+    table to make a live decision. Same simple on/off convention as
+    knowledge_index_enabled, for the same reason (no live-baseline
+    comparison for a diagnostic sweep)."""
+    value = _load().get(
+        "self_learning_detectors_enabled", _DEFAULTS["self_learning_detectors_enabled"],
     )
     return bool(value)
 
