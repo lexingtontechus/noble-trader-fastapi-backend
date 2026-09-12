@@ -139,6 +139,14 @@ already found and shadow-tested for other symbols this session.
 > **Priority**: P2 · **Task**: Scope 4-phase self-learning direction ·
 > **Status**: superseded by §3's revision · **Date**: 2026-09-10 ·
 > **Roadmap refs**: RM-36
+>
+> **2026-09-11 update**: Phase 3 and Phase 4 below are left in place
+> verbatim for history, but are no longer the live scope for either
+> phase — both were moved to and widened in
+> `worklog/20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md`,
+> which folds in TimesFM 2.5/3.0 forward forecasting and reconsiders
+> JinaAI for retrieval. Phase 1 and Phase 2 (§3 onward, RM-36/RM-37)
+> are unaffected and remain as built.
 
 **Grounding first: this isn't a green field.** Before proposing
 anything new, here's what the codebase already has, so nothing below
@@ -231,6 +239,15 @@ codebase's history — encoding the pattern directly is honest and cheap;
 reaching for an LLM to "notice" something a five-line SQL/Python check
 already catches would be over-engineering in the same spirit this
 session has been correcting all day.
+
+> **Moved 2026-09-11**: Phase 3 and Phase 4 as originally scoped below
+> are superseded by
+> `worklog/20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md`,
+> which widens Phase 3 to a full lookback (this index + Phase 2
+> findings) / forward (TimesFM 2.5/3.0 forecasting + the 12-month
+> commodity macro model) design and reconsiders JinaAI for the
+> retrieval layer. Kept here verbatim for history only — do not build
+> against this version.
 
 **Phase 3 — LLM-assisted triage, grounded in Phase 1's index, reading
 Phase 2's detector output (medium risk, output is a written
