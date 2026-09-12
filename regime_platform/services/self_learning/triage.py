@@ -13,17 +13,29 @@ read — nothing here writes to ``tuning_registry`` or any other live
 parameter. Structurally enforced, not just by convention: this module
 never imports ``tuning_registry.write_param``.
 
-No new embedding model, no forecasting integration — see the worklog
-for what was deliberately left out of this first cut. LLM calls go
-through ``llm_client.call_llm`` (OpenRouter primary, NVIDIA NIM
-fallback) — NOT Anthropic, corrected 2026-09-11 per explicit
-instruction.
+No new embedding model — see the worklog for what was deliberately
+left out of this first cut. LLM calls go through
+``llm_client.call_llm`` (OpenRouter primary, NVIDIA NIM fallback) —
+NOT Anthropic, corrected 2026-09-11 per explicit instruction.
+
+**TimesFM forecast grounding** (2026-09-12, worklog
+20260912_EOD_CORRECTION_INTRADAY_SCOPE_AND_SELF_LEARNING_FOLLOWUPS.md
+§4): each finding's own symbol (when it has one — dead-mechanism/
+redundant-computation findings don't) gets grounded with its most
+recent TimesFM read (`p_timesfm`, derived confidence, and the read's
+age) via ``fetch_latest_sweep`` — reused as-is, not duplicated;
+``eod_correction.py``'s degeneracy check already reads the same
+"latest nt_sweep_result row per symbol" shape. No staleness cutoff:
+the read's age is included in the prompt so the LLM can weigh a
+6-hour-old forecast differently from a 6-day-old one itself, rather
+than this module guessing a magic threshold.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from regime_platform.core import tuning_registry
@@ -31,6 +43,7 @@ from regime_platform.services.self_learning.knowledge_index import semantic_sear
 from regime_platform.services.self_learning.llm_client import call_llm
 from regime_platform.sweep_orchestrator.auto_tuner import TIER_D_PILOT_PARAMS
 from regime_platform.sweep_orchestrator.supabase_client import (
+    fetch_latest_sweep,
     fetch_untriaged_findings,
     insert_self_learning_report,
     mark_finding_triaged,
@@ -44,14 +57,19 @@ _CONTEXT_K = 3
 _SYSTEM_PROMPT = """You are a diagnostic assistant for a Renko-brick \
 signal-generation and backtesting research platform (NOT a live \
 trading system). You are given one finding from an automated \
-statistical detector, plus a few related code/worklog excerpts from \
-this repository for context.
+statistical detector, a few related code/worklog excerpts from this \
+repository, and — when the finding names a symbol — that symbol's \
+most recent TimesFM price forecast (a probability the next bar closes \
+up, plus how old that reading is).
 
-Write a short (2-4 sentence) root-cause narrative for the finding. \
-You may ALSO propose changing exactly one tunable parameter, but ONLY \
-if you choose it from the "Allowed parameters" list below — never any \
-other name. If no parameter change is warranted, or you are not \
-confident, set proposed_param and proposed_value to null.
+Write a short (2-4 sentence) root-cause narrative for the finding, \
+using the TimesFM reading as corroborating (or contradicting) context \
+when it's present and not too stale — use your own judgment on how \
+much weight a given reading's age deserves. You may ALSO propose \
+changing exactly one tunable parameter, but ONLY if you choose it \
+from the "Allowed parameters" list below — never any other name. If \
+no parameter change is warranted, or you are not confident, set \
+proposed_param and proposed_value to null.
 
 Nothing you output is applied automatically. A human reads every \
 report before anything changes.
@@ -78,15 +96,66 @@ async def _allowed_params_context() -> dict[str, dict[str, float]]:
     return out
 
 
+async def _fetch_timesfm_context(symbol: Optional[str]) -> Optional[dict[str, Any]]:
+    """Latest TimesFM read for ``symbol`` — reuses
+    ``fetch_latest_sweep`` (already used by ``eod_correction.py``'s
+    degeneracy check) rather than adding a near-duplicate fetch
+    function for the same "latest nt_sweep_result row" shape. Returns
+    ``None`` if there's no symbol, no row, no ``p_timesfm``, or the
+    read fails — best-effort, matches every other context source here."""
+    if not symbol:
+        return None
+    try:
+        row = await fetch_latest_sweep(symbol)
+    except Exception as exc:
+        logger.warning("triage: fetch_latest_sweep(%s) failed: %s: %r", symbol, type(exc).__name__, exc)
+        return None
+
+    if not row or row.get("p_timesfm") is None:
+        return None
+
+    p_timesfm = float(row["p_timesfm"])
+    age_hours: Optional[float] = None
+    sweep_timestamp = row.get("sweep_timestamp")
+    if sweep_timestamp:
+        try:
+            ts = datetime.fromisoformat(str(sweep_timestamp).replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+        except ValueError:
+            pass
+
+    return {
+        "p_timesfm": p_timesfm,
+        "confidence": abs(p_timesfm - 0.5),
+        "age_hours": age_hours,
+        "sweep_timestamp": sweep_timestamp,
+    }
+
+
+def _format_timesfm_context(timesfm_context: Optional[dict[str, Any]]) -> str:
+    if timesfm_context is None:
+        return "(no TimesFM forecast available for this symbol)"
+    age = timesfm_context.get("age_hours")
+    age_str = f"{age:.1f}h old" if age is not None else "age unknown"
+    return (
+        f"p_timesfm={timesfm_context['p_timesfm']:.4f} (probability next bar closes up), "
+        f"confidence={timesfm_context['confidence']:.4f}, reading is {age_str} "
+        f"(as of {timesfm_context.get('sweep_timestamp')})"
+    )
+
+
 def _build_prompt(
     finding: dict[str, Any],
     context_chunks: list[str],
     allowed_params: dict[str, dict[str, float]],
+    timesfm_context: Optional[dict[str, Any]] = None,
 ) -> str:
     lines = [
         f"Finding (detector={finding.get('detector')!r}, symbol={finding.get('symbol')!r}):",
         str(finding.get("summary", "")),
         f"Details: {json.dumps(finding.get('details') or {}, default=str)}",
+        "",
+        f"TimesFM forecast for this symbol: {_format_timesfm_context(timesfm_context)}",
         "",
         "Related code/worklog context:",
     ]
@@ -141,8 +210,9 @@ async def triage_finding(finding: dict[str, Any]) -> Optional[dict[str, Any]]:
         logger.warning("triage: semantic_search failed: %s: %r", type(exc).__name__, exc)
         context_chunks = []
 
+    timesfm_context = await _fetch_timesfm_context(finding.get("symbol"))
     allowed_params = await _allowed_params_context()
-    prompt = _build_prompt(finding, context_chunks, allowed_params)
+    prompt = _build_prompt(finding, context_chunks, allowed_params, timesfm_context)
     parsed = await _call_llm(prompt)
     if parsed is None:
         return None

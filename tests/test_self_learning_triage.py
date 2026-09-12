@@ -14,6 +14,7 @@ produced).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -56,6 +57,76 @@ class TestValidateProposal:
         assert value is None
 
 
+# ── _fetch_timesfm_context ────────────────────────────────────────────
+
+class TestFetchTimesfmContext:
+    @pytest.mark.asyncio
+    async def test_no_symbol_returns_none_without_network_call(self):
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock()) as mock_fetch:
+            result = await triage._fetch_timesfm_context(None)
+        assert result is None
+        mock_fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_row_returns_none(self):
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock(return_value=None)):
+            result = await triage._fetch_timesfm_context("AAPL")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_row_with_null_p_timesfm_returns_none(self):
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock(return_value={
+            "symbol": "AAPL", "sweep_timestamp": "2026-09-12T10:00:00+00:00", "p_timesfm": None,
+        })):
+            result = await triage._fetch_timesfm_context("AAPL")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_returns_none(self):
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            result = await triage._fetch_timesfm_context("AAPL")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_valid_row_computes_confidence_and_age(self):
+        ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock(return_value={
+            "symbol": "AAPL", "sweep_timestamp": ts, "p_timesfm": 0.62,
+        })):
+            result = await triage._fetch_timesfm_context("AAPL")
+        assert result["p_timesfm"] == 0.62
+        assert result["confidence"] == pytest.approx(0.12)
+        assert result["age_hours"] == pytest.approx(2.0, abs=0.05)
+
+    @pytest.mark.asyncio
+    async def test_unparseable_timestamp_leaves_age_none(self):
+        with patch.object(triage, "fetch_latest_sweep", new=AsyncMock(return_value={
+            "symbol": "AAPL", "sweep_timestamp": "not-a-timestamp", "p_timesfm": 0.5,
+        })):
+            result = await triage._fetch_timesfm_context("AAPL")
+        assert result["age_hours"] is None
+
+
+# ── _format_timesfm_context ───────────────────────────────────────────
+
+class TestFormatTimesfmContext:
+    def test_none_renders_no_data_message(self):
+        assert "no TimesFM forecast" in triage._format_timesfm_context(None)
+
+    def test_present_renders_p_timesfm_and_age(self):
+        text = triage._format_timesfm_context({
+            "p_timesfm": 0.62, "confidence": 0.12, "age_hours": 2.0, "sweep_timestamp": "2026-09-12T10:00:00+00:00",
+        })
+        assert "0.6200" in text
+        assert "2.0h old" in text
+
+    def test_missing_age_renders_unknown(self):
+        text = triage._format_timesfm_context({
+            "p_timesfm": 0.5, "confidence": 0.0, "age_hours": None, "sweep_timestamp": None,
+        })
+        assert "age unknown" in text
+
+
 # ── _build_prompt ─────────────────────────────────────────────────────
 
 def test_build_prompt_includes_finding_and_allowed_params():
@@ -64,6 +135,17 @@ def test_build_prompt_includes_finding_and_allowed_params():
     assert "X is stale" in prompt
     assert "some code excerpt" in prompt
     assert "KELLY_REDUCTION" in prompt
+    assert "no TimesFM forecast" in prompt  # default timesfm_context=None
+
+
+def test_build_prompt_includes_timesfm_context_when_given():
+    finding = {"detector": "regime_price_mismatch", "symbol": "AAPL", "summary": "s", "details": {}}
+    prompt = triage._build_prompt(
+        finding, [], {},
+        timesfm_context={"p_timesfm": 0.71, "confidence": 0.21, "age_hours": 1.5, "sweep_timestamp": "2026-09-12T10:00:00+00:00"},
+    )
+    assert "0.7100" in prompt
+    assert "1.5h old" in prompt
 
 
 # ── _call_llm (thin wrapper around llm_client.call_llm, tested there) ─
@@ -146,6 +228,38 @@ class TestTriageFinding:
         ):
             report = await triage.triage_finding(finding)
         assert report["narrative"] == "n"
+
+    @pytest.mark.asyncio
+    async def test_fetches_timesfm_context_for_the_findings_symbol_and_includes_it_in_prompt(self):
+        finding = {"id": 1, "detector": "regime_price_mismatch", "symbol": "AAPL", "summary": "s", "details": {}}
+        captured_prompt = {}
+
+        async def _fake_call_llm(system_prompt, user_prompt, max_tokens=512):
+            captured_prompt["text"] = user_prompt
+            return {"narrative": "n", "proposed_param": None, "proposed_value": None}
+
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_fetch_timesfm_context", new=AsyncMock(return_value={
+                "p_timesfm": 0.8, "confidence": 0.3, "age_hours": 0.5, "sweep_timestamp": "2026-09-12T10:00:00+00:00",
+            })) as mock_fetch,
+            patch.object(triage, "call_llm", new=_fake_call_llm),
+        ):
+            await triage.triage_finding(finding)
+        mock_fetch.assert_awaited_once_with("AAPL")
+        assert "0.8000" in captured_prompt["text"]
+
+    @pytest.mark.asyncio
+    async def test_no_symbol_finding_still_proceeds_with_no_timesfm_context(self):
+        finding = {"id": 1, "detector": "dead_mechanism", "symbol": None, "summary": "s", "details": {}}
+        with (
+            patch.object(triage, "semantic_search", return_value=[]),
+            patch.object(triage, "_allowed_params_context", new=AsyncMock(return_value={})),
+            patch.object(triage, "_call_llm", new=AsyncMock(return_value={"narrative": "n", "proposed_param": None, "proposed_value": None})),
+        ):
+            report = await triage.triage_finding(finding)
+        assert report["narrative"] == "n"  # _fetch_timesfm_context(None) short-circuits to None, no crash
 
 
 # ── run_triage ────────────────────────────────────────────────────────

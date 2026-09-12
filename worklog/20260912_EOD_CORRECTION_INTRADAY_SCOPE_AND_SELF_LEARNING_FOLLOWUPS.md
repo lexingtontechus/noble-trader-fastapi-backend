@@ -18,6 +18,7 @@
 | §7 | n/a | Record decision: let self-learning data accumulate before acting on "closest available lever" | recorded | 2026-09-12 | RM-50 |
 | §8 | P2 | Scope a macro-forecast doc for existing (active) symbols | scoped only, doc not written | 2026-09-12 | RM-50 |
 | §9 | P2 | Build: RM-42 Option B catch-up guard, `nt_macro_forecast` FK enforcement, multi-source registry | resolved — built | 2026-09-12 | RM-42, RM-50 |
+| §10 | P2 | Build: TimesFM forecast grounding for `triage.py` (§4's deferred half) | resolved — built | 2026-09-12 | RM-50 |
 
 ---
 
@@ -455,4 +456,56 @@ one-line addition to this tuple, no other code change.
 
 5 new/updated tests covering multi-source aggregation and per-source
 failure isolation. Full suite: 948 passed, 21 skipped (was 943).
+
+---
+
+## 10. Built: TimesFM forecast grounding for `triage.py`
+
+Realizes §4's still-deferred half (the macro-forecast-doc half was
+built in §9; this is the other one). Per §4's own scoping: TimesFM 2.5
+already runs every sweep cycle and its output is captured per-symbol
+in `nt_sweep_result` — no new inference call needed, just a read.
+
+**Reused rather than duplicated**: `fetch_latest_sweep(symbol)`
+already exists (`eod_correction.py`'s degeneracy check uses it) and
+already returns exactly the shape needed — the latest
+`nt_sweep_result` row per symbol, ordered by `sweep_timestamp desc`.
+No new Supabase-client function was added; writing one would have
+been the exact "redundant computation" shape Phase 2's own detector 3
+looks for.
+
+**`triage.py` additions**:
+- `_fetch_timesfm_context(symbol) -> dict | None` — `None` immediately
+  (no network call) if the finding has no symbol (dead-mechanism/
+  redundant-computation findings don't); otherwise reads
+  `fetch_latest_sweep`, extracts `p_timesfm`, derives
+  `confidence = abs(p_timesfm - 0.5)` and the reading's age in hours.
+  Best-effort — any failure (missing row, null `p_timesfm`, unparseable
+  timestamp, network error) degrades to `None`/`age_hours=None` rather
+  than raising.
+- `_format_timesfm_context(...)` — renders it as one line for the
+  prompt, or an explicit "no TimesFM forecast available" line when
+  absent.
+- `_build_prompt()` gained a `timesfm_context` parameter; `_SYSTEM_PROMPT`
+  updated to tell the model to use the reading as corroborating (or
+  contradicting) context and weigh its own age.
+
+**Staleness decision, made rather than left open**: no hard cutoff.
+The original scope flagged "how stale is recent enough" as an open
+question with three options (use regardless of age / cap and omit if
+stale / pull a short history). Went with the first, but with the
+reading's age always included in the prompt text — the model gets the
+information needed to discount an old reading itself, rather than this
+module guessing a magic threshold that would need its own tuning later.
+
+**No degradation of existing behavior**: `p_timesfm` is the only
+TimesFM value actually persisted anywhere (`rel_change`/raw forecast
+price are computed in-memory in `orchestrator.py` and only logged as
+text, never stored) — checked before assuming more was available.
+
+12 new tests (`_fetch_timesfm_context`, `_format_timesfm_context`,
+`_build_prompt` with/without `timesfm_context`, `triage_finding`
+integration — verifies the finding's own symbol is what gets fetched,
+and that a symbol-less finding still proceeds without crashing). Full
+suite: 960 passed, 21 skipped (was 948).
 
