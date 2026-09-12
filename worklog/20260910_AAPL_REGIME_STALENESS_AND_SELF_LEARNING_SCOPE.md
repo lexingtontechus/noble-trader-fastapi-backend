@@ -972,3 +972,63 @@ context field (no different in kind from capturing `macro_label` today
 — shadow mode itself makes no Kelly claim), or (c) hold this module at
 `off` pending further tuning. Not decided here — this section reports
 the real result and the tradeoff, not a chosen path.
+
+## 10. Phase 2, detector 1 — regime-vs-price mismatch, built and validated (2026-09-12, explicit approval: "can we start to build phase 2")
+
+> **Priority**: P1 · **Task**: Build detector 1 of §2's three candidate
+> shapes (regime-implied-direction vs realized-price-sign mismatch) ·
+> **Status**: resolved (built, tested, validated against real AAPL
+> history, backtested against all 14 symbols per the approved
+> methodology) · **Date**: 2026-09-12 · **Roadmap refs**: RM-37
+
+**A real design bug caught during validation, not before shipping.**
+`regime_platform/services/self_learning/regime_price_mismatch.py`'s
+first draft compared a candidate run's price peak only to its FINAL
+day. That version correctly flagged a hand-picked 9-day AAPL fixture
+(09-01..09-09) — but when run against AAPL's REAL, full daily history
+(pulled fresh from `nt_sweep_result`), it found nothing. Diagnosis: the
+regime's actual bull-family run is 14 days long (08-28..09-10), not 9
+— it doesn't break until 09-11. By its true last day (09-10), price had
+already partially recovered to $325.95, only -0.65% off the $328.07
+peak — hiding the real -3.85% mismatch that existed one day earlier
+(09-09, $315.45, the exact day this session originally diagnosed by
+hand). **A peak-vs-final-day design structurally cannot catch a
+transient mismatch that recovers before the regime label itself
+changes — exactly the failure mode this detector exists for.**
+Corrected to track the worst point reached at ANY day within the
+qualifying run, not just its last one.
+
+**Verified against the corrected version**:
+- Real AAPL history (21 days, `nt_sweep_result`, pulled fresh): flags
+  the mismatch at exactly `08-28..09-10 (worst=09-09) move=-3.85%` —
+  the precise day and magnitude this session's original hand
+  investigation found (§1).
+- 14 new unit tests, including the full real AAPL history as a
+  regression fixture (not the misleadingly-easy 9-day one) and a
+  synthetic test specifically for "a transient mismatch that recovers
+  before the run ends must still be caught."
+- **14-symbol backtest** (direct Supabase REST pulls, ~60k raw rows,
+  aggregated to daily — not committed, matches the trend-filter
+  backtest's own real-data-not-a-script-in-the-repo precedent): **5/14
+  symbols flagged** in the last 21 days — AAPL plus the entire gold/
+  silver family (XAGUSD, XAUAUD, XAUEUR, XAUUSD), all in a tighter
+  window (3-6 day runs, 2.5-4.2% moves). Forex pairs and BTCUSD/
+  US30USD/US500 showed none. Worth noting, not over-claiming: the
+  gold-family cluster landing in the SAME calendar window (08-27..
+  08-30) suggests a possible shared cause (a real, brief volatility
+  event affecting the whole complex) rather than 4 independently
+  broken classifiers — plausible, not confirmed. This also lines up
+  with this session's separate, already-known finding that gold/silver
+  pairs read calibration-OVERCONFIDENT (§6 of the pulse-check skill) —
+  a related but distinct symptom, not verified as the same root cause
+  here.
+
+877 tests passing (863 baseline + 14 new), 0 regressions.
+
+**Deliberately not built yet**: detectors 2 (dead-mechanism detection)
+and 3 (redundant-computation detection) from §2's original three-shape
+scope. Not wired into any scheduled job or live path — Phase 2 stays
+diagnostic-only per the 4-phase design; there is no Phase 3 (LLM-
+assisted triage) built yet to consume this detector's output, so for
+now it's a tested, validated function a human (or a future session)
+can run on demand, not an automated nightly check.
