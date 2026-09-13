@@ -20,6 +20,7 @@
 | §9 | P2 | Build: RM-42 Option B catch-up guard, `nt_macro_forecast` FK enforcement, multi-source registry | resolved — built | 2026-09-12 | RM-42, RM-50 |
 | §10 | P2 | Build: TimesFM forecast grounding for `triage.py` (§4's deferred half) | resolved — built | 2026-09-12 | RM-50 |
 | §11 | P1 | Retune trend-regime horizon/crossover-pair with a real backtest tool | resolved — no edge found at scale, supersedes the earlier small-sample read | 2026-09-13 | RM-40 |
+| §12 | P2 | Scope `trend_edge.py` — tie `trend_label` to real win/loss + expectancy, not just directional hit rate | scoped only, needs approval to flip `trend_regime_mode` first | 2026-09-13 | RM-40 |
 
 ---
 
@@ -593,4 +594,102 @@ over `off` on its own. Not decided here.
 `scripts/trend_regime_backtest.py` committed — rerunnable with a
 different lookback/horizon/pair set any time without rebuilding this
 analysis from scratch again.
+
+---
+
+## 12. Scope: `trend_edge.py` — tie `trend_label` to real P/L, not just directional hit rate
+
+### 12.1 The distinction that motivated this ("w/l is not p/l")
+
+`scripts/trend_regime_backtest.py` (§11) only measures whether raw
+price moved the "right" direction — a binary hit/miss. That's the
+wrong bar for a trend signal in the first place: real trend-following
+systems routinely run 35-45% win rates and are still profitable,
+because wins are sized larger than losses (cut losers fast, let
+winners run). A signal can show a ~50% hit rate and still have a real,
+positive **expectancy** if the wins are bigger than the losses — §11's
+backtest could never see that, because it never looked at trade size,
+only direction.
+
+### 12.2 This already exists for macro — `macro_edge.py`
+
+`macro_filter.py` is deliberately price-only, by its own docstring —
+it doesn't look at win/loss or P/L at all. But a **separate** module,
+`macro_edge.py` (worklog 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md),
+already does exactly the P/L tie-in being asked about here, for
+`macro_label`:
+
+- Reads win/loss-*resolved* `nt_signal_sim` rows (`outcome in
+  (tp_hit, sl_hit)` — `expired` excluded, same convention as
+  `calibration_bias_bucket.py`) that captured `macro_label` at signal
+  time.
+- Buckets by `(symbol, alignment)` — did the trade's direction agree
+  with the macro label (`aligned`/`opposed`/`neutral`)?
+- Computes `win_rate`, `avg_rr_winners` (average realized reward:risk
+  among winners, from `tp_bricks`/`sl_bricks`), and **`expectancy_r`**
+  (`win_rate × avg_rr_winners − (1 − win_rate) × 1.0`) — the actual
+  P/L-relevant number, reusing the exact same bug-fixed formula
+  `calibration_bias_bucket.py` already uses.
+- Also computes median/p75/p90 hours-to-resolve per bucket — does
+  trading with the trend resolve faster, not just win more.
+- Output (`nt_macro_edge_by_symbol`) is read-only evidence for a human
+  to read before touching `macro.boost_scale`/`penalty_scale` — it
+  does not auto-tune anything, nothing downstream reads it live.
+
+**This is the template.** `trend_edge.py` would be a structural clone,
+keyed on `trend_label` instead of `macro_label`.
+
+### 12.3 Real blocker, checked before scoping further
+
+`trend_regime_mode` is currently `"off"`. Queried `nt_signal_sim`
+directly rather than assuming: **93,785 total rows, 0 with
+`trend_label` populated** (33,619 of those rows are win/loss-resolved
+and would otherwise be usable). The column exists — `trend_filter.py`'s
+shadow-mode wiring was built 2026-09-10 — but the mode being `off`
+means the capture path is never invoked (`trend_filter.py`'s own
+docstring: `off: skip the read entirely`). `trend_edge.py` would run
+against zero rows today.
+
+### 12.4 Two-phase plan
+
+**Phase A (prerequisite — needs explicit approval, not done here)**:
+flip `trend_regime_mode` `off → shadow`. Purely additive — shadow mode
+computes and captures `trend_label`/`trend_strength` on `nt_signal_sim`
+without touching Kelly sizing, same as every other shadow flip this
+session. Then **wait for real accumulation** — this can't be backfilled
+from historical prices the way §11's backtest could; it needs actual
+signals to fire going forward (with `trend_label` now being captured)
+and then actually resolve (up to the 48h `EXPIRY_BARS` window), so a
+realistic accumulation period is days-to-weeks depending on signal
+frequency, not immediate. Note: this directly answers the "not decided
+here" flag left in worklog SS9 back in `20260910_..._SCOPE.md` — the
+missing piece blocking that decision wasn't more backtesting, it was
+never having outcome data to check against in the first place.
+
+**Phase B (build, once there's enough resolved data)** —
+`trend_edge.py`:
+- `_alignment_for(signal, trend_label)` — same aligned/opposed/neutral
+  inference as `macro_edge.py`'s, adapted to `trend_label`'s 5-value
+  vocab: `trending_up`/`reversal_up` → bull-implied, `trending_down`/
+  `reversal_down` → bear-implied, `consolidating` → neutral.
+- Identical query shape and identical `win_rate`/`avg_rr_winners`/
+  `expectancy_r` formula — reused verbatim from `macro_edge.py`, not
+  reinvented.
+- **One real addition beyond `macro_edge.py`'s own design**: also
+  bucket by a `trend_strength` tier (e.g. low/med/high, or above/below
+  the existing `strength_saturation` threshold), not just alignment —
+  directly tests whether high-conviction trend reads show a real edge
+  even though §11 found none in the aggregate. `macro_edge.py` doesn't
+  do this for `macro_strength` either — a candidate to back-port there
+  too later, not required to ship this first version.
+- New table `nt_trend_edge_by_symbol`, mirroring
+  `nt_macro_edge_by_symbol`'s columns (`symbol`, `alignment`,
+  `strength_tier`, `n`, `win_rate`, `avg_rr_winners`, `expectancy_r`,
+  `median_hours_to_resolve`, `p75_hours`, `p90_hours`).
+- Same read-only diagnostic discipline as `macro_edge.py` — doesn't
+  feed `kelly_trend_multiplier` automatically; a human reads it before
+  deciding shadow → live (or off).
+
+Nothing built in this section — Phase A needs a decision before Phase
+B is worth writing at all.
 
