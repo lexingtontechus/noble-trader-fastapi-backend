@@ -19,6 +19,7 @@
 | §8 | P2 | Scope a macro-forecast doc for existing (active) symbols | scoped only, doc not written | 2026-09-12 | RM-50 |
 | §9 | P2 | Build: RM-42 Option B catch-up guard, `nt_macro_forecast` FK enforcement, multi-source registry | resolved — built | 2026-09-12 | RM-42, RM-50 |
 | §10 | P2 | Build: TimesFM forecast grounding for `triage.py` (§4's deferred half) | resolved — built | 2026-09-12 | RM-50 |
+| §11 | P1 | Retune trend-regime horizon/crossover-pair with a real backtest tool | resolved — no edge found at scale, supersedes the earlier small-sample read | 2026-09-13 | RM-40 |
 
 ---
 
@@ -508,4 +509,88 @@ text, never stored) — checked before assuming more was available.
 integration — verifies the finding's own symbol is what gets fetched,
 and that a symbol-less finding still proceeds without crashing). Full
 suite: 960 passed, 21 skipped (was 948).
+
+---
+
+## 11. `aapl_regime_staleness_vs_realized_price` — corrected, larger-sample re-analysis supersedes 2026-09-13's early read
+
+### 11.1 What the backtest actually measures — clarified on request
+
+Direct answer to "does the 10/15-day edge mean the qualified signal
+hits SL/TP?": **no.** This backtest (§11.2 below, `scripts/
+trend_regime_backtest.py`) checks whether the raw close price N days
+after a fresh `reversal_up`/`reversal_down` label ended up on the side
+of that day's close the label implied — a directional-correctness
+proxy on `compute_trend_regime()`'s own output. It has no entry price,
+no stop/target, no renko brick geometry, no `eod_resolver.py` TP/SL-
+walk logic, no qualification gates. A real signal's actual outcome
+depends on the *path* price takes (SL can be hit before the
+"eventually correct" direction plays out) — this script never models
+that. A good number here means "the classifier has real directional
+signal," not "wiring this into `kelly_trend_multiplier` live would
+raise the win rate." That second claim needs a backtest hooked into
+the actual brick/SL-TP simulation, out of scope here.
+
+### 11.2 The earlier 66.7%-at-10-days read does not survive a bigger sample
+
+Promoted the throwaway scratch script into `scripts/trend_regime_backtest.py`
+— reusable, configurable lookback/horizons/crossover-pairs, following
+this repo's existing `scripts/` convention (`sim_deadline_aware_scoring.py`
+et al. are committed analysis tools, not scratch-and-delete). Two real
+bugs caught and fixed in it before trusting its output:
+
+1. Patched `feature_flags.get_trend_sma_mid_days` to sweep crossover
+   pairs — did nothing, because `trend_filter.py` imports the getter
+   by name into its own module namespace (`from ... import
+   get_trend_sma_mid_days`), so patching the `feature_flags` module's
+   copy doesn't touch what `trend_filter` actually calls. Caught
+   because three "different" pairs produced byte-identical output.
+   Fixed: patch `trend_filter.get_trend_sma_short_days`/
+   `get_trend_sma_long_days` directly.
+2. Was sweeping `sma_mid_days`/`sma_long_days` as "the crossover
+   pair" — wrong pair. Read `compute_trend_regime()` again: the
+   crossover sign (`short >= long`) and `trend_strength`
+   (`|sma_10 - sma_50|`) both only ever compare **short vs. long**;
+   `sma_mid_days` only feeds the informational `sma_20` field in the
+   return dict and affects nothing the label actually depends on.
+
+With both fixed, re-ran at `--lookback-days 500` (137-345 events per
+config, 4-10x the original 33-event sample) instead of the original
+90-day window:
+
+| Config | 5d | 10d | 15d |
+|---|---|---|---|
+| short=10/long=50 (current default) | 50.0% (69/138) | 52.9% (73/138) | 54.3% (75/138) |
+| short=10/long=20 | 49.3% (151/306) | 47.4% (145/306) | 50.0% (153/306) |
+| short=20/long=50 | 50.9% (58/114) | 52.6% (60/114) | 53.5% (61/114) |
+| short=5/long=20 | 46.7% (161/345) | 45.8% (158/345) | 47.8% (165/345) |
+
+**Every single configuration lands in 45.7%-54.3%** — statistically
+indistinguishable from a coin flip at these sample sizes (a true 50%
+rate has a ~±5.7% 95% CI margin at n=306). **The earlier 66.7% finding
+from the 90-day/33-event sample does not replicate** — it was very
+likely sampling noise from too small a sample, not a real 10-day edge.
+This is now much closer to (and reinforces, at much higher confidence)
+the original 2026-09-10 finding: no standalone directional edge in
+this SMA-crossover trend_label, at any horizon 3-20 days or any
+crossover pair tested.
+
+### 11.3 Revised recommendation
+
+Option (a) from the original 3-way choice — "retune the horizon/pair"
+— was tried properly (4 pairs × multiple horizons, real data, adequate
+sample) and found nothing. That option is now closed, not still open.
+Remaining real choices: **(b) ship to shadow anyway, explicitly framed
+as non-authoritative context only** (shadow makes no Kelly claim
+regardless — zero live risk either way, and it may still combine
+usefully with `regime_conf`/RSI/`macro_label` even without a
+standalone edge, matching the module's own original design intent) or
+**(c) hold at `off`**. Recommend (b) over (c) only if there's actual
+interest in accumulating shadow data for a future *blended* signal
+study — not because this analysis found evidence favoring `shadow`
+over `off` on its own. Not decided here.
+
+`scripts/trend_regime_backtest.py` committed — rerunnable with a
+different lookback/horizon/pair set any time without rebuilding this
+analysis from scratch again.
 
