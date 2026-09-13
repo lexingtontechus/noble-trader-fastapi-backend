@@ -2120,7 +2120,7 @@ async def fetch_calibration_state(symbol: str) -> dict[str, Any] | None:
             resp.raise_for_status()
             data: list[dict] = resp.json()
     except Exception as exc:
-        logger.warning("fetch_calibration_state %s failed: %s", symbol, exc)
+        logger.warning("fetch_calibration_state %s failed: %s: %r", symbol, type(exc).__name__, exc)
         return None
     if not isinstance(data, list) or len(data) == 0:
         return None
@@ -2372,7 +2372,8 @@ async def fetch_latest_qualified_signal(symbol: str, direction: str) -> dict[str
             data: list[dict] = resp.json()
     except Exception as exc:
         logger.warning(
-            "fetch_latest_qualified_signal %s/%s failed: %s", symbol, direction, exc,
+            "fetch_latest_qualified_signal %s/%s failed: %s: %r",
+            symbol, direction, type(exc).__name__, exc,
         )
         return None
 
