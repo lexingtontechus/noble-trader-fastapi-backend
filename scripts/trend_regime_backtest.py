@@ -166,7 +166,7 @@ async def main() -> None:
 
     if not args.crossover_pairs:
         events_by_horizon = _run_walk_forward(closes_by_symbol, horizons, backtest_days)
-        _print_results("current live config (sma_mid/sma_long from feature_flags.yaml)", events_by_horizon)
+        _print_results("current live config (sma_short/sma_long from feature_flags.yaml)", events_by_horizon)
         return
 
     for pair in args.crossover_pairs.split(","):
