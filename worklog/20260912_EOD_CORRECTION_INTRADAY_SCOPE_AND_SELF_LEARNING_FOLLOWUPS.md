@@ -20,7 +20,7 @@
 | §9 | P2 | Build: RM-42 Option B catch-up guard, `nt_macro_forecast` FK enforcement, multi-source registry | resolved — built | 2026-09-12 | RM-42, RM-50 |
 | §10 | P2 | Build: TimesFM forecast grounding for `triage.py` (§4's deferred half) | resolved — built | 2026-09-12 | RM-50 |
 | §11 | P1 | Retune trend-regime horizon/crossover-pair with a real backtest tool | resolved — no edge found at scale, supersedes the earlier small-sample read | 2026-09-13 | RM-40 |
-| §12 | P2 | Scope `trend_edge.py` — tie `trend_label` to real win/loss + expectancy, not just directional hit rate | scoped only, needs approval to flip `trend_regime_mode` first | 2026-09-13 | RM-40 |
+| §12 | P2 | Scope + build `trend_edge.py` — tie `trend_label` to real win/loss + expectancy, not just directional hit rate | resolved — built, `trend_regime_mode` flipped to shadow; not yet meaningful (no data accumulated yet) | 2026-09-13 | RM-40 |
 
 ---
 
@@ -692,4 +692,49 @@ never having outcome data to check against in the first place.
 
 Nothing built in this section — Phase A needs a decision before Phase
 B is worth writing at all.
+
+### 12.5 Both phases built (2026-09-13, explicit approval: "flip it and build this")
+
+**Phase A**: `trend_regime_mode` flipped `off → shadow` in
+`config/feature_flags.yaml`. `nt_signal_sim.trend_label`/`trend_strength`
+will now start populating going forward — real accumulation still
+needs real elapsed time (days-to-weeks), nothing to analyze yet as of
+this commit.
+
+**Phase B**: `regime_platform/sweep_orchestrator/trend_edge.py` built —
+structural clone of `macro_edge.py`, as scoped:
+- `_alignment_for(signal, trend_label)` — same aligned/opposed/neutral
+  logic, adapted to `trend_label`'s 5-value vocab.
+- `_strength_tier_for(trend_strength)` — the one addition beyond
+  `macro_edge.py`'s own bucket key: low/med/high tiers (cut at
+  0.33/0.66) on top of alignment.
+- `build_trend_edge_table()` — same win/loss-resolved population rule,
+  same bug-fixed `expectancy_r` formula reused verbatim. One
+  implementation difference from `macro_edge.py`, not a scope
+  deviation: uses the already-existing generic `fetch_all_rows()`
+  pagination helper instead of writing a 4th near-duplicate local
+  `_fetch_all()` — that helper didn't exist yet when `macro_edge.py`
+  was written (it predates the Phase 2 self-learning detectors it was
+  built for), so this isn't the same "redundant computation" pattern
+  those detectors look for, it's the fix for it.
+- New table `nt_trend_edge_by_symbol` (migration
+  `add_nt_trend_edge_by_symbol`), keyed on
+  `(symbol, alignment, strength_tier)`. `upsert_trend_edge_by_symbol()`
+  added to `supabase_client.py`, same upsert-on-conflict shape as
+  `upsert_macro_edge_by_symbol`.
+- Wired into the same weekly job `macro_edge.py` already runs in
+  (`_run_bracket_reachability`, Sun 07:00 UTC), gated on
+  `get_trend_regime_mode() != "off"` so it doesn't run pointlessly
+  while the mode is off (querying for `trend_label is not null` would
+  just repeatedly find nothing).
+
+17 new tests (`_alignment_for`, `_strength_tier_for`, bucket
+aggregation + `expectancy_r` correctness, best-effort fetch/upsert
+failure handling, orchestrator wiring). Full suite: 977 passed, 21
+skipped (was 960).
+
+**Not yet meaningful** — will report empty (`nt_trend_edge_by_symbol`
+gets no rows) until enough win/loss-resolved, `trend_label`-captured
+signals accumulate under the new shadow mode. Revisit this in
+1-2 weeks, not immediately.
 

@@ -1172,6 +1172,48 @@ async def upsert_macro_edge_by_symbol(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_macro_edge_by_symbol: insert failed: %s", exc)
 
 
+NT_TREND_EDGE_BY_SYMBOL_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "alignment", "strength_tier", "n", "win_rate", "avg_rr_winners",
+    "expectancy_r", "median_hours_to_resolve", "p75_hours", "p90_hours",
+})
+
+
+async def upsert_trend_edge_by_symbol(rows: list[dict[str, Any]]) -> None:
+    """Upsert bucket rows into ``nt_trend_edge_by_symbol`` (best-effort).
+
+    Keyed on ``(symbol, alignment, strength_tier)`` — same
+    upsert-on-conflict shape as ``upsert_macro_edge_by_symbol``, one
+    extra key column since ``trend_edge.py`` also buckets by
+    `trend_strength` tier, not just alignment.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_TREND_EDGE_BY_SYMBOL_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_trend_edge_by_symbol: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_trend_edge_by_symbol')}?on_conflict=symbol,alignment,strength_tier",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_trend_edge_by_symbol: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_trend_edge_by_symbol: insert failed: %s: %r", type(exc).__name__, exc)
+
+
 NT_HMM_SHADOW_ACCURACY_COLUMNS: frozenset[str] = frozenset({
     "symbol", "metric", "n", "coverage", "accuracy", "brier_score", "computed_at",
 })

@@ -235,7 +235,12 @@ macro:
 # nt_trend_regime writes. shadow = compute + capture trend_label/
 # trend_strength on nt_signal_sim, no Kelly impact. live = additionally
 # multiply effective_kelly by kelly_trend_multiplier().
-trend_regime_mode: "off"
+# 2026-09-13: off -> shadow (worklog 20260912_..._FOLLOWUPS.md SS12) --
+# needed to start nt_signal_sim.trend_label accumulating real
+# win/loss-resolved rows for trend_edge.py's P/L-based analysis (checked
+# live before this flip: 0/93,785 rows had trend_label populated while
+# off). No Kelly impact -- shadow is capture-only.
+trend_regime_mode: "shadow"
 trend:
   sma_short_days: 10
   sma_mid_days: 20

@@ -2089,6 +2089,31 @@ class SweepOrchestrator(HeavySweepMixin):
             except Exception as exc:
                 logger.error("[macro-edge] failed: %s", exc)
 
+        # Trend-edge-by-symbol (2026-09-13, worklog/
+        # 20260912_EOD_CORRECTION_INTRADAY_SCOPE_AND_SELF_LEARNING_FOLLOWUPS.md
+        # §12): the win/loss+PnL evidence for the trend filter
+        # (trend_filter.py), structural clone of macro-edge above. Chained
+        # onto the same weekly job, same resolved-nt_signal_sim population,
+        # same cadence. Gated on trend_regime_mode != "off" since
+        # nt_signal_sim.trend_label is only ever populated in shadow/live —
+        # querying with the mode off would just repeatedly find nothing.
+        # Read-only: informs the trend_regime_mode shadow->live (or off)
+        # decision, does not auto-tune it.
+        from regime_platform.core.feature_flags import get_trend_regime_mode
+        if get_trend_regime_mode() != "off":
+            from regime_platform.sweep_orchestrator.trend_edge import (
+                build_trend_edge_table,
+            )
+
+            try:
+                trend_edge_rows = await build_trend_edge_table()
+                logger.info(
+                    "[trend-edge] done: %d bucket row(s) across %d symbol(s)",
+                    len(trend_edge_rows), len({r["symbol"] for r in trend_edge_rows}),
+                )
+            except Exception as exc:
+                logger.error("[trend-edge] failed: %s", exc)
+
         # HMM shadow accuracy (2026-08-31, worklog/
         # 20260831_SHADOW_TO_LIVE_ROADMAP.md): outcome-linked evidence for
         # the Tier 1/2 markov_source_mode/trend_probs_gate_mode live-mode
