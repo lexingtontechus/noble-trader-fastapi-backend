@@ -54,6 +54,7 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
     _bucket_for,
     _current_atr_by_symbol,
     _hours_between,
+    _vol_tier,
 )
 from regime_platform.sweep_orchestrator.supabase_client import (
     _headers,
@@ -105,7 +106,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     try:
         rows = await _fetch_all(
             "nt_signal_sim",
-            "symbol,ts,entry_price,take_profit,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks",
+            "symbol,ts,entry_price,take_profit,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks,regime",
             filters,
         )
     except Exception as exc:
@@ -124,7 +125,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         logger.warning("calibration_bias_bucket: ATR proxy fetch failed: %s", exc)
         proxy_atr = {}
 
-    bucket_data: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+    bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "n": 0, "wins": 0, "losses": 0, "p_win_sum": 0.0,
             "rr_sum": 0.0, "hours": [], "atr_source": "stored",
@@ -151,8 +152,9 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         bucket = _bucket_for(ratio)
         if bucket is None:
             continue
+        vol_tier = _vol_tier(row.get("regime"))
 
-        d = bucket_data[(symbol, bucket)]
+        d = bucket_data[(symbol, vol_tier, bucket)]
         d["n"] += 1
         d["atr_source"] = atr_source
         p_win = row.get("p_win")
@@ -172,18 +174,18 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
 
     try:
         reachability_rows = await _fetch_all(
-            "nt_bracket_reachability", "symbol,distance_atr_bucket,pct_expired", {},
+            "nt_bracket_reachability", "symbol,vol_tier,distance_atr_bucket,pct_expired", {},
         )
     except Exception as exc:
         logger.warning("calibration_bias_bucket: reachability join fetch failed: %s", exc)
         reachability_rows = []
     pct_expired_by_bucket = {
-        (r["symbol"], r["distance_atr_bucket"]): r.get("pct_expired")
+        (r["symbol"], r.get("vol_tier", "unknown"), r["distance_atr_bucket"]): r.get("pct_expired")
         for r in reachability_rows
     }
 
     output_rows: list[dict[str, Any]] = []
-    for (symbol, bucket), d in bucket_data.items():
+    for (symbol, vol_tier, bucket), d in bucket_data.items():
         n = d["n"]
         avg_p_win = d["p_win_sum"] / n
         win_rate = d["wins"] / n
@@ -199,12 +201,13 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         )
         output_rows.append({
             "symbol": symbol,
+            "vol_tier": vol_tier,
             "distance_atr_bucket": bucket,
             "n": n,
             "avg_p_win": round(avg_p_win, 4),
             "win_rate": round(win_rate, 4),
             "bias": bias,
-            "pct_expired": pct_expired_by_bucket.get((symbol, bucket)),
+            "pct_expired": pct_expired_by_bucket.get((symbol, vol_tier, bucket)),
             "avg_rr_winners": round(avg_rr_winners, 4) if avg_rr_winners is not None else None,
             "expectancy_r": expectancy_r,
             "median_hours_to_resolve": median_hours,
@@ -295,15 +298,15 @@ def _print_bias_report(rows: list[dict[str, Any]]) -> None:
         print("No calibration-bias-by-bucket rows computed.")
         return
     print(
-        f"{'Symbol':<10} {'Bucket':<8} {'n':>6} {'avgP':>6} {'winR':>6} "
+        f"{'Symbol':<10} {'VolTier':<13} {'Bucket':<8} {'n':>6} {'avgP':>6} {'winR':>6} "
         f"{'bias':>7} {'%Exp':>6} {'RRwin':>6} {'exR':>7} {'medHr':>7} {'dExR':>7} {'src':<14}"
     )
-    print("-" * 100)
-    for row in sorted(rows, key=lambda r: (r["symbol"], r["distance_atr_bucket"])):
+    print("-" * 115)
+    for row in sorted(rows, key=lambda r: (r["symbol"], r.get("vol_tier", ""), r["distance_atr_bucket"])):
         def fmt(v, spec="{:.3f}"):
             return spec.format(v) if v is not None else "-"
         print(
-            f"{row['symbol']:<10} {row['distance_atr_bucket']:<8} {row['n']:>6} "
+            f"{row['symbol']:<10} {row.get('vol_tier', 'unknown'):<13} {row['distance_atr_bucket']:<8} {row['n']:>6} "
             f"{fmt(row['avg_p_win']):>6} {fmt(row['win_rate']):>6} {fmt(row['bias'], '{:+.3f}'):>7} "
             f"{fmt(row['pct_expired']):>6} {fmt(row['avg_rr_winners'], '{:.2f}'):>6} "
             f"{fmt(row['expectancy_r'], '{:+.3f}'):>7} {fmt(row['median_hours_to_resolve'], '{:.1f}'):>7} "

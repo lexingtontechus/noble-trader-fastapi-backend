@@ -86,6 +86,36 @@ def _bucket_for(ratio: float) -> str | None:
     return None
 
 
+# vol_tier — 2026-09-13, worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md.
+# ATR itself is regime-conditional (the HMM's volatility dimension is fit
+# on the same price history ATR is computed from), so the same
+# distance/ATR bucket represents a different absolute price distance
+# depending on which of the 4 vol tiers is active. Bucketing by
+# (symbol, vol_tier, distance_atr_bucket) instead of (symbol,
+# distance_atr_bucket) is the same fix Phase 1 already applied once (raw
+# %-distance -> distance/ATR), one dimension further.
+_UNKNOWN_VOL_TIER = "unknown"
+
+
+def _vol_tier(regime_label: str | None) -> str:
+    """Extract the HMM volatility tier from a combined regime label.
+
+    ``regime_label`` is built as ``f"{vol_state}_vol_{trend_state}"``
+    (``regime_engine.py:562``), e.g. ``"med_low_vol_strong_bear"`` ->
+    ``"med_low_vol"``. Returns ``"unknown"`` (not None) for a missing or
+    unparseable label (e.g. the pre-HMM-bootstrap ``"unknown"`` fallback)
+    — a concrete sentinel so it can bucket cleanly rather than being
+    dropped, matching ``atr_source``'s ``stored``/``proxy_current``
+    convention rather than a nullable column (see migration 152's
+    docstring for why: PostgREST's upsert ``on_conflict`` needs a real
+    unique constraint on the exact column list, not an expression index
+    over a nullable column).
+    """
+    if not regime_label or "_vol_" not in regime_label:
+        return _UNKNOWN_VOL_TIER
+    return regime_label.split("_vol_")[0] + "_vol"
+
+
 async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[str, Any]]:
     """Paginate resolved ``nt_signal_sim`` rows (any outcome).
 
@@ -98,7 +128,7 @@ async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[st
     rows: list[dict[str, Any]] = []
     offset = 0
     params: dict[str, str] = {
-        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at",
+        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at,regime",
         "outcome": "not.is.null",
         "order": "ts.asc",
         "limit": str(_PAGE_SIZE),
@@ -182,7 +212,7 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
         logger.warning("bracket_reachability: ATR proxy fetch failed: %s", exc)
         proxy_atr = {}
 
-    bucket_data: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+    bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "n": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0,
             "hours": [], "atr_source": "stored",
@@ -213,8 +243,9 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
         bucket = _bucket_for(ratio)
         if bucket is None:
             continue
+        vol_tier = _vol_tier(row.get("regime"))
 
-        d = bucket_data[(symbol, bucket)]
+        d = bucket_data[(symbol, vol_tier, bucket)]
         d["n"] += 1
         d[outcome] += 1
         d["atr_source"] = atr_source
@@ -224,11 +255,12 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
                 d["hours"].append(hrs)
 
     output_rows: list[dict[str, Any]] = []
-    for (symbol, bucket), d in bucket_data.items():
+    for (symbol, vol_tier, bucket), d in bucket_data.items():
         n = d["n"]
         hours = d["hours"]
         output_rows.append({
             "symbol": symbol,
+            "vol_tier": vol_tier,
             "distance_atr_bucket": bucket,
             "n": n,
             "pct_hit_tp": round(d["tp_hit"] / n, 4),
@@ -259,16 +291,16 @@ def _print_report(rows: list[dict[str, Any]]) -> None:
         print("No reachability rows computed.")
         return
     print(
-        f"{'Symbol':<10} {'Bucket':<8} {'n':>6} {'%TP':>7} {'%SL':>7} "
+        f"{'Symbol':<10} {'VolTier':<13} {'Bucket':<8} {'n':>6} {'%TP':>7} {'%SL':>7} "
         f"{'%Exp':>7} {'medHr':>7} {'p75':>7} {'p90':>7} {'src':<14}"
     )
-    print("-" * 90)
-    for row in sorted(rows, key=lambda r: (r["symbol"], r["distance_atr_bucket"])):
+    print("-" * 105)
+    for row in sorted(rows, key=lambda r: (r["symbol"], r.get("vol_tier", ""), r["distance_atr_bucket"])):
         med = row["median_hours_to_resolve"]
         p75 = row["p75_hours"]
         p90 = row["p90_hours"]
         print(
-            f"{row['symbol']:<10} {row['distance_atr_bucket']:<8} {row['n']:>6} "
+            f"{row['symbol']:<10} {row.get('vol_tier', 'unknown'):<13} {row['distance_atr_bucket']:<8} {row['n']:>6} "
             f"{row['pct_hit_tp'] * 100:>6.1f}% {row['pct_hit_sl'] * 100:>6.1f}% "
             f"{row['pct_expired'] * 100:>6.1f}% "
             f"{med if med is not None else '-':>7} "

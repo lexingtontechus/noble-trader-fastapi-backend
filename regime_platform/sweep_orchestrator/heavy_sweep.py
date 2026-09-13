@@ -947,6 +947,7 @@ class HeavySweepMixin:
 
             reachability_mode = get_heavy_sweep_reachability_mode()
             if reachability_mode != "off":
+                from regime_platform.sweep_orchestrator.bracket_reachability import _vol_tier
                 from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
                     fetch_bias_by_bucket,
                     reachability_aware_pick,
@@ -956,6 +957,7 @@ class HeavySweepMixin:
                 )
                 try:
                     bias_by_bucket = await fetch_bias_by_bucket(symbol)
+                    sweep_vol_tier = _vol_tier(result.regime_label)
                     # Explicit min_rr/max_sharpe/min_trades (not the
                     # function's own defaults) — guarantees this shadow
                     # comparison's "baseline" recomputation uses the
@@ -963,7 +965,7 @@ class HeavySweepMixin:
                     # used above, not a second, independently-resolved
                     # copy that could quietly drift from it.
                     reach = reachability_aware_pick(
-                        grid_results, atr, bias_by_bucket,
+                        grid_results, atr, bias_by_bucket, vol_tier=sweep_vol_tier,
                         min_rr=MIN_RR, max_sharpe=MAX_SHARPE, min_trades=MIN_TRADES,
                     )
                     asyncio.create_task(record_heavy_sweep_reachability_shadow(
@@ -974,12 +976,13 @@ class HeavySweepMixin:
                         baseline_sharpe=reach["baseline_sharpe"],
                         filtered_bucket=reach["filtered_bucket"],
                         filtered_sharpe=reach["filtered_sharpe"],
+                        vol_tier=sweep_vol_tier,
                     ))
                     logger.info(
-                        "[sweep:heavy] %s: reachability %s — baseline bucket=%s "
+                        "[sweep:heavy] %s: reachability %s (vol_tier=%s) — baseline bucket=%s "
                         "sharpe=%.4f | filtered bucket=%s sharpe=%s "
                         "(nothing_survived=%s, pick_changed=%s)",
-                        symbol, reachability_mode,
+                        symbol, reachability_mode, sweep_vol_tier,
                         reach["baseline_bucket"], reach["baseline_sharpe"] or 0.0,
                         reach["filtered_bucket"],
                         f"{reach['filtered_sharpe']:.4f}" if reach["filtered_sharpe"] is not None else "-",

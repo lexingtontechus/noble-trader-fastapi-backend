@@ -50,7 +50,7 @@ from typing import Any, Optional
 import httpx
 
 from regime_platform.core.settings import settings
-from regime_platform.sweep_orchestrator.bracket_reachability import _bucket_for
+from regime_platform.sweep_orchestrator.bracket_reachability import _bucket_for, _vol_tier
 from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
 
 logger = logging.getLogger("regime.sweep.heavy_sweep_reachability")
@@ -73,7 +73,8 @@ def _bucket_for_combo(combo: Any, atr: float | None) -> Optional[str]:
 def reachability_aware_pick(
     combos: list[Any],
     atr: float | None,
-    bias_by_bucket: dict[str, float | None],
+    bias_by_bucket: dict[tuple[str, str], float | None],
+    vol_tier: str | None = None,
     min_rr: float = _MIN_RR_DEFAULT,
     max_sharpe: float = _MAX_SHARPE_DEFAULT,
     min_trades: int = _MIN_TRADES_DEFAULT,
@@ -88,10 +89,20 @@ def reachability_aware_pick(
             the reachability leg entirely (every combo's bucket becomes
             unknown, so nothing is excluded) — same fail-open behavior
             as an unscored bucket, never gates blindly on missing data.
-        bias_by_bucket: ``{distance_atr_bucket: expectancy_r}`` for this
-            symbol from ``nt_calibration_bias_by_bucket``. A bucket
-            absent from this dict (no calibration data yet) is treated
-            the same as ``None`` — kept, not excluded.
+        bias_by_bucket: ``{(vol_tier, distance_atr_bucket): expectancy_r}``
+            for this symbol from ``nt_calibration_bias_by_bucket``
+            (2026-09-13, worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md —
+            ATR itself is regime-conditional, so the same distance/ATR
+            bucket means a different absolute distance depending on vol
+            tier; keying on vol_tier too disambiguates that). A
+            ``(vol_tier, bucket)`` pair absent from this dict (no
+            calibration data yet) is treated the same as ``None`` — kept,
+            not excluded.
+        vol_tier: the LIVE regime's vol tier at sweep time (e.g.
+            ``_vol_tier(result.regime_label)`` — already computed by the
+            caller before this function runs). ``None``/missing resolves
+            to ``"unknown"``, matching ``_vol_tier``'s own fail-open
+            sentinel — looked up as its own bucket, not excluded.
 
     Returns:
         {
@@ -104,6 +115,7 @@ def reachability_aware_pick(
           "pick_changed": bool,
         }
     """
+    resolved_vol_tier = vol_tier or "unknown"
     quality_filtered = [
         c for c in combos
         if c.tp_bricks / max(c.sl_bricks, 1) >= min_rr
@@ -116,7 +128,7 @@ def reachability_aware_pick(
         bucket = _bucket_for_combo(combo, atr)
         if bucket is None:
             return True
-        expectancy = bias_by_bucket.get(bucket)
+        expectancy = bias_by_bucket.get((resolved_vol_tier, bucket))
         return expectancy is None or expectancy > 0
 
     reachable = [c for c in quality_filtered if _is_reachable(c)]
@@ -141,11 +153,12 @@ def reachability_aware_pick(
     }
 
 
-async def fetch_bias_by_bucket(symbol: str) -> dict[str, float | None]:
-    """``{distance_atr_bucket: expectancy_r}`` for one symbol, from
-    ``nt_calibration_bias_by_bucket``. Best-effort — returns ``{}`` on
-    any failure (callers then treat every bucket as unscored, i.e. keep
-    everything — fail-open, same as a missing ``atr``)."""
+async def fetch_bias_by_bucket(symbol: str) -> dict[tuple[str, str], float | None]:
+    """``{(vol_tier, distance_atr_bucket): expectancy_r}`` for one symbol,
+    from ``nt_calibration_bias_by_bucket``. Best-effort — returns ``{}`` on
+    any failure (callers then treat every (vol_tier, bucket) pair as
+    unscored, i.e. keep everything — fail-open, same as a missing
+    ``atr``)."""
     if not settings.SUPABASE_URL:
         return {}
     try:
@@ -154,7 +167,7 @@ async def fetch_bias_by_bucket(symbol: str) -> dict[str, float | None]:
                 _url("nt_calibration_bias_by_bucket"),
                 headers=_headers(),
                 params={
-                    "select": "distance_atr_bucket,expectancy_r",
+                    "select": "vol_tier,distance_atr_bucket,expectancy_r",
                     "symbol": f"eq.{symbol}",
                 },
             )
@@ -162,7 +175,10 @@ async def fetch_bias_by_bucket(symbol: str) -> dict[str, float | None]:
             rows = resp.json()
         if not isinstance(rows, list):
             return {}
-        return {r["distance_atr_bucket"]: r.get("expectancy_r") for r in rows}
+        return {
+            (r.get("vol_tier", "unknown"), r["distance_atr_bucket"]): r.get("expectancy_r")
+            for r in rows
+        }
     except Exception as exc:
         logger.warning("fetch_bias_by_bucket: %s: fetch failed: %s", symbol, exc)
         return {}

@@ -607,7 +607,7 @@ async def log_renko_bricks(
 
 
 NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
-    "symbol", "distance_atr_bucket", "n",
+    "symbol", "vol_tier", "distance_atr_bucket", "n",
     "pct_hit_tp", "pct_hit_sl", "pct_expired",
     "median_hours_to_resolve", "p75_hours", "p90_hours",
     "atr_source",
@@ -617,10 +617,12 @@ NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
 async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
     """Upsert bucket rows into ``nt_bracket_reachability`` (best-effort).
 
-    Keyed on ``(symbol, distance_atr_bucket)`` — a weekly refresh REPLACES
-    each bucket's stats rather than accumulating duplicates, same
-    ``on_conflict`` + ``Prefer: resolution=merge-duplicates`` pattern as
-    ``log_renko_bricks``.
+    Keyed on ``(symbol, vol_tier, distance_atr_bucket)`` (2026-09-13,
+    worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md — was ``(symbol,
+    distance_atr_bucket)`` before ATR-scale's regime-conditionality was
+    accounted for) — a weekly refresh REPLACES each bucket's stats rather
+    than accumulating duplicates, same ``on_conflict`` + ``Prefer:
+    resolution=merge-duplicates`` pattern as ``log_renko_bricks``.
     """
     if not settings.SUPABASE_URL:
         return
@@ -633,7 +635,7 @@ async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{_url('nt_bracket_reachability')}?on_conflict=symbol,distance_atr_bucket",
+                f"{_url('nt_bracket_reachability')}?on_conflict=symbol,vol_tier,distance_atr_bucket",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",
@@ -651,7 +653,7 @@ async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
 
 
 NT_CALIBRATION_BIAS_BY_BUCKET_COLUMNS: frozenset[str] = frozenset({
-    "symbol", "distance_atr_bucket", "n",
+    "symbol", "vol_tier", "distance_atr_bucket", "n",
     "avg_p_win", "win_rate", "bias", "pct_expired",
     "avg_rr_winners", "expectancy_r",
     "median_hours_to_resolve", "daily_expectancy_r",
@@ -662,8 +664,9 @@ NT_CALIBRATION_BIAS_BY_BUCKET_COLUMNS: frozenset[str] = frozenset({
 async def upsert_calibration_bias_by_bucket(rows: list[dict[str, Any]]) -> None:
     """Upsert bucket rows into ``nt_calibration_bias_by_bucket`` (best-effort).
 
-    Keyed on ``(symbol, distance_atr_bucket)`` — same upsert-on-conflict
-    shape as ``upsert_bracket_reachability``.
+    Keyed on ``(symbol, vol_tier, distance_atr_bucket)`` (2026-09-13,
+    worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md) — same upsert-on-
+    conflict shape as ``upsert_bracket_reachability``.
     """
     if not settings.SUPABASE_URL:
         return
@@ -676,7 +679,7 @@ async def upsert_calibration_bias_by_bucket(rows: list[dict[str, Any]]) -> None:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{_url('nt_calibration_bias_by_bucket')}?on_conflict=symbol,distance_atr_bucket",
+                f"{_url('nt_calibration_bias_by_bucket')}?on_conflict=symbol,vol_tier,distance_atr_bucket",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",
@@ -738,7 +741,7 @@ async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
 NT_HEAVY_SWEEP_REACHABILITY_SHADOW_COLUMNS: frozenset[str] = frozenset({
     "symbol", "n_compared", "n_nothing_survived", "n_pick_changed",
     "last_baseline_bucket", "last_baseline_sharpe",
-    "last_filtered_bucket", "last_filtered_sharpe", "updated_at",
+    "last_filtered_bucket", "last_filtered_sharpe", "vol_tier", "updated_at",
 })
 
 
@@ -750,11 +753,18 @@ async def record_heavy_sweep_reachability_shadow(
     baseline_sharpe: float | None,
     filtered_bucket: str | None,
     filtered_sharpe: float | None,
+    vol_tier: str | None = None,
 ) -> None:
     """Accumulate one heavy-sweep's reachability-aware-pick comparison
     into the running per-symbol row in ``nt_heavy_sweep_reachability_shadow``
     (best-effort). Phase 3a of the calibration reframe (worklog
     20260825_CALIBRATION_REFRAME_SCOPE.md).
+
+    ``vol_tier`` (2026-09-13, worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md)
+    is the live regime's vol tier at THIS comparison — visibility only,
+    not part of the upsert key (this table stays keyed on symbol alone,
+    one running row per symbol). Lets a human query "is this symbol's
+    nothing-survived pattern concentrated in a specific vol tier" directly.
 
     Fetch-then-upsert, same shape as ``record_markov_shadow_compare`` —
     ``updated_at`` included in the payload from the start (that
@@ -788,6 +798,7 @@ async def record_heavy_sweep_reachability_shadow(
                 "last_baseline_sharpe": round(float(baseline_sharpe), 4) if baseline_sharpe is not None else None,
                 "last_filtered_bucket": filtered_bucket,
                 "last_filtered_sharpe": round(float(filtered_sharpe), 4) if filtered_sharpe is not None else None,
+                "vol_tier": vol_tier,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }, NT_HEAVY_SWEEP_REACHABILITY_SHADOW_COLUMNS)
 
