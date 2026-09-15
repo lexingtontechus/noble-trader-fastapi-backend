@@ -858,19 +858,42 @@ class HeavySweepMixin:
 
             # ── 5a2. Deadline-aware rescoring — root cause fix, worklog
             # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md. Applied
-            # after ATR-anchoring (independent re-ranking over the same
-            # grid_results — with atr_anchored_mode="off", grid_results is
-            # just the original 5-brick-size grid, matching exactly what
-            # this fix was validated against). "off" reproduces `best`
-            # above exactly (both read c.sharpe uncapped) — no behavior
-            # change when both flags are off, which is today's shipped
-            # default for both.
+            # after ATR-anchoring (independent re-ranking — with
+            # atr_anchored_mode="off", grid_results is just the original
+            # 5-brick-size grid, matching exactly what this fix was
+            # validated against). "off" reproduces `best` above exactly
+            # (both read c.sharpe uncapped) — no behavior change when
+            # both flags are off, which is today's shipped default for
+            # both.
+            #
+            # BUG FIX 2026-09-14 (worklog
+            # 20260914_DEADLINE_AWARE_ATR_ANCHOR_SHADOW_LEAK.md): this
+            # stage used to re-pick from the FULL `grid_results` — which
+            # already includes ATR-anchored candidates whenever
+            # atr_anchored_mode != "off" — silently reintroducing
+            # candidates the ATR-anchoring stage above had just
+            # restricted away in "shadow" mode. Confirmed live in
+            # production: XAUUSD's heavy sweep picked the widened
+            # (ATR-anchored) combo despite
+            # heavy_sweep_atr_anchored_bricks_mode="shadow", because this
+            # stage never consulted `selection.chosen`/`atr_anchored_mode`
+            # before re-deriving `best`. Fix: restrict the candidate pool
+            # fed into deadline-aware scoring to whatever the ATR-
+            # anchoring stage actually authorized for production
+            # (`original_brick_sizes` only, unless atr_anchored_mode is
+            # "live") — the two shadow flags now compose instead of one
+            # silently overriding the other's isolation.
+            deadline_candidates = (
+                grid_results if atr_anchored_mode == "live"
+                else [c for c in grid_results if c.brick_size in original_brick_sizes]
+            )
+
             from regime_platform.core.feature_flags import (
                 get_heavy_sweep_deadline_aware_scoring_mode,
             )
 
             deadline_mode = get_heavy_sweep_deadline_aware_scoring_mode()
-            deadline_selection = select_best_combo_deadline_aware(grid_results, deadline_mode)
+            deadline_selection = select_best_combo_deadline_aware(deadline_candidates, deadline_mode)
             best = deadline_selection.chosen
             if deadline_mode in ("shadow", "live"):
                 def _fmt2(c: Optional[ComboResult]) -> str:
