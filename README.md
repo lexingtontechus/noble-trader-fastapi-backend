@@ -725,6 +725,46 @@ P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
 
 ---
 
+## Heavy Sweep Grid Selection & Reachability (2026-08-25 onward)
+
+The heavy sweep (`regime_platform/sweep_orchestrator/heavy_sweep.py`, weekly
+per symbol) runs a Renko brick/SL/TP grid search and picks the best
+combo by Sharpe ratio. Multiple independent, shadow-first correctness
+layers sit on top of that raw Sharpe pick, each gated by its own
+`off | shadow | live` flag in `config/feature_flags.yaml` and each
+tracked to a review date in `nt_roadmap`:
+
+| Mechanism | Mode (current) | What it does |
+|---|---|---|
+| `heavy_sweep_deadline_aware_scoring_mode` | **live** (2026-09-08) | Re-scores every grid candidate with a 48h-deadline-capped Sharpe — a backtest trade that would resolve after the live signal's expiry window no longer counts as a "win" at selection time. |
+| `heavy_sweep_atr_anchored_bricks_mode` | **shadow** (2026-09-13, "Phase 3b") | Adds 3 extra ATR-scaled brick candidates to the grid so symbols whose native grid never lands near price (e.g. gold pairs) get a chance at a tighter, more reachable bracket. |
+| `reachability_vol_tier` | **live** (2026-09-13) | Buckets historical bracket-resolution expectancy by `(symbol, vol_tier, distance/ATR)` instead of `(symbol, distance/ATR)` alone — the same distance/ATR bucket has very different real win rates depending on the HMM's current vol regime. |
+| `heavy_sweep_reachability_mode` | **shadow** (2026-08-28, "Phase 3a") | `reachability_aware_pick()` compares the raw Sharpe-best pick against a reachability/expectancy-aware alternative — if the Sharpe-best bracket lands in a bucket with negative historical expectancy and a better-expectancy alternative exists, shadow mode logs what it *would* have picked instead. |
+| `macro_regime_mode` | **shadow** (2026-08-28) | 200-day-SMA trend read per symbol (`macro_filter.py`) + `nt_macro_edge_by_symbol` tracks whether trading with vs. against that trend actually wins historically, per symbol. |
+
+**Review cadence**: `nt_roadmap` tracks each mechanism's shadow-accumulation
+progress and review date (Phase 3b's three related rows share
+**2026-10-05**). Daily pulse checks re-verify orchestrator health, gate
+these review dates, and re-pull the shadow comparison tables — see
+`worklog/20260913_PHASE_3B_GRID_WIDENING_SCOPE.md`,
+`worklog/20260913_REACHABILITY_VOL_TIER_SCOPE.md`, and
+`worklog/20260825_CALIBRATION_REFRAME_SCOPE.md` for the full scope of
+each.
+
+**2026-09-14 shadow-composition bug (fixed same day)**: the
+deadline-aware and reachability-aware selection stages were each
+individually correct in shadow mode, but both re-derived their pick
+from the *full* grid — which already includes ATR-anchored candidates
+once that mode is `shadow` — silently bypassing the ATR-anchoring
+stage's own restriction. Confirmed live (XAUUSD's widened combo shipped
+to production despite `heavy_sweep_atr_anchored_bricks_mode="shadow"`).
+Fixed by restricting both later stages' candidate pool to whatever the
+ATR-anchoring stage actually authorized. See
+`worklog/20260914_DEADLINE_AWARE_ATR_ANCHOR_SHADOW_LEAK.md` and
+`tests/test_heavy_sweep_shadow_mode_composition.py`.
+
+---
+
 ## GPU Acceleration
 
 ```bash
