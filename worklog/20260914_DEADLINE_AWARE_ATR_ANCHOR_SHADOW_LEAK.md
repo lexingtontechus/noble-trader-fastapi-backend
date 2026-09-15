@@ -94,11 +94,40 @@ covered by existing worklogs' claims:
   the 2026-09-08 root-cause fix was validated against (win% 58.5→74.5),
   so that validation still holds.
 
+## Third leak point found: `reachability_aware_pick()` had the identical bug
+
+While scoping whether to build/wire `reachability_aware_pick()` live
+(user's next question, same session), tracing its exact call site
+turned up the same root cause a third time. `heavy_sweep.py`'s stage 5a
+(reachability shadow comparison, `heavy_sweep_reachability_mode`, live
+in shadow since 2026-08-28 — this mechanism already exists and was
+already running, not something to newly build) also called
+`reachability_aware_pick()` with the raw, unrestricted `grid_results`
+instead of the ATR-anchoring-restricted pool.
+
+**Confirmed live**: `nt_heavy_sweep_reachability_shadow`'s XAUUSD row
+showed `last_baseline_bucket='0.5-1', last_baseline_sharpe=1.6981` — its
+internal "baseline" (meant to reproduce the TRUE production Sharpe-only
+pick before applying the reachability filter) was actually the
+ATR-anchored WIDENED combo, not the real `4+` baseline. This means:
+- **`nt_heavy_sweep_reachability_shadow`'s `pick_changed`/
+  `nothing_survived` counts have been unreliable since 2026-09-13**
+  (when ATR-anchoring went to shadow) for the same structural reason —
+  the shadow comparison's own "before" state was already contaminated.
+- **A live flip of `heavy_sweep_reachability_mode` today would have
+  risked promoting a still-shadow ATR-anchored candidate into
+  production** via `reach["filtered_combo"]`, completely independent of
+  whether `heavy_sweep_atr_anchored_bricks_mode` itself was live.
+
+**Fix**: pass the same `deadline_candidates` restricted pool (added by
+the fix above) into `reachability_aware_pick()` too, instead of raw
+`grid_results`. Same one-line class of fix as the first leak.
+
 ## Tests added
 
-`tests/test_heavy_sweep_shadow_mode_composition.py` — 6 new tests
-(0 existing coverage of either function or their composition before
-this fix):
+`tests/test_heavy_sweep_shadow_mode_composition.py` — 8 new tests total
+(0 existing coverage of any of these three functions' composition
+before this fix):
 1. `test_shadow_leak_reproduced_without_the_fix` — reproduces the exact
    bug (documents what would happen without the restriction).
 2. `test_fix_keeps_atr_anchored_combo_out_of_production_in_shadow_mode`
@@ -112,9 +141,14 @@ this fix):
    claim in both functions' docstrings.
 6. `test_atr_anchoring_stage_shadow_mode_unaffected_by_this_fix` —
    confirms stage 1 itself needed no change.
+7. `test_reachability_baseline_leak_reproduced_without_the_fix` —
+   reproduces the third leak point (reachability's own baseline
+   contamination).
+8. `test_reachability_fix_uses_restricted_pool_for_its_baseline` —
+   confirms the fix for that third leak point.
 
-Full suite: **994 passed, 21 skipped, 0 failed** (up from 988 before
-this fix — net +6).
+Full suite: **996 passed, 21 skipped, 0 failed** (up from 988 before
+this fix session — net +8).
 
 ## What this means for Phase 3b's Oct 5 review
 

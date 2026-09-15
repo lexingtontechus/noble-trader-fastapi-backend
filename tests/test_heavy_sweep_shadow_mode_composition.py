@@ -149,3 +149,61 @@ def test_atr_anchoring_stage_shadow_mode_unaffected_by_this_fix():
     assert selection.chosen.brick_size == 2.0
     assert selection.widened.brick_size == 0.8  # still computed for comparison/logging
     assert selection.changed is True
+
+
+# ─── Third leak point: reachability_aware_pick() had the identical bug ──
+#
+# Same discovery session, same root cause: heavy_sweep.py's reachability
+# call site (5a) also passed raw `grid_results` into
+# `reachability_aware_pick()` instead of the ATR-anchoring-restricted
+# pool — contaminating its internal baseline recomputation the same way
+# stage 5a2 was contaminated. Confirmed live: XAUUSD's
+# nt_heavy_sweep_reachability_shadow row showed
+# last_baseline_bucket="0.5-1" (the WIDENED combo) instead of the true
+# "4+" baseline. Fixed by passing the same restricted candidate pool
+# (`deadline_candidates` at the call site) into this function too.
+
+
+from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
+    reachability_aware_pick,
+)
+
+
+def test_reachability_baseline_leak_reproduced_without_the_fix():
+    """Feeding the FULL grid into reachability_aware_pick (pre-fix
+    behavior) lets its internal baseline recomputation pick up a
+    still-shadow ATR-anchored combo — exactly what shipped for XAUUSD's
+    shadow-comparison row."""
+    original_brick_sizes = {2.0}
+    baseline_combo = _combo(2.0, 3, 5, sharpe=1.2, total_trades=50)
+    widened_combo = _combo(0.8, 3, 5, sharpe=1.7, total_trades=50)  # ATR-anchored, still shadow
+    grid_results = [baseline_combo, widened_combo]
+
+    # Pre-fix: called with the raw, unrestricted grid.
+    result = reachability_aware_pick(
+        grid_results, atr=10.0, bias_by_bucket={}, vol_tier="high_vol",
+        min_rr=1.5, max_sharpe=10.0, min_trades=10,
+    )
+    # Bug: the internal baseline is the widened combo's bucket/sharpe,
+    # not the true production baseline's.
+    assert result["baseline_sharpe"] == 1.7
+
+
+def test_reachability_fix_uses_restricted_pool_for_its_baseline():
+    """With the fix (passing the ATR-anchoring-restricted candidate
+    pool, matching what deadline-aware scoring now also uses), the
+    reachability shadow comparison's baseline matches the TRUE
+    production baseline again."""
+    original_brick_sizes = {2.0}
+    baseline_combo = _combo(2.0, 3, 5, sharpe=1.2, total_trades=50)
+    widened_combo = _combo(0.8, 3, 5, sharpe=1.7, total_trades=50)
+    grid_results = [baseline_combo, widened_combo]
+
+    restricted = _deadline_candidates(grid_results, original_brick_sizes, atr_anchored_mode="shadow")
+    assert restricted == [baseline_combo]
+
+    result = reachability_aware_pick(
+        restricted, atr=10.0, bias_by_bucket={}, vol_tier="high_vol",
+        min_rr=1.5, max_sharpe=10.0, min_trades=10,
+    )
+    assert result["baseline_sharpe"] == 1.2

@@ -987,8 +987,25 @@ class HeavySweepMixin:
                     # EXACT SAME threshold values as pick_best_combo just
                     # used above, not a second, independently-resolved
                     # copy that could quietly drift from it.
+                    # BUG FIX 2026-09-14 (worklog
+                    # 20260914_DEADLINE_AWARE_ATR_ANCHOR_SHADOW_LEAK.md,
+                    # same root cause as the deadline-aware leak above):
+                    # this call used to pass the FULL grid_results, which
+                    # already includes ATR-anchored candidates whenever
+                    # atr_anchored_mode != "off" — contaminating this
+                    # function's own internal "baseline" recomputation
+                    # (confirmed live: XAUUSD's reachability-shadow
+                    # baseline showed bucket="0.5-1" sharpe=1.6981 — the
+                    # WIDENED combo — not the true "4+" baseline). Fixed
+                    # by passing `deadline_candidates` (the same
+                    # ATR-anchoring/deadline-restricted pool that
+                    # actually feeds `best`) instead of raw
+                    # `grid_results`, so reachability's shadow comparison
+                    # stays isolated the same way the deadline-aware
+                    # stage now is, and a live flip can't promote a
+                    # still-shadow ATR-anchored candidate either.
                     reach = reachability_aware_pick(
-                        grid_results, atr, bias_by_bucket, vol_tier=sweep_vol_tier,
+                        deadline_candidates, atr, bias_by_bucket, vol_tier=sweep_vol_tier,
                         min_rr=MIN_RR, max_sharpe=MAX_SHARPE, min_trades=MIN_TRADES,
                     )
                     asyncio.create_task(record_heavy_sweep_reachability_shadow(
