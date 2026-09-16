@@ -457,14 +457,20 @@ class Settings(BaseSettings):
     # backtest cost; the nightly pass is unaffected).
     EOD_HEAVY_SWEEP_COOLDOWN_HOURS: int = 12
 
-    # predicted_p_win_raw capture (2026-08-13 plan, SCHEDULED): when True, the
-    # PRE-enforcement p_win is persisted into nt_signal_sim (new column, see
-    # supabase/migrations/114_add_predicted_p_win_raw.sql) and carried into
+    # predicted_p_win_raw capture (Batch B, 2026-09-16): when True, the
+    # PRE-enforcement p_win is persisted into nt_signal_sim and carried into
     # nt_calibration_records so the calibration loop can separate model
-    # miscalibration from enforcement compensation. DEFAULT OFF — the DB column
-    # must exist BEFORE enabling (PostgREST would otherwise reject the insert
-    # with PGRST204 and signals would stop being captured).
-    NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW: bool = False
+    # miscalibration from enforcement compensation. DEFAULT True — the DB
+    # column (migration 114) exists in production. Measurement paths must
+    # NOT fall back to enforced p_win when raw is missing (see
+    # fetch_calibration_bias_raw / eod_resolver Brier).
+    NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW: bool = True
+
+    # When True, calibration records / raw-bias paths refuse to treat
+    # enforced p_win as a stand-in for raw (Brier left null; raw-bias
+    # returns None if too few rows carry predicted_p_win_raw). Batch B
+    # measurement honesty — keep True in production.
+    NOBLE_TRADER_CALIBRATION_RAW_REQUIRED: bool = True
 
     # NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY (default False, 2026-08-12):
     #   When True, only QUALIFIED non-neutral signals are persisted to

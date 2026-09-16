@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noble-trader-backend"
-version = "7.8.0"
+version = "7.9.0"
 description = "Dynamic Regime Risk Management Platform — HMM regime detection, Renko HFT pipeline, GPU-accelerated forecasting, and execution engine"
 readme = "README.md"
 requires-python = ">=3.11"

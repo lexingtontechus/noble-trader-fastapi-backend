@@ -107,10 +107,14 @@ def _inv_logit(x: float) -> float:
 # since the dynamic renormalization already covers every missing-source case
 # they were meant to hand-document.
 P_WIN_WEIGHTS_FULL = {
-    "p_historical": 0.30,
-    "p_regime": 0.25,
-    "p_markov_hold_n": 0.20,
-    "p_timesfm": 0.25,
+    # Batch F (2026-09-16): p_historical removed — never fed by production
+    # since 2026-09-09. Remaining relative weights (5:4:5) match the live
+    # renormalized blend (0.25/0.7, 0.20/0.7, 0.25/0.7). compute_ev still
+    # renormalizes over available sources; set_weights() still accepts
+    # p_historical for API compat if a source is re-wired.
+    "p_regime": 5.0 / 14.0,
+    "p_markov_hold_n": 4.0 / 14.0,
+    "p_timesfm": 5.0 / 14.0,
 }
 
 # Regime shift meta-signal thresholds

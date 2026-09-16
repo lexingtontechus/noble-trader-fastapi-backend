@@ -372,12 +372,15 @@ class TestEpisodeSummariesAndDecayWeighting:
         assert summaries[0]["win_fraction"] == pytest.approx(0.5)
         assert summaries[0]["entered_at"] == base.isoformat()
 
-    def test_episode_summary_raw_pred_falls_back_to_enforced(self):
+    def test_episode_summary_raw_pred_is_none_without_raw(self):
+        """Batch B: missing raw stays None — never silently becomes enforced."""
         episode = [
             {"predicted_p_win": 0.7, "predicted_p_win_raw": None, "outcome": "win", "entered_at": "2026-01-01T00:00:00+00:00"},
         ]
         summaries = _episode_summaries([episode])
-        assert summaries[0]["predicted_p_win_raw"] == pytest.approx(0.7)
+        assert summaries[0]["predicted_p_win_raw"] is None
+        assert summaries[0]["n_raw_present"] == 0
+        assert summaries[0]["predicted_p_win"] == pytest.approx(0.7)
 
     def test_decay_weighted_episode_stats_favors_recent_episode(self):
         now = datetime.now(timezone.utc)

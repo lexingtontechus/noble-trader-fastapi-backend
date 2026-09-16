@@ -343,6 +343,28 @@ async def apply_calibration_adjustment(
         "KELLY_REDUCTION", KELLY_REDUCTION
     )
 
+    status = state.get("status") or "PENALTY"
+    # Batch D (4.6): underconfidence is already conservative — do NOT apply
+    # the same Kelly cut as overconfidence. Keep p_win Bayesian shrink (it
+    # pulls toward 0.5, which is directionally correct when the model is
+    # too low) but leave sizing untouched.
+    if str(status).upper() == "UNDERCONFIDENT":
+        adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+        adjusted_kelly = float(kelly_f)
+        log.info(
+            "[calibration:enforce] %s: UNDERCONFIDENT bias=%s n=%s → p_win %.4f→%.4f, "
+            "kelly unchanged %.6f (no underconfidence cut)",
+            symbol, bias, n_records, p_win, adjusted_p_win, adjusted_kelly,
+        )
+        return {
+            "applied": True,
+            "status": status,
+            "bias": bias,
+            "p_win": adjusted_p_win,
+            "kelly_f": adjusted_kelly,
+            "reason": "underconfidence_no_kelly_cut",
+        }
+
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
     adjusted_kelly = float(kelly_f) * kelly_reduction
     # status: read directly from the state row (2026-09-09) — it was
@@ -352,7 +374,6 @@ async def apply_calibration_adjustment(
     # was itself a small instance of the "one arbiter" problem this
     # session's review found (worklog SS16). "PENALTY" fallback preserved
     # for the defensive case where an older/malformed row has no status.
-    status = state.get("status") or "PENALTY"
     log.info(
         "[calibration:enforce] %s: %s bias=%s n=%s → p_win %.4f→%.4f, kelly %.6f→%.6f "
         "(kelly_reduction=%.2f)",

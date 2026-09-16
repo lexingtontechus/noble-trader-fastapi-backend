@@ -135,10 +135,12 @@ class TestSignalSimPayloadRawPWin:
             predicted_p_win_raw=raw,
         )
 
-    def test_flag_off_omits_raw(self, monkeypatch):
+    def test_flag_off_still_includes_raw_when_present(self, monkeypatch):
+        # Batch B: raw is always persisted when available; flag no longer
+        # suppresses a known-good pre-enforcement value.
         monkeypatch.setattr(settings, "NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW", False)
         p = self._payload(raw=0.91)
-        assert "predicted_p_win_raw" not in p
+        assert p["predicted_p_win_raw"] == 0.91
         assert p["p_win"] == 0.62
 
     def test_flag_on_includes_raw(self, monkeypatch):

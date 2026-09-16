@@ -3,7 +3,7 @@
 > **Repo:** `noble-trader-fastapi-backend` · **Role:** Sweep orchestrator / signal producer · **Host:** LightningAI Studio (`noble-trader-unified`)
 
 ## Version
-**v7.8.0** (as of 2026-08-14). Version anchors across `pyproject.toml`, `main.py`, and **both** `openapi.yaml` copies must be updated together on any bump, along with `tests/test_version_consistency.py` (asserts exact version).
+**v7.9.0** (as of 2026-09-16). Version anchors across `pyproject.toml`, `main.py`, and **both** `openapi.yaml` copies must be updated together on any bump, along with `tests/test_version_consistency.py` (asserts exact version).
 
 ## Quick Start
 ```bash
@@ -24,7 +24,7 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
    ──► Discord (direct delivery, discord_delivery.py — Redis/proxy/agent-stream fan-out retired 2026-08-25)
 ```
 
-## EOD Recalibration Loop (v7.8.0)
+## EOD Recalibration Loop (v7.9.0)
 - **Nightly 00:30 UTC**: resolver (12,000 cap) + correction + retention.
 - **4h correction passes**: 04:30/08:30/12:30/16:30/20:30 UTC — recomputes bias + `nt_eod_actions`; emergency heavy sweeps fire only for newly-flagged symbols (12h cooldown).
 - **Drift monitor** on every light sweep — writes immediate `bayesian_penalty` when 48h rolling bias > 0.15 (≥20 records, no fresh action).

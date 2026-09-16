@@ -52,6 +52,10 @@ _DEFAULTS: dict[str, Any] = {
     },
     "heavy_sweep_atr_anchored_bricks_mode": "off",
     "heavy_sweep_deadline_aware_scoring_mode": "off",
+    "settlement_contract_mode": "live",
+    "settlement_same_bar_policy": "tp_first",
+    "p_win_bracket_mode": "shadow",
+    "min_p_win_bracket": 0.45,
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -63,6 +67,11 @@ _DEFAULTS: dict[str, Any] = {
         "min_p_win": 0.55,
     },
     "timesfm_gate_mode": "soft",
+    "timesfm": {
+        "sigmoid_k": 10.0,
+        "clamp_min": 0.05,
+        "clamp_max": 0.95,
+    },
     "sweep_after_hours": False,
     "signal_cooldown_minutes": 60.0,
     "expiry_rate_alert": {
@@ -383,6 +392,46 @@ def get_heavy_sweep_deadline_aware_scoring_mode() -> str:
     )).lower()
 
 
+def get_settlement_contract_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Batch A, worklog
+    20260916_STREAMLINE_AND_CALIBRATION_REACHABILITY_SCOPE.md — shared
+    settlement contract for outcome + PnL). ``live`` (default): resolver
+    delegates to settlement_contract. ``off``: historical inline walk.
+    ``shadow``: contract computes and logs mismatches; writes still use
+    contract outcomes when live path is active — see eod_resolver."""
+    return str(_load().get(
+        "settlement_contract_mode",
+        _DEFAULTS["settlement_contract_mode"],
+    )).lower()
+
+
+def get_settlement_same_bar_policy() -> str:
+    """``tp_first`` | ``sl_first`` — same-bar TP/SL priority when both
+    levels are touched on one bar. ``tp_first`` preserves historical
+    live outcomes; ``sl_first`` matches heavy-sweep OCO default and is
+    the conservative target after replay evidence (worklog Phase 1.4)."""
+    return str(_load().get(
+        "settlement_same_bar_policy",
+        _DEFAULTS["settlement_same_bar_policy"],
+    )).lower()
+
+
+def get_p_win_bracket_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (Batch C). shadow: compute and
+    persist p_win_bracket + would-reject flag; gates still use directional
+    p_win. live: add p_win_bracket as a qualification gate."""
+    return str(_load().get(
+        "p_win_bracket_mode", _DEFAULTS["p_win_bracket_mode"],
+    )).lower()
+
+
+def get_min_p_win_bracket() -> float:
+    try:
+        return float(_load().get("min_p_win_bracket", _DEFAULTS["min_p_win_bracket"]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["min_p_win_bracket"]
+
+
 def get_regime_warm_start_mode() -> str:
     """``off`` | ``live`` (root-cause fix for regime_label flapping —
     warm-starts RegimeHMM's EM fit from the previous tick's own
@@ -461,6 +510,29 @@ def get_timesfm_gate_mode() -> str:
     return str(_load().get(
         "timesfm_gate_mode", _DEFAULTS["timesfm_gate_mode"],
     )).lower()
+
+
+def _timesfm_map_number(key: str) -> float:
+    try:
+        cfg = _load().get("timesfm", _DEFAULTS["timesfm"])
+        if not isinstance(cfg, dict):
+            cfg = _DEFAULTS["timesfm"]
+        return float(cfg.get(key, _DEFAULTS["timesfm"][key]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["timesfm"][key]
+
+
+def get_timesfm_sigmoid_k() -> float:
+    """TimesFM price→probability sigmoid k (feature_flags.yaml timesfm block)."""
+    return _timesfm_map_number("sigmoid_k")
+
+
+def get_timesfm_clamp_min() -> float:
+    return _timesfm_map_number("clamp_min")
+
+
+def get_timesfm_clamp_max() -> float:
+    return _timesfm_map_number("clamp_max")
 
 
 def get_sweep_after_hours() -> bool:

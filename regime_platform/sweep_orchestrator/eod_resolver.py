@@ -70,12 +70,13 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     _insert_row,
     _url,
 )
+from regime_platform.sweep_orchestrator import settlement_contract as sc
 
 logger = logging.getLogger("regime.sweep.eod_resolver")
 
 # ─── Constants ────────────────────────────────────────────────────
 
-EXPIRY_BARS = 48          # post-entry 1h bars before a signal is 'expired'
+EXPIRY_BARS = sc.EXPIRY_BARS   # 48 post-entry 1h bars before a signal is 'expired'
 LIGHT_BARS = LIGHT_CANDLE_BARS  # 200 — post-entry bars fetched per symbol
 INTERVAL = "1h"           # sweep bar interval used for resolution
 
@@ -172,6 +173,42 @@ def anchor_post_entry_closes(
     entry_idx = max(len(closes) - 1 - offset, 0)
     return list(closes[entry_idx:])
 
+def _settlement_mode() -> str:
+    """off | shadow | live for the shared settlement contract."""
+    try:
+        from regime_platform.core.feature_flags import get_settlement_contract_mode
+        return get_settlement_contract_mode()
+    except Exception:
+        return "live"
+
+
+def _same_bar_policy() -> str:
+    try:
+        from regime_platform.core.feature_flags import get_settlement_same_bar_policy
+        return get_settlement_same_bar_policy()
+    except Exception:
+        return sc.SAME_BAR_TP_FIRST
+
+
+def _drift_fields(
+    entry_price: float,
+    window: Sequence[float],
+    is_buy: bool,
+) -> dict[str, float | None]:
+    def _drift_at(bar_offset: int) -> float | None:
+        if bar_offset >= len(window) or entry_price == 0:
+            return None
+        close = float(window[bar_offset])
+        signed = (close - entry_price) if is_buy else (entry_price - close)
+        return round(signed / entry_price * 100.0, 4)
+
+    return {
+        "drift_1h_pct": _drift_at(1),
+        "drift_4h_pct": _drift_at(4),
+        "drift_24h_pct": _drift_at(24),
+    }
+
+
 def resolve_signal_outcome(
     entry_price: float,
     stop_loss: float,
@@ -183,30 +220,56 @@ def resolve_signal_outcome(
     """Close-walk TP/SL resolution for one signal over post-entry closes.
 
     Walks the first ``expiry_bars`` closes in order. On each bar the TP
-    check runs BEFORE the SL check (same-bar TP priority convention), so:
+    check runs BEFORE the SL check (same-bar TP priority convention) unless
+    ``settlement_same_bar_policy`` is ``sl_first`` — see
+    ``settlement_contract.settle``. Whichever level's bar comes first wins;
+    if neither is touched within ``expiry_bars`` the signal is ``expired``.
 
-      * BUY  (TP above entry):  ``tp_hit`` when ``close >= take_profit``,
-        ``sl_hit`` when ``close <= stop_loss``.
-      * SELL (TP below entry):  ``tp_hit`` when ``close <= take_profit``,
-        ``sl_hit`` when ``close >= stop_loss``.
-
-    Whichever level's bar comes first wins; if neither is touched within
-    ``expiry_bars`` the signal is ``expired``. Any value of ``direction``
-    that is not sell/short is treated as buy (defensive).
-
-    Returns a dict with: ``outcome``, ``exit_price`` (the triggering
-    close, ``None`` when expired), ``exit_idx`` (0-based bar index,
-    ``None`` when expired), ``hold_bars`` (bars held: exit_idx+1, or the
-    walked window length when expired), ``mfe`` / ``mae`` (max favorable
-    / max adverse close excursion in price units, >= 0), and
-    ``drift_1h_pct``/``drift_4h_pct``/``drift_24h_pct`` (direction-
-    relative price drift at fixed post-entry horizons, as % of
-    entry_price — positive means the market moved in the signal's
-    favor. Computed over the FULL fetched window, not the outcome-
-    truncated walk, since this measures post-entry market behavior
-    independent of when/whether the trade itself exited. ``None`` when
-    fewer than that many post-entry bars were available.
+    Implementation delegates to ``settlement_contract`` when
+    ``settlement_contract_mode`` is ``live`` (default after Batch A);
+    ``off`` keeps the historical inline walk for emergency revert.
     """
+    mode = _settlement_mode()
+    policy = _same_bar_policy()
+    is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
+    window = list(closes or [])[: max(int(expiry_bars or 0), 0)]
+
+    if mode == "off":
+        return _resolve_signal_outcome_legacy(
+            entry_price, stop_loss, take_profit, closes, direction, expiry_bars
+        )
+
+    result = sc.settle_from_closes(
+        entry_price, stop_loss, take_profit, window,
+        direction=direction, expiry_bars=expiry_bars, same_bar_policy=policy,
+    )
+    out = result.as_outcome_dict()
+    out.update(_drift_fields(float(entry_price), window, is_buy))
+    if mode == "shadow":
+        legacy = _resolve_signal_outcome_legacy(
+            entry_price, stop_loss, take_profit, closes, direction, expiry_bars
+        )
+        if legacy.get("outcome") != result.outcome:
+            logger.info(
+                "settlement_contract SHADOW mismatch: legacy=%s contract=%s "
+                "policy=%s bars=%d",
+                legacy.get("outcome"), result.outcome, policy, len(window),
+            )
+        out["settlement_shadow_legacy_outcome"] = legacy.get("outcome")
+    out["settlement_mode"] = mode
+    out["settlement_same_bar_policy"] = policy
+    return out
+
+
+def _resolve_signal_outcome_legacy(
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    closes: Sequence[float],
+    direction: str = "buy",
+    expiry_bars: int = EXPIRY_BARS,
+) -> dict[str, Any]:
+    """Historical inline close-walk (tp_first). Kept for mode=off revert."""
     is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
     window = list(closes or [])[: max(int(expiry_bars or 0), 0)]
 
@@ -222,7 +285,7 @@ def resolve_signal_outcome(
             if close <= stop_loss:
                 outcome, exit_price, exit_idx = "sl_hit", close, i
                 break
-        else:  # sell — TP is BELOW entry, SL is ABOVE
+        else:
             if close <= take_profit:
                 outcome, exit_price, exit_idx = "tp_hit", close, i
                 break
@@ -230,19 +293,9 @@ def resolve_signal_outcome(
                 outcome, exit_price, exit_idx = "sl_hit", close, i
                 break
 
-    # 2026-09-08 fix: an expired signal is still open at the last walked
-    # close — that price was always available here (it's how mfe/mae
-    # below get computed) but was previously discarded, leaving
-    # exit_price permanently NULL for every expired row (confirmed live:
-    # 59,913 of 59,913 expired signals had exit_price=NULL). Capture it
-    # so compute_pnl can score a real mark-to-market outcome instead of a
-    # fixed 0 — "expired" still means "never touched TP/SL," it no longer
-    # means "financially nothing happened."
     if outcome == "expired" and window:
         exit_price = float(window[-1])
 
-    # Excursion is measured over the bars actually walked (through the
-    # exit bar, or the whole window when expired).
     walked = window if exit_idx is None else window[: exit_idx + 1]
     if is_buy:
         mfe = max((float(c) - entry_price for c in walked), default=0.0)
@@ -252,8 +305,6 @@ def resolve_signal_outcome(
         mae = max((float(c) - entry_price for c in walked), default=0.0)
 
     def _drift_at(bar_offset: int) -> float | None:
-        # window[0] is the entry bar's own close (anchor_post_entry_closes
-        # includes it); window[bar_offset] is `bar_offset` hours later.
         if bar_offset >= len(window) or entry_price == 0:
             return None
         close = float(window[bar_offset])
@@ -284,26 +335,38 @@ def compute_pnl(
 ) -> dict[str, float]:
     """PnL in bricks and dollars for a resolved outcome.
 
-    Convention (matches the pipeline's brick-delta model):
-      * ``tp_hit``  → ``pnl_bricks = +tp_bricks``
-      * ``sl_hit``  → ``pnl_bricks = -sl_bricks``
-      * ``expired`` → mark-to-market, not a fixed 0 (2026-09-08 fix). The
-        position was still open at ``exit_price`` (the last walked close
-        — see ``resolve_signal_outcome``'s 2026-09-08 fix) when the 48h
-        window ran out; scoring it as a flat 0 regardless of whether it
-        was actually up or down was fiction, not a "no fill" case (no
-        signal here is ever unfilled — entry is the live market price at
-        signal time). ``pnl_bricks = signed(exit_price - entry_price) /
-        brick_size`` — same brick-unit convention as tp_hit/sl_hit, so all
-        three outcome types stay directly summable downstream. Falls back
-        to the old ``0.0`` only when price/brick_size data is missing
-        (defensive — should not happen for any row resolved after this
-        fix; historical expired rows resolved before it have no
-        exit_price to compute from).
-    ``abs()`` guards against a future schema that stores negative brick
-    counts — a take-profit is always a gain and a stop-loss always a loss.
+    Convention (matches the pipeline's brick-delta model) — implemented in
+    ``settlement_contract.compute_bricks_pnl`` so live resolver, paper book,
+    and scorecard share one formula. See that module for expired MTM.
     ``pnl_dollars = pnl_bricks * brick_size`` (6dp).
     """
+    mode = _settlement_mode()
+    if mode == "off":
+        return _compute_pnl_legacy(
+            outcome, tp_bricks, sl_bricks, brick_size,
+            entry_price=entry_price, exit_price=exit_price, direction=direction,
+        )
+    pnl_bricks, dollars = sc.compute_bricks_pnl(
+        outcome,
+        tp_bricks=tp_bricks,
+        sl_bricks=sl_bricks,
+        brick_size=brick_size,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        direction=direction,
+    )
+    return {"pnl_bricks": pnl_bricks, "pnl_dollars": round(dollars, 6)}
+
+
+def _compute_pnl_legacy(
+    outcome: str,
+    tp_bricks: float | None,
+    sl_bricks: float | None,
+    brick_size: float | None,
+    entry_price: float | None = None,
+    exit_price: float | None = None,
+    direction: str = "buy",
+) -> dict[str, float]:
     if outcome == "tp_hit":
         pnl_bricks = abs(float(tp_bricks or 0.0))
     elif outcome == "sl_hit":
@@ -436,22 +499,39 @@ async def _write_calibration_record(
     aggression = str(sig.get("aggression") or "mid").lower()
     if aggression not in ("passive", "mid", "aggressive"):
         aggression = "mid"
-    # Brier score = (predicted_prob - outcome)^2; outcome ∈ {1, 0}. Uses the
-    # RAW (pre-enforcement) p_win when the capture flag carried it, else the
-    # stored (possibly enforced) p_win. Measures probability calibration per
-    # record so the bias loop can track model accuracy independent of the
-    # enforcement shrink (2026-08-13).
-    pred_for_brier = _as_float(sig.get("predicted_p_win_raw"))
-    if pred_for_brier is None:
-        pred_for_brier = _as_float(sig.get("p_win")) or 0.5
-    brier = round((1.0 - pred_for_brier) ** 2 if outcome == "win" else pred_for_brier ** 2, 6)
+    # Brier score = (predicted_prob - outcome)^2; outcome ∈ {1, 0}.
+    # Batch B (2026-09-16): measurement honesty — Brier uses RAW only.
+    # When raw is missing we do NOT silently score the enforced p_win
+    # (that would make enforcement look like model accuracy). brier=None
+    # and error_source marks the gap.
+    raw_required = bool(getattr(settings, "NOBLE_TRADER_CALIBRATION_RAW_REQUIRED", True))
+    pred_raw = _as_float(sig.get("predicted_p_win_raw"))
+    pred_enforced = _as_float(sig.get("p_win"))
+    error_source = "eod_resolver"
+    if pred_raw is not None:
+        brier = round((1.0 - pred_raw) ** 2 if outcome == "win" else pred_raw ** 2, 6)
+    elif raw_required:
+        brier = None
+        error_source = "raw_missing"
+        logger.warning(
+            "eod_resolver: calibration record for %s has no predicted_p_win_raw — "
+            "Brier skipped (raw required); enforced p_win not used as stand-in",
+            symbol,
+        )
+    else:
+        # Legacy opt-out path only
+        pred_for_brier = pred_enforced or 0.5
+        brier = round(
+            (1.0 - pred_for_brier) ** 2 if outcome == "win" else pred_for_brier ** 2, 6
+        )
+        error_source = "enforced_fallback"
     payload = _filter_payload({
         "id": str(uuid.uuid4()),
         "signal_id": sig.get("signal_id"),
         "symbol": symbol,
         "venue": sig.get("venue"),
-        "predicted_p_win": _as_float(sig.get("p_win")),
-        "predicted_p_win_raw": _as_float(sig.get("predicted_p_win_raw")),
+        "predicted_p_win": pred_enforced,
+        "predicted_p_win_raw": pred_raw,
         "calibration_brier": brier,
         "outcome": outcome,
         "aggression": aggression,
@@ -460,7 +540,7 @@ async def _write_calibration_record(
         "entered_at": entered_at,
         "closed_at": shift_ts(sig.get("ts"), resolved.get("hold_bars") or 0),
         "actual_pnl": pnl.get("pnl_dollars"),
-        "error_source": "eod_resolver",
+        "error_source": error_source,
     }, CALIBRATION_RECORD_COLUMNS)
     ok = await _insert_row("nt_calibration_records", payload)
     if not ok:

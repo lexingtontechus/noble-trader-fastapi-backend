@@ -666,6 +666,7 @@ class HeavySweepMixin:
             _fetch_timesfm_cached,
             MARKOV_HOLD_STEPS,
             MIN_P_WIN,
+            resolve_markov_n_steps,
         )
 
         symbol = sym["symbol"]
@@ -1221,8 +1222,41 @@ class HeavySweepMixin:
                     brick_size=best.brick_size,
                     sl_bricks=best.sl_bricks,
                     tp_bricks=best.tp_bricks,
-                    n_steps=MARKOV_HOLD_STEPS,
+                    n_steps=resolve_markov_n_steps(best.tp_bricks),
                 )
+
+            # ── Batch D 4.1: enforce BEFORE gates (parity with light sweep) ──
+            # Historical order was qualify(raw) → enforce at push, so heavy
+            # could publish on pre-enforcement overconfidence that light
+            # would have shrunk away.
+            effective_kelly_pre = result.kelly_f * ev_result.ev_scale
+            if settings.EOD_CALIBRATION_ENFORCE:
+                from regime_platform.sweep_orchestrator.calibration_enforcement import (
+                    apply_calibration_adjustment,
+                )
+                try:
+                    calib_adj = await apply_calibration_adjustment(
+                        symbol,
+                        p_win=ev_result.p_win,
+                        kelly_f=effective_kelly_pre,
+                    )
+                    if calib_adj and calib_adj.get("applied"):
+                        ev_result.p_win = calib_adj["p_win"]
+                        effective_kelly_pre = calib_adj["kelly_f"]
+                        _recomputed = self._ev_engine.recompute_ev_fields(
+                            ev_result.p_win, ev_result.profit, ev_result.stake,
+                        )
+                        ev_result.ev = _recomputed["ev"]
+                        ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
+                        ev_result.rr = _recomputed["rr"]
+                        ev_result.allowed = _recomputed["allowed"]
+                        ev_result.aggression = _recomputed["aggression"]
+                        ev_result.ev_scale = _recomputed["ev_scale"]
+                except Exception as exc:
+                    logger.warning(
+                        "[sweep:heavy] %s: calibration enforcement failed (%s) — proceeding raw",
+                        symbol, type(exc).__name__,
+                    )
 
             # ── 9. Build + push qualified signal ──────────────────────
             trade_signal = _compute_trade_signal(
@@ -1230,7 +1264,7 @@ class HeavySweepMixin:
                 best.brick_size, best.sl_bricks, best.tp_bricks,
             )
             qualified = self._evaluate_heavy_qualification(
-                ev_result, trade_signal, result.regime_conf, result.kelly_f,
+                ev_result, trade_signal, result.regime_conf, effective_kelly_pre,
                 p_timesfm,
             )
             result.qualified = qualified
@@ -1370,7 +1404,7 @@ class HeavySweepMixin:
                     regime_conf=result.regime_conf,
                     trade_signal=trade_signal,
                     best=best,
-                    kelly_f=result.kelly_f,
+                    kelly_f=effective_kelly_pre,
                     ev_result=ev_result,
                     p_timesfm=p_timesfm,
                     cal=cal,
@@ -1799,7 +1833,9 @@ class HeavySweepMixin:
 
         now_ms = int(time.time() * 1000)
         venue_name = _derive_venue(sym)
-        effective_kelly = kelly_f * ev_result.ev_scale
+        # Batch D: enforcement already applied before qualification; kelly_f
+        # here is the post-enforcement effective value.
+        effective_kelly = float(kelly_f)
 
         # ── One arbiter for "is this symbol calibrated" (2026-09-09,
         # worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
@@ -1817,29 +1853,8 @@ class HeavySweepMixin:
             )
             calibration_status = _classify_bias(cal["bias"])
 
-        # ── EOD calibration enforcement (2026-08-10) ────────────────────
-        # Heavy-sweep signals get the same live calibration correction as
-        # light sweeps: read the latest nt_eod_actions recommendation and
-        # shrink p_win toward 0.5 + halve Kelly when over/underconfident.
-        calib_adj = None
-        if settings.EOD_CALIBRATION_ENFORCE:
-            from regime_platform.sweep_orchestrator.calibration_enforcement import (
-                apply_calibration_adjustment,
-            )
-            try:
-                calib_adj = await apply_calibration_adjustment(
-                    symbol,
-                    p_win=ev_result.p_win,
-                    kelly_f=effective_kelly,
-                )
-                if calib_adj and calib_adj.get("applied"):
-                    ev_result.p_win = calib_adj["p_win"]
-                    effective_kelly = calib_adj["kelly_f"]
-            except Exception as exc:
-                logger.warning(
-                    "[sweep:heavy] %s: calibration enforcement failed (%s) — proceeding raw",
-                    symbol, type(exc).__name__,
-                )
+        # Enforcement moved BEFORE _evaluate_heavy_qualification (Batch D 4.1)
+        # so heavy and light share one gate order.
 
         agent_payload = json.dumps({
             "type": "heartbeat",
@@ -1878,7 +1893,7 @@ class HeavySweepMixin:
             "timesfm_available": p_timesfm is not None,
             "calibration_bias": round(cal["bias"], 4) if cal else None,
             "calibration_status": calibration_status,
-            "calibration_enforced": bool(calib_adj and calib_adj.get("applied")),
+            "calibration_enforced": True,  # applied before qualification (Batch D)
             "sharpe": round(best.sharpe, 4),
             "n_combos_tested": True,  # marker — agent can show "optimised" badge
             "qualified": True,

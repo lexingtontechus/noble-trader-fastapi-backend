@@ -14,7 +14,9 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ## Version
 
-**v7.8.0** — Intraday EOD recalibration (4h correction passes + drift monitor) · Rolling 7-day bias window · Backlog drain (pending → 0) · Contaminated calibration purge · `predicted_p_win_raw`/Brier calibration audit (opt-in) · EOD resolve cap 12,000/night · Retention protect-list chunking · Multivariate Gaussian HMM for `p_markov` · EV Engine v4 · P5 Execution-Deprecation Contract · MCP Server · Renko HFT Pipeline
+**v7.9.0** — Settlement contract (single outcome+PnL path) · Measurement honesty (mandatory raw `p_win`, no enforced Brier fallback, dual-report scorecard) · `p_win_bracket` shadow capture · Qualification cleanup (enforce-before-gates light+heavy, underconfidence no Kelly cut, Markov N = `tp_bricks`, TimesFM yaml k=10) · Ghost `p_historical` weight removed · Pipeline docs (`SIGNAL_PIPELINE.md`, `ACTIVE_MODES.md`)
+
+> **v7.9.0 changelog (2026-09-16):** Batches A–F of `worklog/20260916_STREAMLINE_AND_CALIBRATION_REACHABILITY_SCOPE.md` (quant audit follow-up; see `docs/QUANT_AUDIT_SIGNAL_CALIBRATION_REACHABILITY_PNL.md`). (1) **Settlement contract** — `settlement_contract.py` owns close-walk/OHLC resolution, same-bar policy (`tp_first` default), expired MTM, optional costs; `eod_resolver` delegates when `settlement_contract_mode=live`. (2) **Measurement honesty** — `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW` + `NOBLE_TRADER_CALIBRATION_RAW_REQUIRED` default true; Brier uses raw only (`error_source=raw_missing` otherwise); raw-bias excludes raw-absent episodes (no enforced stand-in). (3) **Dual-report scorecard** (migration 153) — `pnl_closed_only` / `pnl_all_resolved` / `win_pct_closed` / `expiry_pct`; reachability `n_stored`/`n_proxy`; proxy ATR quarantined from expectancy. (4) **`p_win_bracket`** (migration 154, shadow) — `p_resolve × Beta(2,2) P(win|resolve)` by `(symbol, vol_tier, distance/ATR)`; `bracket_gate_shadow` logged. (5) **Heavy-sweep gate order** — calibration enforce **before** qualification (parity with light). (6) **Underconfidence** no longer cuts Kelly. (7) **Markov N** = `tp_bricks` (fallback 10). (8) **TimesFM** mapping from `feature_flags.yaml` (`timesfm.sigmoid_k=10`, clamp `[0.05,0.95]`); ghost `p_historical` 0.30 weight removed (live blend renormalized 5:4:5).
 
 > **v7.8.0 changelog (2026-08-13):** EOD recalibration is no longer a once-daily 00:30 UTC job. (1) **Intraday correction passes** run every 4h (04:30/08:30/12:30/16:30/20:30 UTC, `EOD_CORRECTION_INTRADAY_ENABLED`) recomputing per-symbol bias + `nt_eod_actions`; emergency heavy sweeps fire only for newly-flagged symbols subject to a 12h cooldown. (2) **Rolling bias window** — `fetch_calibration_bias` computes bias over the last 7 days (`EOD_BIAS_WINDOW_DAYS`) with a 20-record minimum instead of all-time, so a regime shift moves the bias in hours. (3) **Drift monitor** on the 5-min light sweep (`drift_monitor.py`, `EOD_DRIFT_MONITOR_ENABLED`) writes an immediate `bayesian_penalty` when a 48h rolling bias exceeds `EOD_DRIFT_THRESHOLD` (0.15) with ≥20 records and no fresh action — a fast path between scheduled passes. (4) Action freshness window 26 → 8h (`EOD_ACTION_FRESH_HOURS`). (5) **Backlog drain** — `scripts/drain_signal_backlog.py` (resilient retry guard) cleared `nt_signal_sim` pending to 0; `EOD_RESOLVE_MAX_TOTAL` raised 4,000 → 12,000 so the nightly run outpaces capture. (6) **Retention fix** — the resolved-delete protect list is chunked (keyset pagination + `in.(≤100)` deletes), ending the nightly HTTP 400. (7) **Purge** — contaminated `nt_calibration_records` (`entered_at < 2026-08-11T14:00Z`, stale-price artifact) deleted; table rebuilt from clean records. (8) **`predicted_p_win_raw`/`calibration_brier`** — pre-enforcement p_win captured when `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW` is enabled (migration: `supabase/migrations/114_add_predicted_p_win_raw.sql`) so calibration can separate model miscalibration from enforcement compensation; Brier score written per record. Full day detail: `worklog/20260813_CHANGELOG.md`.
 
@@ -184,7 +186,7 @@ noble-trader-fastapi-backend (LightningAI sweep orchestrator)
 Discord webhook delivery (direct, per-asset-class or per-plan channel routing)
 ```
 
-- **Version:** `v7.8.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
+- **Version:** `v7.9.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
 - **CORS:** live middleware (`main.py`) reads **`CORS_ALLOWED_ORIGINS`** (default
   `http://localhost:3000`). The legacy `CORS_ORIGINS` var was removed — do not use it.
 - **License validation:** the proxy validates subscriber `X-License-Key` via the
@@ -314,7 +316,7 @@ Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elaps
 | `GET` | `/calibration/bias/{symbol}` | Get calibration bias per symbol | Any |
 | `GET` | `/calibration/status` | Get daily CALIBRATED / OVERCONFIDENT / UNDERCONFIDENT status | Any |
 
-**EOD recalibration (v7.8.0):** the self-correction loop runs a full
+**EOD recalibration (v7.9.0):** the self-correction loop runs a full
 resolve+correct+retention pass nightly at 00:30 UTC, plus **correction-only passes
 every 4h** (04:30/08:30/12:30/16:30/20:30 UTC) and a **drift monitor** on each 5-min
 light sweep. Bias is computed over a **rolling 7-day window** (min 20 records).
@@ -667,24 +669,29 @@ intermediate broker, aggregate channel, or per-plan fan-out.
 | `shift_at` | timestamp | `1782015223299` | Light regime | Unix ms when shift was detected |
 | `shifts_24h` | int | `3` | Light regime | Number of regime shifts in last 24h |
 
-### TimesFM Fields (v3)
+### TimesFM Fields (current)
 
 | Field | Type | Example | Source | Description |
 |---|---|---|---|---|
 | `p_timesfm` | float | `0.48` | TimesFM API | Foundation model directional forecast (0–1). >0.5 = bullish, <0.5 = bearish |
 | `timesfm_horizon` | string | `12h` | TimesFM API | Forecast window label |
 
-**Example:** `p_timesfm=0.48` for BTC means TimesFM forecasts a slight price decline over the next 12 hours. This feeds into the EV Engine v3 blended P_win:
+**Example:** `p_timesfm=0.48` for BTC means TimesFM forecasts a slight price decline over the next 12 hours.
+
+**Live P_win blend (EV Engine v6, Batch F):** logit pool of
+`p_regime` + `p_markov_hold_n` + `p_timesfm` (weights renormalized over
+available sources). `p_historical` is **not** in the live weight table.
+`P_imbalance` was removed from EV years ago (microstructure deprecation).
 
 ```
-P_win = 0.35 × P_regime + 0.20 × P_imbalance + 0.20 × P_markov + 0.25 × P_timesfm
+p_win = inv_logit( Σ w_i · logit(p_i) )   # available sources only
+# nominal: p_regime 0.25 / p_markov_hold_n 0.20 / p_timesfm 0.25
 ```
 
-When TimesFM is unavailable (API error, timeout), the blend falls back to:
+Mapping: `p_timesfm = clamp(σ(k · Δp/p), clamp_min, clamp_max)` with
+`k=10`, clamp `[0.05, 0.95]` from `config/feature_flags.yaml` (`timesfm` block).
 
-```
-P_win = 0.40 × P_regime + 0.30 × P_imbalance + 0.30 × P_markov
-```
+See `docs/SIGNAL_PIPELINE.md` for the full path.
 
 ### Tail Risk Fields (v3)
 

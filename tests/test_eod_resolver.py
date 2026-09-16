@@ -166,8 +166,9 @@ class TestCalibrationRecordPayload:
         )
         assert p.get("calibration_brier") == pytest.approx(0.01)  # (1-0.90)^2
 
-    def test_calibration_payload_brier_loss_falls_back_to_p_win(self):
-        """Without raw, Brier uses the stored (possibly enforced) p_win."""
+    def test_calibration_payload_brier_skipped_without_raw(self):
+        """Batch B: without raw, Brier is None and error_source marks the gap —
+        enforced p_win is NOT scored as if it were model accuracy."""
         sig = {
             "symbol": "USDCAD", "venue": "OANDA",
             "p_win": 0.80,  # no predicted_p_win_raw
@@ -177,8 +178,9 @@ class TestCalibrationRecordPayload:
             sig, {"outcome": "sl_hit", "exit_price": 1.3950, "hold_bars": 3},
             {"pnl_dollars": -40.0},
         )
-        assert p.get("calibration_brier") == pytest.approx(0.64)  # 0.80^2
+        assert p.get("calibration_brier") is None
         assert p.get("predicted_p_win_raw") is None
+        assert p.get("error_source") == "raw_missing"
 
     def test_calibration_columns_include_raw_and_brier(self):
         assert "predicted_p_win_raw" in CALIBRATION_RECORD_COLUMNS

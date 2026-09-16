@@ -173,14 +173,23 @@ class TestFetchCalibrationBiasRaw:
         assert result["avg_pred"] == pytest.approx(0.55, abs=1e-4)
         assert result["avg_pred_raw"] == pytest.approx(0.90, abs=1e-4)
 
-    def test_fallback_to_enforced_when_raw_is_null(self):
-        """When predicted_p_win_raw IS NULL, bias falls back to enforced p_win."""
+    def test_no_enforced_fallback_when_raw_is_null(self):
+        """Batch B: when predicted_p_win_raw IS NULL, do NOT fall back to
+        enforced p_win for raw-bias measurement — return None instead."""
         rows = _rows_raw_null(30, 15, enforced=0.80)
         result, _ = _run_raw(rows=rows)
+        assert result is None
+
+    def test_enforced_fallback_only_when_raw_not_required(self):
+        """Emergency opt-out: NOBLE_TRADER_CALIBRATION_RAW_REQUIRED=False
+        restores the old per-row fallback."""
+        from regime_platform.core.settings import settings as settings_obj
+        rows = _rows_raw_null(30, 15, enforced=0.80)
+        with patch.object(settings_obj, "NOBLE_TRADER_CALIBRATION_RAW_REQUIRED", False):
+            result, _ = _run_raw(rows=rows)
         assert result is not None
         assert result["bias"] == pytest.approx(0.30, abs=1e-3)
         assert result["avg_pred"] == pytest.approx(0.80, abs=1e-4)
-        assert result["avg_pred_raw"] == pytest.approx(0.80, abs=1e-4)
 
     def test_select_includes_raw_column(self):
         """The GET request must request predicted_p_win_raw in the select."""

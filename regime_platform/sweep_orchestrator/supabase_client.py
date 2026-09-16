@@ -248,6 +248,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # (this constant governs capture-time inserts; eod_resolver.py keeps
     # its own local copy in sync for the outcome patch).
     "drift_1h_pct", "drift_4h_pct", "drift_24h_pct",
+    # Batch C (migration 154): directional vs bracket-outcome probabilities
+    "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
+    "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.
@@ -611,6 +614,9 @@ NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
     "pct_hit_tp", "pct_hit_sl", "pct_expired",
     "median_hours_to_resolve", "p75_hours", "p90_hours",
     "atr_source",
+    # Batch B (migration 153): split counts so consumers can quarantine
+    # look-ahead proxy ATR without discarding the whole bucket row.
+    "n_stored", "n_proxy",
 })
 
 
@@ -1664,48 +1670,58 @@ def _group_into_episodes(
 def _episode_summaries(episodes: list[list[dict]]) -> list[dict]:
     """Collapse each episode's raw rows into ONE representative
     pseudo-record: ``{entered_at, predicted_p_win, predicted_p_win_raw,
-    win_fraction}`` — the episode's earliest ``entered_at`` (for recency
-    weighting), the mean of each pred column across its rows, and the
-    fraction of its rows with ``outcome == "win"``.
+    win_fraction, n_raw_present}``.
 
-    ``predicted_p_win_raw`` falls back to ``predicted_p_win`` per-row
-    before averaging — same fallback ``_decay_weighted_bias_stats``
-    applies — so behavior on pre-migration-114 data (no raw column
-    populated) is unchanged.
+    Batch B (2026-09-16): ``predicted_p_win_raw`` is averaged only over
+    rows that actually carry a non-null raw value — it is NOT fallen back
+    to enforced ``predicted_p_win``. ``n_raw_present`` lets callers decide
+    whether the episode has enough raw evidence. Enforced averages still
+    use all rows.
     """
     summaries: list[dict] = []
     for ep in episodes:
         preds = [float(r.get("predicted_p_win", 0.5) or 0.5) for r in ep]
         preds_raw = [
-            float(r["predicted_p_win_raw"]) if r.get("predicted_p_win_raw") is not None
-            else float(r.get("predicted_p_win", 0.5) or 0.5)
+            float(r["predicted_p_win_raw"])
             for r in ep
+            if r.get("predicted_p_win_raw") is not None
         ]
         wins = [1.0 if r.get("outcome") == "win" else 0.0 for r in ep]
         entered_ats = [r.get("entered_at") for r in ep if r.get("entered_at")]
         summaries.append({
             "entered_at": min(entered_ats) if entered_ats else None,
             "predicted_p_win": sum(preds) / len(preds) if preds else 0.5,
-            "predicted_p_win_raw": sum(preds_raw) / len(preds_raw) if preds_raw else 0.5,
+            "predicted_p_win_raw": (
+                sum(preds_raw) / len(preds_raw) if preds_raw else None
+            ),
             "win_fraction": sum(wins) / len(wins) if wins else 0.0,
+            "n_raw_present": len(preds_raw),
+            "n_rows": len(ep),
         })
     return summaries
 
 
 def _decay_weighted_episode_stats(
     episode_summaries: list[dict], pred_key: str, half_life_days: float, now: datetime,
+    *,
+    skip_null_pred: bool = False,
 ) -> tuple[float, float]:
-    """Recency-weighted (avg_pred, win_rate) over EPISODE summaries
-    (``_episode_summaries``) instead of raw rows — sibling of
-    ``_decay_weighted_bias_stats`` that runs AFTER episode-collapse, so a
-    correlated burst contributes exactly one weighted sample instead of
-    one per raw row within it. Same ``0.5 ** (age_days / half_life_days)``
-    weighting, keyed off each episode's earliest ``entered_at``.
+    """Recency-weighted (avg_pred, win_rate) over EPISODE summaries.
+
+    When ``skip_null_pred`` is True, episodes whose ``pred_key`` is None
+    are excluded from the weighted average (and from the returned win_rate
+    so numerator/denominator stay on the same population). Batch B: used
+    for raw-bias so missing raw never silently becomes 0.5/enforced.
     """
     total_weight = 0.0
     weighted_pred = 0.0
     weighted_wins = 0.0
     for ep in episode_summaries:
+        pred = ep.get(pred_key)
+        if skip_null_pred and pred is None:
+            continue
+        if pred is None:
+            pred = 0.5
         dt = _parse_iso_dt(ep.get("entered_at"))
         if dt is not None:
             age_days = max((now - dt).total_seconds() / 86400.0, 0.0)
@@ -1713,7 +1729,7 @@ def _decay_weighted_episode_stats(
         else:
             weight = 1.0
         total_weight += weight
-        weighted_pred += weight * float(ep.get(pred_key, 0.5))
+        weighted_pred += weight * float(pred)
         weighted_wins += weight * float(ep.get("win_fraction", 0.0))
     if total_weight <= 0:
         return 0.5, 0.0
@@ -1857,13 +1873,16 @@ async def fetch_calibration_bias_raw(
     been shrunk toward 0.5 by the Bayesian penalty, so reading it directly
     would measure the correction, not the model error.
 
-    Falls back to ``predicted_p_win`` when ``predicted_p_win_raw IS NULL``
-    (e.g. before migration 114 or when the capture flag was off), so the
-    behaviour is identical to ``fetch_calibration_bias`` on old data.
+    Batch B (2026-09-16): **no silent fallback to enforced p_win.** Episodes
+    without any non-null ``predicted_p_win_raw`` are excluded from the raw
+    average and from raw win_rate. If fewer than ``min_episodes`` remain,
+    returns ``None`` (insufficient raw evidence). When
+    ``settings.NOBLE_TRADER_CALIBRATION_RAW_REQUIRED`` is False, the old
+    per-row fallback is restored for emergency use only.
 
     Returns the same shape as ``fetch_calibration_bias`` plus
-    ``avg_pred_raw`` (the average of the raw column) for observability:
-    ``{bias, status, n, raw_n, distinct_days, win_rate, avg_pred, avg_pred_raw}``.
+    ``avg_pred_raw`` and ``raw_episodes``:
+    ``{bias, status, n, raw_n, distinct_days, win_rate, avg_pred, avg_pred_raw, raw_episodes}``.
 
     The bias thresholds here are wider (``EOD_BIAS_RAW_OVERCONFIDENT`` /
     ``EOD_BIAS_RAW_UNDERCONFIDENT``) because raw model output is naturally
@@ -1919,34 +1938,50 @@ async def fetch_calibration_bias_raw(
         return None
     episode_summaries = _episode_summaries(episodes)
     now = datetime.now(timezone.utc)
-    avg_pred_enforced, win_rate = _decay_weighted_episode_stats(
+    raw_required = bool(getattr(settings, "NOBLE_TRADER_CALIBRATION_RAW_REQUIRED", True))
+    skip_null = raw_required
+    if not skip_null:
+        # Emergency opt-out: restore historical per-row stand-in
+        for ep in episode_summaries:
+            if ep.get("predicted_p_win_raw") is None:
+                ep["predicted_p_win_raw"] = ep.get("predicted_p_win", 0.5)
+
+    raw_episodes = [
+        ep for ep in episode_summaries
+        if ep.get("predicted_p_win_raw") is not None
+    ]
+    if skip_null and len(raw_episodes) < min_eps:
+        logger.info(
+            "fetch_calibration_bias_raw %s: only %d/%d episodes carry raw p_win "
+            "(min_episodes=%d) — returning None (no enforced fallback)",
+            symbol, len(raw_episodes), n_episodes, min_eps,
+        )
+        return None
+
+    avg_pred_enforced, _ = _decay_weighted_episode_stats(
         episode_summaries, "predicted_p_win", half_life, now,
     )
-    avg_pred_raw, _ = _decay_weighted_episode_stats(
+    avg_pred_raw, win_rate = _decay_weighted_episode_stats(
         episode_summaries, "predicted_p_win_raw", half_life, now,
+        skip_null_pred=skip_null,
     )
     # Bias is computed from the RAW (pre-enforcement) p_win so it reflects
     # the model's true miscalibration, not the enforcement compensation.
     bias = round(avg_pred_raw - win_rate, 4)
 
-    # One arbiter (2026-09-09, worklog
-    # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
-    # classify via eod_correction._classify_bias_raw -- the wider,
-    # registry-tunable thresholds this docstring already says should be
-    # used, instead of the hardcoded 0.05 this function computed
-    # independently before (contradicting its own documented design).
     from regime_platform.sweep_orchestrator.eod_correction import _classify_bias_raw
     status = _classify_bias_raw(bias)
 
     return {
         "bias": bias,
         "status": status,
-        "n": n_episodes,
+        "n": len(raw_episodes) if skip_null else n_episodes,
         "raw_n": raw_n,
         "distinct_days": distinct_days,
         "win_rate": round(win_rate, 4),
-        "avg_pred": round(avg_pred_enforced, 4),       # enforced average (for stamping)
-        "avg_pred_raw": round(avg_pred_raw, 4),        # raw average (for bias)
+        "avg_pred": round(avg_pred_enforced, 4),
+        "avg_pred_raw": round(avg_pred_raw, 4),
+        "raw_episodes": len(raw_episodes),
     }
 
 

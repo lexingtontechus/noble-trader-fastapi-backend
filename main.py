@@ -326,7 +326,7 @@ def create_app() -> FastAPI:
         - Renko pipeline: full autonomy (warmup, restore, regime, equity, sizing, backtest, live toggle)
         - Snapshot management (save/restore pipeline state)
         """,
-        version="7.8.0",
+        version="7.9.0",
         contact={
             "name": "Noble Trader Dynamic Regime Risk Platform",
             "email": "nobletrader@0xdweb.com",
@@ -510,7 +510,7 @@ def create_app() -> FastAPI:
         
         return {
             "status": "ok",
-            "version": "7.8.0",
+            "version": "7.9.0",
             "mode": "paper" if settings.ALPACA_API_KEY else "live",
             "renko_pipelines": renko_status,
         }

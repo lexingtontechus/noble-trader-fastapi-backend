@@ -267,7 +267,7 @@ def test_apply_penalty_active_shrinks_p_win_and_kelly():
 
 
 def test_apply_underconfident_pulls_p_win_up():
-    """UNDERCONFIDENT (bias < -0.10) → p_win pulled UP toward 0.5, kelly halved."""
+    """UNDERCONFIDENT → p_win pulled UP toward 0.5, Kelly NOT cut (Batch D 4.6)."""
     state = {
         "action": "bayesian_penalty",
         "bias": -0.15,
@@ -280,7 +280,8 @@ def test_apply_underconfident_pulls_p_win_up():
     assert result["applied"] is True
     assert result["status"] == "UNDERCONFIDENT"
     assert result["p_win"] > 0.44
-    assert abs(result["kelly_f"] - 0.125) < 1e-9
+    assert abs(result["kelly_f"] - 0.25) < 1e-9  # unchanged underconfidence
+    assert result["reason"] == "underconfidence_no_kelly_cut"
 
 
 def test_apply_stale_action_is_noop():

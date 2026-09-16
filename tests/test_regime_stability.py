@@ -339,7 +339,8 @@ def test_temp_weights_discounts_p_regime_and_restores():
     with engine.temp_weights({"p_regime": original * 0.5}):
         assert engine.get_weights()["p_regime"] == original * 0.5
         # Other weights untouched during the override.
-        assert engine.get_weights()["p_historical"] == P_WIN_WEIGHTS_FULL["p_historical"]
+        assert "p_historical" not in engine.get_weights()
+        assert engine.get_weights()["p_timesfm"] == P_WIN_WEIGHTS_FULL["p_timesfm"]
     # Fully restored after exit.
     assert engine.get_weights() == P_WIN_WEIGHTS_FULL
 

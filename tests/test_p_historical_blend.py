@@ -47,21 +47,20 @@ def test_compute_p_historical_passthrough_and_clamp():
 # ─── 2. compute_ev() blend integration ─────────────────────────────────
 
 
-def test_weights_full_has_historical_not_pattern():
-    """R2: p_pattern is gone; R3: p_historical replaces it at the same
-    30% base weight. The weight table entry itself survives the 2026-09-09
-    removal of the production fetch — only the live feed was retired."""
+def test_weights_full_has_no_ghost_historical():
+    """Batch F (2026-09-16): p_historical removed from the live weight
+    table — the 0.30 row was a ghost (never fed by production since
+    2026-09-09) that renormalized out and misled readers. set_weights()
+    still accepts the key for API compat."""
     assert "p_pattern" not in P_WIN_WEIGHTS_FULL
-    assert P_WIN_WEIGHTS_FULL["p_historical"] == 0.30
+    assert "p_historical" not in P_WIN_WEIGHTS_FULL
     assert abs(sum(P_WIN_WEIGHTS_FULL.values()) - 1.0) < 1e-9
 
 
 def test_p_historical_none_renormalizes_like_old_p_pattern():
     """Omitting p_historical (None — the default, and now what every
     production caller passes since the 2026-09-09 removal) must drop it
-    from the blend and renormalize over the remaining 3 sources — the
-    exact contract p_pattern always relied on, since the server always
-    passed it as None."""
+    from the blend and renormalize over the remaining sources."""
     engine = EVEngine()
     result = engine.compute_ev(
         trend_probs={"bull": 0.6, "bear": 0.2, "strong_bull": 0.1, "strong_bear": 0.1},
@@ -74,11 +73,9 @@ def test_p_historical_none_renormalizes_like_old_p_pattern():
     assert abs(sum(result.weights_used.values()) - 1.0) < 1e-9
 
 
-def test_p_historical_present_participates_in_blend():
-    """A direct caller that still supplies p_historical (e.g.
-    renko/router.py's ad-hoc /ev/compute endpoint) gets it blended: a high
-    value (symbol has a strong realized track record) pulls p_win up
-    relative to the same call without it."""
+def test_p_historical_present_no_weight_has_no_effect():
+    """With no weight-table entry, a supplied p_historical is reported in
+    sources_used but contributes 0 to the logit pool (weight 0)."""
     engine = EVEngine()
     common = dict(
         trend_probs={"bull": 0.5, "bear": 0.5},
@@ -89,7 +86,8 @@ def test_p_historical_present_participates_in_blend():
     without = engine.compute_ev(p_historical=None, **common)
     with_high = engine.compute_ev(p_historical=0.9, **common)
     assert "p_historical" in with_high.sources_used
-    assert with_high.p_win > without.p_win
+    # Weight 0 after Batch F — does not move p_win
+    assert with_high.p_win == pytest.approx(without.p_win)
 
 
 def test_unknown_weight_key_error_mentions_p_historical():

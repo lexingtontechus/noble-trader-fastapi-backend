@@ -155,10 +155,15 @@ def reachability_aware_pick(
 
 async def fetch_bias_by_bucket(symbol: str) -> dict[tuple[str, str], float | None]:
     """``{(vol_tier, distance_atr_bucket): expectancy_r}`` for one symbol,
-    from ``nt_calibration_bias_by_bucket``. Best-effort — returns ``{}`` on
-    any failure (callers then treat every (vol_tier, bucket) pair as
-    unscored, i.e. keep everything — fail-open, same as a missing
-    ``atr``)."""
+    from ``nt_calibration_bias_by_bucket``.
+
+    Best-effort — returns ``{}`` on any failure (callers then treat every
+    (vol_tier, bucket) pair as unscored, i.e. keep everything — fail-open,
+    same as a missing ``atr``).
+
+    Batch B: prefer stored-ATR buckets only (``atr_source=stored``) so
+    look-ahead proxy ATR never drives a live/shadow pick.
+    """
     if not settings.SUPABASE_URL:
         return {}
     try:
@@ -167,8 +172,9 @@ async def fetch_bias_by_bucket(symbol: str) -> dict[tuple[str, str], float | Non
                 _url("nt_calibration_bias_by_bucket"),
                 headers=_headers(),
                 params={
-                    "select": "vol_tier,distance_atr_bucket,expectancy_r",
+                    "select": "vol_tier,distance_atr_bucket,expectancy_r,atr_source",
                     "symbol": f"eq.{symbol}",
+                    "atr_source": "eq.stored",
                 },
             )
             resp.raise_for_status()
@@ -178,6 +184,7 @@ async def fetch_bias_by_bucket(symbol: str) -> dict[tuple[str, str], float | Non
         return {
             (r.get("vol_tier", "unknown"), r["distance_atr_bucket"]): r.get("expectancy_r")
             for r in rows
+            if r.get("atr_source", "stored") == "stored"
         }
     except Exception as exc:
         logger.warning("fetch_bias_by_bucket: %s: fetch failed: %s", symbol, exc)

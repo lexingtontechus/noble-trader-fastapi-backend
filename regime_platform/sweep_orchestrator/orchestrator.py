@@ -102,12 +102,21 @@ MARKOV_BARS_PER_DAY = int(os.getenv("MARKOV_BARS_PER_DAY", "24"))
 MARKOV_WINDOW_BARS = int(
     os.getenv("MARKOV_WINDOW_BARS", str(MARKOV_WINDOW_DAYS * MARKOV_BARS_PER_DAY))
 )
-# Multi-step hold horizon (T^N). User decision 7.5: max steps = 10.
-# Covers a typical TP-brick count for swing trades (5-10 bricks at 1
-# brick/bar). Can be overridden per-call via compute_ev(n_steps=...).
-# When None, the EV engine uses tp_bricks as N (brick velocity model:
-# 1 brick = 1 bar).
+# Multi-step hold horizon (T^N). Fallback only — Batch D (2026-09-16):
+# production call sites prefer n_steps = tp_bricks (bracket geometry) so
+# Markov horizon matches the actual TP distance. This env default is used
+# when tp_bricks is missing or invalid.
 MARKOV_HOLD_STEPS = int(os.getenv("MARKOV_HOLD_STEPS", "10"))
+
+
+def resolve_markov_n_steps(tp_bricks: float | int | None, fallback: int | None = None) -> int:
+    """N for T^N: prefer tp_bricks (bars-to-TP under 1 brick = 1 bar)."""
+    fb = fallback if fallback is not None else MARKOV_HOLD_STEPS
+    try:
+        n = int(tp_bricks) if tp_bricks is not None else 0
+    except (TypeError, ValueError):
+        n = 0
+    return n if n >= 1 else int(fb)
 
 # ─── Qualification gate thresholds (configurable via env vars) ───────────
 # These determine which sweep signals qualify and get sent to Discord
@@ -253,17 +262,23 @@ MIN_P_WIN = get_min_p_win()
 # where k controls how aggressively price deltas map to confidence.
 # k=20 → 1% move ≈ p=0.73, 5% move ≈ p=0.99 (EXCESSIVELY aggressive)
 # k=10 → 1% move ≈ p=0.62, 5% move ≈ p=0.92 (more reasonable)
-# k=5  → 1% move ≈ p=0.55, 5% move ≈ 0.99 (conservative)
-# The high k=20 was found to systematically produce near-1.0 p_win values,
-# causing chronic OVERCONFIDENT bias across all symbols (verified 2026-08-13).
-TIMESFM_SIGMOID_K = float(os.getenv("TIMESFM_SIGMOID_K", "20.0"))
+# Batch D/F: source of truth is config/feature_flags.yaml (timesfm block).
+# Env is NOT read — feature_flags is the sole config surface (user 2026-09-16).
 
-# Clamp range for p_timesfm — prevents extreme certainty from a single
-# source dominating the logit-pooled blend. Defaults [0.001, 0.999] were
-# too permissive — a 5% forecast at k=20 produced p=0.993, effectively
-# bypassing downstream calibration. [0.05, 0.95] provides a sane ceiling.
-TIMESFM_CLAMP_MIN = float(os.getenv("TIMESFM_CLAMP_MIN", "0.001"))
-TIMESFM_CLAMP_MAX = float(os.getenv("TIMESFM_CLAMP_MAX", "0.999"))
+
+def _timesfm_mapping_defaults() -> tuple[float, float, float]:
+    try:
+        from regime_platform.core.feature_flags import (
+            get_timesfm_clamp_max,
+            get_timesfm_clamp_min,
+            get_timesfm_sigmoid_k,
+        )
+        return get_timesfm_sigmoid_k(), get_timesfm_clamp_min(), get_timesfm_clamp_max()
+    except Exception:
+        return 10.0, 0.05, 0.95
+
+
+TIMESFM_SIGMOID_K, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX = _timesfm_mapping_defaults()
 
 # ── TimesFM fetcher with 15-minute cache ────────────────────────────────
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
@@ -827,6 +842,13 @@ def _build_signal_sim_payload(
     trend_hmm_markov_state: str | None = None,
     raw_p_regime: float | None = None,
     gated_p_regime: float | None = None,
+    p_win_dir: float | None = None,
+    p_win_bracket: float | None = None,
+    p_resolve: float | None = None,
+    p_win_resolve: float | None = None,
+    bracket_bucket: str | None = None,
+    bracket_vol_tier: str | None = None,
+    bracket_gate_shadow: bool | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -913,11 +935,32 @@ def _build_signal_sim_payload(
         "raw_p_regime": round(float(raw_p_regime), 4) if raw_p_regime is not None else None,
         "gated_p_regime": round(float(gated_p_regime), 4) if gated_p_regime is not None else None,
     }
-    if (
-        settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW
-        and predicted_p_win_raw is not None
-    ):
+    # Batch B (2026-09-16): always persist pre-enforcement p_win when we have
+    # it. Capture flag remains for emergency off; when on and raw is missing,
+    # still omit the column but log an error so measurement gaps are visible.
+    if predicted_p_win_raw is not None:
         payload["predicted_p_win_raw"] = round(float(predicted_p_win_raw), 4)
+    elif settings.NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW:
+        logger.error(
+            "signal-sim capture: predicted_p_win_raw missing while "
+            "NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW=True — measurement will "
+            "treat this row as raw-absent"
+        )
+    # Batch C: always stamp directional vs bracket probabilities when known
+    if p_win_dir is not None:
+        payload["p_win_dir"] = round(float(p_win_dir), 4)
+    if p_win_bracket is not None:
+        payload["p_win_bracket"] = round(float(p_win_bracket), 4)
+    if p_resolve is not None:
+        payload["p_resolve"] = round(float(p_resolve), 4)
+    if p_win_resolve is not None:
+        payload["p_win_resolve"] = round(float(p_win_resolve), 4)
+    if bracket_bucket is not None:
+        payload["bracket_bucket"] = bracket_bucket
+    if bracket_vol_tier is not None:
+        payload["bracket_vol_tier"] = bracket_vol_tier
+    if bracket_gate_shadow is not None:
+        payload["bracket_gate_shadow"] = bool(bracket_gate_shadow)
     return payload
 
 
@@ -3116,7 +3159,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 brick_size=brick_size,
                 sl_bricks=sl_bricks,
                 tp_bricks=tp_bricks,
-                n_steps=MARKOV_HOLD_STEPS,
+                n_steps=resolve_markov_n_steps(tp_bricks),
                 p_markov_override=_smoothed_p_markov,
             )
         # EVFullResult is a dataclass — use attribute access.
@@ -3167,7 +3210,7 @@ class SweepOrchestrator(HeavySweepMixin):
             # it just contributes less. The engine itself renormalises
             # remaining weights to sum to 1.0 over available sources.
             if p_timesfm is not None and confidence is not None:
-                base_weight = 0.25  # matches P_WIN_WEIGHTS_FULL["p_timesfm"]
+                base_weight = P_WIN_WEIGHTS_FULL.get("p_timesfm", 0.25)
                 scale = min(1.0, confidence / MIN_TIMESFM_CONFIDENCE) if MIN_TIMESFM_CONFIDENCE > 0 else 1.0
                 if scale < 1.0:
                     # Recompute EV with adjusted TimesFM weight using the
@@ -3192,7 +3235,7 @@ class SweepOrchestrator(HeavySweepMixin):
                             brick_size=brick_size,
                             sl_bricks=sl_bricks,
                             tp_bricks=tp_bricks,
-                            n_steps=MARKOV_HOLD_STEPS,
+                            n_steps=resolve_markov_n_steps(tp_bricks),
                             # Reuse the SAME smoothed values computed above —
                             # not fresh calls — so both compute_ev() calls in
                             # this tick agree on P_markov_hold_N (fix #3a) and
@@ -3490,6 +3533,12 @@ class SweepOrchestrator(HeavySweepMixin):
             p_win_kelly_shrink = 1.0
 
         p_win_kelly_shrink = max(0.0, min(1.0, p_win_kelly_shrink))
+        # Batch D: soft-band honesty — stamp marginal publishes so scorecard
+        # can separate "full edge" from "soft band" without changing publish.
+        p_win_soft_band = bool(
+            p_win_ok
+            and P_WIN_HARD_FLOOR <= ev_result.p_win < MIN_P_WIN
+        )
 
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
@@ -3525,6 +3574,8 @@ class SweepOrchestrator(HeavySweepMixin):
             "rr": round(effective_ev_result.rr, 4),
             "p_win": round(ev_result.p_win, 4),
             "p_win_kelly_shrink": round(p_win_kelly_shrink, 4),
+            # Batch D: soft-band stamp (not a gate — informational)
+            "p_win_soft_band": p_win_soft_band,
             # ── EOD calibration enforcement stamp (2026-08-10) ─────────
             "calibration_enforced": bool(calib_adj and calib_adj.get("applied")),
             "calibration_status": (calib_adj or {}).get("status"),
@@ -3970,6 +4021,55 @@ class SweepOrchestrator(HeavySweepMixin):
         # opt-in — changes what the sim measures).
         if trade_signal["signal"] not in ("neutral", "unknown"):
             try:
+                # ── Batch C: p_win_bracket lookup (shadow default) ──────
+                from regime_platform.core.feature_flags import (
+                    get_min_p_win_bracket,
+                    get_p_win_bracket_mode,
+                )
+                p_bracket_mode = get_p_win_bracket_mode()
+                _p_win_dir = p_win_raw
+                _p_win_bracket = _p_resolve = _p_win_resolve = None
+                _bracket_bucket = _bracket_vol_tier = None
+                _bracket_gate_shadow: bool | None = None
+                if p_bracket_mode != "off":
+                    from regime_platform.sweep_orchestrator.p_win_bracket import (
+                        lookup_bracket_probs,
+                        would_bracket_gate_reject,
+                    )
+                    _bp = await lookup_bracket_probs(
+                        symbol,
+                        entry_price=trade_signal.get("entry_price"),
+                        take_profit=trade_signal.get("take_profit"),
+                        atr=atr,
+                        regime_label=regime_label,
+                    )
+                    _p_win_bracket = _bp.p_win_bracket
+                    _p_resolve = _bp.p_resolve
+                    _p_win_resolve = _bp.p_win_resolve
+                    _bracket_bucket = _bp.bucket
+                    _bracket_vol_tier = _bp.vol_tier
+                    _reject = would_bracket_gate_reject(
+                        _p_win_bracket, min_p_win_bracket=get_min_p_win_bracket(),
+                    )
+                    _bracket_gate_shadow = bool(qualified and _reject is True)
+                    if p_bracket_mode == "live" and _reject is True:
+                        qualified = False
+                        gate_results["p_win_bracket_ok"] = False
+                        logger.info(
+                            "[sweep:orch] %s: REJECTED by p_win_bracket=%.4f "
+                            "(min=%.3f, bucket=%s)",
+                            symbol, _p_win_bracket or 0.0,
+                            get_min_p_win_bracket(), _bracket_bucket,
+                        )
+                    elif p_bracket_mode == "shadow" and _bracket_gate_shadow:
+                        logger.info(
+                            "[sweep:orch] %s: bracket gate SHADOW would "
+                            "reject p_win_bracket=%.4f (bucket=%s vol=%s) "
+                            "— live still qualified=%s",
+                            symbol, _p_win_bracket or 0.0, _bracket_bucket,
+                            _bracket_vol_tier, qualified,
+                        )
+
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
                     venue=venue_name,
@@ -3991,6 +4091,13 @@ class SweepOrchestrator(HeavySweepMixin):
                     effective_kelly=effective_kelly,
                     predicted_p_win_raw=p_win_raw,
                     atr=atr,
+                    p_win_dir=_p_win_dir,
+                    p_win_bracket=_p_win_bracket,
+                    p_resolve=_p_resolve,
+                    p_win_resolve=_p_win_resolve,
+                    bracket_bucket=_bracket_bucket,
+                    bracket_vol_tier=_bracket_vol_tier,
+                    bracket_gate_shadow=_bracket_gate_shadow,
                     macro_label=macro_label,
                     macro_strength=macro_strength,
                     trend_label=trend_label,

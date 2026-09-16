@@ -215,7 +215,7 @@ Tick → Brick Construction → Swing Classification → Pattern Detection
 | OpenAPI spec | 200+ paths |
 | MCP exposed tools | 30+ |
 | Python version | 3.11+ |
-| Version | **7.8.0** |
+| Version | **7.9.0** |
 
 ---
 

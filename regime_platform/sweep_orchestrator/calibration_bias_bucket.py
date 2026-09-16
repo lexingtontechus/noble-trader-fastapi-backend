@@ -128,7 +128,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "n": 0, "wins": 0, "losses": 0, "p_win_sum": 0.0,
-            "rr_sum": 0.0, "hours": [], "atr_source": "stored",
+            "rr_sum": 0.0, "hours": [], "n_stored": 0, "n_proxy": 0,
         }
     )
 
@@ -148,6 +148,12 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         if not atr:
             continue
 
+        # Batch B: proxy ATR is a look-ahead approximation (current ATR for
+        # historical rows). Exclude from expectancy/bias so live gates never
+        # train on contaminated buckets. Still counted for n_proxy visibility.
+        if atr_source == "proxy_current":
+            continue
+
         ratio = abs(float(tp) - float(entry)) / atr
         bucket = _bucket_for(ratio)
         if bucket is None:
@@ -156,7 +162,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
 
         d = bucket_data[(symbol, vol_tier, bucket)]
         d["n"] += 1
-        d["atr_source"] = atr_source
+        d["n_stored"] += 1
         p_win = row.get("p_win")
         if p_win is not None:
             d["p_win_sum"] += float(p_win)
@@ -212,7 +218,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
             "expectancy_r": expectancy_r,
             "median_hours_to_resolve": median_hours,
             "daily_expectancy_r": daily_expectancy_r,
-            "atr_source": d["atr_source"],
+            "atr_source": "stored",
         })
 
     try:

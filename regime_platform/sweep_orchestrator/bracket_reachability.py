@@ -215,7 +215,7 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
     bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "n": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0,
-            "hours": [], "atr_source": "stored",
+            "hours": [], "n_stored": 0, "n_proxy": 0,
         }
     )
 
@@ -248,7 +248,10 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
         d = bucket_data[(symbol, vol_tier, bucket)]
         d["n"] += 1
         d[outcome] += 1
-        d["atr_source"] = atr_source
+        if atr_source == "stored":
+            d["n_stored"] += 1
+        else:
+            d["n_proxy"] += 1
         if outcome in ("tp_hit", "sl_hit"):
             hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
             if hrs is not None:
@@ -258,11 +261,16 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
     for (symbol, vol_tier, bucket), d in bucket_data.items():
         n = d["n"]
         hours = d["hours"]
+        # Batch B: dominant source is informational; consumers that need
+        # point-in-time ATR must filter n_proxy==0 (or n_stored/n).
+        atr_source = "stored" if d["n_stored"] >= d["n_proxy"] else "proxy_current"
         output_rows.append({
             "symbol": symbol,
             "vol_tier": vol_tier,
             "distance_atr_bucket": bucket,
             "n": n,
+            "n_stored": d["n_stored"],
+            "n_proxy": d["n_proxy"],
             "pct_hit_tp": round(d["tp_hit"] / n, 4),
             "pct_hit_sl": round(d["sl_hit"] / n, 4),
             "pct_expired": round(d["expired"] / n, 4),
@@ -271,7 +279,7 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
             ),
             "p75_hours": round(float(np.percentile(hours, 75)), 2) if hours else None,
             "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
-            "atr_source": d["atr_source"],
+            "atr_source": atr_source,
         })
 
     try:
