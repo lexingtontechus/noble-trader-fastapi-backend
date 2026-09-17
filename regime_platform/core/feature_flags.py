@@ -67,6 +67,7 @@ _DEFAULTS: dict[str, Any] = {
         "min_p_win": 0.55,
     },
     "timesfm_gate_mode": "soft",
+    "timesfm_map_mode": "zmap_shadow",
     "timesfm": {
         "sigmoid_k": 10.0,
         "clamp_min": 0.05,
@@ -509,6 +510,18 @@ def get_timesfm_gate_mode() -> str:
     os.getenv("TIMESFM_GATE_MODE"))."""
     return str(_load().get(
         "timesfm_gate_mode", _DEFAULTS["timesfm_gate_mode"],
+    )).lower()
+
+
+def get_timesfm_map_mode() -> str:
+    """``sigmoid`` | ``zmap_shadow`` | ``zmap_live`` (2026-09-17).
+
+    z-map standardizes TimesFM rel_change by per-symbol rolling σ before
+    Φ(). zmap_shadow logs both but feeds sigmoid to EV; zmap_live feeds
+    z-map. See worklog/20260917_TIMESFM_ZMAP_FIX.md.
+    """
+    return str(_load().get(
+        "timesfm_map_mode", _DEFAULTS["timesfm_map_mode"],
     )).lower()
 
 

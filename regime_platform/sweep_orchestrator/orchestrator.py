@@ -520,15 +520,33 @@ async def _fetch_timesfm_cached(
         )
         confidence = abs(p_timesfm - 0.5)
 
-        # TimesFM probe (sanity 2026-09-17): always log the full map chain
-        # so a stuck p≈0.5 is diagnosable from Studio logs alone.
+        # ── z-map (2026-09-17 worklog 20260917_TIMESFM_ZMAP_FIX.md) ────
+        # Global k-sigmoid cannot resolve sub-percent TimesFM forecasts
+        # (probe: +0.12% → p=0.503). Standardize by per-symbol rolling σ.
+        from regime_platform.core.feature_flags import get_timesfm_map_mode
+        from regime_platform.sweep_orchestrator import timesfm_zmap
+
+        _map_mode = get_timesfm_map_mode()
+        timesfm_zmap.record_rel_change(symbol, rel_change)
+        p_zmap = timesfm_zmap.zmap_probability(symbol, rel_change)
+        p_sigmoid = p_timesfm
+        if _map_mode == "zmap_live" and p_zmap is not None:
+            p_timesfm = max(
+                TIMESFM_CLAMP_MIN,
+                min(TIMESFM_CLAMP_MAX, p_zmap),
+            )
+            confidence = abs(p_timesfm - 0.5)
+        # TimesFM probe: always log the full map chain so a stuck p≈0.5
+        # is diagnosable from Studio logs alone.
         _flat = abs(rel_change) < 1e-6
         logger.info(
             "[timesfm:probe] %s forecast=%.6f last=%.6f rel_change=%.8f "
-            "k=%.2f sigmoid_raw=%.4f p_clamped=%.4f conf=%.4f flat=%s "
-            "clamp=[%.3f,%.3f]",
+            "k=%.2f sigmoid_raw=%.4f p_sigmoid=%.4f p_zmap=%s "
+            "p_used=%.4f mode=%s conf=%.4f flat=%s clamp=[%.3f,%.3f]",
             symbol, forecast_value, last_price, rel_change, _k,
-            _raw_sig, p_timesfm, confidence, _flat,
+            _raw_sig, p_sigmoid,
+            f"{p_zmap:.4f}" if p_zmap is not None else "n/a",
+            p_timesfm, _map_mode, confidence, _flat,
             TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX,
         )
         if _flat:
