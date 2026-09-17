@@ -5,7 +5,23 @@
 > `config/feature_flags.yaml` (hot-reload on mtime). Do not duplicate
 > incident essays here — link worklogs instead.
 
-Last verified against `config/feature_flags.yaml` + code: 2026-09-16.
+Last verified against `config/feature_flags.yaml` + code: 2026-09-17.
+
+## Cadence (live)
+
+| Job | When |
+|---|---|
+| Light sweep | **every 15 min** (`*/15`, two symbol batches per slot) |
+| Heavy sweep | Sunday 20:00 UTC |
+| EOD resolve + reachability rebuild | daily 01:17 UTC |
+| Intraday calibration correction | every 4h |
+
+## Aggression label (not SL/TP tiering)
+
+`passive` / `mid` / `aggressive` = **order-style** from `ev_per_dollar`
+(high EV → passive limit OK; low EV → need aggressive fill). **Does not**
+change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
+`EVEngine.edge_tier()` for high/mid/low EV language.
 
 ## Live behavior
 

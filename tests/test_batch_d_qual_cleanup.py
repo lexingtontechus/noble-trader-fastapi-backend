@@ -64,6 +64,17 @@ async def _run_enforce(status: str, p_win: float = 0.70, kelly: float = 0.20, bi
             return await apply_calibration_adjustment("EURUSD", p_win=p_win, kelly_f=kelly)
 
 
+class TestEdgeTier:
+    def test_edge_tier_not_confused_with_aggression(self):
+        from regime_platform.services.statistics.ev_engine import EVEngine
+        # High EV is order-style "passive" but edge "high"
+        assert EVEngine.compute_aggression(0.5) == "passive"
+        assert EVEngine.edge_tier(0.5) == "high"
+        assert EVEngine.edge_tier(0.2) == "mid"
+        assert EVEngine.edge_tier(0.0) == "low"
+        assert EVEngine.edge_tier(-1.0) == "low"
+
+
 class TestUnderconfidenceNoKellyCut:
     def test_underconfident_keeps_kelly(self):
         import asyncio

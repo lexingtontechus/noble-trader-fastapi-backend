@@ -16,7 +16,7 @@ The system predicts **direction** (“price should go up”), then scores and pu
 
 ## What the system actually does today
 
-1. Every ~5 minutes, for each symbol, the **light sweep** loads recent 1h closes, fits an HMM regime, optionally a TimesFM forecast, builds a buy/sell signal from the regime label, and runs a chain of **qualification gates**.
+1. Every ~15 minutes, for each symbol, the **light sweep** loads recent 1h closes, fits an HMM regime, optionally a TimesFM forecast, builds a buy/sell signal from the regime label, and runs a chain of **qualification gates**.
 2. Direction is **not** blended. It is a string match on the regime label: if the label contains “bull,” the trade is long; if “bear,” short. Everything else only *conditions* confidence on that already-chosen side.
 3. Entry is simply the **last close**. Stop-loss and take-profit are fixed distances:
    - SL = entry ∓ `brick_size × sl_bricks`
@@ -124,7 +124,7 @@ TradingView 1h candles (200 light / 2160 heavy)
         ▼
 ┌───────────────────┐     brick_params.yaml      ┌──────────────────┐
 │  Heavy sweep      │ ─────────────────────────► │  Light sweep     │
-│  (daily 20:00)    │   brick_size, sl, tp       │  (every ~5 min)  │
+│  (daily 20:00)    │   brick_size, sl, tp       │  (every ~15 min)  │
 │  Renko grid+Sharpe│                            │  HMM + TimesFM   │
 └─────────┬─────────┘                            │  EV + 7–10 gates │
           │ deadline_aware_sharpe (LIVE)         └────────┬─────────┘

@@ -563,16 +563,33 @@ class EVEngine:
         )
 
     # ── Aggression Dispatcher ──────────────────────────────────────
+    # Labels are ORDER-STYLE hints (2026-09-17 doc fix), NOT conviction:
+    #   high ev_per_dollar → "passive"  = can afford a patient limit
+    #   low/neg ev_per_dollar → "aggressive" = need a market/chase fill
+    # They do NOT change SL/TP geometry (still brick_params only).
 
     @staticmethod
     def compute_aggression(ev_per_dollar: float) -> str:
-        """Map ev_per_dollar to aggression level."""
+        """Map ev_per_dollar to order-style aggression (not edge strength)."""
         if ev_per_dollar > 0.40:
             return "passive"
         elif ev_per_dollar > 0.15:
             return "mid"
         else:
             return "aggressive"
+
+    @staticmethod
+    def edge_tier(ev_per_dollar: float) -> str:
+        """Human-readable EV tier for dashboards (Batch F follow-up).
+
+        Distinct from compute_aggression's order-style label so operators
+        do not read 'passive' as 'weak edge'.
+        """
+        if ev_per_dollar > 0.40:
+            return "high"
+        elif ev_per_dollar > 0.15:
+            return "mid"
+        return "low"
 
     @staticmethod
     def compute_ev_scale(ev_per_dollar: float) -> float:

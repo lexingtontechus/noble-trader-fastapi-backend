@@ -507,12 +507,37 @@ async def _fetch_timesfm_cached(
             map_forecast_to_probability,
         )
         _k = TIMESFM_SIGMOID_K if k_override is None else k_override
-        # Clamp to [TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX] so confidence is
-        # never exactly 0 or 1 (avoids edge cases in downstream EV/Kelly math).
+        # Pre-clamp sigmoid for the probe log (2026-09-17): live data showed
+        # p_timesfm pinned near 0.5 — need to see whether rel_change is ~0
+        # (flat forecast) or the clamp is crushing a real signal.
+        import math
+        try:
+            _raw_sig = 1.0 / (1.0 + math.exp(-_k * rel_change))
+        except OverflowError:
+            _raw_sig = 0.0 if rel_change < 0 else 1.0
         p_timesfm = map_forecast_to_probability(
             rel_change, _k, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX,
         )
         confidence = abs(p_timesfm - 0.5)
+
+        # TimesFM probe (sanity 2026-09-17): always log the full map chain
+        # so a stuck p≈0.5 is diagnosable from Studio logs alone.
+        _flat = abs(rel_change) < 1e-6
+        logger.info(
+            "[timesfm:probe] %s forecast=%.6f last=%.6f rel_change=%.8f "
+            "k=%.2f sigmoid_raw=%.4f p_clamped=%.4f conf=%.4f flat=%s "
+            "clamp=[%.3f,%.3f]",
+            symbol, forecast_value, last_price, rel_change, _k,
+            _raw_sig, p_timesfm, confidence, _flat,
+            TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX,
+        )
+        if _flat:
+            logger.warning(
+                "[timesfm:probe] %s: forecast equals last price "
+                "(rel_change=0) — p_timesfm will stay ~0.5; TimesFM is "
+                "not contributing directional information",
+                symbol,
+            )
 
         if shadow_k is not None:
             p_timesfm_shadow = map_forecast_to_probability(

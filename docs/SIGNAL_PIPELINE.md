@@ -13,7 +13,7 @@ TradingView 1h candles (200 light / 2160 heavy)
         ▼                                              ▼
 ┌───────────────────┐                        ┌──────────────────┐
 │ Heavy sweep       │  brick_params.yaml     │ Light sweep      │
-│ daily 20:00 UTC   │ ─────────────────────► │ every ~5 min     │
+│ daily 20:00 UTC   │ ─────────────────────► │ every ~15 min     │
 │ Renko grid+Sharpe │                        │ HMM + TimesFM    │
 │ deadline-aware    │                        │ EV + gates       │
 └─────────┬─────────┘                        └────────┬─────────┘
