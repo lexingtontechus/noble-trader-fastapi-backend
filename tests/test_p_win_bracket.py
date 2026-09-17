@@ -52,11 +52,32 @@ class TestComputeBracketProbs:
         assert r.p_win_bracket is None
         assert r.reason == "missing_atr_or_prices"
 
-    def test_insufficient_stored_n(self):
+    def test_legacy_stored_fallback_when_n_stored_thin(self):
+        """Bootstrap (2026-09-16): n_stored thin but n large + row stored → use n."""
         r = compute_bracket_probs(
             entry_price=2500.0, take_profit=2510.0, atr=10.0,
             regime_label="med_low_vol_bull",
             n=50, n_stored=1, pct_hit_tp=0.5, pct_hit_sl=0.3, pct_expired=0.2,
+        )
+        assert r.p_win_bracket is not None
+        assert r.atr_source == "legacy_stored"
+
+    def test_insufficient_n_without_legacy_fallback(self):
+        r = compute_bracket_probs(
+            entry_price=2500.0, take_profit=2510.0, atr=10.0,
+            regime_label="med_low_vol_bull",
+            n=2, n_stored=1, pct_hit_tp=0.5, pct_hit_sl=0.3, pct_expired=0.2,
+            allow_legacy_stored=False,
+        )
+        assert r.p_win_bracket is None
+        assert r.reason == "insufficient_stored_n"
+
+    def test_legacy_fallback_never_for_proxy_rows(self):
+        r = compute_bracket_probs(
+            entry_price=2500.0, take_profit=2510.0, atr=10.0,
+            regime_label="med_low_vol_bull",
+            n=50, n_stored=0, pct_hit_tp=0.5, pct_hit_sl=0.3, pct_expired=0.2,
+            row_atr_source="proxy_current",
         )
         assert r.p_win_bracket is None
         assert r.reason == "insufficient_stored_n"

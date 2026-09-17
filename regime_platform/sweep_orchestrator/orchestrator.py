@@ -1420,8 +1420,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
         # after the 05:00 UTC weekend heavy-sweep window so that week's
-        # sweeps have landed. Read-only: computes nt_bracket_reachability
-        # from resolved nt_signal_sim rows, nothing downstream reads it yet.
+        # sweeps have landed. ALSO rebuilt after every nightly EOD resolve
+        # (2026-09-16, worklog/20260916_REACHABILITY_BOOTSTRAP_UNBLOCK.md)
+        # so n_stored/n_proxy stay current for p_win_bracket shadow.
         if getattr(settings, "BRACKET_REACHABILITY_ENABLED", True):
             self._scheduler.add_job(
                 self._run_bracket_reachability,
@@ -1794,6 +1795,16 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[eod:lookback] correction failed: %s", exc)
             correction_summary = {}
+
+        # ── Reachability rebuild (Batch C bootstrap, 2026-09-16) ────────
+        # Weekly Sun job alone left n_stored at migration-153 defaults (0)
+        # for days, so p_win_bracket never computed. Rebuild after every
+        # EOD resolve so stored-ATR counts track fresh outcomes. Same
+        # best-effort contract as the rest of this job.
+        try:
+            await self._run_bracket_reachability()
+        except Exception as exc:
+            logger.error("[eod:lookback] reachability rebuild failed: %s", exc)
 
         # ── Part III: emergency heavy sweeps (2026-08-10) ───────────────
         # The EOD correction pass RECOMMENDS `emergency_heavy_sweep` for

@@ -55,7 +55,7 @@ class BracketProb:
     vol_tier: str
     n: int
     n_stored: int
-    atr_source: str  # "stored" | "none"
+    atr_source: str  # "stored" | "legacy_stored" | "none"
     reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -91,23 +91,48 @@ def compute_bracket_probs(
     min_n_stored: int = 3,
     alpha: float = BETA_ALPHA,
     beta: float = BETA_BETA,
+    allow_legacy_stored: bool = True,
+    row_atr_source: str | None = None,
 ) -> BracketProb:
-    """Pure computation from one reachability bucket row."""
+    """Pure computation from one reachability bucket row.
+
+    Bootstrap fallback (2026-09-16): when ``n_stored < min_n_stored`` but
+    ``n ≥ min_n_stored`` and the row is tagged ``atr_source='stored'``
+    (legacy rebuild predating the counters), use ``n`` as the sample size
+    and stamp ``atr_source='legacy_stored'``. Never applies to
+    ``proxy_current`` rows.
+    """
     vol_tier = _vol_tier(regime_label)
     if not atr or entry_price is None or take_profit is None:
         return BracketProb(None, None, None, None, vol_tier, n, n_stored, "none", "missing_atr_or_prices")
     bucket = _bucket_for(abs(float(take_profit) - float(entry_price)) / float(atr))
     if bucket is None:
         return BracketProb(None, None, None, None, vol_tier, n, n_stored, "stored", "no_bucket")
-    if n < 1 or n_stored < min_n_stored or pct_hit_tp is None or pct_hit_sl is None:
-        return BracketProb(None, None, None, bucket, vol_tier, n, n_stored, "stored", "insufficient_stored_n")
+    if pct_hit_tp is None or pct_hit_sl is None:
+        return BracketProb(None, None, None, bucket, vol_tier, n, n_stored, "stored", "missing_pct")
+
+    sample_n = n_stored
+    source = "stored"
+    if n_stored < min_n_stored:
+        if (
+            allow_legacy_stored
+            and (row_atr_source or "stored") == "stored"
+            and n >= min_n_stored
+        ):
+            sample_n = n
+            source = "legacy_stored"
+        else:
+            return BracketProb(
+                None, None, None, bucket, vol_tier, n, n_stored, "stored",
+                "insufficient_stored_n",
+            )
 
     # Prefer proportions that sum with expired ≈ 1; fall back if expired missing
     p_resolve = float(pct_hit_tp) + float(pct_hit_sl)
     if pct_expired is not None:
         p_resolve = max(0.0, min(1.0, 1.0 - float(pct_expired)))
-    wins = float(n) * float(pct_hit_tp)
-    losses = float(n) * float(pct_hit_sl)
+    wins = float(sample_n) * float(pct_hit_tp)
+    losses = float(sample_n) * float(pct_hit_sl)
     p_win_resolve = beta_shrunk_win_rate(wins, losses, alpha, beta)
     p_bracket = p_resolve * p_win_resolve
     return BracketProb(
@@ -118,7 +143,7 @@ def compute_bracket_probs(
         vol_tier=vol_tier,
         n=n,
         n_stored=n_stored,
-        atr_source="stored",
+        atr_source=source,
         reason=None,
     )
 
@@ -179,6 +204,7 @@ async def lookup_bracket_probs(
         pct_hit_tp=row.get("pct_hit_tp"),
         pct_hit_sl=row.get("pct_hit_sl"),
         pct_expired=row.get("pct_expired"),
+        row_atr_source=row.get("atr_source"),
     )
 
 
