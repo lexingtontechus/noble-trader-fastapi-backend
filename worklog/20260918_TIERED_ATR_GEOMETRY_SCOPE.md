@@ -1,6 +1,6 @@
 # Tiered ATR geometry — close the 4+ bucket gap
 
-> **Priority**: P0 economics · **Status**: C2 capture + risk helper + replay built (awaiting migration 156 + Studio deploy + regression) · **Date**: 2026-09-18  
+> **Priority**: P0 economics · **Status**: shadow path built (dynamic_atr_mode=shadow); live flips still nt_roadmap 2026-10-05 · **Date**: 2026-09-18  
 > **Reference**: `docs/Tiered_Trading_Targets.md` (idealized prior art — not authoritative)  
 > **Evidence**: Live pulse 2026-09-17 — ~100% recent brackets in **`4+` ATR**; avg `p_win_dir≈0.50` vs **`p_win_bracket≈0.10`**; 7d qualified PnL negative.  
 > **Related**: `zmap_live` TimesFM (probability honesty) does **not** fix geometry.
@@ -199,6 +199,37 @@ If RR floor conflicts with reachable TP, **shrink SL and/or accept lower RR** �
 - Risk-capped heavy-sweep pick write  
 - `atr_at_write` persistence on YAML  
 - Conviction-narrow-only mode  
+
+## Build log — tiered ATR shadow (2026-09-18)
+
+| Piece | Path |
+|-------|------|
+| Tier priors + risk-capped pick | `regime_platform/sweep_orchestrator/tiered_atr.py` |
+| Flags | `dynamic_atr_mode: shadow`, `dynamic_atr_risk_cap: 0.35` |
+| Brick write provenance | migration `157_nt_brick_params_state.sql` + `_persist_brick_params_to_yaml(..., atr=...)` |
+| Heavy-sweep wiring | Shadow `[tiered:atr]` log after reachability; **live pick only if `dynamic_atr_mode=live`** |
+| Tests | `tests/test_tiered_atr.py` |
+
+### Verification
+
+```
+pytest tests/ → 1078 passed, 21 skipped
+```
+
+### Roadmap respect
+
+| Action | Allowed now? |
+|--------|--------------|
+| Shadow logs + nt_brick_params_state | **Yes** |
+| Flip `dynamic_atr_mode` live (risk-capped pick) | After shadow evidence / replay |
+| Flip `heavy_sweep_atr_anchored_bricks_mode` / reachability live | **nt_roadmap 2026-10-05 Stage 1** |
+
+### Deploy
+
+1. Apply migration **157**  
+2. Redeploy Studio  
+3. Grep `[tiered:atr]` on next heavy sweep  
+4. Commit after Studio confirms logs (user gate)
 
 ## Operator glossary (one page)
 

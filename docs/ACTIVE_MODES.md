@@ -30,6 +30,7 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `settlement_contract_mode` | **live** | EOD resolver uses `settlement_contract.py` for outcome+PnL |
 | `settlement_same_bar_policy` | **tp_first** | Historical same-bar TP priority (flip after A/B replay) |
 | `heavy_sweep_deadline_aware_scoring_mode` | **live** | Grid Sharpe zeros trades held > 48h |
+| `dynamic_atr_mode` | **shadow** | Tiered ATR risk-capped pick logged; live pick unchanged |
 | `timesfm_gate_mode` | **soft** | Low TimesFM confidence shrinks blend weight, does not veto |
 | `timesfm.sigmoid_k` / `clamp_*` | 10 / [0.05, 0.95] | Price→p mapping (yaml only) |
 | `timesfm_map_mode` | **zmap_live** | EV uses z-map p; shorts use 1−P(up) |

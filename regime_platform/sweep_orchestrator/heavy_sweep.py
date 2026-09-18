@@ -1058,11 +1058,68 @@ class HeavySweepMixin:
                         symbol, type(exc).__name__, exc,
                     )
 
+                # ── Tiered ATR / dynamic risk-capped pick (2026-09-18) ──
+                # Shadow by default. Does not replace reachability/ATR
+                # roadmap live flips (nt_roadmap 2026-10-05).
+                try:
+                    from regime_platform.core.feature_flags import (
+                        get_dynamic_atr_mode,
+                        get_dynamic_atr_risk_cap,
+                    )
+                    from regime_platform.sweep_orchestrator.tiered_atr import (
+                        fetch_bucket_long_lag,
+                        risk_capped_pick,
+                    )
+
+                    dyn_mode = get_dynamic_atr_mode()
+                    if dyn_mode != "off":
+                        exp_map, p90_map = await fetch_bucket_long_lag(symbol)
+                        risk_pick = risk_capped_pick(
+                            deadline_candidates,
+                            atr=atr,
+                            asset_class=sym.get("asset_class"),
+                            min_rr=MIN_RR,
+                            max_sharpe=MAX_SHARPE,
+                            min_trades=MIN_TRADES,
+                            risk_cap=get_dynamic_atr_risk_cap(),
+                            pct_expired_by_bucket=exp_map,
+                            p90_by_bucket=p90_map,
+                            mode=dyn_mode,
+                        )
+                        logger.info(
+                            "[tiered:atr] %s mode=%s ac=%s baseline tp_atr=%s risk=%s | "
+                            "capped tp_atr=%s risk=%s changed=%s none_survived=%s",
+                            symbol, dyn_mode, risk_pick.asset_class,
+                            risk_pick.baseline_tp_atr, risk_pick.baseline_risk,
+                            risk_pick.capped_tp_atr, risk_pick.capped_risk,
+                            risk_pick.pick_changed, risk_pick.nothing_survived,
+                        )
+                        if dyn_mode == "live" and risk_pick.pick_changed and not risk_pick.nothing_survived:
+                            # Map capped key back to combo object
+                            for _c in deadline_candidates:
+                                if (_c.brick_size, _c.sl_bricks, _c.tp_bricks) == risk_pick.capped_key:
+                                    best = _c
+                                    result.best_combo = best
+                                    logger.info(
+                                        "[tiered:atr] %s LIVE risk-capped pick — "
+                                        "brick=%.4f sl=%d tp=%d sharpe=%.4f",
+                                        symbol, best.brick_size, best.sl_bricks,
+                                        best.tp_bricks, best.sharpe,
+                                    )
+                                    break
+                except Exception as exc:
+                    logger.warning(
+                        "[tiered:atr] %s failed (%s: %s)",
+                        symbol, type(exc).__name__, exc,
+                    )
+
             venue_name = _derive_venue(sym)
 
             # ── 7. Persist optimised brick params to YAML ─────────────
             await self._persist_brick_params_to_yaml(
                 symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
+                atr=atr,
+                asset_class=sym.get("asset_class"),
             )
             result.persisted_yaml = True
 
@@ -1752,6 +1809,9 @@ class HeavySweepMixin:
         brick: float,
         sl: int,
         tp: int,
+        atr: float | None = None,
+        asset_class: str | None = None,
+        source: str = "heavy_sweep",
     ) -> None:
         """Write optimised brick params to config/brick_params.yaml.
 
@@ -1770,6 +1830,35 @@ class HeavySweepMixin:
                 "tp_bricks": tp,
             }},
         )
+        # Phase C1 (tiered ATR): persist ATR-at-write for vol-drift risk.
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+            import httpx
+            from regime_platform.core.settings import settings
+            if settings.SUPABASE_URL:
+                payload = {
+                    "symbol": symbol,
+                    "brick_size": brick,
+                    "sl_bricks": int(sl),
+                    "tp_bricks": int(tp),
+                    "atr_at_write": float(atr) if atr else None,
+                    "asset_class": asset_class,
+                    "source": source,
+                    "written_at": datetime.now(timezone.utc).isoformat(),
+                }
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    await client.post(
+                        f"{_url('nt_brick_params_state')}?on_conflict=symbol",
+                        headers={
+                            **_headers(),
+                            "Prefer": "resolution=merge-duplicates",
+                        },
+                        json=payload,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[tiered:atr] %s brick_params_state write failed: %s", symbol, exc,
+            )
         logger.info(
             "[sweep:heavy] %s: wrote brick params to YAML (brick=%.4f, sl=%d, tp=%d)",
             symbol, brick, sl, tp,

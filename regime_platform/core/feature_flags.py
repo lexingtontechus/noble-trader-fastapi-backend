@@ -45,6 +45,8 @@ _DEFAULTS: dict[str, Any] = {
         "penalty_scale": 0.5,
     },
     "heavy_sweep_reachability_mode": "off",
+    "dynamic_atr_mode": "shadow",
+    "dynamic_atr_risk_cap": 0.35,
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -339,6 +341,20 @@ def get_heavy_sweep_reachability_mode() -> str:
     return str(_load().get(
         "heavy_sweep_reachability_mode", _DEFAULTS["heavy_sweep_reachability_mode"],
     )).lower()
+
+
+def get_dynamic_atr_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — tiered ATR risk-capped pick."""
+    return str(_load().get(
+        "dynamic_atr_mode", _DEFAULTS.get("dynamic_atr_mode", "shadow"),
+    )).lower()
+
+
+def get_dynamic_atr_risk_cap() -> float:
+    try:
+        return float(_load().get("dynamic_atr_risk_cap", 0.35))
+    except (TypeError, ValueError):
+        return 0.35
 
 
 def get_min_rr() -> float:

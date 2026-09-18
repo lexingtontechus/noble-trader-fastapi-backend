@@ -335,6 +335,16 @@ timesfm_k_ceiling: 60.0  # defensive upper bound -- caps k at 3x the default bas
 # zero live-behavior change (still shadow, not live).
 heavy_sweep_reachability_mode: shadow
 
+# dynamic_atr_mode (2026-09-18, worklog 20260918_TIERED_ATR_GEOMETRY_SCOPE.md):
+# off | shadow | live. Tiered ATR = asset-class preferred TP-ATR bands +
+# long-lag risk-capped combo pick. shadow: log comparison, persist write
+# provenance (nt_brick_params_state), do NOT change live pick.
+# live: risk-capped pick replaces Sharpe pick when a survivor exists.
+# Live geometry flips of atr_anchored/reachability remain nt_roadmap
+# 2026-10-05; this flag is a separate risk layer, not a substitute for Stage 1.
+dynamic_atr_mode: "shadow"
+dynamic_atr_risk_cap: 0.35
+
 # min_rr: minimum reward:risk ratio. Deliberately SHARED by two
 # independent gates: the light-sweep qualification gate (EVEngine.min_rr,
 # set from this value in orchestrator.py) and the heavy sweep's grid
