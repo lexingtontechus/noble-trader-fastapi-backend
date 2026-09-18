@@ -67,7 +67,7 @@ _DEFAULTS: dict[str, Any] = {
         "min_p_win": 0.55,
     },
     "timesfm_gate_mode": "soft",
-    "timesfm_map_mode": "zmap_shadow",
+    "timesfm_map_mode": "zmap_live",
     "timesfm": {
         "sigmoid_k": 10.0,
         "clamp_min": 0.05,

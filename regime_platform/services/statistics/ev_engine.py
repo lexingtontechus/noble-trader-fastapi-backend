@@ -675,6 +675,13 @@ class EVEngine:
             )
 
         p_timesfm_val = p_timesfm  # may be None
+        # TimesFM is P(next bar up). For shorts the trade wins when price
+        # falls — invert so the source reinforces trade direction
+        # (2026-09-18 zmap_live flip; user: "reinforces market direction").
+        if p_timesfm_val is not None and str(direction).lower() in (
+            "short", "sell", "s",
+        ):
+            p_timesfm_val = 1.0 - float(p_timesfm_val)
 
         # Step 2: Build the available-source map and renormalise weights
         # Missing sources are dropped; remaining weights rescaled to sum

@@ -69,3 +69,25 @@ class TestFeatureFlag:
     def test_default_mode(self):
         from regime_platform.core.feature_flags import get_timesfm_map_mode
         assert get_timesfm_map_mode() in ("sigmoid", "zmap_shadow", "zmap_live")
+
+    def test_live_default_after_flip(self):
+        from regime_platform.core.feature_flags import get_timesfm_map_mode
+        assert get_timesfm_map_mode() == "zmap_live"
+
+
+class TestTimesfmShortInvert:
+    def test_short_uses_inverse_p_up(self):
+        from regime_platform.services.statistics.ev_engine import EVEngine
+        engine = EVEngine(min_rr=0.0)
+        common = dict(
+            trend_probs={"bull": 0.6, "bear": 0.2, "neutral": 0.2},
+            p_timesfm=0.8,  # bullish P(up)
+            tp_bricks=6, sl_bricks=3, brick_size=1.0,
+            transition_matrix=None, current_state="FLAT",
+        )
+        long_r = engine.compute_ev(direction="long", **common)
+        short_r = engine.compute_ev(direction="short", **common)
+        # Short should treat bullish TimesFM as 0.2 (inverted), not 0.8
+        assert long_r.p_timesfm == pytest.approx(0.8)
+        assert short_r.p_timesfm == pytest.approx(0.2)
+        assert long_r.p_win > short_r.p_win

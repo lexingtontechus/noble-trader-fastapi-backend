@@ -892,6 +892,11 @@ def _build_signal_sim_payload(
     bracket_bucket: str | None = None,
     bracket_vol_tier: str | None = None,
     bracket_gate_shadow: bool | None = None,
+    tp_distance_atr: float | None = None,
+    sl_distance_atr: float | None = None,
+    long_lag_hat: float | None = None,
+    geometry_risk_hat: float | None = None,
+    long_lag_risk: bool | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1004,6 +1009,16 @@ def _build_signal_sim_payload(
         payload["bracket_vol_tier"] = bracket_vol_tier
     if bracket_gate_shadow is not None:
         payload["bracket_gate_shadow"] = bool(bracket_gate_shadow)
+    if tp_distance_atr is not None:
+        payload["tp_distance_atr"] = round(float(tp_distance_atr), 4)
+    if sl_distance_atr is not None:
+        payload["sl_distance_atr"] = round(float(sl_distance_atr), 4)
+    if long_lag_hat is not None:
+        payload["long_lag_hat"] = round(float(long_lag_hat), 4)
+    if geometry_risk_hat is not None:
+        payload["geometry_risk_hat"] = round(float(geometry_risk_hat), 4)
+    if long_lag_risk is not None:
+        payload["long_lag_risk"] = bool(long_lag_risk)
     return payload
 
 
@@ -4124,6 +4139,40 @@ class SweepOrchestrator(HeavySweepMixin):
                             _bracket_vol_tier, qualified,
                         )
 
+                # ── Tiered ATR geometry / long-lag risk (Phase C2) ──────
+                from regime_platform.sweep_orchestrator.geometry_risk import (
+                    compute_geometry_metrics,
+                    lookup_long_lag,
+                )
+                _gm = compute_geometry_metrics(
+                    entry_price=trade_signal.get("entry_price"),
+                    take_profit=trade_signal.get("take_profit"),
+                    stop_loss=trade_signal.get("stop_loss"),
+                    atr=atr,
+                    regime_label=regime_label,
+                    atr_at_write=None,
+                )
+                if _gm.bucket and atr:
+                    _exp, _p90 = await lookup_long_lag(
+                        symbol, vol_tier=_gm.vol_tier, bucket=_gm.bucket,
+                    )
+                    _gm = compute_geometry_metrics(
+                        entry_price=trade_signal.get("entry_price"),
+                        take_profit=trade_signal.get("take_profit"),
+                        stop_loss=trade_signal.get("stop_loss"),
+                        atr=atr,
+                        regime_label=regime_label,
+                        pct_expired=_exp,
+                        p90_hours=_p90,
+                    )
+                if _gm.long_lag_risk:
+                    logger.info(
+                        "[geometry:risk] %s long_lag_hat=%s risk=%s "
+                        "tp_atr=%s bucket=%s",
+                        symbol, _gm.long_lag_hat, _gm.geometry_risk_hat,
+                        _gm.tp_distance_atr, _gm.bucket,
+                    )
+
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
                     venue=venue_name,
@@ -4152,6 +4201,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     bracket_bucket=_bracket_bucket,
                     bracket_vol_tier=_bracket_vol_tier,
                     bracket_gate_shadow=_bracket_gate_shadow,
+                    tp_distance_atr=_gm.tp_distance_atr,
+                    sl_distance_atr=_gm.sl_distance_atr,
+                    long_lag_hat=_gm.long_lag_hat,
+                    geometry_risk_hat=_gm.geometry_risk_hat,
+                    long_lag_risk=_gm.long_lag_risk,
                     macro_label=macro_label,
                     macro_strength=macro_strength,
                     trend_label=trend_label,

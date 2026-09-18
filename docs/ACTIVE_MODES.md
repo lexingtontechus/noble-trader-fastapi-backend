@@ -32,7 +32,7 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `heavy_sweep_deadline_aware_scoring_mode` | **live** | Grid Sharpe zeros trades held > 48h |
 | `timesfm_gate_mode` | **soft** | Low TimesFM confidence shrinks blend weight, does not veto |
 | `timesfm.sigmoid_k` / `clamp_*` | 10 / [0.05, 0.95] | Price→p mapping (yaml only) |
-| `timesfm_map_mode` | **zmap_shadow** | Logs z-map p; EV still uses sigmoid until `zmap_live` |
+| `timesfm_map_mode` | **zmap_live** | EV uses z-map p; shorts use 1−P(up) |
 | `min_rr` | 1.5 | Shared light EV allow + heavy grid filter |
 | `qualification_gates.*` | see yaml | regime_conf 0.60, kelly 0.02, timesfm conf 0.05, ev 0, p_win 0.55 |
 | `signal_cooldown_minutes` | 60 | Open prior signal blocks; restart on resolve |

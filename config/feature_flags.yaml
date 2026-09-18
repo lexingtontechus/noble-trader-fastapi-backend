@@ -61,9 +61,10 @@ timesfm:
 # timesfm_map_mode (2026-09-17): sigmoid | zmap_shadow | zmap_live.
 # Probes showed TimesFM rel_change ~0.01-0.1% → k-sigmoid p≈0.5 always.
 # z-map: p = Φ(rel_change / max(σ_symbol, floor)) with rolling local σ.
-# zmap_shadow (default): log p_zmap, feed sigmoid to EV until reviewed.
-# zmap_live: feed z-map to EV after a few clean shadow sweeps.
-timesfm_map_mode: "zmap_shadow"
+# FLIPPED zmap_live 2026-09-18: shadow probes showed real p_zmap spread
+# (0.17-0.89). EV now uses z-map; TimesFM reinforces trade direction
+# (P(up) inverted for shorts — see ev_engine.compute_ev).
+timesfm_map_mode: "zmap_live"
 
 # sweep_after_hours: when true, sweep ALL symbols regardless of market
 # hours (crypto is always 24/7 and forex Sun-Fri regardless of this flag —

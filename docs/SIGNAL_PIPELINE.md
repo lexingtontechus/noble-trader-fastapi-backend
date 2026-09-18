@@ -79,12 +79,20 @@ Heavy path uses the **same enforce-before-gates order** (Batch D).
 - Expired: MTM at last close
 - PnL: brick counts for TP/SL; MTM for expired
 
+**Horizon classes** (canonical — `worklog/20260918_TIERED_ATR_GEOMETRY_SCOPE.md`):
+
+| Class | Outcomes | Meaning |
+|-------|----------|---------|
+| **Short-horizon** | `tp_hit` / `sl_hit` within 48h | What gates, EV, scorecard win% are designed for |
+| **Long-lag / geometry** | `expired` (open past 48h; often 72h–10d+) | Not a chosen swing — **geometry risk**; long-lag % feeds dynamic ATR |
+
 ## 4. Calibrate
 
 | Piece | Rule |
 |---|---|
-| Population | `tp_hit`/`sl_hit` only for bias (expired excluded by design) |
-| Raw vs enforced | `predicted_p_win_raw` required for Brier/raw-bias; no silent enforced fallback |
+| Population | `tp_hit`/`sl_hit` only for bias (expired excluded from W/L) |
+| Long-lag | Not a calibration win/loss — **is** a geometry risk input (`pct_expired`, p90 hours) |
+| Raw vs enforced | `predicted_p_win_raw` required for Brier/raw-bias |
 | Bias | Episode-collapsed, 7d window, 3d half-life decay |
 | Enforcement | Overconfident: Bayesian p_win shrink + Kelly×0.5. **Underconfident: no Kelly cut** |
 | Reachability | `p_resolve × Beta P(win\|resolve)` by `(symbol, vol_tier, distance/ATR)`; stored ATR only |

@@ -251,6 +251,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
+    # Batch tiered-ATR (migration 156): geometry / long-lag risk
+    "tp_distance_atr", "sl_distance_atr", "long_lag_hat",
+    "geometry_risk_hat", "long_lag_risk",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.

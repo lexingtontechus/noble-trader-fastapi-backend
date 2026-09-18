@@ -1,6 +1,6 @@
 # TimesFM z-map — definitive fix for p≈0.5
 
-> **Priority**: P1 EV source · **Status**: built (shadow default; flip zmap_live after review) · **Date**: 2026-09-17  
+> **Priority**: P1 EV source · **Status**: **zmap_live** flipped 2026-09-18 + short invert · **Date**: 2026-09-17  
 > **Evidence**: Studio `orchestrator.log` via `ssh noble-trader-unified` (confirmed live access).  
 > Probes: XAGUSD rel_change=+0.12% → p=0.503; BTCUSD +0.052% → 0.501; EURUSD +0.009% → 0.500.  
 > `flat=False` — TimesFM **does** forecast; **k-sigmoid on raw %** cannot resolve sub-percent moves.
