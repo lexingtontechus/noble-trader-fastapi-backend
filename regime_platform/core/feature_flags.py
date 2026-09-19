@@ -47,6 +47,8 @@ _DEFAULTS: dict[str, Any] = {
     "heavy_sweep_reachability_mode": "off",
     "dynamic_atr_mode": "shadow",
     "dynamic_atr_risk_cap": 0.35,
+    "atr_anchored_evidence_mode": "shadow",
+    "heavy_publish_geometry_gate": "live",
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -355,6 +357,21 @@ def get_dynamic_atr_risk_cap() -> float:
         return float(_load().get("dynamic_atr_risk_cap", 0.35))
     except (TypeError, ValueError):
         return 0.35
+
+
+def get_atr_anchored_evidence_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — P0 evidence promote into deadline pool."""
+    return str(_load().get(
+        "atr_anchored_evidence_mode", _DEFAULTS.get("atr_anchored_evidence_mode", "shadow"),
+    )).lower()
+
+
+def get_heavy_publish_geometry_gate() -> str:
+    """``off`` | ``shadow`` | ``live`` — block heavy QUALIFIED on neg deadline
+    Sharpe or geometry risk over cap when live."""
+    return str(_load().get(
+        "heavy_publish_geometry_gate", _DEFAULTS.get("heavy_publish_geometry_gate", "live"),
+    )).lower()
 
 
 def get_min_rr() -> float:

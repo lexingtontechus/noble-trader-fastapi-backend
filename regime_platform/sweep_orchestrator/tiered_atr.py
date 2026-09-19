@@ -267,6 +267,57 @@ def risk_capped_pick(
     )
 
 
+def should_promote_atr_candidates(
+    *,
+    selection_changed: bool,
+    baseline_bucket: str | None,
+    widened_bucket: str | None,
+    pct_expired_by_bucket: dict[str, float | None] | None,
+    risk_cap: float = DEFAULT_RISK_CAP,
+) -> bool:
+    """P0 evidence rule: allow ATR-anchored candidates into the live pick pool.
+
+    Promote only when shadow comparison says the pick **changed** and the
+    widened bucket is strictly better on long-lag (lower pct_expired) than
+    baseline — or baseline is 4+ and widened is a tighter band under cap.
+    Missing metrics → no promote (fail-closed for evidence).
+    """
+    if not selection_changed:
+        return False
+    exp = pct_expired_by_bucket or {}
+    b_lag = exp.get(baseline_bucket) if baseline_bucket else None
+    w_lag = exp.get(widened_bucket) if widened_bucket else None
+    tighter = {"<0.5", "0.5-1", "1-2", "2-4"}
+    if baseline_bucket == "4+" and widened_bucket in tighter:
+        if w_lag is not None and float(w_lag) <= risk_cap:
+            return True
+        if widened_bucket in ("0.5-1", "1-2", "<0.5") and w_lag is None:
+            # Tighter ATR band with unknown lag — still prefer vs known-bad 4+
+            return b_lag is None or float(b_lag) > risk_cap
+    if b_lag is not None and w_lag is not None:
+        return float(w_lag) < float(b_lag) and float(w_lag) <= risk_cap
+    return False
+
+
+def compose_deadline_candidate_pool(
+    grid_results: list,
+    original_brick_sizes: set,
+    atr_anchored_mode: str,
+    *,
+    promote: bool,
+) -> list:
+    """P0.3: pool fed into deadline-aware scoring.
+
+    * atr_anchored_mode == live → full grid
+    * shadow + evidence promote → full grid (ATR candidates eligible)
+    * shadow without promote → original brick sizes only (leak-safe)
+    * off → original sizes only
+    """
+    if atr_anchored_mode == "live" or (atr_anchored_mode != "off" and promote):
+        return list(grid_results)
+    return [c for c in grid_results if getattr(c, "brick_size", None) in original_brick_sizes]
+
+
 async def fetch_bucket_long_lag(symbol: str) -> tuple[dict[str, float | None], dict[str, float | None]]:
     """Load (pct_expired_by_bucket, p90_by_bucket) from reachability for risk scores."""
     import httpx

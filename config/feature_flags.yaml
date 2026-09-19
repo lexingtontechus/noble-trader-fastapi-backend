@@ -345,6 +345,18 @@ heavy_sweep_reachability_mode: shadow
 dynamic_atr_mode: "shadow"
 dynamic_atr_risk_cap: 0.35
 
+# atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
+# live: when ATR-anchored shadow pick changes AND widened bucket has better
+# long-lag than baseline, allow ATR candidates into deadline-aware pool
+# without flipping global heavy_sweep_atr_anchored_bricks_mode to live.
+# shadow: evaluate + log only; pool stays original (leak-safe).
+atr_anchored_evidence_mode: "shadow"
+
+# heavy_publish_geometry_gate: off | shadow | live.
+# live: heavy QUALIFIED blocked if deadline_aware_sharpe < 0 or
+# geometry_risk_hat > dynamic_atr_risk_cap.
+heavy_publish_geometry_gate: "live"
+
 # min_rr: minimum reward:risk ratio. Deliberately SHARED by two
 # independent gates: the light-sweep qualification gate (EVEngine.min_rr,
 # set from this value in orchestrator.py) and the heavy sweep's grid

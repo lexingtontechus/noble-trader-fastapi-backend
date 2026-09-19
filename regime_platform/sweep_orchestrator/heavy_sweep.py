@@ -857,6 +857,47 @@ class HeavySweepMixin:
                     widened_sharpe=selection.widened.sharpe if selection.widened else None,
                 ))
 
+            # ── P0.2 ATR evidence promote (2026-09-19) ────────────────
+            from regime_platform.core.feature_flags import (
+                get_atr_anchored_evidence_mode,
+                get_dynamic_atr_risk_cap,
+            )
+            from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
+                _bucket_for_combo,
+            )
+            from regime_platform.sweep_orchestrator.tiered_atr import (
+                compose_deadline_candidate_pool,
+                fetch_bucket_long_lag,
+                should_promote_atr_candidates,
+            )
+
+            _evidence_mode = get_atr_anchored_evidence_mode()
+            _exp_map, _p90_map = await fetch_bucket_long_lag(symbol)
+            _base_bkt = _bucket_for_combo(selection.baseline, atr) if selection.baseline else None
+            _wide_bkt = _bucket_for_combo(selection.widened, atr) if selection.widened else None
+            _promote = False
+            if atr_anchored_mode != "off" and _evidence_mode != "off":
+                _promote = should_promote_atr_candidates(
+                    selection_changed=bool(selection.changed),
+                    baseline_bucket=_base_bkt,
+                    widened_bucket=_wide_bkt,
+                    pct_expired_by_bucket=_exp_map,
+                    risk_cap=get_dynamic_atr_risk_cap(),
+                )
+                logger.info(
+                    "[atr:evidence] %s mode=%s changed=%s base=%s wide=%s "
+                    "promote=%s",
+                    symbol, _evidence_mode, bool(selection.changed),
+                    _base_bkt, _wide_bkt, _promote,
+                )
+
+            deadline_candidates = compose_deadline_candidate_pool(
+                grid_results,
+                original_brick_sizes,
+                atr_anchored_mode,
+                promote=_promote and _evidence_mode == "live",
+            )
+
             # ── 5a2. Deadline-aware rescoring — root cause fix, worklog
             # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md. Applied
             # after ATR-anchoring (independent re-ranking — with
@@ -884,11 +925,7 @@ class HeavySweepMixin:
             # (`original_brick_sizes` only, unless atr_anchored_mode is
             # "live") — the two shadow flags now compose instead of one
             # silently overriding the other's isolation.
-            deadline_candidates = (
-                grid_results if atr_anchored_mode == "live"
-                else [c for c in grid_results if c.brick_size in original_brick_sizes]
-            )
-
+            # deadline_candidates already composed above (P0.3 evidence pool)
             from regime_platform.core.feature_flags import (
                 get_heavy_sweep_deadline_aware_scoring_mode,
             )
@@ -1286,6 +1323,9 @@ class HeavySweepMixin:
             # Historical order was qualify(raw) → enforce at push, so heavy
             # could publish on pre-enforcement overconfidence that light
             # would have shrunk away.
+            # P1.3 (2026-09-19): stash pre-enforcement p_win for sim raw
+            # capture — was missing and caused 27× raw-absent ERROR logs.
+            p_win_raw_heavy = ev_result.p_win
             effective_kelly_pre = result.kelly_f * ev_result.ev_scale
             if settings.EOD_CALIBRATION_ENFORCE:
                 from regime_platform.sweep_orchestrator.calibration_enforcement import (
@@ -1325,6 +1365,52 @@ class HeavySweepMixin:
                 p_timesfm,
             )
             result.qualified = qualified
+
+            # ── P1.1 + P1.2: geometry + heavy publish gate ────────────
+            from regime_platform.core.feature_flags import (
+                get_heavy_publish_geometry_gate,
+                get_dynamic_atr_risk_cap,
+            )
+            from regime_platform.sweep_orchestrator.geometry_risk import (
+                compute_geometry_metrics,
+            )
+
+            _gm = compute_geometry_metrics(
+                entry_price=trade_signal.get("entry_price"),
+                take_profit=trade_signal.get("take_profit"),
+                stop_loss=trade_signal.get("stop_loss"),
+                atr=atr,
+                regime_label=result.regime_label,
+                pct_expired=_exp_map.get(_wide_bkt) if _wide_bkt else _exp_map.get(_base_bkt),
+                p90_hours=_p90_map.get(_wide_bkt) if _wide_bkt else _p90_map.get(_base_bkt),
+            )
+            _pub_gate = get_heavy_publish_geometry_gate()
+            _dl_sharpe = getattr(best, "deadline_aware_sharpe", None)
+            _neg_dl = _dl_sharpe is not None and float(_dl_sharpe) < 0
+            _risk_over = (
+                _gm.geometry_risk_hat is not None
+                and float(_gm.geometry_risk_hat) > get_dynamic_atr_risk_cap()
+            )
+            if qualified and _pub_gate == "live" and (_neg_dl or _risk_over):
+                qualified = False
+                result.qualified = False
+                logger.info(
+                    "[sweep:heavy] %s: REJECTED by publish geometry gate — "
+                    "deadline_sharpe=%s risk=%s tp_atr=%s",
+                    symbol, _dl_sharpe, _gm.geometry_risk_hat, _gm.tp_distance_atr,
+                )
+            elif qualified and _pub_gate == "shadow" and (_neg_dl or _risk_over):
+                logger.info(
+                    "[sweep:heavy] %s: geometry gate SHADOW would reject — "
+                    "deadline_sharpe=%s risk=%s (still qualified=%s)",
+                    symbol, _dl_sharpe, _gm.geometry_risk_hat, qualified,
+                )
+            if _gm.long_lag_risk:
+                logger.info(
+                    "[geometry:risk] %s heavy long_lag_hat=%s risk=%s tp_atr=%s bucket=%s",
+                    symbol, _gm.long_lag_hat, _gm.geometry_risk_hat,
+                    _gm.tp_distance_atr, _gm.bucket,
+                )
 
             # ── 8b. Macro filter (2026-08-28, worklog
             # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) — mirror of
@@ -1557,6 +1643,16 @@ class HeavySweepMixin:
                         trend_hmm_markov_state=sim_trend_hmm_markov_state,
                         raw_p_regime=sim_raw_p_regime,
                         gated_p_regime=sim_gated_p_regime,
+                        # P1.3 + P1.2 — raw + geometry on heavy sim rows
+                        predicted_p_win_raw=p_win_raw_heavy,
+                        p_win_dir=p_win_raw_heavy,
+                        tp_distance_atr=_gm.tp_distance_atr,
+                        sl_distance_atr=_gm.sl_distance_atr,
+                        long_lag_hat=_gm.long_lag_hat,
+                        geometry_risk_hat=_gm.geometry_risk_hat,
+                        long_lag_risk=_gm.long_lag_risk,
+                        bracket_bucket=_gm.bucket,
+                        bracket_vol_tier=_gm.vol_tier,
                     )
                     if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                         logger.debug(
