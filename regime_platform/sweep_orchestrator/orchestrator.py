@@ -1878,7 +1878,11 @@ class SweepOrchestrator(HeavySweepMixin):
         emergency_syms = sorted({
             a.get("symbol")
             for a in (correction_summary.get("actions") or [])
-            if a.get("action") in ("emergency_heavy_sweep", "degeneracy_breaker")
+            if a.get("action") in (
+                "emergency_heavy_sweep",
+                "degeneracy_breaker",
+                "geometry_tuning_sweep",
+            )
                 and a.get("symbol")
         })
         if emergency_syms:
@@ -1948,30 +1952,11 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.error("[eod:lookback] renko brick retention failed: %s", exc)
 
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
-        """Run emergency heavy sweeps for the given symbols (best-effort).
+        """Run emergency/geometry-tuning heavy sweeps (best-effort).
 
-        Shared by the nightly lookback and the intraday correction passes.
-
-        Cooldown (2026-09-09, worklog
-        20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16):
-        reconciling this dispatch against the now-unconditional daily
-        heavy-sweep cadence (SS13) found the nightly caller applied NO
-        cooldown at all, and the intraday caller's cooldown lived only in
-        an in-memory, emergency-sweeps-only, restart-fragile dict
-        (``_heavy_sweep_last``, now removed) — invisible to the regular
-        daily cron's own completions. Both are replaced with one durable
-        check here, applied uniformly to every caller:
-        ``fetch_last_full_heavy_sweep_ts`` reads the real last-completed
-        heavy sweep for the symbol from ``nt_sweep_result``, regardless of
-        whether the regular cron or a prior emergency dispatch produced
-        it. A symbol whose bracket was already re-optimized within
-        ``EOD_HEAVY_SWEEP_COOLDOWN_HOURS`` (default 12h) is skipped — a
-        second re-optimization against essentially the same 90-day window
-        wouldn't change the outcome, it would just repeat the same
-        compute.
-
-        Each symbol is fetched + swept in isolation; failures are logged,
-        never raised out of the tick.
+        T4 (2026-09-19): same single-symbol heavy path for
+        ``geometry_tuning_sweep`` as for calibration emergencies — do not
+        wait for the daily heavy cron to rewrite bricks.
         """
         if not emergency_syms:
             return
@@ -1980,7 +1965,13 @@ class SweepOrchestrator(HeavySweepMixin):
                 fetch_active_symbols,
                 fetch_last_full_heavy_sweep_ts,
             )
+            from regime_platform.core.feature_flags import (
+                get_geometry_tuning_cooldown_hours,
+                get_geometry_tuning_sweep_mode,
+            )
             cooldown_h = float(getattr(settings, "EOD_HEAVY_SWEEP_COOLDOWN_HOURS", 12) or 12)
+            geo_mode = get_geometry_tuning_sweep_mode()
+            geo_cd = get_geometry_tuning_cooldown_hours()
             now = datetime.now(timezone.utc)
 
             all_symbols = await fetch_active_symbols()
@@ -1993,15 +1984,18 @@ class SweepOrchestrator(HeavySweepMixin):
                         sym_name,
                     )
                     continue
+                # Geometry enqueues only fire the sweep when mode=live
+                # (write_eod_action already gated); cooldown uses shorter geo default.
+                cd = geo_cd if geo_mode != "off" else cooldown_h
 
                 last_full_ts = await fetch_last_full_heavy_sweep_ts(sym_name)
                 if last_full_ts is not None:
                     age_h = (now - last_full_ts).total_seconds() / 3600.0
-                    if age_h < cooldown_h:
+                    if age_h < cd:
                         logger.info(
                             "[eod:lookback] emergency sweep %s: skipped — "
                             "last full sweep %.1fh ago (< %.0fh cooldown)",
-                            sym_name, age_h, cooldown_h,
+                            sym_name, age_h, cd,
                         )
                         continue
 
@@ -2479,7 +2473,11 @@ class SweepOrchestrator(HeavySweepMixin):
         emergency_syms = sorted({
             a.get("symbol")
             for a in (correction_summary.get("actions") or [])
-            if a.get("action") in ("emergency_heavy_sweep", "degeneracy_breaker")
+            if a.get("action") in (
+                "emergency_heavy_sweep",
+                "degeneracy_breaker",
+                "geometry_tuning_sweep",
+            )
                 and a.get("symbol")
         })
         if not emergency_syms:
@@ -3115,6 +3113,41 @@ class SweepOrchestrator(HeavySweepMixin):
         atr = compute_atr(np_prices.tolist(), period=14)
 
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
+
+        # ── T1/T2 intraday ATR drift scale (2026-09-19) ─────────────
+        # Uses nt_brick_params_state.atr_at_write vs live ATR; scales
+        # brick_size only (not brick counts). shadow = log; live = apply.
+        from regime_platform.core.feature_flags import (
+            get_geometry_intraday_scale_mode,
+            get_geometry_tuning_min_consecutive,
+            get_geometry_tuning_sweep_mode,
+            get_dynamic_atr_risk_cap,
+        )
+        from regime_platform.sweep_orchestrator.geometry_risk import (
+            brick_vol_scale,
+            fetch_brick_state,
+            write_eod_action,
+        )
+        _geo_scale_mode = get_geometry_intraday_scale_mode()
+        _atr_at_write = None
+        if _geo_scale_mode != "off":
+            try:
+                _bstate = await fetch_brick_state(symbol)
+                _atr_at_write = float(_bstate.get("atr_at_write")) if _bstate and _bstate.get("atr_at_write") else None
+                _vscale = brick_vol_scale(atr, _atr_at_write)
+                if _vscale != 1.0:
+                    _scaled_brick = brick_size * _vscale
+                    logger.info(
+                        "[geo:intraday] %s mode=%s atr_now=%.6f atr_write=%s "
+                        "scale=%.4f brick %.4f→%.4f",
+                        symbol, _geo_scale_mode, atr or 0.0, _atr_at_write,
+                        _vscale, brick_size,
+                        _scaled_brick if _geo_scale_mode == "live" else brick_size,
+                    )
+                    if _geo_scale_mode == "live":
+                        brick_size = float(_scaled_brick)
+            except Exception as exc:
+                logger.warning("[geo:intraday] %s failed: %s", symbol, exc)
 
         # Extract p_up / p_dn from the HMM's 3x3 transition matrix
         #
@@ -4172,6 +4205,48 @@ class SweepOrchestrator(HeavySweepMixin):
                         symbol, _gm.long_lag_hat, _gm.geometry_risk_hat,
                         _gm.tp_distance_atr, _gm.bucket,
                     )
+                # T3: geometry_tuning_sweep enqueue (streak + cooldown in dispatch)
+                try:
+                    _tune_mode = get_geometry_tuning_sweep_mode()
+                    _risk_cap = get_dynamic_atr_risk_cap()
+                    _need_tune = bool(
+                        _gm.long_lag_risk
+                        or (_gm.geometry_risk_hat is not None and float(_gm.geometry_risk_hat) > _risk_cap)
+                    )
+                    streak = getattr(self, "_geo_tune_streak", None)
+                    if streak is None:
+                        streak = {}
+                        self._geo_tune_streak = streak
+                    if _need_tune:
+                        streak[symbol] = streak.get(symbol, 0) + 1
+                    else:
+                        streak[symbol] = 0
+                    _min_streak = get_geometry_tuning_min_consecutive()
+                    if streak[symbol] >= _min_streak and _tune_mode != "off":
+                        detail = {
+                            "reason": "geometry_risk_streak",
+                            "streak": streak[symbol],
+                            "geometry_risk_hat": _gm.geometry_risk_hat,
+                            "long_lag_hat": _gm.long_lag_hat,
+                            "tp_distance_atr": _gm.tp_distance_atr,
+                            "bucket": _gm.bucket,
+                            "mode": _tune_mode,
+                        }
+                        if _tune_mode == "live":
+                            ok = await write_eod_action(symbol, "geometry_tuning_sweep", detail)
+                            logger.info(
+                                "[geo:tuning] %s ENQUEUE geometry_tuning_sweep streak=%d risk=%s ok=%s",
+                                symbol, streak[symbol], _gm.geometry_risk_hat, ok,
+                            )
+                            streak[symbol] = 0
+                        else:
+                            logger.info(
+                                "[geo:tuning] %s SHADOW would enqueue geometry_tuning_sweep "
+                                "streak=%d risk=%s tp_atr=%s",
+                                symbol, streak[symbol], _gm.geometry_risk_hat, _gm.tp_distance_atr,
+                            )
+                except Exception as _tune_exc:
+                    logger.warning("[geo:tuning] %s: %s", symbol, _tune_exc)
 
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,

@@ -384,6 +384,59 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
         try:
             venue = _derive_venue(sym)
 
+            # T3 (2026-09-19): geometry path — high long-lag / tp_atr from
+            # recent sim → geometry_tuning_sweep (independent of bias).
+            try:
+                from regime_platform.core.feature_flags import (
+                    get_dynamic_atr_risk_cap,
+                    get_geometry_tuning_sweep_mode,
+                )
+                import httpx as _httpx
+                from regime_platform.core.settings import settings as _settings
+                if _settings.SUPABASE_URL and get_geometry_tuning_sweep_mode() != "off":
+                    _headers = {
+                        "apikey": _settings.SUPABASE_KEY,
+                        "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
+                    }
+                    async with _httpx.AsyncClient(timeout=8.0) as _c:
+                        _r = await _c.get(
+                            f"{_settings.SUPABASE_URL.rstrip('/')}/rest/v1/nt_signal_sim",
+                            headers=_headers,
+                            params={
+                                "select": "geometry_risk_hat,tp_distance_atr,long_lag_risk,ts",
+                                "symbol": f"eq.{symbol}",
+                                "order": "ts.desc",
+                                "limit": "20",
+                            },
+                        )
+                        _r.raise_for_status()
+                        _rows = _r.json() or []
+                    _risks = [float(x["geometry_risk_hat"]) for x in _rows if x.get("geometry_risk_hat") is not None]
+                    _cap = get_dynamic_atr_risk_cap()
+                    if _risks and sum(1 for r in _risks if r > _cap) >= 2:
+                        if get_geometry_tuning_sweep_mode() == "live":
+                            await _write_eod_action(
+                                symbol, "geometry_tuning_sweep", None,
+                                {
+                                    "reason": "intraday_eod_geometry",
+                                    "n_risk_over_cap": sum(1 for r in _risks if r > _cap),
+                                    "max_risk": max(_risks),
+                                    "cap": _cap,
+                                },
+                            )
+                            logger.info(
+                                "[eod:correction] %s: geometry_tuning_sweep written (max_risk=%.3f cap=%.3f)",
+                                symbol, max(_risks), _cap,
+                            )
+                        else:
+                            logger.info(
+                                "[eod:correction] %s: SHADOW geometry_tuning_sweep would write "
+                                "(max_risk=%.3f cap=%.3f)",
+                                symbol, max(_risks), _cap,
+                            )
+            except Exception as _geo_exc:
+                logger.warning("[eod:correction] %s geometry check failed: %s", symbol, _geo_exc)
+
             if raw_bias_mode:
                 # ── 4h intraday correction pass — raw-bias mode ──
                 cal = await fetch_calibration_bias_raw(symbol, venue=venue)

@@ -49,6 +49,10 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_risk_cap": 0.35,
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
+    "geometry_intraday_scale_mode": "shadow",
+    "geometry_tuning_sweep_mode": "shadow",
+    "geometry_tuning_cooldown_hours": 6,
+    "geometry_tuning_min_consecutive": 2,
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -372,6 +376,34 @@ def get_heavy_publish_geometry_gate() -> str:
     return str(_load().get(
         "heavy_publish_geometry_gate", _DEFAULTS.get("heavy_publish_geometry_gate", "live"),
     )).lower()
+
+
+def get_geometry_intraday_scale_mode() -> str:
+    return str(_load().get(
+        "geometry_intraday_scale_mode",
+        _DEFAULTS.get("geometry_intraday_scale_mode", "shadow"),
+    )).lower()
+
+
+def get_geometry_tuning_sweep_mode() -> str:
+    return str(_load().get(
+        "geometry_tuning_sweep_mode",
+        _DEFAULTS.get("geometry_tuning_sweep_mode", "shadow"),
+    )).lower()
+
+
+def get_geometry_tuning_cooldown_hours() -> float:
+    try:
+        return float(_load().get("geometry_tuning_cooldown_hours", 6))
+    except (TypeError, ValueError):
+        return 6.0
+
+
+def get_geometry_tuning_min_consecutive() -> int:
+    try:
+        return int(_load().get("geometry_tuning_min_consecutive", 2))
+    except (TypeError, ValueError):
+        return 2
 
 
 def get_min_rr() -> float:

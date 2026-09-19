@@ -15,6 +15,7 @@ metrics for capture. Pure functions + best-effort lookup.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -206,3 +207,74 @@ async def lookup_long_lag(
     except Exception as exc:
         logger.warning("lookup_long_lag %s: %s", symbol, exc)
         return None, None
+
+
+# ── T1/T2 intraday vol-drift brick scale (2026-09-19) ───────────────
+# scale = clip(ATR_now / ATR_at_write, lo, hi); applied to brick_size only.
+VOL_SCALE_LO = 0.5
+VOL_SCALE_HI = 1.5
+VOL_SCALE_DEADBAND = (0.85, 1.15)  # no scale inside this band
+
+
+def brick_vol_scale(
+    atr_now: float | None,
+    atr_at_write: float | None,
+    *,
+    lo: float = VOL_SCALE_LO,
+    hi: float = VOL_SCALE_HI,
+    deadband: tuple[float, float] = VOL_SCALE_DEADBAND,
+) -> float:
+    """1.0 when ATR unchanged / unknown; else clipped ATR ratio."""
+    if not atr_now or not atr_at_write or float(atr_at_write) <= 0:
+        return 1.0
+    ratio = float(atr_now) / float(atr_at_write)
+    if deadband[0] <= ratio <= deadband[1]:
+        return 1.0
+    return max(lo, min(hi, ratio))
+
+
+async def fetch_brick_state(symbol: str) -> Optional[dict[str, Any]]:
+    """Latest nt_brick_params_state row (atr_at_write, geometry at write)."""
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                _url("nt_brick_params_state"),
+                headers=_headers(),
+                params={
+                    "select": "symbol,brick_size,sl_bricks,tp_bricks,atr_at_write,asset_class,written_at",
+                    "symbol": f"eq.{symbol}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+        return rows[0] if isinstance(rows, list) and rows else None
+    except Exception as exc:
+        logger.warning("fetch_brick_state %s: %s", symbol, exc)
+        return None
+
+
+async def write_eod_action(
+    symbol: str,
+    action: str,
+    detail: dict[str, Any] | None = None,
+) -> bool:
+    """Insert into nt_eod_actions (same shape as eod_correction._write_eod_action)."""
+    from regime_platform.sweep_orchestrator.supabase_client import _insert_row
+    from datetime import datetime, timezone
+    if not settings.SUPABASE_URL:
+        return False
+    row = {
+        "symbol": symbol,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "bias": None,
+        "detail": detail or {},
+    }
+    try:
+        return bool(await _insert_row("nt_eod_actions", row))
+    except Exception as exc:
+        logger.warning("write_eod_action %s %s: %s", symbol, action, exc)
+        return False
