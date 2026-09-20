@@ -1,6 +1,6 @@
 # Qualified quality gates + macro evidence hygiene
 
-> **Priority**: P0 quality · **Status**: A flipped live; B+C built (B shadow) · **Date**: 2026-09-20  
+> **Priority**: P0 quality · **Status**: A live + B/C shipped; **migration 158 needed** (action CHECK) · **Date**: 2026-09-20  
 > **Trigger**: Pulse 2026-09-20 — 7d qualified **W8/L32/E20**, PnL ≈ **−$1.5k**; geo:tuning **shadow streak=8**; `macro_regime_mode=shadow` with **inverted** `nt_macro_edge_by_symbol`; mixed `computed_at` on macro edge.  
 > **Parent**: `20260919_INTRADAY_GEOMETRY_TUNING_SCOPE.md`, `20260918_TIERED_ATR_GEOMETRY_SCOPE.md`, `20260919_HEAVY_GEOMETRY_PROMOTE_P0_P1_P2.md`
 
