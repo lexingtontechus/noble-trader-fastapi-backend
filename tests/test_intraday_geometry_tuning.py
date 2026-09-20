@@ -30,6 +30,7 @@ class TestBrickVolScale:
 
 
 class TestFlags:
-    def test_defaults_shadow(self):
-        assert get_geometry_intraday_scale_mode() == "shadow"
-        assert get_geometry_tuning_sweep_mode() == "shadow"
+    def test_defaults_after_a_flip(self):
+        # A flipped live 2026-09-20
+        assert get_geometry_intraday_scale_mode() == "live"
+        assert get_geometry_tuning_sweep_mode() == "live"

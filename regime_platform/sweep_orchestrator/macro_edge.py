@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -167,6 +168,9 @@ async def build_macro_edge_table(symbols: list[str] | None = None) -> list[dict[
             ),
             "p75_hours": round(float(np.percentile(hours, 75)), 2) if hours else None,
             "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
+            # Stamp every rebuild (Batch C 2026-09-20) so mixed-age rows
+            # are visible; full rebuild writes this on all cells.
+            "computed_at": datetime.now(timezone.utc).isoformat(),
         })
 
     try:

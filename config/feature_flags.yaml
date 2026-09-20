@@ -359,10 +359,13 @@ heavy_publish_geometry_gate: "live"
 
 # Intraday geometry tuning (2026-09-19 T1–T4): light-path ATR drift scale
 # + single-symbol geometry_tuning_sweep (not waiting 24h for daily heavy).
-geometry_intraday_scale_mode: "shadow"   # off | shadow | live
-geometry_tuning_sweep_mode: "shadow"     # off | shadow | live
+# FLIPPED live 2026-09-20 (pulse: ATR contraction vs atr_at_write, streak≥8)
+geometry_intraday_scale_mode: "live"
+geometry_tuning_sweep_mode: "live"
 geometry_tuning_cooldown_hours: 6
 geometry_tuning_min_consecutive: 2
+# B: light-path qualified quality gate (shadow until reject-rate reviewed)
+light_publish_geometry_gate: "shadow"
 
 # min_rr: minimum reward:risk ratio. Deliberately SHARED by two
 # independent gates: the light-sweep qualification gate (EVEngine.min_rr,

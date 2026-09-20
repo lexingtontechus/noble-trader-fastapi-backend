@@ -1014,26 +1014,38 @@ async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
     per-tick read both sweep paths use right before applying the macro
     Kelly multiplier. Returns ``None`` on any failure or missing row
     (never raises — callers treat that as "no macro read yet, no-op").
+
+    2026-09-20: timeout 5s→15s + one retry (ReadTimeout dropped labels).
     """
     if not settings.SUPABASE_URL:
         return None
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                _url("nt_macro_regime"),
-                headers=_headers(),
-                params={
-                    "select": "macro_label,macro_strength,macro_score_smoothed",
-                    "symbol": f"eq.{symbol}",
-                    "limit": "1",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data[0] if isinstance(data, list) and data else None
-    except Exception as exc:
-        logger.warning("fetch_macro_regime: %s: read failed: %s: %r", symbol, type(exc).__name__, exc)
-        return None
+    params = {
+        "select": "macro_label,macro_strength,macro_score_smoothed,computed_at",
+        "symbol": f"eq.{symbol}",
+        "limit": "1",
+    }
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _url("nt_macro_regime"),
+                    headers=_headers(),
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data[0] if isinstance(data, list) and data else None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                logger.info("fetch_macro_regime: %s retry (%s)", symbol, type(exc).__name__)
+                continue
+    logger.warning(
+        "fetch_macro_regime: %s: read failed: %s: %r",
+        symbol, type(last_exc).__name__ if last_exc else "?", last_exc,
+    )
+    return None
 
 
 NT_MACRO_FORECAST_COLUMNS: frozenset[str] = frozenset({
@@ -1152,9 +1164,9 @@ async def fetch_trend_regime(symbol: str) -> dict[str, Any] | None:
 
 NT_MACRO_EDGE_BY_SYMBOL_COLUMNS: frozenset[str] = frozenset({
     "symbol", "alignment", "n", "win_rate", "avg_rr_winners", "expectancy_r",
-    # median_hours_to_resolve/p75_hours/p90_hours (migration 126): does
-    # trading with the macro trend also resolve faster, not just win more.
     "median_hours_to_resolve", "p75_hours", "p90_hours",
+    # Batch C (2026-09-20): stamp every upsert so stale rows are visible
+    "computed_at",
 })
 
 

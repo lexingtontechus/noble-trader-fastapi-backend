@@ -3122,6 +3122,8 @@ class SweepOrchestrator(HeavySweepMixin):
             get_geometry_tuning_min_consecutive,
             get_geometry_tuning_sweep_mode,
             get_dynamic_atr_risk_cap,
+            get_light_publish_geometry_gate,
+            get_min_p_win_bracket,
         )
         from regime_platform.sweep_orchestrator.geometry_risk import (
             brick_vol_scale,
@@ -4247,6 +4249,40 @@ class SweepOrchestrator(HeavySweepMixin):
                             )
                 except Exception as _tune_exc:
                     logger.warning("[geo:tuning] %s: %s", symbol, _tune_exc)
+
+                # ── B: light-path geometry QUALIFIED gate (2026-09-20) ──
+                try:
+                    _light_gate = get_light_publish_geometry_gate()
+                    _risk_cap_b = get_dynamic_atr_risk_cap()
+                    _min_br = get_min_p_win_bracket()
+                    _risk_over = (
+                        _gm.geometry_risk_hat is not None
+                        and float(_gm.geometry_risk_hat) > _risk_cap_b
+                    )
+                    _br_reject = (
+                        _p_win_bracket is not None
+                        and float(_p_win_bracket) < _min_br
+                    )
+                    # Fail-open when neither metric is scored
+                    _would_reject = bool(_risk_over or _br_reject)
+                    if qualified and _light_gate != "off" and _would_reject:
+                        if _light_gate == "live":
+                            qualified = False
+                            logger.info(
+                                "[light:geometry] %s REJECT qualified — risk=%s cap=%s "
+                                "p_win_bracket=%s min=%s tp_atr=%s",
+                                symbol, _gm.geometry_risk_hat, _risk_cap_b,
+                                _p_win_bracket, _min_br, _gm.tp_distance_atr,
+                            )
+                        else:
+                            logger.info(
+                                "[light:geometry] %s SHADOW would reject — risk=%s "
+                                "p_win_bracket=%s tp_atr=%s (still qualified=%s)",
+                                symbol, _gm.geometry_risk_hat, _p_win_bracket,
+                                _gm.tp_distance_atr, qualified,
+                            )
+                except Exception as _lg_exc:
+                    logger.warning("[light:geometry] %s: %s", symbol, _lg_exc)
 
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,

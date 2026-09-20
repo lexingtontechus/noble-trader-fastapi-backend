@@ -49,10 +49,11 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_risk_cap": 0.35,
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
-    "geometry_intraday_scale_mode": "shadow",
-    "geometry_tuning_sweep_mode": "shadow",
+    "geometry_intraday_scale_mode": "live",
+    "geometry_tuning_sweep_mode": "live",
     "geometry_tuning_cooldown_hours": 6,
     "geometry_tuning_min_consecutive": 2,
+    "light_publish_geometry_gate": "shadow",
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -404,6 +405,14 @@ def get_geometry_tuning_min_consecutive() -> int:
         return int(_load().get("geometry_tuning_min_consecutive", 2))
     except (TypeError, ValueError):
         return 2
+
+
+def get_light_publish_geometry_gate() -> str:
+    """``off`` | ``shadow`` | ``live`` — light-path QUALIFIED geometry quality gate."""
+    return str(_load().get(
+        "light_publish_geometry_gate",
+        _DEFAULTS.get("light_publish_geometry_gate", "shadow"),
+    )).lower()
 
 
 def get_min_rr() -> float:
