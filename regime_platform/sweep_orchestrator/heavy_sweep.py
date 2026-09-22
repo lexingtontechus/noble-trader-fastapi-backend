@@ -1306,6 +1306,37 @@ class HeavySweepMixin:
                         symbol, type(exc).__name__, exc,
                     )
 
+            # ── R2: trade_signal + p_win_bracket lookup BEFORE EV (heavy parity) ──
+            trade_signal = _compute_trade_signal(
+                result.regime_label, current_price,
+                best.brick_size, best.sl_bricks, best.tp_bricks,
+            )
+            from regime_platform.core.feature_flags import (
+                get_p_win_bracket_mode,
+                get_p_win_in_ev_mode,
+            )
+            p_bracket_mode = get_p_win_bracket_mode()
+            p_win_in_ev_mode = get_p_win_in_ev_mode()
+            _p_win_bracket = _p_resolve = _p_win_resolve = None
+            _bracket_bucket = _bracket_vol_tier = None
+            _bracket_applied_to_ev = False
+            if p_bracket_mode != "off" or p_win_in_ev_mode != "off":
+                from regime_platform.sweep_orchestrator.p_win_bracket import (
+                    lookup_bracket_probs,
+                )
+                _bp = await lookup_bracket_probs(
+                    symbol,
+                    entry_price=trade_signal.get("entry_price"),
+                    take_profit=trade_signal.get("take_profit"),
+                    atr=atr,
+                    regime_label=result.regime_label,
+                )
+                _p_win_bracket = _bp.p_win_bracket
+                _p_resolve = _bp.p_resolve
+                _p_win_resolve = _bp.p_win_resolve
+                _bracket_bucket = _bp.bucket
+                _bracket_vol_tier = _bp.vol_tier
+
             with self._ev_engine.temp_weights(_regime_weight_override):
                 ev_result = self._ev_engine.compute_ev(
                     trend_probs=_trend_probs,
@@ -1327,6 +1358,40 @@ class HeavySweepMixin:
             # capture — was missing and caused 27× raw-absent ERROR logs.
             p_win_raw_heavy = ev_result.p_win
             effective_kelly_pre = result.kelly_f * ev_result.ev_scale
+
+            # ── R2c/R2e heavy: same EV/Kelly contract as light ──
+            if p_win_in_ev_mode == "live" and p_bracket_mode != "off":
+                from regime_platform.sweep_orchestrator.p_win_bracket import (
+                    apply_bracket_to_ev,
+                )
+                _bracket_applied_to_ev = apply_bracket_to_ev(
+                    ev_result,
+                    p_win_bracket=_p_win_bracket,
+                    p_resolve=_p_resolve,
+                    engine=self._ev_engine,
+                )
+                if _bracket_applied_to_ev:
+                    effective_kelly_pre = result.kelly_f * ev_result.ev_scale
+                    logger.info(
+                        "[sweep:heavy] %s: R2 EV/Kelly on p_win_bracket=%.4f "
+                        "(p_dir_raw=%.4f, p_resolve=%s, ev=%.4f, kelly=%.6f)",
+                        symbol, ev_result.p_win, p_win_raw_heavy, _p_resolve,
+                        ev_result.ev, effective_kelly_pre,
+                    )
+            elif p_win_in_ev_mode == "shadow" and _p_win_bracket is not None:
+                from regime_platform.sweep_orchestrator.p_win_bracket import (
+                    expire_prob,
+                )
+                _shadow = self._ev_engine.recompute_ev_fields(
+                    float(_p_win_bracket), ev_result.profit, ev_result.stake,
+                    p_expire=expire_prob(_p_resolve),
+                )
+                logger.info(
+                    "[sweep:heavy] %s: R2 SHADOW would set EV from p_win_bracket="
+                    "%.4f ev=%.4f (live dir ev=%.4f p_dir=%.4f)",
+                    symbol, _p_win_bracket or 0.0, _shadow["ev"],
+                    ev_result.ev, ev_result.p_win,
+                )
             if settings.EOD_CALIBRATION_ENFORCE:
                 from regime_platform.sweep_orchestrator.calibration_enforcement import (
                     apply_calibration_adjustment,
@@ -1365,10 +1430,6 @@ class HeavySweepMixin:
                     )
 
             # ── 9. Build + push qualified signal ──────────────────────
-            trade_signal = _compute_trade_signal(
-                result.regime_label, current_price,
-                best.brick_size, best.sl_bricks, best.tp_bricks,
-            )
             qualified = self._evaluate_heavy_qualification(
                 ev_result, trade_signal, result.regime_conf, effective_kelly_pre,
                 p_timesfm,
@@ -1655,6 +1716,9 @@ class HeavySweepMixin:
                         # P1.3 + P1.2 — raw + geometry on heavy sim rows
                         predicted_p_win_raw=p_win_raw_heavy,
                         p_win_dir=p_win_raw_heavy,
+                        p_win_bracket=_p_win_bracket,
+                        p_resolve=_p_resolve,
+                        p_win_resolve=_p_win_resolve,
                         tp_distance_atr=_gm.tp_distance_atr,
                         sl_distance_atr=_gm.sl_distance_atr,
                         long_lag_hat=_gm.long_lag_hat,
