@@ -139,7 +139,9 @@ def test_apply_bracket_to_ev_mutates_and_fails_open():
 
 class TestGateThresholds:
     def test_below_threshold_rejects(self):
-        assert would_bracket_gate_reject(0.30) is True
+        # min_p_win_bracket is 0.20 (was 0.45 — wrong scale for p_resolve×p_win|resolve).
+        assert would_bracket_gate_reject(0.15) is True
+        assert would_bracket_gate_reject(0.30) is False
 
     def test_above_threshold_keeps(self):
         assert would_bracket_gate_reject(0.60) is False

@@ -3475,6 +3475,9 @@ class SweepOrchestrator(HeavySweepMixin):
                 symbol,
                 p_win=ev_result.p_win,
                 kelly_f=effective_kelly,
+                side="buy" if direction == "long" else "sell",
+                vol_tier=_bracket_vol_tier,
+                distance_atr_bucket=_bracket_bucket,
             )
             if calib_adj and calib_adj.get("applied"):
                 # The agent must see the CORRECTED p_win so its synthesizer

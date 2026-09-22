@@ -21,7 +21,7 @@ class TestFlagsAfterFlip:
 class TestLightGateLogic:
     def test_would_reject_rules(self):
         # mirror orchestrator light gate math
-        def would(risk, p_br, cap=0.35, min_br=0.45):
+        def would(risk, p_br, cap=0.35, min_br=0.20):
             risk_over = risk is not None and risk > cap
             br_reject = p_br is not None and p_br < min_br
             return risk_over or br_reject

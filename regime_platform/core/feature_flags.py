@@ -64,7 +64,7 @@ _DEFAULTS: dict[str, Any] = {
     "settlement_contract_mode": "live",
     "settlement_same_bar_policy": "tp_first",
     "p_win_bracket_mode": "shadow",
-    "min_p_win_bracket": 0.45,
+    "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "shadow",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",

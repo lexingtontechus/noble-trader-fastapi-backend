@@ -56,10 +56,12 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
     _hours_between,
     _vol_tier,
 )
+from regime_platform.sweep_orchestrator.p_win_bracket import beta_shrunk_win_rate
 from regime_platform.sweep_orchestrator.supabase_client import (
     _headers,
     _url,
     upsert_calibration_bias_by_bucket,
+    upsert_calibration_bias_by_cell,
     upsert_entry_drift,
 )
 
@@ -106,7 +108,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     try:
         rows = await _fetch_all(
             "nt_signal_sim",
-            "symbol,ts,entry_price,take_profit,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks,regime",
+            "symbol,ts,entry_price,take_profit,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks,regime,signal",
             filters,
         )
     except Exception as exc:
@@ -125,12 +127,13 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         logger.warning("calibration_bias_bucket: ATR proxy fetch failed: %s", exc)
         proxy_atr = {}
 
-    bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
-        lambda: {
-            "n": 0, "wins": 0, "losses": 0, "p_win_sum": 0.0,
-            "rr_sum": 0.0, "hours": [], "n_stored": 0, "n_proxy": 0,
-        }
-    )
+    _empty = lambda: {
+        "n": 0, "wins": 0, "losses": 0, "p_win_sum": 0.0,
+        "rr_sum": 0.0, "hours": [], "n_stored": 0, "n_proxy": 0,
+    }
+    bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(_empty)
+    # R3: side-level cells (symbol, side, vol_tier, bucket). side=buy|sell.
+    cell_data: dict[tuple[str, str, str, str], dict[str, Any]] = defaultdict(_empty)
 
     for row in rows:
         symbol = row.get("symbol")
@@ -161,22 +164,25 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
         vol_tier = _vol_tier(row.get("regime"))
 
         d = bucket_data[(symbol, vol_tier, bucket)]
-        d["n"] += 1
-        d["n_stored"] += 1
-        p_win = row.get("p_win")
-        if p_win is not None:
-            d["p_win_sum"] += float(p_win)
-        if outcome == "tp_hit":
-            d["wins"] += 1
-            tp_bricks = row.get("tp_bricks") or 0
-            sl_bricks = row.get("sl_bricks") or 0
-            if sl_bricks:
-                d["rr_sum"] += float(tp_bricks) / float(sl_bricks)
-        else:
-            d["losses"] += 1
-        hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
-        if hrs is not None:
-            d["hours"].append(hrs)
+        side = str(row.get("signal") or "").lower()
+        c = cell_data[(symbol, side, vol_tier, bucket)] if side in ("buy", "sell") else None
+        for target in (d, c) if c is not None else (d,):
+            target["n"] += 1
+            target["n_stored"] += 1
+            p_win = row.get("p_win")
+            if p_win is not None:
+                target["p_win_sum"] += float(p_win)
+            if outcome == "tp_hit":
+                target["wins"] += 1
+                tp_bricks = row.get("tp_bricks") or 0
+                sl_bricks = row.get("sl_bricks") or 0
+                if sl_bricks:
+                    target["rr_sum"] += float(tp_bricks) / float(sl_bricks)
+            else:
+                target["losses"] += 1
+            hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
+            if hrs is not None:
+                target["hours"].append(hrs)
 
     try:
         # signal='all' only — post-migration-159 the table also has buy/sell
@@ -230,9 +236,43 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     except Exception as exc:
         logger.error("calibration_bias_bucket: upsert failed: %s", exc)
 
+    # R3 side-level cells → nt_calibration_bias_by_cell (enforcement input).
+    cell_rows: list[dict[str, Any]] = []
+    for (symbol, side, vol_tier, bucket), d in cell_data.items():
+        n = d["n"]
+        if n <= 0 or side not in ("buy", "sell"):
+            continue
+        avg_p_win = d["p_win_sum"] / n if d["p_win_sum"] else None
+        win_rate = d["wins"] / n
+        bias = round((avg_p_win if avg_p_win is not None else 0.0) - win_rate, 4) if avg_p_win is not None else None
+        shrunk_wr = beta_shrunk_win_rate(d["wins"], d["losses"])
+        bias_shrunk = round((avg_p_win if avg_p_win is not None else 0.0) - shrunk_wr, 4) if avg_p_win is not None else None
+        avg_rr_winners = d["rr_sum"] / d["wins"] if d["wins"] else None
+        expectancy_r = round(win_rate * (avg_rr_winners or 0.0) - (1 - win_rate) * 1.0, 4)
+        cell_rows.append({
+            "symbol": symbol,
+            "side": side,
+            "vol_tier": vol_tier,
+            "distance_atr_bucket": bucket,
+            "n": n,
+            "wins": d["wins"],
+            "losses": d["losses"],
+            "avg_p_win": round(avg_p_win, 4) if avg_p_win is not None else None,
+            "win_rate": round(win_rate, 4),
+            "bias": bias,
+            "bias_shrunk": bias_shrunk,
+            "expectancy_r": expectancy_r,
+        })
+    if cell_rows:
+        try:
+            await upsert_calibration_bias_by_cell(cell_rows)
+        except Exception as exc:
+            logger.error("calibration_bias_bucket: cell upsert failed: %s", exc)
+
     logger.info(
-        "calibration_bias_bucket: computed %d bucket row(s) across %d symbol(s)",
-        len(output_rows), len({r["symbol"] for r in output_rows}),
+        "calibration_bias_bucket: computed %d bucket row(s) across %d symbol(s); "
+        "%d side cell(s)",
+        len(output_rows), len({r["symbol"] for r in output_rows}), len(cell_rows),
     )
     return output_rows
 

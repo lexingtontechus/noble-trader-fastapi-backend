@@ -71,6 +71,10 @@ from regime_platform.sweep_orchestrator.eod_correction import (
 
 log = logging.getLogger("regime.sweep.calibration_enforcement")
 
+# R3: cell is the enforcement input when it has enough episodes.
+# Below this, fall back to parent symbol state (then system = no-op).
+CELL_MIN_N = 10
+
 # How old an EOD action may be before it stops being enforced. The EOD
 # correction now runs every 4h (EOD_CORRECTION_INTERVAL_HOURS), so the
 # freshness window is 8h (2026-08-13) — a stale penalty ages out in a single
@@ -235,40 +239,34 @@ async def apply_calibration_adjustment(
     p_win: float,
     kelly_f: float,
     venue: Optional[str] = None,
+    side: Optional[str] = None,
+    vol_tier: Optional[str] = None,
+    distance_atr_bucket: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute the calibration correction for one symbol.
+    """Compute the calibration correction for one symbol (R3 cell hierarchy).
 
-    Reads ``symbol``'s single current-state row from
-    ``nt_symbol_calibration_state`` (2026-09-09, worklog
-    20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS16, item
-    #6 — the nt_eod_actions state/history split). When a penalty is
-    active (and fresh), returns adjusted ``p_win`` (Bayesian shrink
-    toward 0.5) and ``kelly_f`` (× 0.5), plus the status/bias for
-    stamping. Otherwise returns the inputs unchanged.
+    Enforcement input hierarchy (worklog 20260922 R3):
+      1. Cell (symbol, side, vol_tier, distance_atr_bucket) when n ≥ CELL_MIN_N
+         — no symbol is shrunk because a different cell is overconfident.
+      2. Parent symbol ``nt_symbol_calibration_state`` (legacy path).
+      3. System — no-op (fail open).
 
-    This no longer reads ``nt_eod_actions`` at all — that table remains
-    the permanent, multi-writer audit log (eod_correction
-    nightly/intraday, drift_monitor, regime_shift_alert all still write
-    to it, unchanged), but reconstructing "what's currently enforceable"
-    from its latest matching row was the exact fragility that caused two
-    confirmed incidents (see ``fetch_latest_eod_action``'s docstring,
-    kept below for its own remaining callers/history). The single
-    current-state row structurally cannot have that problem: there is
-    nothing else in that table for a different writer's row to be
-    mistaken for.
+    ``stagnation_kill_switch`` remains symbol-level (hard block) and is
+    checked even when a cell drives the soft penalty.
+
+    Underconfidence (Batch D 4.6): Bayesian shrink p_win only — no Kelly cut.
+    Overconfidence: shrink + Kelly × kelly_reduction.
 
     Returns:
         {
-          "applied": bool,          # True when a penalty was enforced
-          "status": str | None,     # OVERCONFIDENT / UNDERCONFIDENT / None
+          "applied": bool,
+          "status": str | None,
           "bias": float | None,
-          "p_win": float,           # possibly adjusted
-          "kelly_f": float,         # possibly adjusted
+          "p_win": float,
+          "kelly_f": float,
           "reason": str,
+          "source": "cell" | "symbol" | "system",
         }
-
-    ``venue`` is accepted for API symmetry with fetch_calibration_bias but
-    the calibration-state table is keyed by symbol only (no venue column).
     """
     noop = {
         "applied": False,
@@ -277,19 +275,121 @@ async def apply_calibration_adjustment(
         "p_win": float(p_win),
         "kelly_f": float(kelly_f),
         "reason": "enforcement_disabled",
+        "source": "system",
     }
     if not settings.EOD_CALIBRATION_ENFORCE:
         return noop
 
+    # Symbol-level hard block first (stagnation is not cell-scoped).
     try:
         from regime_platform.sweep_orchestrator.supabase_client import (
             fetch_calibration_state,
         )
-        state = await fetch_calibration_state(symbol)
+        symbol_state = await fetch_calibration_state(symbol)
     except Exception as exc:
         log.warning("calibration adjustment %s failed: %s", symbol, exc)
+        symbol_state = None
         return {**noop, "reason": f"fetch_error:{type(exc).__name__}"}
 
+    if (
+        symbol_state
+        and symbol_state.get("action") == "stagnation_kill_switch"
+        and _action_is_fresh({"ts": symbol_state.get("computed_at")})
+    ):
+        detail = symbol_state.get("detail") if isinstance(symbol_state.get("detail"), dict) else {}
+        bias = _num(symbol_state.get("bias"))
+        log.warning(
+            "[calibration:enforce] %s: STAGNATION KILL SWITCH (bias=%s, "
+            "streak=%s) → kelly forced to 0.0",
+            symbol, bias, detail.get("stagnation_streak"),
+        )
+        return {
+            "applied": True,
+            "status": "STAGNATION_KILL_SWITCH",
+            "bias": bias,
+            "p_win": 0.5,
+            "kelly_f": 0.0,
+            "reason": "penalty:stagnation_kill_switch",
+            "source": "symbol",
+        }
+
+    evidence = await resolve_bias_evidence(
+        symbol,
+        side=side,
+        vol_tier=vol_tier,
+        distance_atr_bucket=distance_atr_bucket,
+        symbol_state=symbol_state,
+        symbol_state_fetched=True,
+    )
+    source = evidence.get("source") or "system"
+
+    if source == "cell":
+        status = str(evidence.get("status") or "").upper()
+        bias = evidence.get("bias")
+        n_records = int(evidence.get("n") or 0)
+        if status == "CALIBRATED":
+            log.info(
+                "[calibration:enforce] %s: CELL calibrated (%s) bias=%s n=%s — no penalty",
+                symbol, evidence.get("reason"), bias, n_records,
+            )
+            return {
+                "applied": False,
+                "status": status,
+                "bias": bias,
+                "p_win": float(p_win),
+                "kelly_f": float(kelly_f),
+                "reason": "cell_calibrated",
+                "source": "cell",
+            }
+        if status == "UNDERCONFIDENT":
+            adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+            log.info(
+                "[calibration:enforce] %s: CELL UNDERCONFIDENT bias=%s n=%s "
+                "→ p_win %.4f→%.4f, kelly unchanged",
+                symbol, bias, n_records, p_win, adjusted_p_win,
+            )
+            return {
+                "applied": True,
+                "status": status,
+                "bias": bias,
+                "p_win": adjusted_p_win,
+                "kelly_f": float(kelly_f),
+                "reason": "underconfidence_no_kelly_cut",
+                "source": "cell",
+            }
+        if status == "OVERCONFIDENT":
+            kelly_reduction = _settings_number("KELLY_REDUCTION", KELLY_REDUCTION)
+            adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+            adjusted_kelly = float(kelly_f) * kelly_reduction
+            log.info(
+                "[calibration:enforce] %s: CELL OVERCONFIDENT bias=%s n=%s "
+                "→ p_win %.4f→%.4f, kelly %.6f→%.6f",
+                symbol, bias, n_records, p_win, adjusted_p_win, kelly_f, adjusted_kelly,
+            )
+            return {
+                "applied": True,
+                "status": status,
+                "bias": bias,
+                "p_win": adjusted_p_win,
+                "kelly_f": adjusted_kelly,
+                "reason": "penalty:cell_overconfident",
+                "source": "cell",
+            }
+        return {
+            "applied": False,
+            "status": status or None,
+            "bias": bias,
+            "p_win": float(p_win),
+            "kelly_f": float(kelly_f),
+            "reason": f"cell_status:{status or 'unknown'}",
+            "source": "cell",
+        }
+
+    if source == "system":
+        return {**noop, "reason": evidence.get("reason") or "no_eod_action"}
+
+    # ── symbol path (legacy) ──────────────────────────────────────────
+    state = evidence.get("_state") or symbol_state
     if not state or state.get("action") in (None, "none"):
         return {**noop, "reason": "no_eod_action"}
 
@@ -301,39 +401,12 @@ async def apply_calibration_adjustment(
             "status": None,
             "bias": _num(state.get("bias")),
             "reason": "action_stale",
+            "source": "symbol",
         }
 
     detail = state.get("detail") if isinstance(state.get("detail"), dict) else {}
     n_records = _num(state.get("n_records")) or 0
     bias = _num(state.get("bias"))
-
-    if action_name == "stagnation_kill_switch":
-        # Tier 2 hard block (fix #3c, 2026-08-22 audit): the symbol has been
-        # stuck in the same over/underconfident status for
-        # settings.STAGNATION_TIER2_CYCLES+ consecutive 4h correction
-        # cycles — a parameter re-sweep provably isn't fixing it (see
-        # worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md §2). Force
-        # kelly_f to 0.0 unconditionally so the symbol cannot qualify
-        # (kelly_min_ok always fails at 0.0) — no bayesian-shrink math,
-        # just a hard stop until the stagnation streak resets (either the
-        # bias returns to CALIBRATED, or STAGNATION_RESET_CYCLES elapses
-        # and eod_correction.py automatically forces a fresh attempt).
-        adjusted_p_win = 0.5
-        adjusted_kelly = 0.0
-        status = "STAGNATION_KILL_SWITCH"
-        log.warning(
-            "[calibration:enforce] %s: STAGNATION KILL SWITCH (bias=%s, "
-            "streak=%s) → kelly forced to 0.0",
-            symbol, bias, detail.get("stagnation_streak"),
-        )
-        return {
-            "applied": True,
-            "status": status,
-            "bias": bias,
-            "p_win": adjusted_p_win,
-            "kelly_f": adjusted_kelly,
-            "reason": f"penalty:{action_name}",
-        }
 
     # Tier 1 (fix #3c) writes a deeper kelly_reduction_override (its own
     # column on nt_symbol_calibration_state now, mirrored into detail for
@@ -363,6 +436,7 @@ async def apply_calibration_adjustment(
             "p_win": adjusted_p_win,
             "kelly_f": adjusted_kelly,
             "reason": "underconfidence_no_kelly_cut",
+            "source": "symbol",
         }
 
     adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
@@ -387,6 +461,7 @@ async def apply_calibration_adjustment(
         "p_win": adjusted_p_win,
         "kelly_f": adjusted_kelly,
         "reason": f"penalty:{action_name}",
+        "source": "symbol",
     }
 
 
@@ -398,3 +473,116 @@ def _num(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_side(side: Optional[str]) -> Optional[str]:
+    """Map long/short/buy/sell → buy|sell. Other/None → None."""
+    if not side:
+        return None
+    s = str(side).strip().lower()
+    if s in ("buy", "long"):
+        return "buy"
+    if s in ("sell", "short"):
+        return "sell"
+    return None
+
+
+def _status_from_bias(bias: float) -> str:
+    """Same enforced-band classify as eod_correction._classify_bias."""
+    from regime_platform.sweep_orchestrator.eod_correction import _classify_bias
+
+    return _classify_bias(float(bias))
+
+
+async def resolve_bias_evidence(
+    symbol: str,
+    *,
+    side: Optional[str] = None,
+    vol_tier: Optional[str] = None,
+    distance_atr_bucket: Optional[str] = None,
+    symbol_state: Optional[dict[str, Any]] = None,
+    symbol_state_fetched: bool = False,
+) -> dict[str, Any]:
+    """R3 hierarchy: cell (n≥CELL_MIN_N) → parent symbol → system (none).
+
+    Pass ``symbol_state`` (and ``symbol_state_fetched=True``) to reuse an
+    already-fetched calibration-state row and avoid a second HTTP call.
+
+    Returns:
+      {
+        "source": "cell" | "symbol" | "system",
+        "bias": float | None,
+        "n": int,
+        "status": str | None,      # OVERCONFIDENT / UNDERCONFIDENT / CALIBRATED
+        "action": str | None,      # symbol-level action (stagnation etc.)
+        "detail": dict,
+        "reason": str,
+      }
+    """
+    evidence: dict[str, Any] = {
+        "source": "system",
+        "bias": None,
+        "n": 0,
+        "status": None,
+        "action": None,
+        "detail": {},
+        "reason": "no_eod_action",
+    }
+
+    norm_side = normalize_side(side)
+    cell = None
+    if norm_side and vol_tier and distance_atr_bucket:
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                fetch_calibration_bias_cell,
+            )
+            cell = await fetch_calibration_bias_cell(
+                symbol, norm_side, str(vol_tier), str(distance_atr_bucket),
+            )
+        except Exception as exc:
+            log.warning("resolve_bias_evidence cell %s/%s failed: %s", symbol, norm_side, exc)
+            cell = None
+
+    if cell:
+        n = int(_num(cell.get("n")) or 0)
+        bias = _num(cell.get("bias_shrunk"))
+        if bias is None:
+            bias = _num(cell.get("bias"))
+        if n >= CELL_MIN_N and bias is not None:
+            evidence.update({
+                "source": "cell",
+                "bias": bias,
+                "n": n,
+                "status": _status_from_bias(bias),
+                "reason": f"cell:{norm_side}:{vol_tier}:{distance_atr_bucket}:n={n}",
+            })
+            return evidence
+
+    state = symbol_state
+    if not symbol_state_fetched:
+        try:
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                fetch_calibration_state,
+            )
+            state = await fetch_calibration_state(symbol)
+        except Exception as exc:
+            log.warning("resolve_bias_evidence symbol %s failed: %s", symbol, exc)
+            state = None
+
+    if state and state.get("action") not in (None, "none"):
+        evidence.update({
+            "source": "symbol",
+            "bias": _num(state.get("bias")),
+            "n": int(_num(state.get("n_records")) or 0),
+            "status": state.get("status"),
+            "action": state.get("action"),
+            "detail": state.get("detail") if isinstance(state.get("detail"), dict) else {},
+            "reason": "symbol_state",
+        })
+        # Attach kelly override + computed_at freshness fields used by caller.
+        evidence["kelly_reduction_override"] = _num(state.get("kelly_reduction_override"))
+        evidence["computed_at"] = state.get("computed_at")
+        evidence["_state"] = state
+        return evidence
+
+    return evidence

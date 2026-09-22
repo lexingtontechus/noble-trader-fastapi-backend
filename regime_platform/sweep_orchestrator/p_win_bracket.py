@@ -43,7 +43,7 @@ BETA_BETA = 2.0
 
 # Reject when the *bracket* probability of a full win is below this.
 # Distinct from MIN_P_WIN (directional). Applied only when mode=live.
-MIN_P_WIN_BRACKET = 0.45
+MIN_P_WIN_BRACKET = 0.20
 
 
 @dataclass(frozen=True)

@@ -524,8 +524,10 @@ settlement_same_bar_policy: "tp_first"
 # directional p_win. live: bracket probability participates in qualification
 # (min_p_win_bracket). Flip only after scripts/replay_p_win_bracket_gate.py
 # passes Phase 3.4.
+# 2026-09-22: 0.45 was wrong scale (p_win_bracket max ~0.31 live → 0% pass).
+# 0.20 ≈ 21% pass on the scored book (worklog 20260922_R2_ADDENDUM).
 p_win_bracket_mode: "shadow"
-min_p_win_bracket: 0.45
+min_p_win_bracket: 0.20
 
 # p_win_in_ev_mode (R2, worklog 20260922_L1_CONFIDENT_CALIBRATION_RECOMMENDATIONS.md):
 # off | shadow | live. Which probability prices EV and Kelly.

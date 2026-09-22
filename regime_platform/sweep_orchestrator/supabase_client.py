@@ -712,6 +712,77 @@ async def upsert_calibration_bias_by_bucket(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_calibration_bias_by_bucket: insert failed: %s", exc)
 
 
+NT_CALIBRATION_BIAS_BY_CELL_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "side", "vol_tier", "distance_atr_bucket",
+    "n", "wins", "losses", "avg_p_win", "win_rate", "bias", "bias_shrunk",
+    "expectancy_r",
+})
+
+
+async def upsert_calibration_bias_by_cell(rows: list[dict[str, Any]]) -> None:
+    """Upsert side-level cell rows into ``nt_calibration_bias_by_cell`` (R3)."""
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_CALIBRATION_BIAS_BY_CELL_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_calibration_bias_by_cell: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_calibration_bias_by_cell')}?on_conflict=symbol,side,vol_tier,distance_atr_bucket",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_calibration_bias_by_cell: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_calibration_bias_by_cell: insert failed: %s", exc)
+
+
+async def fetch_calibration_bias_cell(
+    symbol: str,
+    side: str,
+    vol_tier: str,
+    distance_atr_bucket: str,
+) -> dict[str, Any] | None:
+    """Fetch one R3 cell row (or None). Used by calibration_enforcement."""
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return None
+    params = {
+        "select": "symbol,side,vol_tier,distance_atr_bucket,n,wins,losses,avg_p_win,win_rate,bias,bias_shrunk,expectancy_r,computed_at",
+        "symbol": f"eq.{symbol}",
+        "side": f"eq.{side}",
+        "vol_tier": f"eq.{vol_tier}",
+        "distance_atr_bucket": f"eq.{distance_atr_bucket}",
+        "limit": "1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _url("nt_calibration_bias_by_cell"), headers=_headers(), params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning(
+            "fetch_calibration_bias_cell %s/%s failed: %s", symbol, side, exc,
+        )
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data[0]
+
+
 NT_ENTRY_DRIFT_COLUMNS: frozenset[str] = frozenset({
     "symbol", "n",
     "avg_drift_1h_pct", "stdev_drift_1h_pct",

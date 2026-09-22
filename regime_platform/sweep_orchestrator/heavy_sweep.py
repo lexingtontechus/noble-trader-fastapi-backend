@@ -1332,10 +1332,19 @@ class HeavySweepMixin:
                     apply_calibration_adjustment,
                 )
                 try:
+                    from regime_platform.sweep_orchestrator.bracket_reachability import (
+                        _vol_tier,
+                    )
+                    from regime_platform.sweep_orchestrator.heavy_sweep_reachability import (
+                        _bucket_for_combo,
+                    )
                     calib_adj = await apply_calibration_adjustment(
                         symbol,
                         p_win=ev_result.p_win,
                         kelly_f=effective_kelly_pre,
+                        side="buy" if direction == "long" else "sell",
+                        vol_tier=_vol_tier(result.regime_label),
+                        distance_atr_bucket=_bucket_for_combo(best, atr),
                     )
                     if calib_adj and calib_adj.get("applied"):
                         ev_result.p_win = calib_adj["p_win"]
