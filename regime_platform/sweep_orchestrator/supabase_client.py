@@ -279,7 +279,12 @@ def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[st
 
 
 async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
-    """Insert one row into ``table``. Returns True on success."""
+    """Insert one row into ``table``. Returns True on success.
+
+    Per-row success is DEBUG (EOD catchup can insert hundreds of
+    calibration records in a burst — INFO-per-row drowned real signals).
+    Failures stay ERROR. Callers that need a summary log it themselves.
+    """
     if not settings.SUPABASE_URL:
         return False
     try:
@@ -295,7 +300,7 @@ async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
                     table, resp.status_code, resp.text[:300],
                 )
                 return False
-            logger.info(
+            logger.debug(
                 "%s insert OK for %s",
                 table, payload.get("symbol", "unknown"),
             )
@@ -781,6 +786,40 @@ async def fetch_calibration_bias_cell(
     if not isinstance(data, list) or not data:
         return None
     return data[0]
+
+
+NT_LIVE_EXPECTANCY_DAILY_COLUMNS: frozenset[str] = frozenset({
+    "day", "cohort", "n", "n_tp", "n_sl", "n_expired",
+    "win_rate_closed", "pct_expired", "expectancy_r",
+    "avg_p_dir", "avg_p_win_bracket", "bias_dir",
+})
+
+
+async def upsert_live_expectancy_daily(rows: list[dict[str, Any]]) -> None:
+    """Upsert P2 flip-evidence rows into ``nt_live_expectancy_daily``."""
+    if not settings.SUPABASE_URL:
+        return
+    clean_rows = [_filter_payload(r, NT_LIVE_EXPECTANCY_DAILY_COLUMNS) for r in rows]
+    if not clean_rows:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_live_expectancy_daily')}?on_conflict=day,cohort",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_live_expectancy_daily: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_live_expectancy_daily: insert failed: %s", exc)
 
 
 NT_ENTRY_DRIFT_COLUMNS: frozenset[str] = frozenset({

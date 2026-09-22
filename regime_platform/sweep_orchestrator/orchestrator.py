@@ -2174,6 +2174,25 @@ class SweepOrchestrator(HeavySweepMixin):
             except Exception as exc:
                 logger.error("[entry-drift] failed: %s", exc)
 
+            # P2 flip evidence (migration 163): daily expectancy cohorts for
+            # p_win_bracket accept vs the full qualified book.
+            from regime_platform.sweep_orchestrator.live_expectancy import (
+                build_live_expectancy_daily,
+            )
+            from regime_platform.core.feature_flags import (
+                get_min_p_win_bracket,
+            )
+
+            try:
+                exp_rows = await build_live_expectancy_daily(
+                    min_p_win_bracket=get_min_p_win_bracket(),
+                )
+                logger.info(
+                    "[live-expectancy] done: %d day×cohort row(s)", len(exp_rows),
+                )
+            except Exception as exc:
+                logger.error("[live-expectancy] failed: %s", exc)
+
         # Macro-edge-by-symbol (2026-08-28, worklog/
         # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md): the win/loss+PnL
         # evidence for the macro filter (macro_filter.py). Chained onto
