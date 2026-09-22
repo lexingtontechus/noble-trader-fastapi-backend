@@ -48,6 +48,13 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | Flag | Effect |
 |---|---|
 | `p_win_bracket_mode` | Persists `p_win_bracket` + would-reject log; gates still use directional `p_win` |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
+| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss) after calibration; `p_win_ok` keeps gating `p_win_raw`. Flip after live replay (see `worklog/20260922_R2_BUILD_P_WIN_BRACKET_EV_KELLY.md`). |
 | `heavy_sweep_reachability_mode` | Reachability-aware pick comparison only |
 | `heavy_sweep_atr_anchored_bricks_mode` | Extra ATR brick candidates in grid (shadow scoring) |
 | `macro_regime_mode` | Capture macro_label; Kelly only if flipped live |

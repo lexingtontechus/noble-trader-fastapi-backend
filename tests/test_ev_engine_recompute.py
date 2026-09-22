@@ -70,6 +70,32 @@ def test_recompute_allowed_flips_when_shrunk_ev_goes_non_positive():
     assert low["allowed"] is False  # ev must be STRICTLY > min_ev
 
 
+def test_recompute_with_p_expire_three_outcome_ev():
+    """R2: expire is not a loss. EV = p_win*profit − (1−p_win−p_expire)*stake."""
+    engine = EVEngine(min_ev=0.0, min_rr=1.5)
+    profit, stake = 2.0, 1.0
+    p_win, p_exp = 0.40, 0.40  # loss_prob = 0.20
+
+    result = engine.recompute_ev_fields(p_win, profit, stake, p_expire=p_exp)
+    expected_ev = (0.40 * 2.0) - (0.20 * 1.0)
+    assert result["ev"] == round(expected_ev, 4)
+    assert result["loss_prob"] == 0.20
+
+    # Binary (p_expire=0) would charge expire as loss: 0.4*2 − 0.6*1 = 0.2
+    binary = engine.recompute_ev_fields(p_win, profit, stake, p_expire=0.0)
+    assert result["ev"] != binary["ev"]
+    assert result["ev"] > binary["ev"]
+
+
+def test_recompute_p_expire_zero_matches_binary():
+    engine = EVEngine(min_ev=0.0, min_rr=1.5)
+    profit, stake = 2.5, 1.5
+    a = engine.recompute_ev_fields(0.6, profit, stake, p_expire=0.0)
+    b = engine.recompute_ev_fields(0.6, profit, stake)
+    assert a["ev"] == b["ev"]
+    assert a["loss_prob"] == 0.4
+
+
 def test_compute_ev_p_markov_override_bypasses_transition_matrix():
     """p_markov_override (fix #3a) must be used AS the P_markov_hold_N
     source directly, ignoring transition_matrix/current_state entirely,

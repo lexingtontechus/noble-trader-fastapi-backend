@@ -218,3 +218,45 @@ def would_bracket_gate_reject(
     if p_win_bracket is None:
         return None
     return p_win_bracket < min_p_win_bracket
+
+
+def expire_prob(p_resolve: float | None) -> float:
+    """P(expired) from p_resolve. 0.0 when unscored (fail-open to binary EV)."""
+    if p_resolve is None:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - float(p_resolve)))
+
+
+def apply_bracket_to_ev(
+    ev_result,
+    *,
+    p_win_bracket: float | None,
+    p_resolve: float | None,
+    engine,
+    min_rr: float | None = None,
+) -> bool:
+    """R2: substitute directional p_win with p_win_bracket on an EVFullResult.
+
+    Recomputes ev / ev_per_dollar / allowed / aggression / ev_scale with the
+    3-outcome formula (expire is not a loss). Mutates ``ev_result`` in place.
+    Returns True when applied; False when ``p_win_bracket`` is unscored
+    (fail-open — leave directional EV untouched).
+    """
+    if p_win_bracket is None:
+        return False
+    p_exp = expire_prob(p_resolve)
+    recomputed = engine.recompute_ev_fields(
+        float(p_win_bracket),
+        ev_result.profit,
+        ev_result.stake,
+        min_rr=min_rr,
+        p_expire=p_exp,
+    )
+    ev_result.p_win = round(float(p_win_bracket), 4)
+    ev_result.ev = recomputed["ev"]
+    ev_result.ev_per_dollar = recomputed["ev_per_dollar"]
+    ev_result.rr = recomputed["rr"]
+    ev_result.allowed = recomputed["allowed"]
+    ev_result.aggression = recomputed["aggression"]
+    ev_result.ev_scale = recomputed["ev_scale"]
+    return True

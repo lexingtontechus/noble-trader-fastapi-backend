@@ -7,6 +7,8 @@ from __future__ import annotations
 import pytest
 
 from regime_platform.sweep_orchestrator.p_win_bracket import (
+    apply_bracket_to_ev,
+    expire_prob,
     BETA_ALPHA,
     BETA_BETA,
     beta_shrunk_win_rate,
@@ -96,6 +98,46 @@ class TestGate:
     def test_none_is_fail_open(self):
         assert would_bracket_gate_reject(None) is None
 
+
+def test_expire_prob():
+    assert expire_prob(None) == 0.0
+    assert expire_prob(0.7) == pytest.approx(0.3)
+    assert expire_prob(0.0) == pytest.approx(1.0)
+    assert expire_prob(1.0) == pytest.approx(0.0)
+
+
+def test_apply_bracket_to_ev_mutates_and_fails_open():
+    from regime_platform.services.statistics.ev_engine import EVEngine
+
+    class FakeEV:
+        p_win = 0.70
+        profit = 2.0
+        stake = 1.0
+        ev = 0.4
+        ev_per_dollar = 0.4
+        rr = 2.0
+        allowed = True
+        aggression = "low"
+        ev_scale = 0.8
+
+    engine = EVEngine(min_ev=0.0, min_rr=1.5)
+    obj = FakeEV()
+    assert apply_bracket_to_ev(
+        obj, p_win_bracket=0.35, p_resolve=0.5, engine=engine,
+    ) is True
+    assert obj.p_win == 0.35
+    # EV = 0.35*2 − (1-0.35-0.5)*1 = 0.7 − 0.15 = 0.55
+    assert obj.ev == pytest.approx(0.55)
+
+    untouched = FakeEV()
+    before = untouched.p_win
+    assert apply_bracket_to_ev(
+        untouched, p_win_bracket=None, p_resolve=None, engine=engine,
+    ) is False
+    assert untouched.p_win == before
+
+
+class TestGateThresholds:
     def test_below_threshold_rejects(self):
         assert would_bracket_gate_reject(0.30) is True
 

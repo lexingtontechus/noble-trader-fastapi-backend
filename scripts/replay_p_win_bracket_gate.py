@@ -174,6 +174,21 @@ def main() -> int:
         shadow_hits = [r for r in live if r.get("bracket_gate_shadow")]
         print(f"rows with p_win_bracket: {len(with_br)}")
         print(f"bracket_gate_shadow=true: {len(shadow_hits)}")
+        # Distribution — needed to set min_p_win_bracket (p_win_bracket is
+        # p_resolve * p_win|resolve, a different scale from p_win_dir).
+        if with_br:
+            brs = sorted(float(r["p_win_bracket"]) for r in with_br)
+            n = len(brs)
+            def q(p):
+                return brs[min(n - 1, max(0, int(p * (n - 1))))]
+            print(
+                "p_win_bracket dist: "
+                f"min={brs[0]:.3f} p10={q(0.10):.3f} p25={q(0.25):.3f} "
+                f"p50={q(0.50):.3f} p75={q(0.75):.3f} p90={q(0.90):.3f} max={brs[-1]:.3f}"
+            )
+            for thr in (0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45):
+                ok = sum(1 for b in brs if b >= thr)
+                print(f"  pass min_p_win_bracket={thr:.2f}: n={ok} ({100.0*ok/n:.1f}%)")
         if with_br:
             _stats(
                 [

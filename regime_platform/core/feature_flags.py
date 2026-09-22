@@ -65,6 +65,7 @@ _DEFAULTS: dict[str, Any] = {
     "settlement_same_bar_policy": "tp_first",
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.45,
+    "p_win_in_ev_mode": "shadow",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -505,6 +506,20 @@ def get_min_p_win_bracket() -> float:
         return float(_load().get("min_p_win_bracket", _DEFAULTS["min_p_win_bracket"]))
     except (TypeError, ValueError):
         return _DEFAULTS["min_p_win_bracket"]
+
+
+def get_p_win_in_ev_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (R2, 2026-09-22).
+
+    off: EV/Kelly keep directional p_win (status quo).
+    shadow: compute bracket EV comparison and log; live EV unchanged.
+    live: EV + Kelly use p_win_bracket (3-outcome with p_expire). Directional
+    ``p_win_ok`` gate still scores p_win_dir — different scale from
+    ``min_p_win_bracket``. Unscored bracket fails open to directional EV.
+    """
+    return str(_load().get(
+        "p_win_in_ev_mode", _DEFAULTS["p_win_in_ev_mode"],
+    )).lower()
 
 
 def get_regime_warm_start_mode() -> str:

@@ -775,6 +775,7 @@ class EVEngine:
     def recompute_ev_fields(
         self, p_win: float, profit: float, stake: float,
         min_rr: float | None = None,
+        p_expire: float = 0.0,
     ) -> Dict[str, Any]:
         """Recompute ev/ev_per_dollar/rr/allowed/ev_scale/aggression for a
         p_win that changed after ``compute_ev()`` already ran.
@@ -795,12 +796,19 @@ class EVEngine:
         this engine ever run concurrently. This does not touch ``p_win``
         or the blend in any way — same non-goal as the rest of this method.
 
+        ``p_expire`` (R2, 2026-09-22): probability the trade expires
+        unresolved within the deadline. When > 0, EV uses the 3-outcome
+        form ``p_win*profit - (1-p_win-p_expire)*stake`` so expire is not
+        charged as a loss. Default 0.0 preserves the binary formula.
+
         Callers should overwrite ``EVFullResult.{ev, ev_per_dollar, rr,
         allowed, aggression, ev_scale}`` with this method's return values
         after mutating ``EVFullResult.p_win`` — never mutate ``p_win`` alone.
         """
         effective_min_rr = self.min_rr if min_rr is None else min_rr
-        ev = (p_win * profit) - ((1.0 - p_win) * stake)
+        p_exp = max(0.0, min(1.0, float(p_expire or 0.0)))
+        loss_prob = max(0.0, 1.0 - float(p_win) - p_exp)
+        ev = (p_win * profit) - (loss_prob * stake)
         ev_per_dollar = ev / stake if stake > 0 else 0.0
         rr = profit / stake if stake > 0 else 0.0
         allowed = (ev > self.min_ev) and (rr >= effective_min_rr)
@@ -813,6 +821,7 @@ class EVEngine:
             "allowed": allowed,
             "aggression": aggression,
             "ev_scale": round(ev_scale, 4),
+            "loss_prob": round(loss_prob, 4),
         }
 
     # ── v5: validate_signal / validate_signal_sync ──────────────────

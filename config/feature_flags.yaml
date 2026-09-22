@@ -521,10 +521,21 @@ settlement_same_bar_policy: "tp_first"
 # shadow (default): compute p_resolve * p_win|resolve from stored-ATR
 # reachability buckets, persist on nt_signal_sim, log bracket_gate_shadow
 # when live gates pass but the bracket gate would reject. Gates still use
-# directional p_win. live: bracket probability participates in qualification.
-# Flip only after scripts/replay_p_win_bracket_gate.py passes Phase 3.4.
+# directional p_win. live: bracket probability participates in qualification
+# (min_p_win_bracket). Flip only after scripts/replay_p_win_bracket_gate.py
+# passes Phase 3.4.
 p_win_bracket_mode: "shadow"
 min_p_win_bracket: 0.45
+
+# p_win_in_ev_mode (R2, worklog 20260922_L1_CONFIDENT_CALIBRATION_RECOMMENDATIONS.md):
+# off | shadow | live. Which probability prices EV and Kelly.
+#   off: directional p_win (blend) in EV/Kelly — historical.
+#   shadow: log would-be EV from p_win_bracket; live EV unchanged.
+#   live: EV = p_win_bracket*profit − p_sl*stake (expire not charged as loss);
+#         Kelly ev_scale follows. Directional p_win_ok (MIN_P_WIN) still gates
+#         p_win_dir — different scale from min_p_win_bracket. Unscored bracket
+#         fails open (keeps directional EV). Requires p_win_bracket_mode!=off.
+p_win_in_ev_mode: "shadow"
 
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
