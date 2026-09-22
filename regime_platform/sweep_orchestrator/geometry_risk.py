@@ -192,6 +192,7 @@ async def lookup_long_lag(
                     "symbol": f"eq.{symbol}",
                     "vol_tier": f"eq.{vol_tier}",
                     "distance_atr_bucket": f"eq.{bucket}",
+                    "signal": "eq.all",
                     "limit": "1",
                 },
             )

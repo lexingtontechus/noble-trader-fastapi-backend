@@ -41,7 +41,7 @@ async def main() -> int:
         r2 = await c.get(
             f"{base}/rest/v1/nt_bracket_reachability",
             headers=headers,
-            params={"select": "symbol,distance_atr_bucket,n_stored,pct_expired", "limit": "300"},
+            params={"select": "symbol,distance_atr_bucket,n_stored,pct_expired", "signal": "eq.all", "limit": "300"},
         )
         reach = r2.json() if r2.status_code == 200 else []
         lag = {}

@@ -128,7 +128,7 @@ async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[st
     rows: list[dict[str, Any]] = []
     offset = 0
     params: dict[str, str] = {
-        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at,regime",
+        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at,regime,signal",
         "outcome": "not.is.null",
         "order": "ts.asc",
         "limit": str(_PAGE_SIZE),
@@ -177,6 +177,20 @@ async def _current_atr_by_symbol(symbols: list[str]) -> dict[str, float]:
     return proxies
 
 
+def _signal_side(raw: str | None) -> str:
+    """Normalize ``nt_signal_sim.signal`` to a reachability side key.
+
+    ``buy`` / ``sell`` keep their side (migration 159 — direction-asymmetric
+    TP/SL reach is the whole point). ``neutral`` and anything else collapse
+    into ``all`` only via the pooled rollup path; a non-side row is skipped
+    for per-side buckets and counted in ``all``.
+    """
+    s = (raw or "").strip().lower()
+    if s in ("buy", "sell"):
+        return s
+    return "other"
+
+
 def _hours_between(start: str | None, end: str | None) -> float | None:
     if not start or not end:
         return None
@@ -212,7 +226,7 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
         logger.warning("bracket_reachability: ATR proxy fetch failed: %s", exc)
         proxy_atr = {}
 
-    bucket_data: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
+    bucket_data: dict[tuple[str, str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "n": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0,
             "hours": [], "n_stored": 0, "n_proxy": 0,
@@ -244,21 +258,27 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
         if bucket is None:
             continue
         vol_tier = _vol_tier(row.get("regime"))
+        side = _signal_side(row.get("signal"))
+        # Per-side rows only for real buy/sell; every row (including
+        # neutral/other) still rolls into signal='all' so pooled stats match
+        # the pre-159 population.
+        sides = ["all"] + ([side] if side in ("buy", "sell") else [])
 
-        d = bucket_data[(symbol, vol_tier, bucket)]
-        d["n"] += 1
-        d[outcome] += 1
-        if atr_source == "stored":
-            d["n_stored"] += 1
-        else:
-            d["n_proxy"] += 1
-        if outcome in ("tp_hit", "sl_hit"):
-            hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
-            if hrs is not None:
-                d["hours"].append(hrs)
+        for sig in sides:
+            d = bucket_data[(symbol, vol_tier, bucket, sig)]
+            d["n"] += 1
+            d[outcome] += 1
+            if atr_source == "stored":
+                d["n_stored"] += 1
+            else:
+                d["n_proxy"] += 1
+            if outcome in ("tp_hit", "sl_hit"):
+                hrs = _hours_between(row.get("ts"), row.get("resolved_at"))
+                if hrs is not None:
+                    d["hours"].append(hrs)
 
     output_rows: list[dict[str, Any]] = []
-    for (symbol, vol_tier, bucket), d in bucket_data.items():
+    for (symbol, vol_tier, bucket, sig), d in bucket_data.items():
         n = d["n"]
         hours = d["hours"]
         # Batch B: dominant source is informational; consumers that need
@@ -268,6 +288,7 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
             "symbol": symbol,
             "vol_tier": vol_tier,
             "distance_atr_bucket": bucket,
+            "signal": sig,
             "n": n,
             "n_stored": d["n_stored"],
             "n_proxy": d["n_proxy"],
@@ -299,16 +320,25 @@ def _print_report(rows: list[dict[str, Any]]) -> None:
         print("No reachability rows computed.")
         return
     print(
-        f"{'Symbol':<10} {'VolTier':<13} {'Bucket':<8} {'n':>6} {'%TP':>7} {'%SL':>7} "
+        f"{'Symbol':<10} {'VolTier':<13} {'Bucket':<8} {'Side':<5} {'n':>6} {'%TP':>7} {'%SL':>7} "
         f"{'%Exp':>7} {'medHr':>7} {'p75':>7} {'p90':>7} {'src':<14}"
     )
-    print("-" * 105)
-    for row in sorted(rows, key=lambda r: (r["symbol"], r.get("vol_tier", ""), r["distance_atr_bucket"])):
+    print("-" * 111)
+    for row in sorted(
+        rows,
+        key=lambda r: (
+            r["symbol"],
+            r.get("vol_tier", ""),
+            r["distance_atr_bucket"],
+            r.get("signal", "all"),
+        ),
+    ):
         med = row["median_hours_to_resolve"]
         p75 = row["p75_hours"]
         p90 = row["p90_hours"]
         print(
-            f"{row['symbol']:<10} {row.get('vol_tier', 'unknown'):<13} {row['distance_atr_bucket']:<8} {row['n']:>6} "
+            f"{row['symbol']:<10} {row.get('vol_tier', 'unknown'):<13} {row['distance_atr_bucket']:<8} "
+            f"{row.get('signal', 'all'):<5} {row['n']:>6} "
             f"{row['pct_hit_tp'] * 100:>6.1f}% {row['pct_hit_sl'] * 100:>6.1f}% "
             f"{row['pct_expired'] * 100:>6.1f}% "
             f"{med if med is not None else '-':>7} "

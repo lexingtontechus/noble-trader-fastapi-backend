@@ -620,23 +620,30 @@ NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
     # Batch B (migration 153): split counts so consumers can quarantine
     # look-ahead proxy ATR without discarding the whole bucket row.
     "n_stored", "n_proxy",
+    # Migration 159: buy | sell | all. Consumers of the pooled stats must
+    # filter signal='all' (see bracket_reachability.py).
+    "signal",
 })
 
 
 async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
     """Upsert bucket rows into ``nt_bracket_reachability`` (best-effort).
 
-    Keyed on ``(symbol, vol_tier, distance_atr_bucket)`` (2026-09-13,
-    worklog 20260913_REACHABILITY_VOL_TIER_SCOPE.md — was ``(symbol,
-    distance_atr_bucket)`` before ATR-scale's regime-conditionality was
-    accounted for) — a weekly refresh REPLACES each bucket's stats rather
-    than accumulating duplicates, same ``on_conflict`` + ``Prefer:
-    resolution=merge-duplicates`` pattern as ``log_renko_bricks``.
+    Keyed on ``(symbol, vol_tier, distance_atr_bucket, signal)`` (2026-09-22,
+    migration 159 added the buy/sell/all side dimension; was
+    ``(symbol, vol_tier, distance_atr_bucket)`` since 2026-09-13) — a weekly
+    refresh REPLACES each bucket's stats rather than accumulating duplicates,
+    same ``on_conflict`` + ``Prefer: resolution=merge-duplicates`` pattern as
+    ``log_renko_bricks``.
     """
     if not settings.SUPABASE_URL:
         return
 
     clean_rows = [_filter_payload(r, NT_BRACKET_REACHABILITY_COLUMNS) for r in rows]
+    # Default to the pooled side so older callers that omit `signal` keep
+    # writing the pre-159 aggregate key.
+    for r in clean_rows:
+        r.setdefault("signal", "all")
     if not clean_rows:
         logger.debug("upsert_bracket_reachability: no rows — skipping")
         return
@@ -644,7 +651,7 @@ async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{_url('nt_bracket_reachability')}?on_conflict=symbol,vol_tier,distance_atr_bucket",
+                f"{_url('nt_bracket_reachability')}?on_conflict=symbol,vol_tier,distance_atr_bucket,signal",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",

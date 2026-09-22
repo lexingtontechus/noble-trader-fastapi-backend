@@ -191,7 +191,9 @@ RR         = tp_bricks / sl_bricks
 ```
 
 Defaults in YAML: `sl_bricks=3`, `tp_bricks=6` → RR = 2.0.  
-`MIN_RR` is shared between light qualification and heavy grid filter (`feature_flags.yaml: min_rr: 1.5`).
+`min_rr` is shared between light qualification and heavy grid filter (`feature_flags.yaml: min_rr: 1.5` via `get_min_rr()`, not env).
+
+> **Operator status (2026-09-20, post-audit):** `min_rr` is **maintained but a non-factor** on light qualification. At 1.5 the RR clause rarely binds because live brick pairs already sit at RR≈1.67–2.0+; reject composition in production logs is kelly/regime/p_win-dominated. Do not interpret this key as a signal-quality tier; do not raise the light floor to 2.0 as a quality gate. Heavy-grid filtering still uses the same key as a geometry pre-filter. Code unchanged by this note.
 
 **Brick size generation (heavy sweep):**
 
@@ -227,7 +229,7 @@ candidates  = base * [0.75, 1.0, 1.5, 2.0, 3.0]
 p_win = inv_logit( Σ w_i · logit(p_i) )          # missing sources dropped, weights renormed
 p_win'= calibration_shrink(p_win)                # post-blend enforcement
 EV    = p_win'·(tp·bs) − (1−p_win')·(sl·bs)
-allowed = (EV > min_ev) and (RR ≥ min_rr)
+allowed = (EV > min_ev) and (RR ≥ min_rr)   # min_rr=1.5 maintained; RR clause inert on light path (2026-09-20)
 ```
 
 **EV engine issues:**

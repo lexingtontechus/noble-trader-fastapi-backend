@@ -222,7 +222,9 @@ markov_min_occupancy: 0.10
 # trend_probs to compute_ev instead. NOT live by default — review
 # shadow data first, same discipline as markov_source_mode's
 # trend_hmm_live.
-trend_probs_gate_mode: shadow
+# 2026-09-22: shadow -> live (user approval). Gated Brier beat raw on 14/14
+# symbols (nt_hmm_shadow_accuracy). EV now uses gated p_regime.
+trend_probs_gate_mode: live
 
 # Macro filter (2026-08-26/28, worklog 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md,
 # "Macro filter — full build scope" + the w/l+PnL evidence extension).
@@ -280,18 +282,15 @@ trend:
 # qualification. live = included in the qualification decision.
 context_alignment_gate_mode: "shadow"
 
-# Dynamic/regime-conditional MIN_RR (2026-09-11, worklog
-# 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 11).
-# Raises the RR floor (never lowers it) when neither macro_regime nor
-# trend_regime shows a directional edge -- confirmed via code trace that
-# min_rr only gates compute_ev()/recompute_ev_fields()'s post-blend
-# allow/deny check, never the blend itself. off = effective_min_rr ==
-# min_rr always, byte-identical (default). shadow = compute + log what
-# the effective value would have been. live = actually applied via
-# recompute_ev_fields(min_rr=...) (light sweep) and the heavy-sweep grid
-# pre-filter.
+# Dynamic/regime-conditional MIN_RR (2026-09-11, worklog Part 11).
+# SUPERSEDED 2026-09-20 (see min_rr status comment below): base min_rr=1.5
+# is a maintained non-factor on light qualification; a 1.5→2.0 step or
+# continuous matrix will not rank signal strength (RR is brick geometry).
+# Flag remains in code/shadow for observability only — do NOT flip live.
+# Binding light gates: kelly / regime_conf / p_win; quality work is
+# geometry/reachability, not RR.
 dynamic_min_rr_mode: "shadow"
-dynamic_min_rr_consolidation_value: 2.0   # raised floor when both filters show no edge
+dynamic_min_rr_consolidation_value: 2.0   # unused for live qualification; do not promote
 
 # TimesFM k-adaptive dampening (2026-09-11, worklog
 # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part 12).
@@ -367,32 +366,30 @@ geometry_tuning_min_consecutive: 2
 # B: light-path qualified quality gate (shadow until reject-rate reviewed)
 light_publish_geometry_gate: "shadow"
 
-# min_rr: minimum reward:risk ratio. Deliberately SHARED by two
-# independent gates: the light-sweep qualification gate (EVEngine.min_rr,
-# set from this value in orchestrator.py) and the heavy sweep's grid
-# search pre-filter/pick_best_combo (heavy_sweep.py). A divergence
-# between the two already broke production once (2026-08-13:
-# EURUSD/GBPUSD/USDCAD emergency heavy sweeps failed with
-# no_combo_passed_filters because heavy_sweep.py's hardcoded MIN_RR=2.0
-# disagreed with orchestrator.py's env-var override MIN_RR=1.5) — moved
-# both off separate env vars/Studio Secrets onto this single config
-# value (2026-08-30) specifically to make that recurring silently
-# impossible, not just less likely.
+# min_rr: minimum reward:risk ratio. Source of truth for get_min_rr()
+# (orchestrator light EV allow + heavy_sweep grid pre-filter). Env MIN_RR
+# is IGNORED — feature_flags never reads env (see header / worklog
+# 20260904_MIN_RR_REGRESSION.md).
 #
-# CORRECTION (2026-09-04, worklog 20260904_MIN_RR_REGRESSION.md): the
-# 2026-08-30 move shipped this key at 2.0 — the module's hard-coded
-# fallback default, not the Studio's actual long-running value. The
-# Studio's real MIN_RR env var (1.5) was still set at the time and got
-# silently ignored the moment orchestrator.py switched from
-# os.getenv("MIN_RR", ...) to this file (feature_flags.py deliberately
-# never reads env vars — see this file's own header) — confirmed live,
-# the Studio process still has MIN_RR=1.5 in its environment today,
-# doing nothing. That silently tightened the light-sweep qualification
-# gate from 1.5 to 2.0 for three-plus weeks, right through the exact
-# RR gap orchestrator.py's own comment already flagged ("with default
-# brick params... the actual RR is 5/3 = 1.67 — below the 2.0
-# minimum"). Restored to the value actually running before that
-# regression.
+# STATUS 2026-09-20 — MAINTAINED BUT A NON-FACTOR on light qualification:
+#   Live value 1.5. Typical heavy-picked brick geometries already have
+#   RR = tp_bricks/sl_bricks ≈ 1.67 (5/3) to 2.0+ (6/3), so `rr >= 1.5`
+#   almost never binds. Studio reject logs (same period) show light
+#   qualification failing on kelly_min_ok / regime_conf_ok / p_win_ok —
+#   ev_allowed/RR is not the volume bottleneck. RR is a geometry
+#   parameter, not a per-signal strength rank; a 1.5–2.0 "tier" will not
+#   separate strong vs weak signals.
+#
+# Do NOT raise this light-path value to 2.0 as a quality lever — that
+# rejects default 5/3 geometry (RR 1.67) en masse (geometry choke), which
+# is what the 2026-08-30→09-04 regression accidentally did. Keep the key
+# at 1.5; keep light + heavy reading this same key; treat RR as
+# diagnostic/payload (passed_gates['rr']) and as a heavy-grid geometry
+# filter only. dynamic_min_rr (1.5→2.0 step / matrix) is superseded —
+# do not flip live. Code path unchanged (2026-09-20 user decision).
+#
+# History: shared single-source after 2026-08-13 heavy/light MIN_RR split
+# incident; 2026-09-04 restored 1.5 after silent yaml ship at 2.0.
 min_rr: 1.5
 
 # Heavy-sweep grid quality filter, alongside min_rr above (2026-08-30,
@@ -594,7 +591,10 @@ regime_warm_start_mode: "off"
 # regime_warm_start_mode above, no per-symbol regression found. Not
 # live by default regardless — same shadow-first discipline as every
 # other mode flag in this file.
-regime_label_debounce_mode: shadow
+# 2026-09-22: shadow -> live (user approval). Label-stability layer for
+# choppy/consolidation flip-flop; 3-tick debounce applied to regime_label
+# used for direction. pct_differ 17-24% on FX/crypto at review.
+regime_label_debounce_mode: live
 
 # n_confirm for the debouncer above: consecutive ticks of agreement
 # required before a new label is promoted. At this system's ~hourly

@@ -179,8 +179,12 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
             d["hours"].append(hrs)
 
     try:
+        # signal='all' only — post-migration-159 the table also has buy/sell
+        # side rows; the pooled expire rate is what expectancy joins need.
         reachability_rows = await _fetch_all(
-            "nt_bracket_reachability", "symbol,vol_tier,distance_atr_bucket,pct_expired", {},
+            "nt_bracket_reachability",
+            "symbol,vol_tier,distance_atr_bucket,pct_expired",
+            {"signal": "eq.all"},
         )
     except Exception as exc:
         logger.warning("calibration_bias_bucket: reachability join fetch failed: %s", exc)

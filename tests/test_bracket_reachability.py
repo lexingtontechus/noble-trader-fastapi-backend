@@ -13,6 +13,7 @@ why pure-function-only unit tests are the norm here).
 
 from regime_platform.sweep_orchestrator.bracket_reachability import (
     _bucket_for,
+    _signal_side,
     _vol_tier,
 )
 
@@ -62,3 +63,22 @@ def test_vol_tier_is_a_pure_string_split_not_case_sensitive_magic():
     # normalization/whitespace handling is silently relied upon.
     assert _vol_tier("med_low_vol_bull") == "med_low_vol"
     assert "_vol_" in "med_low_vol_bull"
+
+
+# ─── _signal_side (migration 159 BUY vs SELL) ────────────────────────────
+
+
+def test_signal_side_buy_sell_passthrough():
+    assert _signal_side("buy") == "buy"
+    assert _signal_side("sell") == "sell"
+    assert _signal_side("BUY") == "buy"
+    assert _signal_side(" Sell ") == "sell"
+
+
+def test_signal_side_non_side_collapses_to_other():
+    # neutral / missing / garbage do not become a fake side; the builder
+    # still folds them into the pooled signal='all' rollup only.
+    assert _signal_side("neutral") == "other"
+    assert _signal_side(None) == "other"
+    assert _signal_side("") == "other"
+    assert _signal_side("hold") == "other"

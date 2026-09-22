@@ -337,6 +337,7 @@ async def fetch_bucket_long_lag(symbol: str) -> tuple[dict[str, float | None], d
                 params={
                     "select": "distance_atr_bucket,pct_expired,p90_hours,n_stored",
                     "symbol": f"eq.{symbol}",
+                    "signal": "eq.all",
                     "limit": "20",
                 },
             )

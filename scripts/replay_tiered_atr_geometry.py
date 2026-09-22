@@ -66,6 +66,7 @@ def main() -> int:
                         headers=headers,
                         params={
                             "select": "symbol,distance_atr_bucket,n,n_stored,pct_expired,p90_hours",
+                            "signal": "eq.all",
                             "limit": "200",
                         },
                     )

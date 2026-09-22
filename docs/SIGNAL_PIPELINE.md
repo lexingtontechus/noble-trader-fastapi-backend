@@ -47,7 +47,7 @@ TradingView 1h candles (200 light / 2160 heavy)
 | Bracket | `entry=last close`; SL/TP = entry ∓ `brick_size × sl/tp_bricks` from `config/brick_params.yaml` |
 | p_dir | Logit pool: `p_regime` + `p_markov_hold_n` + `p_timesfm` (`ev_engine.py`) |
 | Markov N | `resolve_markov_n_steps(tp_bricks)` — TP distance, not global 10 |
-| EV | `p·TP − (1−p)·SL`; allow if EV>0 and RR≥`min_rr` |
+| EV | `p·TP − (1−p)·SL`; allow if EV>0 and RR≥`min_rr` (yaml 1.5 — **RR clause inert in practice**, 2026-09-20) |
 
 `p_historical` is **not** in the live weight table (Batch F).
 
@@ -61,7 +61,7 @@ Order: construct → **calibration enforce** → gates → cooldown.
 | `regime_conf` | ≥ 0.60 |
 | `effective_kelly` (post-enforce) | ≥ 0.02 |
 | TimesFM | soft mode: weight shrink, not veto |
-| EV allowed | EV>0, RR≥1.5 |
+| EV allowed | EV>0; RR≥`min_rr` (1.5, yaml) — **maintained but non-binding** on light path (geometry RR typically ≥1.67); quality rejects are kelly/regime/p_win |
 | `p_win` | hard floor 0.50; soft band to 0.55 shrinks Kelly (`p_win_soft_band` stamp) |
 | cooldown | 60 min; open prior blocks |
 

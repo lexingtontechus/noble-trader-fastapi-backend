@@ -324,12 +324,16 @@ Penalty actions (`bayesian_penalty` / `kelly_reduction` / `emergency_heavy_sweep
 are enforced live for 8h (freshness window). See `worklog/20260813_CHANGELOG.md`
 and `worklog/20260817_RECALIBRATION_PERF_ASSESSMENT.md`.
 
-**Calibration tuning (2026-08-17):** `MIN_RR` (Gate 6b) is **shared** between the
-orchestrator's signal qualification gate and the heavy sweep grid-search pre-filter —
-both read `MIN_RR` from the env var. `TIMESFM_SIGMOID_K`, `TIMESFM_CLAMP_MIN/MAX`,
-and `HEAVY_SWEEP_MIN_TRADES`/`HEAVY_SWEEP_MAX_SHARPE` are now env-configurable
-(see `.env.example`). Recommended production values: `TIMESFM_SIGMOID_K=10.0`,
-`TIMESFM_CLAMP_MIN=0.05`, `TIMESFM_CLAMP_MAX=0.95`.
+**Calibration tuning:** `min_rr` (Gate 6b / EV allow) is **shared** between light
+qualification (`EVEngine.min_rr`) and the heavy-sweep grid pre-filter — both read
+`get_min_rr()` from `config/feature_flags.yaml` (**not** env; Studio `MIN_RR` is
+stale/ignored after 2026-09-04). Live value **1.5**. **Status 2026-09-20: maintained
+but a non-factor on light qualification** — typical brick geometries already have
+RR ≈ 1.67–2.0+, so `rr ≥ 1.5` almost never binds; reject logs are dominated by
+kelly / regime confidence / p_win. RR is not a strong/weak signal tier; do not raise
+the light floor to 2.0 as a quality lever (geometry choke). Code path unchanged.
+`TIMESFM_SIGMOID_K`, `TIMESFM_CLAMP_MIN/MAX` live in `feature_flags.yaml` /
+related keys — recommended production: k=10.0, clamp=[0.05, 0.95].
 
 ### Venue Management (v3)
 
@@ -610,18 +614,26 @@ last-run) persists to Supabase (`nt_system_config`) instead of Redis.
 - Fetches TimesFM predictions (cached 15min) → 3-source EV blend
 - Enforces 7 qualification gates + cooldown before publishing
 
-**Qualification gates** (all configurable via env vars):
+**Qualification gates** (thresholds via `config/feature_flags.yaml` + related
+settings; some names still appear as env leftovers that are **ignored**):
 
-| Gate | Check | Env var | Default |
-|------|-------|---------|---------|
-| 1 | Signal is buy/sell (not neutral) | — | — |
-| 2 | HMM regime confidence ≥ threshold | `MIN_REGIME_CONF` | 0.60 |
-| 3 | Kelly fraction ≥ threshold | `MIN_KELLY` | 0.02 |
-| 4 | TimesFM available | — | — |
-| 5 | TimesFM confidence ≥ threshold (mode-dependent) | `MIN_TIMESFM_CONFIDENCE` / `TIMESFM_GATE_MODE` | 0.05 / hard |
-| 6 | EV allowed (ev > 0 AND rr ≥ threshold) | `MIN_EV` / `MIN_RR` | 0.0 / 2.0 |
-| 7 | Blended p_win ≥ threshold | `MIN_P_WIN` | 0.55 |
-| + | Cooldown (don't repeat same symbol+dir for N min) | `SIGNAL_COOLDOWN_MINUTES` | 60 |
+| Gate | Check | Config key | Live default | Binding today? |
+|------|-------|------------|--------------|----------------|
+| 1 | Signal is buy/sell (not neutral) | — | — | yes (neutral drops) |
+| 2 | HMM regime confidence ≥ threshold | `regime_conf` / `MIN_REGIME_CONF` | 0.60 | **yes — primary** |
+| 3 | Kelly fraction ≥ threshold | `min_kelly` / `MIN_KELLY` | 0.02 | **yes — primary** |
+| 4 | TimesFM available | `timesfm_gate_mode=soft` → not a veto | soft | informational in soft |
+| 5 | TimesFM confidence | `timesfm_gate_mode` | soft shrink | soft-band kelly, not hard veto |
+| 6 | EV allowed (`ev > 0` **and** `rr ≥ min_rr`) | `min_ev` / `min_rr` | 0.0 / **1.5** | **RR clause inert** (see below); EV>0 still applies |
+| 7 | Blended p_win | hard floor 0.50; soft band → `MIN_P_WIN` 0.55 | 0.50 / 0.55 | **yes — primary** |
+| + | Cooldown | `signal_cooldown_minutes` | 60 | yes (post-gate suppress) |
+
+**`min_rr` note (2026-09-20):** maintained at `feature_flags.yaml` → `min_rr: 1.5`
+via `get_min_rr()`. Still present in EVEngine Step 6 and the heavy grid filter, but
+**non-factor for light signal quality/qualification volume** at this level — RR comes
+from brick geometry (typical ≥1.67), not per-tick strength. Binding light rejects:
+kelly, regime_conf, p_win. Do not tier strong/weak by RR in 1.5–2.0; do not treat
+2.0 as a quality gate on light publishes.
 
 **Signal delivery**: only qualified signals reach Discord — sent directly
 from both the light-sweep (`_process_symbol`) and heavy-sweep
