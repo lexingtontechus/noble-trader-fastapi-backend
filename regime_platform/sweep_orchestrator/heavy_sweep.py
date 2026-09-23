@@ -1153,12 +1153,61 @@ class HeavySweepMixin:
             venue_name = _derive_venue(sym)
 
             # ── 7. Persist optimised brick params to YAML ─────────────
-            await self._persist_brick_params_to_yaml(
-                symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
-                atr=atr,
-                asset_class=sym.get("asset_class"),
-            )
-            result.persisted_yaml = True
+            # Forward-test / incubation gate (2026-09-23, worklog
+            # 20260923_GEOMETRY_FORWARD_TEST_SCOPE.md,
+            # geometry_incubation_mode: off | shadow | live).
+            #
+            #   off:    unchanged — write straight to YAML as always.
+            #   shadow: STILL write straight to YAML immediately (zero
+            #           live behavior change) but also record the pick
+            #           in nt_geometry_incubation so promote/reject
+            #           verdicts accumulate for review before any live
+            #           flip.
+            #   live:   hold the candidate as incubating instead of
+            #           writing — UNLESS this symbol has no prior live
+            #           geometry at all (nothing to protect / no
+            #           regression risk), in which case bootstrap
+            #           straight to YAML same as `off` so a brand-new
+            #           symbol isn't stuck with hardcoded defaults for
+            #           a full incubation window.
+            from regime_platform.core.feature_flags import get_geometry_incubation_mode
+            incub_mode = get_geometry_incubation_mode()
+            skip_direct_write = False
+            if incub_mode in ("shadow", "live"):
+                try:
+                    from regime_platform.sweep_orchestrator.geometry_incubation import (
+                        start_incubation,
+                        fetch_baseline_pct_expired,
+                    )
+                    has_prior_geometry = (
+                        await fetch_baseline_pct_expired(symbol) is not None
+                    )
+                    await start_incubation(
+                        symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
+                        asset_class=sym.get("asset_class"),
+                    )
+                    if incub_mode == "live" and has_prior_geometry:
+                        skip_direct_write = True
+                        logger.info(
+                            "[geometry_incubation] %s: LIVE mode — holding new "
+                            "pick (brick=%.4f sl=%d tp=%d) as incubating, "
+                            "prior geometry keeps trading",
+                            symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[geometry_incubation] %s: start_incubation failed (%s: %s) "
+                        "— falling back to direct YAML write",
+                        symbol, type(exc).__name__, exc,
+                    )
+
+            if not skip_direct_write:
+                await self._persist_brick_params_to_yaml(
+                    symbol, best.brick_size, best.sl_bricks, best.tp_bricks,
+                    atr=atr,
+                    asset_class=sym.get("asset_class"),
+                )
+                result.persisted_yaml = True
 
             # ── 8. EV compute with HMM markov (replaces discrete chain) ─
             direction = "short" if "bear" in result.regime_label.lower() else "long"

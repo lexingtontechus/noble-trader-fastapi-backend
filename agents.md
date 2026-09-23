@@ -13,7 +13,7 @@ PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cache
 
 ## Architecture at a Glance
 - **3-layer stack** (Launched via `start.sh`): `main.py` (port 8001 — HMM/Renko/auth), `server.py` (port 8002 — TimesFM), `proxy.py` (port 8000 — gateway).
-- **Sweep Orchestrator** (`regime_platform/sweep_orchestrator/`) — the live signal generator. Light sweep every **15 min** × 14 symbols (default `*/15`; was `*/5` until 2026-09-09); heavy sweep Sunday 20:00 UTC.
+- **Sweep Orchestrator** (`regime_platform/sweep_orchestrator/`) — the live signal generator. Light sweep every **15 min** × 14 symbols (default `*/15`; was `*/5` until 2026-09-09); heavy sweep **daily** 20:00 UTC (`nt_symbol.sweep_cron` default `'0 20 * * *'`, changed from weekly 2026-09-08 migration 142).
 - **EV Engine v5** — 4-source P_win blend: `p_pattern 0.30 / p_regime 0.25 / p_markov_hold_n 0.20 / p_timesfm 0.25`. Public weight API: `set_weights()` / `temp_weights()` / `restore_default_weights()`.
 - **HMM** — 4-state dual GaussianHMM (volatility × trend, `regime_engine.py`) drives `p_regime`. `p_markov_hold_n` currently comes from a separate 5-state multivariate Gaussian HMM (`regime_platform/services/hmm/model.py`, 2026-08-13, v7.7.0) — confirmed numerically unstable (9 unscaled features) and being retired via `MARKOV_SOURCE_MODE` (Part 1 Change B, 2026-08-25; see Key Conventions below).
 - **7-gate qualification chain** in `_process_symbol`: signal_qualifiable, regime_conf_ok, kelly_min_ok, timesfm_available, timesfm_confidence_ok, ev_allowed, p_win_ok.

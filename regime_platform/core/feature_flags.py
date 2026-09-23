@@ -66,6 +66,10 @@ _DEFAULTS: dict[str, Any] = {
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "shadow",
+    "geometry_incubation_mode": "shadow",
+    "geometry_incubation_min_days": 7,
+    "geometry_incubation_min_resolved": 20,
+    "geometry_incubation_max_expiry_regression": 0.10,
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -520,6 +524,55 @@ def get_p_win_in_ev_mode() -> str:
     return str(_load().get(
         "p_win_in_ev_mode", _DEFAULTS["p_win_in_ev_mode"],
     )).lower()
+
+
+def get_geometry_incubation_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-09-23, worklog
+    20260923_GEOMETRY_FORWARD_TEST_SCOPE.md) — forward-test/incubation
+    gate before a heavy-sweep brick geometry pick is written to
+    config/brick_params.yaml.
+
+    off: byte-identical to pre-migration behavior — heavy sweep writes
+    straight to YAML, nt_geometry_incubation is never touched.
+    shadow: heavy sweep STILL writes straight to YAML (zero live
+    behavior change) but every pick is also tracked so promote/reject
+    verdicts can be reviewed before anything gates real writes.
+    live: a new candidate is held as status=incubating (previous live
+    combo keeps trading) until reconcile_incubations() promotes it.
+    """
+    return str(_load().get(
+        "geometry_incubation_mode", _DEFAULTS["geometry_incubation_mode"],
+    )).lower()
+
+
+def get_geometry_incubation_min_days() -> float:
+    try:
+        return float(_load().get(
+            "geometry_incubation_min_days",
+            _DEFAULTS["geometry_incubation_min_days"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["geometry_incubation_min_days"])
+
+
+def get_geometry_incubation_min_resolved() -> int:
+    try:
+        return int(_load().get(
+            "geometry_incubation_min_resolved",
+            _DEFAULTS["geometry_incubation_min_resolved"],
+        ))
+    except (TypeError, ValueError):
+        return int(_DEFAULTS["geometry_incubation_min_resolved"])
+
+
+def get_geometry_incubation_max_expiry_regression() -> float:
+    try:
+        return float(_load().get(
+            "geometry_incubation_max_expiry_regression",
+            _DEFAULTS["geometry_incubation_max_expiry_regression"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["geometry_incubation_max_expiry_regression"])
 
 
 def get_regime_warm_start_mode() -> str:

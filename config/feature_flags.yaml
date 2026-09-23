@@ -539,6 +539,45 @@ min_p_win_bracket: 0.20
 #         fails open (keeps directional EV). Requires p_win_bracket_mode!=off.
 p_win_in_ev_mode: "shadow"
 
+# geometry_incubation_mode (2026-09-23, worklog
+# 20260923_GEOMETRY_FORWARD_TEST_SCOPE.md): off | shadow | live.
+# Forward-test / incubation gate on heavy-sweep brick geometry picks —
+# today write_brick_params() (config/brick_params.py, "the SOLE writer")
+# takes a heavy-sweep combo straight from a single in-sample 90-day grid
+# backtest to config/brick_params.yaml, live on the very next light-sweep
+# tick. No held-out check exists (tests/test_renko_backtest.py still
+# references a walk_forward() removed in v7.3, never rebuilt).
+#   off:    byte-identical to today — heavy sweep writes straight to YAML,
+#           nt_geometry_incubation (migration 165) is never touched.
+#   shadow: heavy sweep STILL writes straight to YAML (zero live behavior
+#           change) but every pick is also tracked in
+#           nt_geometry_incubation so promote/reject verdicts can be
+#           reviewed before anything gates real writes.
+#   live:   a new candidate is held as status=incubating (previous live
+#           combo keeps trading) until reconcile_incubations() promotes it
+#           per the gates below; only then is write_brick_params() called.
+geometry_incubation_mode: "shadow"
+# Minimum wall-clock days a candidate must incubate before it is eligible
+# for promotion, regardless of sample count. Heavy sweep runs DAILY
+# (nt_symbol.sweep_cron default '0 20 * * *', changed from weekly
+# 2026-09-08 migration 142) — 7 days is deliberately NOT tied to sweep
+# cadence; it's a calendar-week floor so incubation sees at least one
+# full weekday/weekend cycle of market conditions before a promotion
+# decision, not just "wait for the next sweep run" (which would be as
+# short as 1 day and too thin a forward sample).
+geometry_incubation_min_days: 7
+# Minimum forward-RESOLVED (tp_hit/sl_hit) nt_signal_sim rows under the
+# exact candidate geometry before promotion — deliberately separate from
+# heavy_sweep_grid.min_trades (in-sample backtest count); this is
+# out-of-sample count. 20 mirrors the platform's existing calibration
+# min-episode conventions (nt_calibration_bias_by_bucket, drift monitor).
+geometry_incubation_min_resolved: 20
+# Reject a candidate whose forward pct_expired regresses more than this
+# many percentage points versus the previous live combo's own
+# baseline_pct_expired — a candidate should never legitimately go live if
+# it resolves worse than what it is replacing.
+geometry_incubation_max_expiry_regression: 0.10
+
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
 # regime_label flapping tick-to-tick. RegimeHMM.fit() rebuilds and
