@@ -51,15 +51,23 @@ Pass rate at candidate `min_p_win_bracket`:
 | **nt_roadmap tracking** | `p_win_in_ev_mode` + `p_win_bracket_mode` rows (pending, review_at 2026-10-06) |
 | **Replay distribution** | quantiles + pass-rate table in `replay_p_win_bracket_gate.py` |
 
-**Still not built:** R3 cell-level enforcement · `min_p_win_bracket` 0.45→0.20 · heavy-sweep bracket · nobletradingapp aligned-baseline UI.
+**Status 2026-09-23** — all of the above are now built (see `20260923_L1_STATUS_AND_NT_ROADMAP.md`):
+
+| Item | Status |
+|---|---|
+| `min_p_win_bracket: 0.20` | **done** (P0, feature_flags.yaml) |
+| Migration 161 | **applied** (user) |
+| R3 cell-level enforcement | **done** (m162) |
+| nobletradingapp aligned + thin_evidence | **done** |
+| Live expectancy table | **done** (m163) |
+| Heavy-sweep bracket | **done** |
+| Supabase timeout/retry + log hygiene | **done** |
 
 ---
 
-## 4. Next priority (on completion)
+## 4. Next priority (updated 2026-09-23)
 
-1. **P0** — Set `min_p_win_bracket: 0.20`, deploy, ≥7d shadow logs (unblocks every flip).
-2. **P0** — Apply migration 161 on Supabase.
-3. **P1** — R3 cell-level enforcement (symbol×side×vol_tier×bucket, single correction owner).
-4. **P1** — nobletradingapp: `v_paper_vs_equalwt_aligned` + `thin_evidence` on L1 board.
-5. **P2** — Live expectancy table → `p_win_in_ev_mode: live`.
-6. **P2** — Heavy-sweep bracket parity (after light live).
+1. **Accumulate ≥7d** of `nt_live_expectancy_daily` at 0.20 (weekly reachability job).
+2. **Flip bar:** `bracket_accept` vs `all_qualified` → expired%↓ **and** expectancy_r↑/flat.
+3. Then `p_win_in_ev_mode: live` → +7d → `p_win_bracket_mode: live` if |bias_raw| improves.
+4. Optional: `asyncio.Semaphore(4)` on fire-and-forget shadow writers if ReadTimeouts persist.
