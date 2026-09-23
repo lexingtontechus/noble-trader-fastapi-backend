@@ -129,20 +129,31 @@ async def log_regime_entry(
     }
     if venue:
         payload["venue"] = venue
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                _url("nt_regime_log"),
-                headers={**_headers(), "Prefer": "return=minimal"},
-                json=payload,
-            )
-            if not resp.is_success:
-                logger.warning(
-                    "log_regime_entry %s: HTTP %d — %s",
-                    symbol, resp.status_code, resp.text[:300],
+    # 2026-09-23: 5s→15s + one retry (ReadTimeout under light-sweep write
+    # pile-up). Log type+repr — ReadTimeout('') stringifies empty.
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    _url("nt_regime_log"),
+                    headers={**_headers(), "Prefer": "return=minimal"},
+                    json=payload,
                 )
-    except Exception as exc:
-        logger.warning("log_regime_entry %s failed: %s", symbol, exc)
+                if not resp.is_success:
+                    logger.warning(
+                        "log_regime_entry %s: HTTP %d — %s",
+                        symbol, resp.status_code, resp.text[:300],
+                    )
+                return
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    logger.warning(
+        "log_regime_entry %s failed: %s: %r",
+        symbol, type(last_exc).__name__ if last_exc else "unknown", last_exc,
+    )
 
 
 # ─── Schema whitelists ───────────────────────────────────────────
@@ -734,24 +745,33 @@ async def upsert_calibration_bias_by_cell(rows: list[dict[str, Any]]) -> None:
         logger.debug("upsert_calibration_bias_by_cell: no rows — skipping")
         return
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{_url('nt_calibration_bias_by_cell')}?on_conflict=symbol,side,vol_tier,distance_atr_bucket",
-                headers={
-                    **_headers(),
-                    "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates",
-                },
-                json=clean_rows,
-            )
-            if not resp.is_success:
-                logger.error(
-                    "upsert_calibration_bias_by_cell: insert HTTP %d — %s",
-                    resp.status_code, resp.text[:300],
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{_url('nt_calibration_bias_by_cell')}?on_conflict=symbol,side,vol_tier,distance_atr_bucket",
+                    headers={
+                        **_headers(),
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=merge-duplicates",
+                    },
+                    json=clean_rows,
                 )
-    except Exception as exc:
-        logger.error("upsert_calibration_bias_by_cell: insert failed: %s", exc)
+                if not resp.is_success:
+                    logger.error(
+                        "upsert_calibration_bias_by_cell: insert HTTP %d — %s",
+                        resp.status_code, resp.text[:300],
+                    )
+                return
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    logger.error(
+        "upsert_calibration_bias_by_cell: insert failed: %s: %r",
+        type(last_exc).__name__ if last_exc else "unknown", last_exc,
+    )
 
 
 async def fetch_calibration_bias_cell(
@@ -771,21 +791,28 @@ async def fetch_calibration_bias_cell(
         "distance_atr_bucket": f"eq.{distance_atr_bucket}",
         "limit": "1",
     }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                _url("nt_calibration_bias_by_cell"), headers=_headers(), params=params,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as exc:
-        logger.warning(
-            "fetch_calibration_bias_cell %s/%s failed: %s", symbol, side, exc,
-        )
-        return None
-    if not isinstance(data, list) or not data:
-        return None
-    return data[0]
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _url("nt_calibration_bias_by_cell"), headers=_headers(), params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            if not isinstance(data, list) or not data:
+                return None
+            return data[0]
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    logger.warning(
+        "fetch_calibration_bias_cell %s/%s failed: %s: %r",
+        symbol, side,
+        type(last_exc).__name__ if last_exc else "unknown", last_exc,
+    )
+    return None
 
 
 NT_LIVE_EXPECTANCY_DAILY_COLUMNS: frozenset[str] = frozenset({
@@ -802,24 +829,33 @@ async def upsert_live_expectancy_daily(rows: list[dict[str, Any]]) -> None:
     clean_rows = [_filter_payload(r, NT_LIVE_EXPECTANCY_DAILY_COLUMNS) for r in rows]
     if not clean_rows:
         return
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{_url('nt_live_expectancy_daily')}?on_conflict=day,cohort",
-                headers={
-                    **_headers(),
-                    "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates",
-                },
-                json=clean_rows,
-            )
-            if not resp.is_success:
-                logger.error(
-                    "upsert_live_expectancy_daily: insert HTTP %d — %s",
-                    resp.status_code, resp.text[:300],
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{_url('nt_live_expectancy_daily')}?on_conflict=day,cohort",
+                    headers={
+                        **_headers(),
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=merge-duplicates",
+                    },
+                    json=clean_rows,
                 )
-    except Exception as exc:
-        logger.error("upsert_live_expectancy_daily: insert failed: %s", exc)
+                if not resp.is_success:
+                    logger.error(
+                        "upsert_live_expectancy_daily: insert HTTP %d — %s",
+                        resp.status_code, resp.text[:300],
+                    )
+                return
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    logger.error(
+        "upsert_live_expectancy_daily: insert failed: %s: %r",
+        type(last_exc).__name__ if last_exc else "unknown", last_exc,
+    )
 
 
 NT_ENTRY_DRIFT_COLUMNS: frozenset[str] = frozenset({
@@ -1478,57 +1514,69 @@ async def record_markov_shadow_compare(
     """
     if not settings.SUPABASE_URL:
         return
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                _url("nt_markov_source_shadow"),
-                headers=_headers(),
-                params={
-                    "select": "n_compared,n_state_disagree,sum_abs_p_up_diff",
-                    "symbol": f"eq.{symbol}",
-                    "limit": "1",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            prev = data[0] if isinstance(data, list) and data else {}
-
-            row = _filter_payload({
-                "symbol": symbol,
-                "n_compared": int(prev.get("n_compared", 0)) + 1,
-                "n_state_disagree": int(prev.get("n_state_disagree", 0)) + (0 if state_agree else 1),
-                "sum_abs_p_up_diff": round(
-                    float(prev.get("sum_abs_p_up_diff", 0.0)) + abs(float(p_up_diff)), 6,
-                ),
-                "last_legacy_state": legacy_state,
-                "last_trend_hmm_state": trend_hmm_state,
-                # updated_at (2026-08-27 fix): the column's DEFAULT now()
-                # only applies on INSERT — an upsert-on-conflict never
-                # touches a column absent from the payload, so without
-                # this the timestamp silently froze at first-insert time
-                # forever, undermining the exact "how fresh is this row"
-                # check this table exists to support. Confirmed live:
-                # n_compared kept incrementing for hours while
-                # updated_at stayed pinned to the very first write.
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }, NT_MARKOV_SOURCE_SHADOW_COLUMNS)
-
-            resp = await client.post(
-                f"{_url('nt_markov_source_shadow')}?on_conflict=symbol",
-                headers={
-                    **_headers(),
-                    "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates",
-                },
-                json=row,
-            )
-            if not resp.is_success:
-                logger.error(
-                    "record_markov_shadow_compare: upsert HTTP %d — %s",
-                    resp.status_code, resp.text[:300],
+    # 2026-09-23: 5s→15s + one retry; WARNING (diagnostic, miss is OK).
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _url("nt_markov_source_shadow"),
+                    headers=_headers(),
+                    params={
+                        "select": "n_compared,n_state_disagree,sum_abs_p_up_diff",
+                        "symbol": f"eq.{symbol}",
+                        "limit": "1",
+                    },
                 )
-    except Exception as exc:
-        logger.error("record_markov_shadow_compare: failed for %s: %s: %r", symbol, type(exc).__name__, exc)
+                resp.raise_for_status()
+                data = resp.json()
+                prev = data[0] if isinstance(data, list) and data else {}
+
+                row = _filter_payload({
+                    "symbol": symbol,
+                    "n_compared": int(prev.get("n_compared", 0)) + 1,
+                    "n_state_disagree": int(prev.get("n_state_disagree", 0)) + (0 if state_agree else 1),
+                    "sum_abs_p_up_diff": round(
+                        float(prev.get("sum_abs_p_up_diff", 0.0)) + abs(float(p_up_diff)), 6,
+                    ),
+                    "last_legacy_state": legacy_state,
+                    "last_trend_hmm_state": trend_hmm_state,
+                    # updated_at (2026-08-27 fix): the column's DEFAULT now()
+                    # only applies on INSERT — an upsert-on-conflict never
+                    # touches a column absent from the payload, so without
+                    # this the timestamp silently froze at first-insert time
+                    # forever, undermining the exact "how fresh is this row"
+                    # check this table exists to support. Confirmed live:
+                    # n_compared kept incrementing for hours while
+                    # updated_at stayed pinned to the very first write.
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }, NT_MARKOV_SOURCE_SHADOW_COLUMNS)
+
+                resp = await client.post(
+                    f"{_url('nt_markov_source_shadow')}?on_conflict=symbol",
+                    headers={
+                        **_headers(),
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=merge-duplicates",
+                    },
+                    json=row,
+                )
+                if not resp.is_success:
+                    logger.warning(
+                        "record_markov_shadow_compare: upsert HTTP %d — %s",
+                        resp.status_code, resp.text[:300],
+                    )
+                return
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    # Diagnostic only (MARKOV_SOURCE_MODE shadow) — a missed increment is
+    # acceptable; do not escalate to ERROR.
+    logger.warning(
+        "record_markov_shadow_compare: failed for %s: %s: %r",
+        symbol, type(last_exc).__name__ if last_exc else "unknown", last_exc,
+    )
 
 
 NT_TREND_PROBS_GATE_SHADOW_COLUMNS: frozenset[str] = frozenset({

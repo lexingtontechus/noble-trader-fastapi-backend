@@ -172,24 +172,37 @@ async def lookup_bracket_probs(
     if not settings.SUPABASE_URL:
         return _empty("no_supabase", vol_tier)
 
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                _url("nt_bracket_reachability"),
-                headers=_headers(),
-                params={
-                    "select": "n,n_stored,n_proxy,pct_hit_tp,pct_hit_sl,pct_expired,atr_source",
-                    "symbol": f"eq.{symbol}",
-                    "vol_tier": f"eq.{vol_tier}",
-                    "distance_atr_bucket": f"eq.{bucket}",
-                    "signal": "eq.all",
-                    "limit": "1",
-                },
-            )
-            resp.raise_for_status()
-            rows = resp.json()
-    except Exception as exc:
-        logger.warning("lookup_bracket_probs %s: fetch failed: %s", symbol, exc)
+    rows = None
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            # 2026-09-23: 8s→15s + one retry (ReadTimeout under sweep write load).
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _url("nt_bracket_reachability"),
+                    headers=_headers(),
+                    params={
+                        "select": "n,n_stored,n_proxy,pct_hit_tp,pct_hit_sl,pct_expired,atr_source",
+                        "symbol": f"eq.{symbol}",
+                        "vol_tier": f"eq.{vol_tier}",
+                        "distance_atr_bucket": f"eq.{bucket}",
+                        "signal": "eq.all",
+                        "limit": "1",
+                    },
+                )
+                resp.raise_for_status()
+                rows = resp.json()
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 1:
+                continue
+    if rows is None:
+        logger.warning(
+            "lookup_bracket_probs %s: fetch failed: %s: %r",
+            symbol,
+            type(last_exc).__name__ if last_exc else "unknown", last_exc,
+        )
         return _empty("fetch_failed", vol_tier)
 
     if not isinstance(rows, list) or not rows:
