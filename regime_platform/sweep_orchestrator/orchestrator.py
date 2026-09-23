@@ -892,6 +892,7 @@ def _build_signal_sim_payload(
     bracket_bucket: str | None = None,
     bracket_vol_tier: str | None = None,
     bracket_gate_shadow: bool | None = None,
+    qualified_geometry_shadow: bool | None = None,
     tp_distance_atr: float | None = None,
     sl_distance_atr: float | None = None,
     long_lag_hat: float | None = None,
@@ -1009,6 +1010,8 @@ def _build_signal_sim_payload(
         payload["bracket_vol_tier"] = bracket_vol_tier
     if bracket_gate_shadow is not None:
         payload["bracket_gate_shadow"] = bool(bracket_gate_shadow)
+    if qualified_geometry_shadow is not None:
+        payload["qualified_geometry_shadow"] = bool(qualified_geometry_shadow)
     if tp_distance_atr is not None:
         payload["tp_distance_atr"] = round(float(tp_distance_atr), 4)
     if sl_distance_atr is not None:
@@ -4325,6 +4328,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     logger.warning("[geo:tuning] %s: %s", symbol, _tune_exc)
 
                 # ── B: light-path geometry QUALIFIED gate (2026-09-20) ──
+                _qualified_geometry_shadow: bool | None = None
                 try:
                     _light_gate = get_light_publish_geometry_gate()
                     _risk_cap_b = get_dynamic_atr_risk_cap()
@@ -4349,12 +4353,16 @@ class SweepOrchestrator(HeavySweepMixin):
                                 _p_win_bracket, _min_br, _gm.tp_distance_atr,
                             )
                         else:
+                            # B2 stamp (2026-09-23): persist for B5 reject-rate SQL
+                            _qualified_geometry_shadow = True
                             logger.info(
                                 "[light:geometry] %s SHADOW would reject — risk=%s "
                                 "p_win_bracket=%s tp_atr=%s (still qualified=%s)",
                                 symbol, _gm.geometry_risk_hat, _p_win_bracket,
                                 _gm.tp_distance_atr, qualified,
                             )
+                    elif qualified and _light_gate == "shadow":
+                        _qualified_geometry_shadow = False
                 except Exception as _lg_exc:
                     logger.warning("[light:geometry] %s: %s", symbol, _lg_exc)
 
@@ -4386,6 +4394,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     bracket_bucket=_bracket_bucket,
                     bracket_vol_tier=_bracket_vol_tier,
                     bracket_gate_shadow=_bracket_gate_shadow,
+                    qualified_geometry_shadow=_qualified_geometry_shadow,
                     tp_distance_atr=_gm.tp_distance_atr,
                     sl_distance_atr=_gm.sl_distance_atr,
                     long_lag_hat=_gm.long_lag_hat,
