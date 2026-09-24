@@ -1,0 +1,122 @@
+EURUSD: 10751 bars 2025-01-01..2026-09-23 · labelled 10552 · volume coverage 100.0%
+XAUUSD: 10223 bars 2025-01-01..2026-09-23 · labelled 10024 · volume coverage 100.0%
+US500: 10195 bars 2025-01-01..2026-09-23 · labelled 9996 · volume coverage 100.0%
+BTCUSD: 6377 bars 2026-01-01..2026-09-23 · labelled 6178 · volume coverage 100.0%
+USDJPY: 10753 bars 2025-01-01..2026-09-23 · labelled 10554 · volume coverage 100.0%
+
+== 1. debounce calibration (live post-debounce hourly cell flip rate = 0.474) ==
+  n_confirm=1: flip/h 0.665
+  n_confirm=2: flip/h 0.110
+  n_confirm=3: flip/h 0.034
+  n_confirm=4: flip/h 0.014
+  n_confirm=5: flip/h 0.006
+  n_confirm=6: flip/h 0.003
+  → n_confirm = 2 (flip/h 0.110 vs live 0.474) [override]
+
+== 2. edge curves: m_h = d·(C[t+h]−C[t])/ATR, all signals (pooled, symbol-day clusters) ==
+  h= 1: mean +0.0018 ATR [-0.0181,+0.0207] · hit rate 0.501 · n 47299
+  h= 4: mean +0.0182 ATR [-0.0615,+0.0997] · hit rate 0.498 · n 47284
+  h=12: mean +0.0314 ATR [-0.1690,+0.2312] · hit rate 0.496 · n 47244
+  h=24: mean +0.0300 ATR [-0.2935,+0.3502] · hit rate 0.496 · n 47184
+  h=48: mean -0.0508 ATR [-0.5515,+0.4722] · hit rate 0.490 · n 47064
+  per symbol:
+                m1      m4     m12     m24     m48
+    symbol                                        
+    BTCUSD  0.0045  0.0694  0.3457  0.7314  1.3650
+    EURUSD -0.0027 -0.0504 -0.2267 -0.2081  0.1343
+    US500   0.0288  0.1353  0.1414 -0.1254 -0.3451
+    USDJPY -0.0094 -0.0165 -0.0229 -0.1974 -0.6569
+    XAUUSD -0.0104 -0.0216  0.0568  0.2434 -0.1839
+  pooled by regime cell (m4, m24):
+                           m4           m24      
+                         mean count    mean count
+    cell                                         
+    high_vol|bear     -0.0342  5285 -0.3112  5269
+    high_vol|bull      0.1947  5843  0.3742  5835
+    low_vol|bear      -0.0819  4735 -0.3682  4708
+    low_vol|bull      -0.0208  5274  0.3533  5261
+    med_high_vol|bear -0.0841  5990 -0.9240  5990
+    med_high_vol|bull  0.2344  6302  1.2250  6291
+    med_low_vol|bear  -0.0903  6276 -0.7455  6266
+    med_low_vol|bull  -0.0008  7579  0.4291  7564
+
+== null: circular label shift (≥14d offset), 1000 draws ==
+  null done in 55s
+  V1 h=4: observed +0.0182 · null 95% [-0.0843,+0.0855] · p_null 0.363 · p_CI(one-sided) 0.330
+  V1 h=24: observed +0.0300 · null 95% [-0.3677,+0.3930] · p_null 0.482 · p_CI(one-sided) 0.445
+
+== 3. V2 edge vs regime age (m24 demeaned within symbol; left-censored runs excluded) ==
+  pooled slope per log(1+age): -0.1270 [-0.4235,+0.1714] · p(slope≥0) 0.198
+  per-symbol slopes: BTCUSD -0.3311 · EURUSD +0.1288 · US500 +0.0198 · USDJPY -0.4634 · XAUUSD -0.0457 → 3/5 negative
+  edge curves by age band (mean m_h, ATR units; rows = age at signal, cols = horizon):
+                m1      m4     m12     m24     m48      n
+    0–6h   -0.0004  0.0413  0.0549  0.1284 -0.0419  24632
+    6–12h   0.0273  0.0848  0.0931  0.0857 -0.2217  11057
+    12–24h -0.0219 -0.1094  0.0437 -0.0314  0.4108   6908
+    24–48h -0.0252 -0.1358 -0.3705 -0.3890  0.5211   1724
+    ≥48h    0.2279  0.5148 -0.4807 -3.0326 -0.8246     63
+
+== 4. V3 flow field (symbol-level plane point, regional mean velocity vs null) ==
+  edge_rising      |v̄| 0.2133 · null median 0.2165 · p 0.560
+  edge_decaying    |v̄| 0.2890 · null median 0.3234 · p 0.932
+  edge_recovering  |v̄| 0.3292 · null median 0.3217 · p 0.379
+  no_edge          |v̄| 0.2488 · null median 0.2208 · p 0.071
+  steps: 30343 · within-run 92.7% · across regime exits 7.3%
+  plane occupancy: edge_rising 25%, edge_decaying 26%, edge_recovering 25%, no_edge 24%
+
+== 5. V4 regime-exit hazard (clock shifted by n_confirm−1 = 1) ==
+  runs (not left-censored): 5150 · observed ends 4766 · median length 6 bars
+  logistic hazard slope on log(1+age'): -0.0046 [-0.0366,+0.0283] (falling hazard)
+  empirical hazard by age band:
+                ev  at_risk  hazard_per_h
+    0–6h    2386.0  19785.0        0.1206
+    6–12h   1350.0  11086.0        0.1218
+    12–24h   835.0   6790.0        0.1230
+    24–48h   190.0   1635.0        0.1162
+    ≥48h       5.0     58.0        0.0862
+  KS vs shifted geometric EURUSD: D 0.026 · p 0.084 · n 1060
+  KS vs shifted geometric XAUUSD: D 0.016 · p 0.574 · n 980
+  KS vs shifted geometric US500: D 0.024 · p 0.177 · n 980
+  KS vs shifted geometric BTCUSD: D 0.032 · p 0.094 · n 681
+  KS vs shifted geometric USDJPY: D 0.018 · p 0.430 · n 1065
+
+== exit compass (completed runs, by run length) ==
+    band_lab    n  vol_up  vol_down  dir_flip  both
+        0–6h 1988   0.293     0.287     0.249 0.172
+       6–12h 1555   0.265     0.283     0.206 0.246
+      12–24h  999   0.251     0.267     0.201 0.280
+      24–48h  217   0.240     0.290     0.221 0.249
+        ≥48h    7   0.000     0.429     0.000 0.571
+
+== P1 verdicts (Holm over V1–V4) ==
+  V1 edge exists           m₄ +0.018 / m₂₄ +0.030 ATR         Holm p  1.000 → fail
+  V2 decays with age       slope -0.127, 3/5 neg              Holm p  0.792 → fail
+  V3 flow has structure    0/4 regions                        Holm p  1.000 → fail
+  V4 regimes age           hazard slope -0.005, KS 0/5        Holm p  1.000 → fail
+
+== 6. factor panel (§3.8, descriptive — V7 is P2) ==
+  coverage / Spearman ρ with log(1+regime age) [collinearity preview]:
+    roc_1_atr        cov 100% · ρ(age) -0.00
+    roc_4_atr        cov 100% · ρ(age) -0.00
+    roc_24_atr       cov 100% · ρ(age) +0.00
+    accel_4          cov 100% · ρ(age) -0.00
+    stretch_ema20    cov 100% · ρ(age) +0.00
+    stretch_ema50    cov 100% · ρ(age) -0.00
+    efficiency_24    cov 100% · ρ(age) -0.02
+    atr_ratio_run    cov 100% · ρ(age) -0.08
+    dist_run_atr     cov 100% · ρ(age) -0.02
+    bb_width_pct     cov 99% · ρ(age) -0.03
+    parkinson_24     cov 100% · ρ(age) +0.01
+    clv              cov 100% · ρ(age) -0.00
+    rel_volume       cov 99% · ρ(age) -0.01
+    cmf_24           cov 100% · ρ(age) -0.00
+    effort_result    cov 99% · ρ(age) -0.02
+    wick_up          cov 100% · ρ(age) +0.00
+    wick_dn          cov 100% · ρ(age) +0.01
+    range_atr        cov 100% · ρ(age) +0.02
+    h_to_event       cov 100% · ρ(age) -0.01
+    h_since_event    cov 100% · ρ(age) -0.05
+
+artefacts: C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.cache\kairos/p1_summary.json, p1_matrix_cell_age.csv, p1_factor_panel_*.pkl, docs/scopes/assets/20260924_kairos_edge_plane_discovery.html
+runtime 76s
+exit=0

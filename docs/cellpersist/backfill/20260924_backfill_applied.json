@@ -1,0 +1,68 @@
+{
+ "labels": [
+  {
+   "signal_id": "6672e6d8-e2f9-4c2f-bfb9-2cb888eb0436",
+   "symbol": "XAGUSD",
+   "ts": "2026-09-24 15:02:46.408764+00",
+   "gate_outcome": "gate_fail",
+   "failed_gates": "kelly_min_ok",
+   "suppress_reason": null
+  },
+  {
+   "signal_id": "9e51cac8-5789-4d63-b6ea-ab1d5d1e9434",
+   "symbol": "EURUSD",
+   "ts": "2026-09-24 18:01:03.232348+00",
+   "gate_outcome": "suppressed",
+   "failed_gates": null,
+   "suppress_reason": "cooldown_open"
+  },
+  {
+   "signal_id": "f1ab4fce-42f3-4446-86ce-2b98c77ece0f",
+   "symbol": "BTCUSD",
+   "ts": "2026-09-24 21:45:20.383946+00",
+   "gate_outcome": "gate_fail",
+   "failed_gates": "ev_allowed,kelly_min_ok,p_win_ok,regime_conf_ok",
+   "suppress_reason": null
+  }
+ ],
+ "sweep_result": [
+  {
+   "id": 174826,
+   "symbol": "US30USD",
+   "sweep_timestamp": "2026-09-23 17:01:19.144+00"
+  },
+  {
+   "id": 174827,
+   "symbol": "AUDUSD",
+   "sweep_timestamp": "2026-09-23 19:00:21.841+00"
+  },
+  {
+   "id": 174828,
+   "symbol": "US30USD",
+   "sweep_timestamp": "2026-09-23 19:01:27.588+00"
+  },
+  {
+   "id": 174829,
+   "symbol": "AUDUSD",
+   "sweep_timestamp": "2026-09-24 16:00:25.52+00"
+  },
+  {
+   "id": 174830,
+   "symbol": "US500",
+   "sweep_timestamp": "2026-09-24 16:01:41.39+00"
+  },
+  {
+   "id": 174831,
+   "symbol": "BTCUSD",
+   "sweep_timestamp": "2026-09-24 18:45:26.136+00"
+  }
+ ],
+ "regime_log": [
+  {
+   "id": 254095,
+   "symbol": "AUDUSD",
+   "detected_at": "2026-09-24 21:45:13.6+00",
+   "regime": "med_low_vol_bear"
+  }
+ ]
+}

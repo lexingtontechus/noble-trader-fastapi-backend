@@ -1,0 +1,48 @@
+........................................................................ [  6%]
+........................................................................ [ 12%]
+........................................................................ [ 18%]
+........................................................................ [ 24%]
+.....................................................ssssssss.....ss.... [ 30%]
+........................................................................ [ 36%]
+........................................................................ [ 42%]
+........................................................................ [ 48%]
+........................................................................ [ 54%]
+........................................................................ [ 60%]
+........................................................................ [ 66%]
+........................................................................ [ 72%]
+...............................sssssssssss.............................. [ 78%]
+........................................................................ [ 85%]
+........................................................................ [ 91%]
+........................................................................ [ 97%]
+.................................                                        [100%]
+============================== warnings summary ===============================
+tests/test_backtest.py: 4475 warnings
+tests/test_hmm_model.py: 27 warnings
+tests/test_meta_regime_model.py: 32 warnings
+tests/test_meta_regime_shadow_wiring.py: 6 warnings
+tests/test_regime_stability.py: 274 warnings
+tests/test_regime_warm_start.py: 353 warnings
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.venv\Lib\site-packages\hmmlearn\utils.py:27: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    a_sum.shape = shape
+
+tests/test_degeneracy_backtest.py::test_audusd_degeneracy_recovery
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.venv\Lib\site-packages\_pytest\python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/test_degeneracy_backtest.py::test_audusd_degeneracy_recovery returned <class 'tuple'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_uses_raw_fetcher_in_raw_mode
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_does_not_use_enforced_fetcher_in_raw_mode
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_calibrated_symbol_upserts_state_action_none
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_overconfident_writes_three_actions
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_bayesian_shrink_uses_raw_pwin
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_standard_mode_uses_enforced_fetcher
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\regime_platform\sweep_orchestrator\eod_correction.py:403: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    f"{_settings.SUPABASE_URL.rstrip('/')}/rest/v1/nt_signal_sim",
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1164 passed, 21 skipped, 5174 warnings in 130.92s (0:02:10)
+exit=0

@@ -40,6 +40,8 @@ H = (1, 4, 12, 24, 48)
 FACTORS = ("rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps")
 TIERS = ("all", "qualified", "suppressed", "gate_fail", "unknown")
 EXTREME_P = 0.001
+MATURE_H = 84          # 48h horizon + nightly backfill lag + margin
+MIN_COVER = 0.95       # matured-cohort drift coverage required before any edge stat
 RNG = np.random.default_rng(20260924)
 
 
@@ -168,7 +170,7 @@ def main() -> int:
     ap.add_argument("--week-end", default="", help="UTC date (YYYY-MM-DD); default = now")
     ap.add_argument("--n-null", type=int, default=1000)
     ap.add_argument("--n-boot", type=int, default=1000)
-    ap.add_argument("--out", default=str(ROOT / ".cache/kairos/weekly"))
+    ap.add_argument("--out", default=str(ROOT / "docs/cellpersist/weekly"))
     a = ap.parse_args()
     t0 = time.time()
     now = datetime.now(timezone.utc)
@@ -198,11 +200,12 @@ def main() -> int:
     stamped = this_wk[this_wk.hr >= datetime(2026, 9, 24, 8, tzinfo=timezone.utc)]
     cov = {f: float(stamped[f].notna().mean()) if len(stamped) else np.nan for f in FACTORS}
     tier_cov = float((stamped.tier != "unknown").mean()) if len(stamped) else np.nan
-    mat48 = ep[ep.hr <= now - timedelta(days=3)]
-    mat24 = ep[ep.hr <= now - timedelta(days=2)]
-    dcov = {"m12": float(mat24.m12.notna().mean()) if len(mat24) else np.nan,
-            "m24": float(mat24.m24.notna().mean()) if len(mat24) else np.nan,
-            "m48": float(mat48.m48.notna().mean()) if len(mat48) else np.nan}
+    # Matured cohort: the resolver + nightly kairos backfill (49–199h window)
+    # have both had a pass. Younger rows only carry drift if they resolved
+    # early (TP/SL touch) — that subset is geometry-selected and must never
+    # be read as edge.
+    mat = ep[ep.hr <= now - timedelta(hours=MATURE_H)]
+    dcov = {k: float(mat[k].notna().mean()) if len(mat) else np.nan for k in ("m12", "m24", "m48")}
     P("| Check | Value | Target | Status |\n|---|---|---|---|")
     for f, v in cov.items():
         ok = np.isfinite(v) and v >= (0.90 if f == "spread_bps" else 0.95)
@@ -229,6 +232,46 @@ def main() -> int:
         P(f"| median run length (h) | {fmt(float(done.length_h.median()), 1, False)} | – | – |")
         P(f"| (symbol, cell) pairs with ≥ 30 completed runs | {(per_cell >= 30).sum()} / {len(per_cell)} | pooling required below 30 | – |")
         P(f"| runs starting after a data gap (restart/weekend) this week | {gap_wk} | – | – |")
+    # Sweep cadence: light sweeps fire every 15 min ON the hour (:00/:15/:30/:45).
+    # A slot is "covered" when it has ≥1 light-sweep row; coverage is measured
+    # per 15-min slot, never from gaps between consecutive rows (a 15-min gap
+    # is the normal cadence, not a miss).
+    try:
+        sl = _get("nt_signal_sim", "ts,symbol", {
+            "source": "eq.sweep-light",
+            "ts": f"gte.{week_start.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            "order": "ts.asc"})
+        sdf = pd.DataFrame(sl)
+    except Exception as exc:  # noqa: BLE001
+        sdf = pd.DataFrame()
+        P(f"| sweep cadence | – | – | ⚠️ query failed: {type(exc).__name__} |")
+    if not sdf.empty:
+        st = pd.to_datetime(sdf.ts, utc=True, format="ISO8601")
+        got = set(st.dt.floor("15min"))
+        per_slot = sdf.assign(slot=st.dt.floor("15min")).groupby("slot").symbol.nunique()
+        lo = max(pd.Timestamp(week_start), st.min().floor("15min"))
+        hi = (pd.Timestamp(week_end) - pd.Timedelta(minutes=15)).floor("15min")
+        # Weekday slots only (Fri 21:00 → Sun 21:00 UTC excluded: FX/indices
+        # closed, so weekend coverage is not a health signal).
+        exp = [s for s in pd.date_range(lo, hi, freq="15min")
+               if not (s.dayofweek == 5 or (s.dayofweek == 4 and s.hour >= 21)
+                       or (s.dayofweek == 6 and s.hour < 21))]
+        miss = [s for s in exp if s not in got]
+        runs_m, cur = [], []
+        for s in miss:
+            if cur and s - cur[-1] != pd.Timedelta(minutes=15):
+                runs_m.append(cur)
+                cur = []
+            cur.append(s)
+        if cur:
+            runs_m.append(cur)
+        txt = "; ".join(f"{r[0]:%m-%d %H:%M}–{r[-1] + pd.Timedelta(minutes=15):%H:%M} ({len(r)})" for r in runs_m) or "none"
+        P(f"| light-sweep 15-min slots covered (weekday) | {len(exp) - len(miss)} / {len(exp)} | 100% | "
+          f"{'✅' if not miss else '⚠️ uncovered: ' + txt} |")
+        partial = int((per_slot < per_slot.max()).sum())
+        P(f"| slots with fewer symbols than the max ({int(per_slot.max())}) | {partial} | – | – |")
+        if miss:
+            flags.append(f"sweep slots uncovered {len(miss)}")
     P("")
 
     # B. population -----------------------------------------------------
@@ -240,14 +283,26 @@ def main() -> int:
     P(f"| **all** | {len(ep)} | {len(this_wk)} | 100% |")
     sup = ep[ep.tier == "suppressed"]
     if len(sup):
-        P("\nSuppression reasons: " + " · ".join(f"{k} {v}" for k, v in sup.suppress_reason.fillna("?").value_counts().items()))
+        # v_kairos_signal_episodes carries suppress_reason from the hour's FIRST
+        # tick; when a later tick was the suppressed one it is NULL there — use
+        # any_cooldown (bool_or over the hour) to name it.
+        rsn = sup.suppress_reason.where(sup.suppress_reason.notna(), np.where(
+            sup.any_cooldown.astype(bool), "cooldown (later tick in hour)", "other (later tick in hour)"))
+        P("\nSuppression reasons: " + " · ".join(f"{k} {v}" for k, v in rsn.value_counts().items()))
     gf = ep[ep.tier == "gate_fail"].failed_gates.dropna().str.split(",").explode()
     if len(gf):
         P("\nFailed gates (gate_fail episodes; one episode can fail several): " + " · ".join(f"`{k}` {v}" for k, v in gf.value_counts().items()))
     P("\n`unknown` = captured before migration-168 stamps (not qualified; suppressed vs gate_fail not recorded).\n")
 
     # C. edge by population ----------------------------------------------
-    P("## C. Geometry-free edge by population (cumulative)\n")
+    P("## C. Geometry-free edge by population (cumulative, matured cohort only)\n")
+    cover_ok = len(mat) > 0 and np.isfinite(dcov["m24"]) and dcov["m24"] >= MIN_COVER
+    if not cover_ok:
+        P(f"⏳ **Not evaluable yet.** Edge statistics use only episodes ≥ {MATURE_H}h old with m₂₄ coverage "
+          f"≥ {MIN_COVER:.0%} (matured: {len(mat)}, m₂₄ coverage {fmt(dcov['m24'], 3, False)}). Drift on younger "
+          f"rows exists only where TP/SL settled early — geometry-selected, not read.\n")
+    ep_all = ep
+    ep = mat.copy() if cover_ok else mat.iloc[0:0].copy()
     for c in ("m4", "m24"):
         ep[f"{c}_dm"] = ep[c] - ep.groupby("symbol")[c].transform("mean")
     P("| Population | n (m24) | m₄ mean [95% CI] | m₂₄ mean [95% CI] | hit rate m₂₄ | P(m₂₄ ≤ 0) |\n|---|---|---|---|---|---|")
@@ -285,7 +340,9 @@ def main() -> int:
     P("")
 
     # D. edge vs regime age (V2 preview) ---------------------------------
-    P("## D. Edge vs regime age: all signals (V2 live preview)\n")
+    P("## D. Edge vs regime age: all signals (V2 live preview, matured cohort)\n")
+    P(f"Regime age at signal, all {len(ep_all)} episodes (descriptive): "
+      + " · ".join(f"{k} {v}" for k, v in band(ep_all.regime_age_h.dropna()).value_counts(sort=False).items()) + "\n")
     s2 = ep[~ep.age_left_censored.fillna(True).astype(bool) & ep.regime_age_h.notna()].copy()
     if len(s2) >= 20:
         s2["band"] = band(s2.regime_age_h)
@@ -333,6 +390,9 @@ def main() -> int:
     # G. summary ---------------------------------------------------------
     P("## G. This week's read\n")
     P("- Data health: " + ("✅ all checks pass" if not any("coverage" in f for f in flags) else "❌ " + "; ".join(f for f in flags if "coverage" in f)))
+    slot_f = [f for f in flags if f.startswith("sweep slots")]
+    if slot_f:
+        P("- Sweep cadence: ⚠️ " + slot_f[0] + " (see A — check on-start logs for restarts)")
     ext = [f for f in flags if "extreme" in f]
     P("- Extreme interim results (p < 0.001): " + ("; ".join(ext) if ext else "none"))
     P(f"- Next: {'W' + str(wk + 1) if wk < 6 else 'G2 decision (pre-registered family, Holm)'}")

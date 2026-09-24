@@ -613,7 +613,7 @@ from the same data).
 ### 12.2 Weekly cadence
 
 Run `scripts/kairos_weekly_check.py` (read-only, about 5 s) each Thursday after 08:00 UTC. The
-report is written to `.cache/kairos/weekly/YYYYMMDD_Wn.md`.
+report is written to `docs/cellpersist/weekly/YYYYMMDD_Wn.md`.
 
 | Week | Ends (Thu 08:00 UTC) | Must pass (data health) | Monitored (descriptive) | Action if it fails |
 |---|---|---|---|---|
@@ -666,4 +666,4 @@ Stop rules at W6:
   The insert fallback drops these along with the Kairos columns if the schema lags.
 - Tests: `tests/test_kairos_capture.py::TestPayloadStamp` (payload plus a static guard that every
   suppression path sets a reason).
-- Weekly report: `scripts/kairos_weekly_check.py` → `.cache/kairos/weekly/`.
+- Weekly report: `scripts/kairos_weekly_check.py` → `docs/cellpersist/weekly/` (index: `docs/cellpersist/README.md`).

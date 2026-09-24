@@ -1,0 +1,20 @@
+{
+ "week": "W1",
+ "week_end": "2026-09-24T23:22:44.674836+00:00",
+ "n_episodes": 0,
+ "flags": [
+  "sweep slots uncovered 45"
+ ],
+ "stamp_coverage": {
+  "rel_volume_1h": 0.9915611814345991,
+  "clv_1h": 0.9915611814345991,
+  "efficiency_24h": 0.9915611814345991,
+  "atr_ratio_run": 0.9915611814345991,
+  "spread_bps": 0.9873417721518988
+ },
+ "drift_coverage": {
+  "m12": NaN,
+  "m24": NaN,
+  "m48": NaN
+ }
+}
