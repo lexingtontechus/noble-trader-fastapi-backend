@@ -47,6 +47,16 @@ logger = logging.getLogger("regime.hmm.quote_fetcher")
 # as /api/price/batch). Larger lists are chunked into groups automatically.
 BATCH_CHUNK_SIZE = 10
 
+# Latest effective spread per internal symbol from the most recent
+# fetch_and_update() (2026-09-24, Kairos v3 P0.5 — stamped as
+# nt_signal_sim.spread_bps; reuses this call, no extra API request).
+_LAST_SPREAD_BPS: dict[str, float] = {}
+
+
+def spread_bps_by_symbol() -> dict[str, float]:
+    """Latest (ask − bid)/mid × 1e4 per internal symbol (copy)."""
+    return dict(_LAST_SPREAD_BPS)
+
 
 # ─── Batched fetch ────────────────────────────────────────────────────────
 
@@ -208,6 +218,8 @@ async def fetch_and_update(
         mid = (bid + ask) / 2.0
         if mid > 0:
             vector[1] = (ask - bid) / mid * 10000.0  # effective_spread_bps
+            if ask > 0 and bid > 0 and ask >= bid:
+                _LAST_SPREAD_BPS[symbol] = float(vector[1])
 
         denom = bid_size + ask_size
         if denom > 0:

@@ -593,6 +593,16 @@ geometry_incubation_max_expiry_regression: 0.10
 # steady state. Getter floors at 7.
 signal_sim_retention_resolved_days: 120
 
+# kairos_mode (2026-09-24, docs/scopes/20260924_KAIROS_V3_SCOPE.md P0,
+# migration 167): off | shadow | live. shadow stamps the geometry-free
+# market-movement capture columns on nt_signal_sim (rel_volume_1h, clv_1h,
+# efficiency_24h, atr_ratio_run, spread_bps) and refreshes the daily
+# economic-calendar cache (.cache/kairos/econ_calendar.json). Zero effect on
+# qualification, sizing, SL/TP or delivery. live is reserved for P3 knobs
+# and currently behaves as shadow. drift_12h/48h_pct are written by the
+# resolver + nightly backfill regardless of this flag (outcome-side data).
+kairos_mode: shadow
+
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
 # regime_label flapping tick-to-tick. RegimeHMM.fit() rebuilds and

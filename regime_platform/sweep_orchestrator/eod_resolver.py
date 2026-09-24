@@ -91,7 +91,8 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "pnl_bricks", "pnl_dollars", "resolved_at",
     # drift_*_pct (migration 121, Phase 2): direction-relative post-entry
     # price drift at fixed horizons, independent of trade outcome.
-    "drift_1h_pct", "drift_4h_pct", "drift_24h_pct",
+    # 12h/48h added 2026-09-24 (Kairos v3 P0.3, migration 167).
+    "drift_1h_pct", "drift_4h_pct", "drift_12h_pct", "drift_24h_pct", "drift_48h_pct",
 })
 
 # Columns of nt_calibration_records we write (mirrors renko/trade_journal.py
@@ -195,18 +196,15 @@ def _drift_fields(
     window: Sequence[float],
     is_buy: bool,
 ) -> dict[str, float | None]:
-    def _drift_at(bar_offset: int) -> float | None:
-        if bar_offset >= len(window) or entry_price == 0:
-            return None
-        close = float(window[bar_offset])
-        signed = (close - entry_price) if is_buy else (entry_price - close)
-        return round(signed / entry_price * 100.0, 4)
+    """Signed % drift at h ∈ {1,4,12,24,48} bars after the entry bar
+    (window[0]). 12h/48h added 2026-09-24 (Kairos v3 P0.3, migration 167).
+    ``window`` is ``closes[:EXPIRY_BARS]`` (indices 0..47), so drift_48h is
+    always None here — the nightly kairos.backfill_drift_horizons pass fills
+    it (and any 12/24h left None by an early TP/SL settle) once the bars
+    exist."""
+    from regime_platform.sweep_orchestrator.kairos import drift_fields
 
-    return {
-        "drift_1h_pct": _drift_at(1),
-        "drift_4h_pct": _drift_at(4),
-        "drift_24h_pct": _drift_at(24),
-    }
+    return drift_fields(entry_price, window, is_buy)
 
 
 def resolve_signal_outcome(
@@ -304,13 +302,6 @@ def _resolve_signal_outcome_legacy(
         mfe = max((entry_price - float(c) for c in walked), default=0.0)
         mae = max((float(c) - entry_price for c in walked), default=0.0)
 
-    def _drift_at(bar_offset: int) -> float | None:
-        if bar_offset >= len(window) or entry_price == 0:
-            return None
-        close = float(window[bar_offset])
-        signed = (close - entry_price) if is_buy else (entry_price - close)
-        return round(signed / entry_price * 100.0, 4)
-
     return {
         "outcome": outcome,
         "exit_price": exit_price,
@@ -318,9 +309,7 @@ def _resolve_signal_outcome_legacy(
         "hold_bars": (exit_idx + 1) if exit_idx is not None else len(window),
         "mfe": round(mfe, 6),
         "mae": round(mae, 6),
-        "drift_1h_pct": _drift_at(1),
-        "drift_4h_pct": _drift_at(4),
-        "drift_24h_pct": _drift_at(24),
+        **_drift_fields(float(entry_price), window, is_buy),
     }
 
 
@@ -609,7 +598,9 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
         "resolved_at": datetime.now(timezone.utc).isoformat(),
         "drift_1h_pct": resolved.get("drift_1h_pct"),
         "drift_4h_pct": resolved.get("drift_4h_pct"),
+        "drift_12h_pct": resolved.get("drift_12h_pct"),
         "drift_24h_pct": resolved.get("drift_24h_pct"),
+        "drift_48h_pct": resolved.get("drift_48h_pct"),
     }, NT_SIGNAL_SIM_COLUMNS)
 
     if not await _patch_signal(sig.get("signal_id"), patch):

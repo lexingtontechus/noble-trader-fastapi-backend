@@ -258,7 +258,12 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # price drift at fixed horizons, written by eod_resolver.py's PATCH
     # (this constant governs capture-time inserts; eod_resolver.py keeps
     # its own local copy in sync for the outcome patch).
-    "drift_1h_pct", "drift_4h_pct", "drift_24h_pct",
+    # 12h/48h added 2026-09-24 (Kairos v3 P0.3, migration 167).
+    "drift_1h_pct", "drift_4h_pct", "drift_12h_pct", "drift_24h_pct", "drift_48h_pct",
+    # Kairos v3 P0.5 (migration 167): geometry-free market-movement stamps
+    # at capture time (kairos.capture_factors). Nullable; only written when
+    # kairos_mode != off.
+    "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -511,7 +516,25 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
     sim_payload["signal_id"] = str(uuid.uuid4())
 
     # Best-effort insert. Failures are logged but don't propagate.
-    await _insert_row("nt_signal_sim", sim_payload)
+    ok = await _insert_row("nt_signal_sim", sim_payload)
+    # Kairos v3 P0.5 fail-open (2026-09-24): if the insert failed and the row
+    # carried Kairos stamps (e.g. Studio deployed before migration 167 was
+    # applied → PGRST204 unknown column), retry once without them so a
+    # schema lag can never cost a signal-sim row.
+    kairos_keys = [k for k in _KAIROS_CAPTURE_KEYS if k in sim_payload]
+    if not ok and kairos_keys:
+        for k in kairos_keys:
+            sim_payload.pop(k, None)
+        logger.warning(
+            "nt_signal_sim insert failed with Kairos stamps — retrying without %s",
+            kairos_keys,
+        )
+        await _insert_row("nt_signal_sim", sim_payload)
+
+
+_KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
+    "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
+)
 
 
 NT_RENKO_BRICKS_COLUMNS: frozenset[str] = frozenset({

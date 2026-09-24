@@ -898,6 +898,7 @@ def _build_signal_sim_payload(
     long_lag_hat: float | None = None,
     geometry_risk_hat: float | None = None,
     long_lag_risk: bool | None = None,
+    kairos: dict[str, float | None] | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1022,6 +1023,14 @@ def _build_signal_sim_payload(
         payload["geometry_risk_hat"] = round(float(geometry_risk_hat), 4)
     if long_lag_risk is not None:
         payload["long_lag_risk"] = bool(long_lag_risk)
+    # Kairos v3 P0.5 (2026-09-24, migration 167): geometry-free
+    # market-movement stamps; only non-None values are written.
+    if kairos:
+        from regime_platform.sweep_orchestrator.kairos import KAIROS_CAPTURE_COLUMNS
+        for k in KAIROS_CAPTURE_COLUMNS:
+            v = kairos.get(k)
+            if v is not None:
+                payload[k] = v
     return payload
 
 
@@ -1211,6 +1220,15 @@ class SweepOrchestrator(HeavySweepMixin):
         # lifecycle (lost on restart, restarts naturally just cold-start
         # each symbol's debouncer again) as everything else in this block.
         self._regime_debouncers: dict[str, RegimeLabelDebouncer] = {}
+        # Kairos v3 P0.5 (2026-09-24): per-symbol regime-cell run tracker
+        # (start ts + ATR at start → atr_ratio_run) and the latest sweep's
+        # 1h OHLCV per symbol (price_fetcher ohlcv_out). In-memory, same
+        # lifecycle as the debouncers above.
+        from regime_platform.sweep_orchestrator.kairos import KairosRunTracker
+        self._kairos_runs = KairosRunTracker()
+        self._kairos_ohlcv: dict[str, list[dict[str, Any]]] = {}
+        # symbol → (run_age_hours, atr_at_run_start) from this tick's update
+        self._kairos_run_state: dict[str, tuple[float | None, float | None]] = {}
         self._regime_trend_ema: dict[str, dict[str, float]] = {}
         # ── Signal cooldown tracking ──────────────────────────────────
         # Maps (symbol, direction) → timestamp of last PUBLISHED signal.
@@ -1530,6 +1548,20 @@ class SweepOrchestrator(HeavySweepMixin):
             trigger=CronTrigger.from_crontab("10 6 * * *"),
             id="trend-regime-daily",
             name="Trend regime refresh (daily)",
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
+        # Kairos v3 daily (2026-09-24, docs/scopes/20260924_KAIROS_V3_SCOPE.md
+        # P0.3/P0.6): economic-calendar cache + drift_{12,24,48}h backfill.
+        # 03:15 UTC — after the 01:17 EOD resolve and clear of the 02:xx
+        # jobs. Registered unconditionally (kairos_mode hot-reloads; the job
+        # itself checks the flag), same reasoning as trend-regime-daily.
+        self._scheduler.add_job(
+            self._run_kairos_daily,
+            trigger=CronTrigger.from_crontab("15 3 * * *"),
+            id="kairos-daily",
+            name="Kairos calendar cache + drift backfill (daily)",
             misfire_grace_time=3600,
             coalesce=True,
         )
@@ -2279,6 +2311,54 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[macro-regime] failed: %s", exc)
 
+    def _kairos_stamp(
+        self, symbol: str, regime_label: str | None, atr: float | None, source: str,
+    ) -> dict[str, float | None] | None:
+        """Kairos v3 P0.5 capture stamps for one nt_signal_sim row
+        (docs/scopes/20260924_KAIROS_V3_SCOPE.md). Light sweep only; None
+        when kairos_mode is off or anything fails (fail-open — a stamp
+        problem never touches the signal itself)."""
+        if source != "sweep-light":
+            return None
+        try:
+            from regime_platform.core.feature_flags import get_kairos_mode
+            if get_kairos_mode() == "off":
+                return None
+            from regime_platform.sweep_orchestrator.kairos import capture_factors
+            _age, atr_start = self._kairos_run_state.get(symbol, (None, None))
+            spread = hmm_quote_fetcher.spread_bps_by_symbol().get(symbol)
+            return capture_factors(
+                self._kairos_ohlcv.get(symbol),
+                atr_now=atr, atr_run_start=atr_start, spread_bps=spread,
+                forming_last=True,
+            )
+        except Exception as exc:
+            logger.debug("[kairos] stamp %s failed: %s", symbol, exc)
+            return None
+
+    async def _run_kairos_daily(self) -> None:
+        """Kairos v3 P0.3 + P0.6 (daily, 03:15 UTC): refresh the economic
+        calendar cache and backfill drift_{12,24,48}h_pct on resolved rows
+        whose later horizons weren't observable at resolve time. Both are
+        best-effort and read-only for trading; calendar refresh respects
+        kairos_mode=off, the drift backfill always runs (outcome data)."""
+        from regime_platform.core.feature_flags import get_kairos_mode
+        from regime_platform.sweep_orchestrator.kairos import (
+            backfill_drift_horizons,
+            refresh_calendar_cache,
+        )
+        if get_kairos_mode() != "off":
+            try:
+                cal = await refresh_calendar_cache()
+                logger.info("[kairos:daily] calendar %s", cal)
+            except Exception as exc:
+                logger.warning("[kairos:daily] calendar failed: %s", exc)
+        try:
+            bf = await backfill_drift_horizons()
+            logger.info("[kairos:daily] drift backfill %s", bf)
+        except Exception as exc:
+            logger.warning("[kairos:daily] drift backfill failed: %s", exc)
+
     async def _run_trend_regime_refresh(self) -> None:
         """Trend filter daily refresh (2026-09-10, worklog
         20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7).
@@ -2566,9 +2646,11 @@ class SweepOrchestrator(HeavySweepMixin):
         valid_timestamps: dict[str, list[float | None]] = {}
 
         try:
+            _ohlcv: dict[str, list[dict[str, Any]]] = {}
             tv_results, tv_timestamps = await fetch_tradingview_batch(
-                active, 200, include_timestamps=True,
+                active, 200, include_timestamps=True, ohlcv_out=_ohlcv,
             )
+            self._kairos_ohlcv.update(_ohlcv)
             for sym_name, prices in tv_results.items():
                 if len(prices) < 81:
                     logger.warning(
@@ -3133,6 +3215,17 @@ class SweepOrchestrator(HeavySweepMixin):
         # already in memory for the regime fit — no new fetch. Same
         # definition as the heavy sweep's own ATR (compute_atr).
         atr = compute_atr(np_prices.tolist(), period=14)
+
+        # Kairos v3 P0.5: feed the run tracker on EVERY tick (not only when
+        # a signal is captured) so run start/ATR-at-start are exact. Pure
+        # bookkeeping — no effect on this tick's decisions.
+        if source == "sweep-light":
+            try:
+                self._kairos_run_state[symbol] = self._kairos_runs.update(
+                    symbol, regime_label, time.time(), atr,
+                )
+            except Exception as _k_exc:
+                logger.debug("[kairos] run tracker %s: %s", symbol, _k_exc)
 
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
 
@@ -4409,6 +4502,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     trend_hmm_markov_state=_sim_trend_hmm_markov_state,
                     raw_p_regime=_sim_raw_p_regime,
                     gated_p_regime=_sim_gated_p_regime,
+                    kairos=self._kairos_stamp(symbol, regime_label, atr, source),
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

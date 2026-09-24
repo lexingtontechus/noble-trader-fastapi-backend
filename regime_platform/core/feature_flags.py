@@ -71,6 +71,7 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_incubation_min_resolved": 20,
     "geometry_incubation_max_expiry_regression": 0.10,
     "signal_sim_retention_resolved_days": 120,
+    "kairos_mode": "shadow",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -571,6 +572,18 @@ def get_signal_sim_retention_resolved_days() -> int:
     except (TypeError, ValueError):
         v = int(_DEFAULTS["signal_sim_retention_resolved_days"])
     return max(v, 7)
+
+
+def get_kairos_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-09-24, docs/scopes/
+    20260924_KAIROS_V3_SCOPE.md P0). shadow (default): stamp the Kairos
+    capture columns (rel_volume_1h, clv_1h, efficiency_24h, atr_ratio_run,
+    spread_bps) on nt_signal_sim and refresh the daily calendar cache — no
+    effect on qualification, sizing, SL/TP or delivery. off: stamp nothing.
+    live: reserved (P3 knobs); behaves as shadow until a live scope exists.
+    Unknown values fall back to shadow."""
+    v = str(_load().get("kairos_mode", _DEFAULTS["kairos_mode"])).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
 
 
 def get_geometry_incubation_min_resolved() -> int:

@@ -59,6 +59,14 @@ RETRY_AFTER_CAP_SECONDS = 10.0
 _EPOCH_MS_THRESHOLD = 1e12
 
 
+def _opt_float(raw: Any) -> float | None:
+    """float(raw) or None for a missing/non-numeric OHLCV field."""
+    try:
+        return None if raw is None else float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_epoch_seconds(raw: Any) -> float | None:
     """Best-effort: coerce a raw candle timestamp field to Unix seconds.
 
@@ -84,6 +92,7 @@ async def fetch_tradingview_batch(
     hours: int = LIGHT_CANDLE_BARS,
     interval: str = "1h",
     include_timestamps: bool = False,
+    ohlcv_out: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, list[float]] | tuple[dict[str, list[float]], dict[str, list[float | None]]]:
     """Fetch candles for multiple TradingView symbols in batched API calls.
 
@@ -112,6 +121,12 @@ async def fetch_tradingview_batch(
         — added so the Renko brick capture can use real per-bar timestamps
         instead of a fabricated reconstruction; see orchestrator.py's
         brick-capture block and supabase_client.log_renko_bricks).
+    ohlcv_out : dict | None
+        Optional out-parameter (2026-09-24, Kairos v3 P0.5). When a dict is
+        passed, it is filled with ``{symbol: [{"t","o","h","l","c","v"}, ...]}``
+        ascending and index-aligned with the returned closes (``None`` for a
+        field the bar lacked). The return value/shape is unchanged either
+        way, so no existing caller is affected.
 
     Returns
     -------
@@ -278,6 +293,7 @@ async def fetch_tradingview_batch(
             # a bar has no parseable time field) so a caller can zip() them
             # safely rather than trusting positional luck.
             bar_timestamps: list[float | None] = []
+            ohlcv_rows: list[dict[str, Any]] = []
             if bars and isinstance(bars, list):
                 if isinstance(bars[0], dict):
                     for b in bars:
@@ -288,12 +304,30 @@ async def fetch_tradingview_batch(
                         bar_timestamps.append(
                             _normalize_epoch_seconds(b.get("time", b.get("t")))
                         )
+                        if ohlcv_out is not None:
+                            ohlcv_rows.append({
+                                "t": bar_timestamps[-1],
+                                "o": _opt_float(b.get("open", b.get("o"))),
+                                "h": _opt_float(b.get("max", b.get("high", b.get("h")))),
+                                "l": _opt_float(b.get("min", b.get("low", b.get("l")))),
+                                "c": float(close),
+                                "v": _opt_float(b.get("volume", b.get("v"))),
+                            })
                 elif isinstance(bars[0], (list, tuple)):
                     for b in bars:
                         prices.append(float(b[4]) if len(b) > 4 else 0.0)
                         bar_timestamps.append(
                             _normalize_epoch_seconds(b[0]) if len(b) > 0 else None
                         )
+                        if ohlcv_out is not None:
+                            ohlcv_rows.append({
+                                "t": bar_timestamps[-1],
+                                "o": _opt_float(b[1]) if len(b) > 1 else None,
+                                "h": _opt_float(b[2]) if len(b) > 2 else None,
+                                "l": _opt_float(b[3]) if len(b) > 3 else None,
+                                "c": prices[-1],
+                                "v": _opt_float(b[5]) if len(b) > 5 else None,
+                            })
 
             # Fallback to "current" if no history
             if not prices and isinstance(data_obj, dict):
@@ -315,10 +349,13 @@ async def fetch_tradingview_batch(
             # Reverse here ONCE so all consumers stay correct.
             prices.reverse()
             bar_timestamps.reverse()
+            ohlcv_rows.reverse()
 
             if prices:
                 results[internal_sym] = prices
                 results_ts[internal_sym] = bar_timestamps
+                if ohlcv_out is not None and len(ohlcv_rows) == len(prices):
+                    ohlcv_out[internal_sym] = ohlcv_rows
                 logger.info(
                     "TradingView batch %s (%s): %d candles",
                     internal_sym, tv_sym, len(prices),
