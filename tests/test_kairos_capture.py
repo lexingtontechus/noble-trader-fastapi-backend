@@ -158,6 +158,39 @@ class TestPayloadStamp:
     def test_no_kairos_is_byte_identical(self):
         p = self._payload(None)
         assert not any(k in p for k in K.KAIROS_CAPTURE_COLUMNS)
+        assert not any(k in p for k in ("gate_outcome", "suppress_reason", "failed_gates"))
+
+    def test_gate_outcome_stamps(self):
+        from regime_platform.sweep_orchestrator.orchestrator import _build_signal_sim_payload
+        from regime_platform.sweep_orchestrator.supabase_client import NT_SIGNAL_SIM_COLUMNS
+        p = _build_signal_sim_payload(
+            symbol="EURUSD", venue="OANDA", ts="2026-09-24T00:00:00Z", signal="buy",
+            entry_price=1.1, stop_loss=1.09, take_profit=1.12, brick_size=0.001,
+            sl_bricks=3, tp_bricks=6, p_win=0.6, ev=0.1, regime="low_vol_weak_bull",
+            regime_conf=0.8, source="sweep-light", qualified=False,
+            gate_outcome="suppressed", suppress_reason="cooldown_time", failed_gates=None,
+        )
+        assert p["gate_outcome"] == "suppressed" and p["suppress_reason"] == "cooldown_time"
+        assert "failed_gates" not in p
+        q = _build_signal_sim_payload(
+            symbol="EURUSD", venue="OANDA", ts="2026-09-24T00:00:00Z", signal="sell",
+            entry_price=1.1, stop_loss=1.11, take_profit=1.08, brick_size=0.001,
+            sl_bricks=3, tp_bricks=6, p_win=0.4, ev=-0.1, regime="low_vol_weak_bear",
+            regime_conf=0.5, source="sweep-light", qualified=False,
+            gate_outcome="gate_fail", failed_gates=["kelly_min_ok", "p_win_ok"],
+        )
+        assert q["failed_gates"] == "kelly_min_ok,p_win_ok" and "suppress_reason" not in q
+        assert {"gate_outcome", "suppress_reason", "failed_gates"} <= NT_SIGNAL_SIM_COLUMNS
+
+    def test_gate_outcome_wired_in_orchestrator(self):
+        """Every suppression path that flips a gate-passing signal to
+        qualified=False must set a suppress_reason (static guard)."""
+        from pathlib import Path
+        src = Path(__file__).resolve().parents[1].joinpath(
+            "regime_platform/sweep_orchestrator/orchestrator.py").read_text(encoding="utf-8")
+        for reason in ("cooldown_open", "cooldown_time", "content_dedup", "bracket_gate", "geometry_gate"):
+            assert f'_suppress_reason = "{reason}"' in src
+        assert "_gates_pass = bool(qualified)" in src and "gate_outcome=(" in src
 
 
 class TestInsertFallback:

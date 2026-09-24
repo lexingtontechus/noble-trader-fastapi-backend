@@ -398,7 +398,7 @@ W/L, P/L and R are **not** pass criteria anywhere in V1–V7.
 |---|---|---|
 | G0 | P0 done | `v_regime_runs` row count and median run length reported per symbol. Restart breaks flagged. `drift_12h/48h_pct` and the P0.5 factor stamps non-null on ≥ 95% of new rows. Calendar cache refreshing daily. Full pytest green |
 | G1 | P1 done | V1–V4 results on discovery data. **Stop or rethink** if V1 fails pooled (no geometry-free edge to decay) |
-| G2 | ≥ 6 weeks of debounced live runs | V4, V5 and V7 on confirmation data (labels + factors; independent of geometry) |
+| G2 | Weekly W1–W6 (§12), decision at W6 (2026-11-05) | **All** light-sweep signals (not only qualified), split qualified / suppressed / gate_fail. Pre-registered G2 family (§12.3) on live confirmation data; weekly looks are data-health pass/fail + monitoring only (flag p < 0.001) |
 | G3 | P3 + 4-week shadow | V6 passes; gate-pass sign check agrees. Only then is a live-candidate scope written |
 
 A sample check to run at G0: the number of completed runs per symbol per cell. If fewer than
@@ -563,3 +563,107 @@ Options for the user (not decided):
 Artefacts: `.cache/kairos/p1_summary_{nc2,nc1}.json`, `p1_matrix_cell_age_*.csv`,
 `p1_factor_panel_*.pkl`; data plane `docs/scopes/assets/20260924_kairos_edge_plane_discovery.html`
 (n_confirm 2) and `…_nc1.html`.
+
+---
+
+## 12. G2 roadmap: weekly checks on all signals (added 2026-09-24, before any G2 data)
+
+User, 2026-09-24: "add roadmap weekly checks (not just a 6 week check-in), I want to be able to
+ascertain all signals (not just qualified=true due to the cooldown mechanism)."
+
+### 12.1 Why "all signals" needs new stamps
+
+`qualified=false` has so far mixed two different things:
+
+- **gate_fail**: the signal failed at least one qualification gate (kelly, regime confidence,
+  p_win, EV, TimesFM…).
+- **suppressed**: the signal passed **every** gate but wasn't published, because of the cooldown
+  (a prior same-direction signal is still open, or too little time has passed), content dedup, or
+  a live shadow gate (bracket, geometry).
+
+Cooldown alone blocks a gate-passing signal for hours at a time, so "qualified" under-samples the
+signals the gates actually liked. A published-only view would also be biased toward the first
+signal of each streak.
+
+**Migration 168 (applied 2026-09-24)** adds nullable stamps on `nt_signal_sim`. They are written
+after the verdict is final and never read back into it:
+
+| Column | Values |
+|---|---|
+| `gate_outcome` | `qualified` · `suppressed` · `gate_fail` (NULL on rows before the deploy) |
+| `suppress_reason` | `cooldown_open` · `cooldown_time` · `content_dedup` · `bracket_gate` · `geometry_gate` |
+| `failed_gates` | comma list of failed gate names |
+
+**`v_kairos_signal_episodes`** is one row per (symbol, direction, hour) since 2026-09-22 (the
+skill's dedupe rule: about 4 ticks per hour are one decision). Its fields:
+
+- tier = the best outcome in that hour;
+- geometry-free m₁…m₄₈ = signed drift ÷ the sweep ATR;
+- the six factor stamps;
+- regime age from `v_kairos_regime_runs`, with left-censoring.
+
+Rows before the deploy have tier `unknown` (not qualified, but no reason recorded). Tier-split
+tests use stamped episodes only.
+
+**Scale note:** the live `atr` column is the sweep's close-to-close ATR (SMA14 of |ΔC|), not the
+OHLC true-range ATR P1 used. Live m_h values are therefore larger, and **live magnitudes are not
+compared with P1**. Every G2 statistic is within live data (tiers vs each other, and nulls built
+from the same data).
+
+### 12.2 Weekly cadence
+
+Run `scripts/kairos_weekly_check.py` (read-only, about 5 s) each Thursday after 08:00 UTC. The
+report is written to `.cache/kairos/weekly/YYYYMMDD_Wn.md`.
+
+| Week | Ends (Thu 08:00 UTC) | Must pass (data health) | Monitored (descriptive) | Action if it fails |
+|---|---|---|---|---|
+| W0 | 2026-09-24 | Factor stamps ≥ 95% ✅ (spread ≥ 90% ✅) | Baseline: 282 runs, median 2h, 0/95 (symbol, cell) pairs ≥ 30 runs | Deploy the 168 code (gate_outcome 0% today) |
+| W1 | 2026-10-01 | `gate_outcome` ≥ 95% · stamps ≥ 95% · `kairos-daily` ran every night · m₁₂ coverage ≥ 95% on matured rows | Tier shares; suppression reasons; failed-gate counts | Fix the capture and restart; the week does not count toward G2 |
+| W2 | 2026-10-08 | + m₂₄ and m₄₈ coverage ≥ 95% on rows ≥ 3 days old | First matured edge by tier (m₄/m₂₄ with CIs); qualified − suppressed and gates-vs-rest Δ | Backfill fix if m₄₈ < 95% |
+| W3 | 2026-10-15 | Same | Edge vs regime-age band (V2 preview); exit hazard by age (V4 preview); exit compass | Nothing (monitoring) |
+| W4 | 2026-10-22 | Same | Factor ρ with m₂₄ within symbol (V7 preview) | Nothing |
+| W5 | 2026-10-29 | Same | **Power check:** project the W6 95% CI half-width of the gates-vs-rest Δm₂₄ from the current cluster count. If it exceeds 0.2 × the pooled SD of m₂₄ (can't resolve a small 0.2-SD effect), extend G2 to W8. This is decided on the CI width only, never on the size or sign of the effect | Pre-registered extension to W8 (2026-11-19) |
+| W6 | 2026-11-05 | Same | — | **G2 decision (§12.3)** |
+
+**Interim rule (Haybittle–Peto):** weekly results are monitoring only. A weekly look is flagged
+as *extreme* only at p < 0.001, and even then no knob changes before W6. The only weekly
+decisions are data-health fixes and the W5 extension. That keeps six looks from turning into six
+chances at a false positive.
+
+**Restarts and gaps:** each Studio restart resets the in-memory debouncer and run tracker, so the
+next run starts left-censored (`starts_after_gap`). Those episodes are excluded from age
+statistics, and the weekly report counts them.
+
+### 12.3 Pre-registered G2 family (decided at W6; Holm across G2.1–G2.5)
+
+Unit: episode (symbol × direction × hour). Within-symbol demeaned. Symbol|day cluster bootstrap.
+Circular-shift null (per-symbol rotation of the direction series vs the unsigned drift).
+Primary horizon m₂₄ (m₄ secondary, reported).
+
+| Test | Population | Statistic | Pass |
+|---|---|---|---|
+| G2.1 all-signal edge (V1-live) | All episodes | pooled m₂₄ vs circular null | p_Holm < 0.05 and same sign at m₄ |
+| G2.2 gates select edge | stamped: (qualified ∪ suppressed) vs gate_fail | Δm₂₄ | p_Holm < 0.05, Δ > 0 |
+| G2.3 cooldown cost | stamped: qualified vs suppressed | Δm₂₄ (two-sided) | Reported either way. A significant **suppressed > qualified** means the cooldown is dropping the better signals |
+| G2.4 edge decays with regime age (V2-live) | uncensored episodes | slope of m₂₄ on log(1 + age) | p_Holm < 0.05, slope < 0, ≥ 3/5 of the top-volume symbols negative |
+| G2.5 regimes age (V4-live) | uncensored completed runs | hazard slope on log(1 + age) + KS vs geometric | p_Holm < 0.05 |
+| G2.6 factors (V7-live, separate family) | stamped episodes | per-factor Spearman ρ(factor, m₂₄) within symbol, then incremental over an age-only baseline | Holm over the 5 factors |
+
+Stop rules at W6:
+
+- If G2.1 **and** G2.2 both fail, the live signal stream has no geometry-free edge for Kairos to
+  shape. Close the time-knob track (job C) and report.
+- If only G2.2 passes, there is gate edge but no all-signal edge. Kairos continues on the
+  gate-passing population only.
+- G2.3 is information for the cooldown owner (a separate lever, one at a time). It never changes
+  Kairos knobs.
+
+### 12.4 Artefacts
+
+- Migration: `supabase/migrations/168_kairos_g2_gate_outcome_and_episodes.sql` (applied).
+- Capture: `orchestrator.py` sets `_gates_pass` / `_failed_gates` / `_suppress_reason` at each
+  suppression site; `_build_signal_sim_payload(gate_outcome=, suppress_reason=, failed_gates=)`.
+  The insert fallback drops these along with the Kairos columns if the schema lags.
+- Tests: `tests/test_kairos_capture.py::TestPayloadStamp` (payload plus a static guard that every
+  suppression path sets a reason).
+- Weekly report: `scripts/kairos_weekly_check.py` → `.cache/kairos/weekly/`.

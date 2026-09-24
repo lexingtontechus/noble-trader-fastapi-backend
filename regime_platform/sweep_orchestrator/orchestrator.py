@@ -899,6 +899,9 @@ def _build_signal_sim_payload(
     geometry_risk_hat: float | None = None,
     long_lag_risk: bool | None = None,
     kairos: dict[str, float | None] | None = None,
+    gate_outcome: str | None = None,
+    suppress_reason: str | None = None,
+    failed_gates: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1031,6 +1034,15 @@ def _build_signal_sim_payload(
             v = kairos.get(k)
             if v is not None:
                 payload[k] = v
+    # Kairos G2 (2026-09-24, migration 168): qualified | suppressed |
+    # gate_fail, so all-signal analyses can separate cooldown/dedup
+    # suppression from genuine gate rejections.
+    if gate_outcome is not None:
+        payload["gate_outcome"] = gate_outcome
+    if suppress_reason is not None:
+        payload["suppress_reason"] = suppress_reason
+    if failed_gates:
+        payload["failed_gates"] = ",".join(failed_gates)
     return payload
 
 
@@ -3892,6 +3904,16 @@ class SweepOrchestrator(HeavySweepMixin):
             qualified = all(
                 v for k, v in gate_results.items() if k != "timesfm_available"
             )
+        # Kairos G2 (2026-09-24, migration 168): remember the pre-suppression
+        # verdict so nt_signal_sim can tell "failed a gate" apart from
+        # "passed every gate but was suppressed" (cooldown / dedup / shadow-
+        # gate live rejects). Stamp only — never read back into qualification.
+        _gates_pass = bool(qualified)
+        _failed_gates = sorted(
+            k for k, v in gate_results.items()
+            if not v and (TIMESFM_GATE_MODE == "hard" or k != "timesfm_available")
+        )
+        _suppress_reason: str | None = None
 
         # ── Cooldown check (suppress signal spam) ────────────────────
         # Even if all gates pass, suppress the signal if the same
@@ -3941,6 +3963,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 )
                 qualified = False
                 gate_results["cooldown_ok"] = False
+                _suppress_reason = "cooldown_open"
             else:
                 if restart_probe.status == "resolved" and restart_probe.resolved_at is not None:
                     # Restart the cooldown clock from the resolution
@@ -3961,6 +3984,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     # Mark as not qualified so it doesn't get published
                     qualified = False
                     gate_results["cooldown_ok"] = False
+                    _suppress_reason = "cooldown_time"
                 else:
                     gate_results["cooldown_ok"] = True
         else:
@@ -4257,6 +4281,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 # Same content as last publish — suppress even if cooldown expired
                 qualified = False
                 gate_results["content_dedup_ok"] = False
+                _suppress_reason = "content_dedup"
                 logger.info(
                     f"[sweep:orch] {symbol}: DEDUP SUPPRESSED — "
                     f"signal content unchanged (hash={content_hash[:8]}...)"
@@ -4327,6 +4352,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                     _bracket_gate_shadow = bool(qualified and _reject is True)
                     if p_bracket_mode == "live" and _reject is True:
+                        if qualified:
+                            _suppress_reason = "bracket_gate"
                         qualified = False
                         gate_results["p_win_bracket_ok"] = False
                         logger.info(
@@ -4439,6 +4466,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     if qualified and _light_gate != "off" and _would_reject:
                         if _light_gate == "live":
                             qualified = False
+                            _suppress_reason = "geometry_gate"
                             logger.info(
                                 "[light:geometry] %s REJECT qualified — risk=%s cap=%s "
                                 "tp_atr=%s",
@@ -4503,6 +4531,15 @@ class SweepOrchestrator(HeavySweepMixin):
                     raw_p_regime=_sim_raw_p_regime,
                     gated_p_regime=_sim_gated_p_regime,
                     kairos=self._kairos_stamp(symbol, regime_label, atr, source),
+                    gate_outcome=(
+                        "qualified" if qualified
+                        else "suppressed" if _gates_pass
+                        else "gate_fail"
+                    ),
+                    suppress_reason=(
+                        _suppress_reason if (_gates_pass and not qualified) else None
+                    ),
+                    failed_gates=_failed_gates or None,
                 )
                 if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
                     logger.debug(

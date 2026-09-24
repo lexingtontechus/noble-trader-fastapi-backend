@@ -264,6 +264,8 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # at capture time (kairos.capture_factors). Nullable; only written when
     # kairos_mode != off.
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
+    # Kairos G2 (migration 168): qualified | suppressed | gate_fail
+    "gate_outcome", "suppress_reason", "failed_gates",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -534,6 +536,7 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
 
 _KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
+    "gate_outcome", "suppress_reason", "failed_gates",
 )
 
 
