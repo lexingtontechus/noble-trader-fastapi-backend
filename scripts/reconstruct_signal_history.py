@@ -66,7 +66,7 @@ WARM = 48             # continuity warm-up fits before each worker chunk
 HMM_KEYS = ("n_components", "n_iter", "covariance_type", "vol_window_long",
             "vol_window_short", "trend_window_short", "trend_window_long", "random_state")
 CACHE = ROOT / ".cache"
-QUADS = ["Leader", "Fading", "Emerging", "Dead"]
+QUADS = ["edge_rising", "edge_decaying", "edge_recovering", "no_edge"]
 RNG = np.random.default_rng(11)
 
 
@@ -405,8 +405,8 @@ class FastPanel:
         self.pa, self.pb = np.array(pa, int), np.array(pb, int)
 
     def stamp(self, R: np.ndarray) -> np.ndarray:
-        """R (P, n) → quad codes (P, n): 0 Leader, 1 Fading, 2 Emerging,
-        3 Dead, −1 unstamped (cell below the episode floors / outside panel)."""
+        """R (P, n) → quad codes (P, n): 0 edge_rising, 1 edge_decaying, 2 edge_recovering,
+        3 no_edge, −1 unstamped (cell below the episode floors / outside panel)."""
         R = np.atleast_2d(R)
         out = np.full(R.shape, -1, np.int8)
         d14, d7 = 14 * self.DAY, 7 * self.DAY
@@ -508,7 +508,7 @@ def stamped_frame(fp: FastPanel, Q0: np.ndarray) -> pd.DataFrame:
 def geometry_check(rows: list[dict], alt_geoms, base_geom, n_perm: int) -> dict:
     """Does the quadrant result depend on the fixed 3/5-brick choice? For each
     alt SL/TP (same brick, same labels), rebuild the panel on that geometry's
-    own R and resolution times; report Dead/Leader edge and P(stay) vs null."""
+    own R and resolution times; report no_edge/edge_rising edge and P(stay) vs null."""
     import regime_cell_edge_persistence as P
     out = {}
     print(f"\n  Geometry robustness (same labels & brick; each geometry scored on its own R and resolved_at; "
@@ -541,9 +541,9 @@ def geometry_check(rows: list[dict], alt_geoms, base_geom, n_perm: int) -> dict:
         pll = (1 + np.sum(np.abs(nl) >= abs(obs_l))) / (1 + n_perm)
         pst = [(1 + np.sum(ns[:, i] >= obs_st[i])) / (1 + n_perm) for i in range(4)]
         print(f"    SL {g_sl}/TP {g_tp} (RR {g_tp / g_sl:.2f}){' [base]' if (g_sl, g_tp) == base_geom else ''}: "
-              f"all R {r[Q0[0] >= 0].mean():+.3f} · Dead−all {obs_d:+.3f} p={pdd:.3f} · "
-              f"Leader−all {obs_l:+.3f} p={pll:.3f} · P(stay) "
-              + " ".join(f"{q[0]}{obs_st[i]:.2f}/{np.nanmean(ns[:, i]):.2f} p={pst[i]:.3f}"
+              f"all R {r[Q0[0] >= 0].mean():+.3f} · no_edge−all {obs_d:+.3f} p={pdd:.3f} · "
+              f"edge_rising−all {obs_l:+.3f} p={pll:.3f} · P(stay) "
+              + " ".join(f"{q}={obs_st[i]:.2f}/{np.nanmean(ns[:, i]):.2f} p={pst[i]:.3f}"
                          for i, q in enumerate(QUADS)))
         out[tag] = {"all_r": float(r[Q0[0] >= 0].mean()), "dead_minus_all": float(obs_d), "p_dead": float(pdd),
                     "leader_minus_all": float(obs_l), "p_leader": float(pll),
@@ -566,7 +566,7 @@ def analyse(rows: list[dict], n_perm: int, tag: str) -> dict:
 
     Multi-symbol conventions: bootstrap clusters are symbol-days; quadrant
     effects are measured on R demeaned WITHIN symbol (so a symbol that is
-    mostly Dead and also weak cannot masquerade as a Dead effect); nulls
+    mostly no_edge and also weak cannot masquerade as a no_edge effect); nulls
     shuffle R within symbol and rebuild the whole point-in-time panel
     (FastPanel, verified exact against quadrant_panel)."""
     import regime_cell_edge_persistence as P
@@ -606,16 +606,16 @@ def analyse(rows: list[dict], n_perm: int, tag: str) -> dict:
 
     ps: dict[str, float] = {}
 
-    # H1 — Dead forward edge (within-symbol R)
-    print("\n  H1 Dead has above-average edge (R demeaned within symbol; symbol-day cluster bootstrap)")
+    # H1 — no_edge forward edge (within-symbol R)
+    print("\n  H1 no_edge has above-average edge (R demeaned within symbol; symbol-day cluster bootstrap)")
     for qd in QUADS:
         t = boot(s, "r_x", s.quad == qd, vs_all=True)
         print(f"    same-day {qd:9s} R − all: {_f(t)}   (raw R {s[s.quad == qd].r.mean():+.3f}, "
               f"n={int((s.quad == qd).sum())})")
-        if qd == "Dead":
-            ps["H1 Dead same-day"] = t[3]
-    t = boot(s, "r_ohlc_x", s.quad == "Dead", vs_all=True)
-    print(f"    same-day Dead − all, OHLC settlement: {_f(t)}")
+        if qd == "no_edge":
+            ps["H1 no_edge same-day"] = t[3]
+    t = boot(s, "r_ohlc_x", s.quad == "no_edge", vs_all=True)
+    print(f"    same-day no_edge − all, OHLC settlement: {_f(t)}")
 
     # nulls — whole point-in-time panel rebuilt for every null draw.
     # PRIMARY = circular shift (keeps R autocorrelation); iid shown for reference.
@@ -641,22 +641,22 @@ def analyse(rows: list[dict], n_perm: int, tag: str) -> dict:
             p = (1 + np.sum(np.abs(nq_) >= abs(obs[c]))) / (1 + n_perm)
             lo, hi = np.percentile(nq_, [2.5, 97.5])
             line.append(f"{mode} [{lo:+.3f},{hi:+.3f}] p={p:.4f}")
-            if qd == "Dead" and mode == "circ":
-                ps["H1 Dead vs shift null"] = p
+            if qd == "no_edge" and mode == "circ":
+                ps["H1 no_edge vs shift null"] = p
         print(f"      {qd:9s} − all observed {obs[c]:+.3f} · " + " · ".join(line))
 
     # H2 — stickiness beyond the rolling-window mechanics
-    print("\n  H2 Leader & Dead stickier than rolling windows + R autocorrelation (1-day P(stay) vs null)")
+    print("\n  H2 edge_rising & no_edge stickier than rolling windows + R autocorrelation (1-day P(stay) vs null)")
     for i, qd in enumerate(QUADS):
         p = (1 + np.sum(null_stay[:, i] >= obs_stay[i])) / (1 + n_perm)
         ns_iid = nulls["iid"][1][:, i]
         p_iid = (1 + np.sum(ns_iid >= obs_stay[i])) / (1 + n_perm)
         print(f"    {qd:9s} observed {obs_stay[i]:.2f} · circ null {np.nanmean(null_stay[:, i]):.2f} p={p:.4f} · "
               f"iid null {np.nanmean(ns_iid):.2f} p={p_iid:.4f}")
-        if qd in ("Leader", "Dead"):
+        if qd in ("edge_rising", "no_edge"):
             ps[f"H2 {qd} stay"] = p
 
-    # H3 — reversal (user hypothesis: Dead|Leader predict reversal)
+    # H3 — reversal (user hypothesis: no_edge|edge_rising predict reversal)
     print("\n  H3 reversal, excess over the symbol's base rate (within-symbol, symbol-day cluster bootstrap)")
     dirmap = reg.str.contains("bull")
     s["rev_px"] = (s.d24 < 0).astype(float).where(s.d24.notna())
@@ -670,7 +670,7 @@ def analyse(rows: list[dict], n_perm: int, tag: str) -> dict:
         for qd in QUADS:
             t = boot(x, f"{col}_x", x.quad == qd, vs_all=True)
             print(f"      {qd} {x[x.quad == qd][col].mean():.2f} ({_f(t)})")
-            if qd in ("Dead", "Leader"):
+            if qd in ("no_edge", "edge_rising"):
                 ps[f"H3 {qd} {col}"] = t[3]
 
     # H4 — knob response depends on quadrant (path-exact re-settlement)
@@ -698,10 +698,10 @@ def analyse(rows: list[dict], n_perm: int, tag: str) -> dict:
         blk = s[(s.day >= a) & (s.day < b)]
         if blk.clu.nunique() < 20:
             continue
-        t = boot(blk, "r_x", blk.quad == "Dead", vs_all=True)
-        lt = boot(blk, "r_x", blk.quad == "Leader", vs_all=True)
+        t = boot(blk, "r_x", blk.quad == "no_edge", vs_all=True)
+        lt = boot(blk, "r_x", blk.quad == "edge_rising", vs_all=True)
         print(f"    {a.date()}..{(b - pd.Timedelta(days=1)).date()}: all R {blk.r.mean():+.3f} · "
-              f"Dead − all {_f(t)} · Leader − all {_f(lt)}")
+              f"no_edge − all {_f(t)} · edge_rising − all {_f(lt)}")
 
     adj = holm(ps)
     print("\n  Holm-adjusted p across the pre-registered family (pass = adj p < 0.05):")
@@ -830,7 +830,7 @@ def main() -> int:
         print(f"  {'test':28s} " + " ".join(f"{k:>16s}" for k in cols))
         for k in keys:
             print(f"  {k:28s} " + " ".join(cell(s, k) for s in cols))
-        for q in ("Dead", "Leader"):
+        for q in ("no_edge", "edge_rising"):
             print(f"  {q + ' − all (within-sym R)':28s} "
                   + " ".join(f"{summary[s]['quad_minus_all'][q]:>+16.3f}" for s in cols))
         for q in QUADS:

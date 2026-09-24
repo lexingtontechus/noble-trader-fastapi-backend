@@ -1,6 +1,6 @@
 # KAIROS — per-symbol edge-state matrix: research plan and design scope
 
-**2026-09-23 · scope / design only.** No code, config, schema, or live behavior was changed.
+**2026-09-23 · scope / design only.** Name and scope pending the user's rename/rescope. The only live-code change is retention (config).
 Evidence base: `docs/scopes/20260923_REGIME_CELL_EDGE_PERSISTENCE.md` (v3), reproducible with
 `scripts/regime_cell_edge_persistence.py`.
 
@@ -16,25 +16,72 @@ to last.
 - **Alternatives considered:** Proteus (shape-shifting — describes the change, not the timing) and Tyche (fortune — implies luck, the opposite of the claim).
 - **Naming convention:** the flag and all artifacts use the prefix `kairos_`.
 
-## Plain-language explanation
+## Central thesis and terminology (refined 2026-09-23)
 
-For every symbol, the platform already knows which market regime it is in: volatility (4
-levels) × trend direction. Kairos adds one question on top of that: **inside this regime, is our
-signal making money for this symbol right now, and is that getting better or worse?** The
-answer puts each symbol-regime into one of four boxes:
+> **For each symbol, inside each HMM regime, is our signal making money right now, and is that
+> getting better or worse?**
 
-| | Getting better | Getting worse |
+Two separate words, never mixed:
+
+| Term | Meaning | Source | Values |
+|---|---|---|---|
+| **Regime** | Market state, as already used across the platform | `RegimeHMM` label (`regime_engine.py`) | `{vol}_{trend}`: vol ∈ `low_vol`, `med_low_vol`, `med_high_vol`, `high_vol`; trend ∈ `strong_bull`, `weak_bull`, `weak_bear`, `strong_bear` |
+| **Regime cell** | The matrix row: vol tier × direction (strength collapsed; 8 cells per symbol) | Regime label | e.g. `high_vol / bear` |
+| **Edge state** | How *our signal* is performing inside that cell | Own resolved R: 14-day shrunk level vs 7-day trend | `edge_rising`, `edge_decaying`, `edge_recovering`, `no_edge` |
+
+| | Trend ≥ level (getting better) | Trend < level (getting worse) |
 |---|---|---|
-| **Making money (last 14 days)** | Leader | Fading |
-| **Not making money** | Emerging | Dead |
+| **Level > 0 (making money)** | `edge_rising` | `edge_decaying` |
+| **Level ≤ 0 (not making money)** | `edge_recovering` | `no_edge` |
 
-The v3 research says three things about these boxes:
-- **The boxes are informative.** Symbols in the "Dead" box went on to perform *best* (the edge reverts upward).
-- **Two boxes are stable.** Leader and Dead tend to stay put for a day or more; the other two don't.
-- **Nobody knows yet what to do in each box.** Every claim about "reversal" boxes or box-specific stop/target settings failed the stricter tests on 30 days of data.
+- "Edge" = `level > 0`. "Decay" = `edge_decaying` (and the `edge_rising → edge_decaying` move).
+- Former names (v1–v3 and the first reconstruction): Leader = `edge_rising`, Fading = `edge_decaying`,
+  Emerging = `edge_recovering`, Dead = `no_edge`. The research scripts now emit the new names.
+- **The matrix** (goal): per symbol, 8 regime cells × {n, level, trend, edge state, CI, P(regime
+  holds 48h), p_win bias, candidate tuning parameter}. SL/TP is excluded — geometry is its own track;
+  once the matrix exists the tuned symbol is simulated with fractional-ATR geometry for W/L and P/L.
 
-So this scope is about getting more data under clean, pre-registered conditions, not about
-changing live trading.
+### Is "forecast the regime shift" the same as "forecast the next edge state"?
+
+**At the symbol level, yes — mostly.** The edge state belongs to a cell, so when the regime moves the
+symbol to another cell, the symbol's active edge state becomes *that* cell's state. That is the
+non-linear (diagonal) move. Measured on daily data (`scratch shift_vs_state.py`, same point-in-time panel):
+
+| Data | Regime cell changed (days) | P(edge state changes \| shift) | \| no shift | Edge-state changes that coincide with a shift | Diagonal jumps that coincide with a shift |
+|---|---|---|---|---|---|
+| TDVA 5-symbol, 21 mo | 71% | 0.53 | 0.37 (diff +0.16 [+0.12, +0.20]) | 78% | 83% |
+| Live 30 d, 14 symbols | 65% | 0.36 | 0.39 (n.s.) | 64% | 43% |
+
+- In the long reconstruction, **~4 of 5 symbol-level edge-state changes and ~5 of 6 diagonal jumps are
+  regime shifts**; the live 30 days are too short to show it.
+- The destination cell's state is already known at time t. So the forecast decomposes:
+  `P(next edge state) = Σ_cell' P(regime → cell' in 48h) · state(cell')`.
+- The within-cell part (the other ~22%) is what v3/reconstruction tested and found no more predictable
+  than rolling-window mechanics. **All forecastable content is in the regime transition.** The HMM
+  already produces that probability (it feeds `p_markov_hold_n`), so the test is its calibration: is
+  P(regime holds 48h) right, per symbol?
+- Caveat: the daily cell changes on ~70% of days (pre-debounce raw labels). The 2026-09-22 debounce
+  should lower that; confirmation data will show by how much.
+
+### Which parameter per edge state (#3, SL/TP excluded) — first test
+
+`scripts/edge_state_gate_test.py`, live 30 days (4,737 stamped episodes, 14 symbols, 193 symbol-days;
+pre-registered: 4 light gates × 4 edge states, separation R(pass) − R(fail) vs pooled, Holm):
+
+| Gate (current value) | Pooled separation, R | Per-edge-state result |
+|---|---|---|
+| `p_win ≥ 0.55` | −0.04 (n.s.) | none |
+| `regime_conf ≥ 0.60` | +0.01 (n.s.) | none |
+| `effective_kelly ≥ 0.02` | −0.12 (n.s.) | `edge_recovering` −0.31 vs pooled (raw p 0.009, Holm 0.13) |
+| `ev > 0` | +0.03 (n.s.) | `no_edge` +0.23 vs pooled (raw p 0.004, Holm 0.056) |
+
+- **No edge-state-specific threshold passes** after correction. Two leads to carry into confirmation:
+  `ev > 0` separates winners only in `no_edge`; the Kelly gate picks *worse* trades in `edge_recovering`.
+- **A more important descriptive finding:** on all signals, **none of the four gates separates winners
+  from losers** pooled (every CI spans 0). Per-state tuning of a gate that doesn't separate at all is
+  premature; this belongs in the calibration track (#7).
+- Limits: 30 days, raw labels, a gate's pass/fail is correlated with the others, and this covers only
+  the thresholds, not sizing.
 
 ## Current state
 
@@ -52,11 +99,11 @@ changing live trading.
 
 | Question | Answer | Evidence |
 |---|---|---|
-| Does a quadrant define an edge? | **Yes for edge level, per symbol.** Dead has the best forward edge. Leader is no better than average. | Forward 7d R: Dead +0.162 [+0.056, +0.275]. Same-day Dead − all +0.076 vs shuffled null [−0.064, +0.033]. Symbol × quadrant η² 4.25% vs 1.14% chance (in-sample). |
-| Probability of staying in a quadrant | **Leader and Dead are genuinely sticky.** Fading and Emerging are not distinguishable from noise. | 1-day P(stay) observed vs null: Leader 0.80 vs 0.64, Dead 0.79 vs 0.68, Fading 0.76 vs 0.70, Emerging 0.74 vs 0.74. |
-| Edge "rotation" (Leader → Fading → Emerging) | **An artifact of the rolling windows.** | Observed Leader→Fading is *below* null at 1, 3 and 7 days. |
-| Dead\|Leader = reversal (user hypothesis) | **Not supported.** Neither is v2's Fading/Dead-reversal mapping. | Excess reversal over the symbol's own base rate: every quadrant's CI includes 0, for price (4h, 24h, >1 ATR) and for HMM direction flip (4h, 24h). |
-| A different knob per quadrant | **Not supported yet.** | Full stream: no quadrant differs from the pooled knob effect. Gate-pass: one of eight tests nominally significant (Fading tight-TP), uncorrected. |
+| Does a quadrant define an edge? | **Yes for edge level, per symbol.** no_edge has the best forward edge. edge_rising is no better than average. | Forward 7d R: no_edge +0.162 [+0.056, +0.275]. Same-day no_edge − all +0.076 vs shuffled null [−0.064, +0.033]. Symbol × quadrant η² 4.25% vs 1.14% chance (in-sample). |
+| Probability of staying in a quadrant | **edge_rising and no_edge are genuinely sticky.** edge_decaying and edge_recovering are not distinguishable from noise. | 1-day P(stay) observed vs null: edge_rising 0.80 vs 0.64, no_edge 0.79 vs 0.68, edge_decaying 0.76 vs 0.70, edge_recovering 0.74 vs 0.74. |
+| Edge "rotation" (edge_rising → edge_decaying → edge_recovering) | **An artifact of the rolling windows.** | Observed edge_rising→edge_decaying is *below* null at 1, 3 and 7 days. |
+| no_edge\|edge_rising = reversal (user hypothesis) | **Not supported.** Neither is v2's edge_decaying/no_edge-reversal mapping. | Excess reversal over the symbol's own base rate: every quadrant's CI includes 0, for price (4h, 24h, >1 ATR) and for HMM direction flip (4h, 24h). |
+| A different knob per quadrant | **Not supported yet.** | Full stream: no quadrant differs from the pooled knob effect. Gate-pass: one of eight tests nominally significant (edge_decaying tight-TP), uncorrected. |
 | Tight SL | ~~Helps globally~~ **Reversed by the EURUSD 21-month path-exact test: tight SL hurts (−0.196 R), tight TP helps (+0.119 R).** Never by quadrant. | 30-day pooled +0.137 came from close-based MFE/MAE shortcuts; see the reconstruction section. |
 | Regime durability over a 48h hold | **Poor.** | P(same 16-cell after 48h) 0.12; direction 0.55. |
 | Correlated exposure | **14 symbols ≈ 5.3 independent price bets.** | Gold complex 0.97–0.99, US30/US500 0.88, EURUSD/USDCHF −0.82. |
@@ -109,12 +156,12 @@ null; Holm across the pre-registered family.
 
 | Hypothesis | 21-month EURUSD result | vs 30-day, 14-symbol result | Verdict |
 |---|---|---|---|
-| H1 Dead has above-average edge | Same-day +0.016 [−0.022, +0.055]; 7d-forward +0.027 [−0.009, +0.064]; OHLC +0.009. Sign flips across the four ~5-month blocks (+0.05, +0.05, −0.05, +0.01). Leader is nominally best (+0.059, p = 0.08). | Did not replicate (was +0.16 R) | **Fail** |
-| H2 Leader & Dead stickier than rolling windows produce | 1-day P(stay): Leader 0.72 vs null 0.51; Fading 0.73 vs 0.61; Dead 0.74 vs 0.69; Emerging 0.75 vs 0.73. Raw p 0.024 / 0.024 / 0.049 / 0.146. | Same pattern, and Fading now sticky too | **Direction holds. Not significant after Holm**: 0.024 is the floor for 40 permutations, so this needs ≥ 1,000 permutations to settle. |
-| H3 Dead\|Leader predict reversal (user) | Price 24h against signal: Leader 0.47 vs base 0.51 (leans *continuation*); Dead 0.50. HMM flip +24h: Leader +0.046 (p = 0.10); Dead −0.021. | Same: no reversal | **Fail, now on two independent datasets** |
+| H1 no_edge has above-average edge | Same-day +0.016 [−0.022, +0.055]; 7d-forward +0.027 [−0.009, +0.064]; OHLC +0.009. Sign flips across the four ~5-month blocks (+0.05, +0.05, −0.05, +0.01). edge_rising is nominally best (+0.059, p = 0.08). | Did not replicate (was +0.16 R) | **Fail** |
+| H2 edge_rising & no_edge stickier than rolling windows produce | 1-day P(stay): edge_rising 0.72 vs null 0.51; edge_decaying 0.73 vs 0.61; no_edge 0.74 vs 0.69; edge_recovering 0.75 vs 0.73. Raw p 0.024 / 0.024 / 0.049 / 0.146. | Same pattern, and edge_decaying now sticky too | **Direction holds. Not significant after Holm**: 0.024 is the floor for 40 permutations, so this needs ≥ 1,000 permutations to settle. |
+| H3 no_edge\|edge_rising predict reversal (user) | Price 24h against signal: edge_rising 0.47 vs base 0.51 (leans *continuation*); no_edge 0.50. HMM flip +24h: edge_rising +0.046 (p = 0.10); no_edge −0.021. | Same: no reversal | **Fail, now on two independent datasets** |
 | H4 best knob depends on quadrant | No quadrant differs from the pooled effect, under either touch rule (all p ≥ 0.19) | Same | **Fail** |
 | Pooled knobs (not a hypothesis) | Tight SL (×0.5) **−0.196 R** (OHLC) / −0.157 (close); tight TP (×0.5) **+0.119 R** / +0.097 | v3's "tight SL helps +0.137" came from close-based MFE/MAE shortcuts | **v3 tight-SL result reversed.** Path-exact re-settlement says tight stops hurt. Tight TP helps, consistent with 77% of brackets expiring. |
-| Exploratory (not pre-registered) | Fading: price reverses more (0.58 vs 0.51, +0.076, p = 0.008), but the HMM flips *less* (−0.052, p = 0.044) | — | Contradictory definitions. **Record as a hypothesis for the confirmation set, not a finding.** |
+| Exploratory (not pre-registered) | edge_decaying: price reverses more (0.58 vs 0.51, +0.076, p = 0.008), but the HMM flips *less* (−0.052, p = 0.044) | — | Contradictory definitions. **Record as a hypothesis for the confirmation set, not a finding.** |
 
 **What this means for Kairos (EURUSD alone — superseded by the 5-symbol run below).**
 - ~~**Quadrant *state* is real.**~~ Withdrawn: the "persistence" was mostly the iid null being too weak. See the 5-symbol section.
@@ -160,38 +207,38 @@ Output: `.cache/recon_<SYM>_summary.json`, `recon_POOLED_summary.json`.
 
 | Test | EURUSD | XAUUSD | US500 | BTCUSD | USDJPY | Pooled (5) |
 |---|---|---|---|---|---|---|
-| H1 Dead − all, R (within symbol) | +0.016 | −0.050 | −0.030 | +0.058 | **+0.171** | +0.027 |
+| H1 no_edge − all, R (within symbol) | +0.016 | −0.050 | −0.030 | +0.058 | **+0.171** | +0.027 |
 | H1 Holm (same-day / shift null) | 1.0 / 1.0 | 1.0 / 1.0 | 1.0 / 1.0 | 1.0 / 1.0 | **0.008 / 0.015 PASS** | 1.0 / 0.70 |
-| Leader − all | +0.059 | +0.010 | +0.018 | +0.064 | **−0.140** (p 0.001) | −0.010 |
-| H2 P(stay) Leader, obs/shift null | 0.72/0.65 | 0.67/0.68 | 0.67/0.65 | 0.67/0.73 | 0.68/0.66 | 0.68/0.68 |
-| H2 P(stay) Dead, obs/shift null | 0.74/0.71 | 0.70/0.69 | 0.66/0.66 | 0.67/0.65 | 0.65/0.67 | 0.69/0.68 |
-| H2 Holm (Leader / Dead) | 0.61 / 0.72 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / 1 |
+| edge_rising − all | +0.059 | +0.010 | +0.018 | +0.064 | **−0.140** (p 0.001) | −0.010 |
+| H2 P(stay) edge_rising, obs/shift null | 0.72/0.65 | 0.67/0.68 | 0.67/0.65 | 0.67/0.73 | 0.68/0.66 | 0.68/0.68 |
+| H2 P(stay) no_edge, obs/shift null | 0.74/0.71 | 0.70/0.69 | 0.66/0.66 | 0.67/0.65 | 0.65/0.67 | 0.69/0.68 |
+| H2 Holm (edge_rising / no_edge) | 0.61 / 0.72 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / 1 |
 | H3 reversal (any quadrant, either definition) | none | none | none | none | none | none |
 | H4 quadrant-specific knob | none | none | none | none | none | none |
 | Pooled tight SL ×0.5 (OHLC) | −0.196 | +0.033 | +0.006 | +0.006 | −0.043 | −0.043 |
 | Pooled tight TP ×0.5 (OHLC) | +0.119 | +0.071 | +0.097 | +0.025 | +0.079 | **+0.082** |
 
 **Geometry robustness.** Same labels and brick, re-settled at SL/TP 2/4, 3/9 and 5/5, each on its own R and its own `resolved_at`.
-- **USDJPY Dead:** +0.134 to +0.171 at 3/5, 2/4 and 5/5 (all p = 0.003); +0.038 at 3/9. Leader is −0.11 to −0.19 at 3/5, 3/9 and 5/5. **Robust to geometry.**
-- **The other four:** no Dead/Leader effect is stable in sign across geometries. The "significant" ones come and go with the geometry, for example US500 Leader −0.057 at 5/5 only, and BTC Leader +0.14 at 2/4 only.
+- **USDJPY no_edge:** +0.134 to +0.171 at 3/5, 2/4 and 5/5 (all p = 0.003); +0.038 at 3/9. edge_rising is −0.11 to −0.19 at 3/5, 3/9 and 5/5. **Robust to geometry.**
+- **The other four:** no no_edge/edge_rising effect is stable in sign across geometries. The "significant" ones come and go with the geometry, for example US500 edge_rising −0.057 at 5/5 only, and BTC edge_rising +0.14 at 2/4 only.
 
-**Time stability for USDJPY Dead** (four ~5-month blocks): +0.06, +0.20, +0.30, +0.14. All are positive; one CI excludes 0 and one is borderline.
+**Time stability for USDJPY no_edge** (four ~5-month blocks): +0.06, +0.20, +0.30, +0.14. All are positive; one CI excludes 0 and one is borderline.
 
 **Verdict.**
 
 | Hypothesis | Status after five symbols (21 months; BTC 8.7) |
 |---|---|
-| H1 Dead has edge | **Symbol-specific.** Strong and geometry-robust in USDJPY only. It fails in the other four and in the pooled test (Holm 0.70), so it is not a universal quadrant property. |
-| H2 Leader/Dead persist | **Fail.** Under the shift null, no symbol passes Holm. The v3/EURUSD "persistence" was the iid null's artifact. Quadrants stay ~70% day to day, but rolling windows over autocorrelated R do that on their own. Only Fading is weakly stickier (pooled 0.74 vs 0.71, raw p 0.006; not pre-registered). |
-| H3 Dead\|Leader → reversal (user) | **Fail in all 5 symbols and pooled**, by price and by regime flip. |
+| H1 no_edge has edge | **Symbol-specific.** Strong and geometry-robust in USDJPY only. It fails in the other four and in the pooled test (Holm 0.70), so it is not a universal quadrant property. |
+| H2 edge_rising/no_edge persist | **Fail.** Under the shift null, no symbol passes Holm. The v3/EURUSD "persistence" was the iid null's artifact. Quadrants stay ~70% day to day, but rolling windows over autocorrelated R do that on their own. Only edge_decaying is weakly stickier (pooled 0.74 vs 0.71, raw p 0.006; not pre-registered). |
+| H3 no_edge\|edge_rising → reversal (user) | **Fail in all 5 symbols and pooled**, by price and by regime flip. |
 | H4 quadrant-specific knob | **Fail in all 5 and pooled.** |
 | Tight TP ×0.5 (global, not a hypothesis) | **+0.08 R pooled, positive in all 5 under OHLC.** This is the only consistent effect. It is geometry-level: brackets mostly expire (37% pooled), so a closer TP converts expiries into wins. **This is a heavy-sweep geometry question, not a Kairos one.** |
 | Tight SL ×0.5 | **Mixed by symbol** (EURUSD −0.20, others ≈0/+). Not a global lever. |
 
 **Implications for the design.**
 1. **Kairos as a global quadrant-action layer is not supported.** No pre-registered quadrant effect holds across symbols. The K2 stay-probability idea loses its basis too, because stays are no stickier than mechanics.
-2. **The user's thesis ("a quadrant defines an edge") holds for one symbol out of five.** A per-symbol edge exists (USDJPY Dead), but it cannot be predicted from the quadrant definition alone. That makes it a *per-symbol, per-cell* finding to confirm forward, not a rule.
-3. The honest next step is a **forward confirmation of exactly one pre-registered claim**: "USDJPY Dead cells out-earn USDJPY's average", as shadow stamping on live signals. Fix the threshold now: Dead − all > 0 with the symbol-day CI excluding 0 after 60 days.
+2. **The user's thesis ("a quadrant defines an edge") holds for one symbol out of five.** A per-symbol edge exists (USDJPY no_edge), but it cannot be predicted from the quadrant definition alone. That makes it a *per-symbol, per-cell* finding to confirm forward, not a rule.
+3. The honest next step is a **forward confirmation of exactly one pre-registered claim**: "USDJPY no_edge cells out-earn USDJPY's average", as shadow stamping on live signals. Fix the threshold now: no_edge − all > 0 with the symbol-day CI excluding 0 after 60 days.
 4. Put the tight-TP result into the heavy-sweep geometry work (reachability/expectancy), where it belongs.
 
 **Caveats that remain.**
@@ -229,7 +276,7 @@ K0 data  ──►  K1 edge state  ──►  K2 transitions  ──►  K3 acti
    - `quadrant`, set to `NULL` when `n_14d < 10` or `n_7d < 5`.
 
    It only counts episodes with `resolved_at < now()`, so there is no lookahead by construction.
-4. **Stamp at signal time.** Add nullable columns to `nt_signal_sim` using `ALTER TABLE … ADD COLUMN`, the same pattern as migrations 154 and 164: `kairos_quadrant`, `kairos_level`, `kairos_momentum`, `kairos_n`.
+4. **Stamp at signal time.** Add nullable columns to `nt_signal_sim` using `ALTER TABLE … ADD COLUMN`, the same pattern as migrations 154 and 164: `kairos_edge_state`, `kairos_level`, `kairos_momentum`, `kairos_n`.
    - The light sweep fetches `v_kairos_state_current` **once per sweep** for all symbols and passes the matching row into `_build_signal_sim_payload` (`orchestrator.py:857`).
    - This gives every future signal the label it had *at the time*, which is the confirmation dataset.
    - It has zero effect on qualification or sizing.
@@ -247,7 +294,7 @@ K0 data  ──►  K1 edge state  ──►  K2 transitions  ──►  K3 acti
 ### K3 — Action layer (blocked until hypotheses pass)
 
 9. **Shadow first.** Per-quadrant shadow multipliers (size) and shadow SL/TP variants are stamped as would-values, the same way `qualified_geometry_shadow` works. Nothing changes live until the gate-pass cohort confirms the sign.
-10. **Hypothesis-driven only.** Only actions whose hypothesis passes (see Research plan) get a shadow variant. At current evidence, the only candidate is a **size tilt toward Dead** (H1). Per-quadrant SL/TP and reversal logic have no candidates.
+10. **Hypothesis-driven only.** Only actions whose hypothesis passes (see Research plan) get a shadow variant. At current evidence, the only candidate is a **size tilt toward no_edge** (H1). Per-quadrant SL/TP and reversal logic have no candidates.
 
 ### K4 — Covariance / cluster exposure (independent track)
 
@@ -278,9 +325,9 @@ K0 data  ──►  K1 edge state  ──►  K2 transitions  ──►  K3 acti
 
 | ID | Hypothesis | Exact test | Pass |
 |---|---|---|---|
-| H1 | Dead has above-average forward edge | Same-day and 7-day-forward R/ep, Dead − all | CI > 0 (Holm-adjusted), full stream; same sign in gate-pass |
-| H2 | Leader and Dead are stickier than the rolling windows alone produce | 1-day P(stay) − shuffled null (≥ 100 perms) | Both > 0; permutation p < 0.05 |
-| H3 | **Dead\|Leader predict reversal** (user) | Excess over symbol base of (a) signed 24h drift < 0 and (b) HMM direction flip by +24h, per quadrant | Either definition CI > 0 for the named quadrant. The definitions are fixed now; no new definitions after seeing the data. |
+| H1 | no_edge has above-average forward edge | Same-day and 7-day-forward R/ep, no_edge − all | CI > 0 (Holm-adjusted), full stream; same sign in gate-pass |
+| H2 | edge_rising and no_edge are stickier than the rolling windows alone produce | 1-day P(stay) − shuffled null (≥ 100 perms) | Both > 0; permutation p < 0.05 |
+| H3 | **no_edge\|edge_rising predict reversal** (user) | Excess over symbol base of (a) signed 24h drift < 0 and (b) HMM direction flip by +24h, per quadrant | Either definition CI > 0 for the named quadrant. The definitions are fixed now; no new definitions after seeing the data. |
 | H4 | The best SL/TP knob depends on quadrant | (quadrant knob effect − pooled knob effect) for tight SL ×0.5 and tight TP ×0.5 | At least one quadrant CI excludes 0 after Holm, with the same sign in gate-pass |
 | H5 | Transition-weighted edge is better calibrated than point p_win | Brier and calibration slope on resolved episodes | Brier improvement CI > 0 |
 | H6 | Same-cluster stacking is frequent enough to matter | Share of qualified signals opened while ≥ 1 same-direction signal in the same cluster is open | > 10% of qualified signals |
@@ -303,7 +350,7 @@ A 14-day warm-up comes before the panel. Confirmation data starting 2026-09-23 t
 | Gate | Date | What happens | Criterion |
 |---|---|---|---|
 | G0 | on approval | K0: retention → 120 days. Create the `v_kairos_episodes` view. | View row count ≈ distinct (symbol, signal, hour) in `nt_signal_sim` (±1%). Script run on the view reproduces v3 `== 1`–`== 4`. |
-| G1 | +1 week | K1 shadow: create the `v_kairos_state_current` view, add the `kairos_*` columns, `kairos_mode: shadow`, stamp in the light sweep. K4 shadow stamps. | ≥ 95% of light-sweep rows have a non-null `kairos_quadrant` when `n` qualifies. Full pytest green. No change in qualified count vs the prior week beyond normal variance. |
+| G1 | +1 week | K1 shadow: create the `v_kairos_state_current` view, add the `kairos_*` columns, `kairos_mode: shadow`, stamp in the light sweep. K4 shadow stamps. | ≥ 95% of light-sweep rows have a non-null `kairos_edge_state` when `n` qualifies. Full pytest green. No change in qualified count vs the prior week beyond normal variance. |
 | G2 | 2026-10-22 (interim) | Descriptive report on the confirmation data: quadrant shares, stamp coverage, H2 and H6. **No H1/H3/H4 decisions.** | Report only. H6 can promote K4 to a live-candidate scope. |
 | G3 | 2026-11-21 (confirmation) | Full H1–H6 run with Holm correction. | A hypothesis passes only by its row in the table above. |
 | G4 | after G3 | K3 shadow variants, only for passed hypotheses. K2 input scope, only if H5 passes. | Each shadow variant gets its own 4-week shadow window and gate-pass sign check before any live flip. |
@@ -312,7 +359,7 @@ Mechanical check for G1 coverage:
 
 ```sql
 SELECT date_trunc('day', ts) AS d,
-       count(*) FILTER (WHERE kairos_quadrant IS NOT NULL)::float / count(*) AS coverage
+       count(*) FILTER (WHERE kairos_edge_state IS NOT NULL)::float / count(*) AS coverage
 FROM nt_signal_sim
 WHERE source = 'sweep-light' AND ts >= now() - interval '7 days'
 GROUP BY 1 ORDER BY 1;
@@ -323,12 +370,12 @@ GROUP BY 1 ORDER BY 1;
 | Artifact | Type | Notes |
 |---|---|---|
 | `signal_sim_retention_resolved_days: 120` | `config/feature_flags.yaml` + getter | **Done 2026-09-23**: `eod_retention.py` reads the getter; the Settings field was removed; tests in `test_eod_retention.py`. |
-| `supabase/migrations/NNN_kairos_views_and_stamps.sql` | Migration | `v_kairos_episodes`, `v_kairos_state_current`, `ALTER TABLE nt_signal_sim ADD COLUMN kairos_quadrant text, kairos_level real, kairos_momentum real, kairos_n int, kairos_cluster text, kairos_cluster_open_risk real`. The next free number at build time (165 is the latest). |
+| `supabase/migrations/NNN_kairos_views_and_stamps.sql` | Migration | `v_kairos_episodes`, `v_kairos_state_current`, `ALTER TABLE nt_signal_sim ADD COLUMN kairos_edge_state text, kairos_level real, kairos_momentum real, kairos_n int, kairos_cluster text, kairos_cluster_open_risk real`. The next free number at build time (165 is the latest). |
 | `regime_platform/sweep_orchestrator/kairos.py` | New module | Fetches `v_kairos_state_current` once per sweep. Pure `lookup(symbol, vol, direction)`. Cluster map from rolling correlation. |
 | `orchestrator.py` | Edit | Pass `kairos_*` into `_build_signal_sim_payload` when `kairos_mode != off`. |
 | `supabase_client.py` | Edit | Allow-list the new columns for insert. |
 | `core/feature_flags.py`, `config/feature_flags.yaml` | Edit | `kairos_mode` (default `shadow`), `kairos_shrink_k: 10`, `kairos_min_n_14d: 10`, `kairos_min_n_7d: 5`. |
-| `scripts/regime_cell_edge_persistence.py` | Edit | Read `v_kairos_episodes` and the stamped `kairos_quadrant` when present; `--since 2026-09-23` confirmation mode. |
+| `scripts/regime_cell_edge_persistence.py` | Edit | Read `v_kairos_episodes` and the stamped `kairos_edge_state` when present; `--since 2026-09-23` confirmation mode. |
 | `tests/test_kairos.py` | New | Quadrant assignment, shrinkage, n-floors, no-lookahead on `resolved_at`, payload stamping off/shadow. |
 
 ## Open decisions

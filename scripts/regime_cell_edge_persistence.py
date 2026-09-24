@@ -200,7 +200,7 @@ def quadrants(ep, keys, anchors, long_d=14, short_d=7, fwd_d=7):
         m["quad"] = np.select(
             [(m.lvl > 0) & (m.sht >= m.lvl), (m.lvl > 0) & (m.sht < m.lvl),
              (m.lvl <= 0) & (m.sht > m.lvl)],
-            ["Leader", "Fading", "Emerging"], "Dead")
+            ["edge_rising", "edge_decaying", "edge_recovering"], "no_edge")
         fwd = fwd_slice(ep, t, fwd_d).merge(m[ck + ["quad"]], on=ck)
         fwd["anchor"] = t.date()
         rows.append(fwd)
@@ -312,7 +312,7 @@ def main() -> int:
             continue
         q = q.assign(cluster=q.symbol + "|" + q.ts.dt.normalize().astype(str))
         print(f"  {g}  (95% CI: cluster bootstrap over symbol-days)")
-        for quad in ["Leader", "Fading", "Emerging", "Dead"]:
+        for quad in ["edge_rising", "edge_decaying", "edge_recovering", "no_edge"]:
             x = q[q.quad == quad]
             print(f"    {quad:9s} n={len(x):4d}  R/ep={_fmt(_cluster_ci(x, 'r'))}  "
                   f"win_closed={x.win.sum() / max(x.closed.sum(), 1):.2f}  expired={x.expired.mean():.2f}")
@@ -341,11 +341,11 @@ def main() -> int:
     anchors = pd.date_range(t0 + pd.Timedelta(days=14), last_fwd - pd.Timedelta(days=7), freq="3.5D")
     q = quadrants(ep, GRAINS["G8 vol4×dir2"], anchors)
     diffs = [
-        q[(q.symbol != s) & (q.quad == "Dead")].r.mean()
-        - q[(q.symbol != s) & (q.quad == "Leader")].r.mean()
+        q[(q.symbol != s) & (q.quad == "no_edge")].r.mean()
+        - q[(q.symbol != s) & (q.quad == "edge_rising")].r.mean()
         for s in q.symbol.unique()
     ]
-    print(f"  G8 Dead−Leader R/ep, leave-one-symbol-out: min {min(diffs):+.3f}  max {max(diffs):+.3f}")
+    print(f"  G8 no_edge−edge_rising R/ep, leave-one-symbol-out: min {min(diffs):+.3f}  max {max(diffs):+.3f}")
 
     extended(rows, ep, t0, last_fwd)
     return 0
@@ -353,7 +353,7 @@ def main() -> int:
 
 # ─── v2: qualification, quadrant actions, transitions, covariance ──────
 
-QUADS = ["Leader", "Fading", "Emerging", "Dead"]
+QUADS = ["edge_rising", "edge_decaying", "edge_recovering", "no_edge"]
 NUM = ["regime_conf", "effective_kelly", "ev", "p_win", "p_win_dir", "entry_price",
        "stop_loss", "take_profit", "mfe", "mae", "atr", "drift_4h_pct", "drift_24h_pct"]
 
@@ -395,7 +395,7 @@ def quadrant_panel(ep: pd.DataFrame, t0, last_fwd, keys=("vol", "direction")) ->
         q = q[(q.nL >= MIN_LAG) & (q.nS >= 5)]
         q["quad"] = np.select(
             [(q.lvl > 0) & (q.sht >= q.lvl), (q.lvl > 0) & (q.sht < q.lvl), (q.lvl <= 0) & (q.sht > q.lvl)],
-            ["Leader", "Fading", "Emerging"], "Dead")
+            ["edge_rising", "edge_decaying", "edge_recovering"], "no_edge")
         today = ep[(ep.ts >= d) & (ep.ts < d + pd.Timedelta(days=1))].merge(q[ck + ["quad"]], on=ck)
         today["day"] = d
         parts.append(today)
@@ -556,7 +556,7 @@ def _transitions(s: pd.DataFrame, h: int) -> pd.DataFrame:
 
 def transition_null(ep: pd.DataFrame, s: pd.DataFrame, t0, last_fwd, n_perm: int = 20) -> None:
     """Rolling 7d/14d windows mechanically produce stickiness and a
-    Leader→Fading→… rotation even with no edge at all. Null: shuffle R
+    edge_rising→edge_decaying→… rotation even with no edge at all. Null: shuffle R
     within each symbol (destroys any time/cell structure), rebuild the panel,
     re-measure. Only observed − null is information."""
     null = {h: [] for h in (1, 3, 7)}
@@ -566,14 +566,16 @@ def transition_null(ep: pd.DataFrame, s: pd.DataFrame, t0, last_fwd, n_perm: int
         s2 = quadrant_panel(e2, t0, last_fwd)
         for h in null:
             null[h].append(_transitions(s2, h).to_numpy())
-        dead.append(s2[s2.quad == "Dead"].r.mean() - s2.r.mean())
+        dead.append(s2[s2.quad == "no_edge"].r.mean() - s2.r.mean())
     for h in null:
         o, nm = _transitions(s, h), pd.DataFrame(np.mean(null[h], axis=0), index=QUADS, columns=QUADS)
+        rf, rf_n = o.loc["edge_rising", "edge_decaying"], nm.loc["edge_rising", "edge_decaying"]
+        nr, nr_n = o.loc["no_edge", "edge_recovering"], nm.loc["no_edge", "edge_recovering"]
         print(f"  h={h}d  P(stay) observed {np.round(np.diag(o), 2)}  null {np.round(np.diag(nm), 2)}  "
-              f"· Leader→Fading {o.loc['Leader', 'Fading']:.2f} (null {nm.loc['Leader', 'Fading']:.2f})  "
-              f"· Dead→Emerging {o.loc['Dead', 'Emerging']:.2f} (null {nm.loc['Dead', 'Emerging']:.2f})")
+              f"· edge_rising→edge_decaying {rf:.2f} (null {rf_n:.2f})  "
+              f"· no_edge→edge_recovering {nr:.2f} (null {nr_n:.2f})")
     lo, hi = np.percentile(dead, [2.5, 97.5])
-    print(f"  same-day Dead R − all: observed {s[s.quad == 'Dead'].r.mean() - s.r.mean():+.3f} · "
+    print(f"  same-day no_edge R − all: observed {s[s.quad == 'no_edge'].r.mean() - s.r.mean():+.3f} · "
           f"null 95% [{lo:+.3f},{hi:+.3f}] ({n_perm} perms)")
 
 
