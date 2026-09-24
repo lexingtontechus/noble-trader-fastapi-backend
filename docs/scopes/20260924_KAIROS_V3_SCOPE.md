@@ -1,0 +1,565 @@
+# KAIROS v3: dual-timeline regime model (scope)
+
+**2026-09-24 · scope / design only.** No code, config, schema, or live behaviour changes. The name
+stays **Kairos** (user decision 2026-09-24). Flags and artefacts use the `kairos_` prefix. This
+supersedes the thesis and plan in `docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md`. Its
+terminology, statistical rules, and retention change carry forward. Canonical visual:
+`docs/scopes/assets/20260924_edge_plane_concept.html` (user-confirmed as the representation of the thesis).
+
+---
+
+## 1. Plain-language explanation
+
+Every symbol is always in some market regime (volatility tier × direction). A regime has a
+**start**, a **life**, and an **exit** into a new regime. The v3 thesis is that our signal's
+edge inside a regime is not constant: it has a shape over the regime's life. We can see:
+- **where** the edge is (which quadrant);
+- **which way it is drifting** as the regime ages;
+- **where it is likely to leak to** when it ends (vol up or down, direction flip).
+
+Read it like a scatter plot that moves. Each symbol-regime is a point on a quadrant chart. As
+the regime ages, the point travels, and its path shows the decay and the direction of the leak.
+The path is **not a fixed cycle**. The point can stay put, move to a neighbouring quadrant,
+move back the way it came, or jump diagonally in one go (for example straight from
+`edge_rising` to `no_edge` on a shock or a regime exit). Which moves actually happen is measured,
+not assumed.
+
+The work splits into three separate jobs that must not be mixed:
+
+| Job | Question | What it may use | What it must not use |
+|---|---|---|---|
+| **A. Find edge and decay** (this scope) | Is there an edge, where is it, how does it decay over time, and where does it leak? | Price paths and regime labels only (geometry-free) | R, win/loss, P/L, TP/SL/expiry shares, SL/TP counterfactuals |
+| **B. Forecast the regime** (this scope) | When does the current regime end, and into what? | Regime labels and market features | Anything outcome-based |
+| **C. Time-based tuning knobs** (this scope, shadow only) | What should change with quadrant × regime age? | Outputs of A and B | SL/TP tuning |
+| **D. Geometry** (separate user-owned track) | Brick / SL / TP / fractional ATR, and W/L and P/L simulation | Receives A and B's curves as inputs later | — |
+
+---
+
+## 2. Thesis v3
+
+> **For each symbol, inside each regime, how does our signal's edge evolve on two clocks: from
+> regime start to regime exit, and from signal to T+48h? Which way is it leaking, and can we
+> forecast the exit and its destination well enough to set time-based knobs per quadrant?**
+
+Four questions, each answered geometry-free:
+1. **Edge and decay.** Can a matrix plus time locate the edge and its decay? (User position: yes.)
+2. **Forecast.** Can we forecast the next regime, both when and where to?
+3. **Knobs.** Which time-based knobs (risk up or down, entry, thresholds, calibration) apply per quadrant × age?
+4. **What's missing.** See §8, which is built into the design as constraints.
+
+---
+
+## 3. The model: layered dimensions
+
+```mermaid
+flowchart TB
+    L0["Layer 0 — Regime run<br/>debounced HMM label per symbol<br/>run = start (T0) → exit<br/>vol tier × direction = regime cell (8/symbol)"]
+    L1["Layer 1 — Clock A: regime age a<br/>hours since the run started<br/>bands 0–6 · 6–12 · 12–24 · 24–48 · ≥48h"]
+    L2["Layer 2 — Clock B: signal horizon h<br/>T+1 · 4 · 12 · 24 · 48h after the signal"]
+    L3["Layer 3 — Edge (geometry-free)<br/>signed forward move ÷ ATR at h<br/>directional hit rate · rank IC"]
+    L4["Layer 4 — Quadrant plane<br/>X = edge level · Y = edge momentum over a<br/>edge_rising · edge_decaying · edge_recovering · no_edge"]
+    L5["Layer 5 — Leak / flow<br/>quadrant transitions, any → any: stay · step · jump<br/>flow field + exit compass: vol ↑/↓ · direction flip"]
+    L6["Layer 6 — Forecast<br/>hazard h(a | features) = P(exit soon)<br/>destination π(cell′ | cell, a, features)"]
+    L7["Layer 7 — Time-based knobs (shadow)<br/>per quadrant × age: size/risk, entry, thresholds,<br/>calibration shift, cooldown"]
+    L8["Handoff → Geometry track (D)<br/>expected remaining move by (cell, a) as input<br/>fractional-ATR W/L, P/L sim after geometry settles"]
+    L0 --> L1 --> L3
+    L0 --> L2 --> L3
+    L3 --> L4 --> L5 --> L6 --> L7
+    L6 --> L8
+    L3 --> L8
+```
+
+### 3.1 Layer 0: regime run
+- The unit is a **run**: consecutive hours with the same debounced regime cell for a symbol.
+- The run's start is T0. The first hour in a different cell is the exit, and its destination cell is recorded.
+- Strength (strong vs weak) is kept as an attribute, not a row, because 16 cells are too thin.
+- Vol tiers are also anchored to **fixed ATR percentiles** per symbol. HMM state names are relative to a rolling fit, so "med_high_vol" can drift in meaning (§8.2).
+
+### 3.2 Two clocks
+- **Clock A (regime age, a):** how old the regime is when a signal fires. This measures staleness.
+- **Clock B (horizon, h):** how far after the signal we look. This measures the edge's shape: when it peaks and how fast it fades.
+- Every edge value is indexed by both: **edge(cell, a, h)**.
+
+### 3.3 Layer 3: geometry-free edge
+For a signal with direction d (+1 buy / −1 sell) at price P₀ with ATR₀, and close P_h at horizon h:
+
+- **Signed move:** `m_h = d · (P_h − P₀) / ATR₀`
+- **Edge level:** mean of m_h, or median (BTC-type fat tails dominate means).
+- **Directional hit rate:** share of m_h > 0, taken as excess over the symbol's own base rate.
+- **Rank IC:** Spearman correlation of d against the forward return, per cell.
+- **Edge curve:** edge(h) for h ∈ {1, 4, 12, 24, 48}. Its peak h\* and half-life are the time shape.
+
+None of these depend on brick size, SL, TP, or expiry.
+
+### 3.4 Layer 4: quadrant plane (geometry-free redefinition)
+The v2 quadrants were built from rolling R, which is geometry-dependent. v3 rebuilds the same
+four boxes from geometry-free coordinates:
+
+- **X (edge level):** edge(cell, h = H_ref) over recent signals. H_ref is pre-registered at 24h.
+- **Y (edge momentum):** the change in edge level with regime age within the current run, plus
+  the recent-vs-longer window comparison (both computed; one chosen before confirmation).
+
+| | Y ≥ 0 (strengthening) | Y < 0 (weakening) |
+|---|---|---|
+| **X > 0 (edge present)** | `edge_rising` | `edge_decaying` |
+| **X ≤ 0 (no edge)** | `edge_recovering` | `no_edge` |
+
+### 3.5 Layer 5: leak and flow (the "moving scatter plot")
+Each (symbol, run) traces a **trajectory** on the plane as its age grows.
+
+**No cycle is assumed.** The v2 "rotation" (`edge_rising` → `edge_decaying` → `no_edge` →
+`edge_recovering` → back) was shown to be a rolling-window artefact (v2 scope, below-null
+transitions), and nothing forces the point to visit the quadrants in order. Between two age bands
+the point can make any of three kinds of move:
+
+| Move | Axes crossed | Examples | Count |
+|---|---|---|---|
+| **Stay** | none | `edge_rising` → `edge_rising` | 4 |
+| **Step** (either direction) | X or Y | `edge_rising` → `edge_decaying`, and also back: `edge_decaying` → `edge_rising` when the edge re-strengthens | 8 |
+| **Jump** (diagonal) | X and Y in one band | `edge_rising` → `no_edge` (edge collapses at once), `no_edge` → `edge_rising`, `edge_decaying` ↔ `edge_recovering` | 4 |
+
+The old fixed cycle covers only 4 of the 12 non-stay moves. All 16 entries are estimated, and none
+is set to zero in advance.
+
+There are two kinds of leak, and both use the same any-to-any structure:
+
+1. **Within-run movement:** the point moves while the regime holds.
+   - Measured as a **quadrant transition matrix** `Q_within(q → q′ | C, age band)`, 4 × 4.
+   - Plus a **flow field**: the average velocity vector (ΔX, ΔY) at each plane location and age band.
+   - **Caveat:** a mean vector can hide jumps. Averaging a few large diagonal jumps with many stays
+     gives a small step that never actually happens. So each plane location also keeps its
+     displacement distribution (at least the stay / step / jump shares and the jump direction),
+     not only the mean.
+2. **Exit leak:** the regime ends and the symbol lands in another cell, which has its own (already
+   known) quadrant. The landing quadrant can be **any** of the four, including the diagonal one.
+   - Measured as an **exit compass** per cell and age band: P(vol ↑), P(vol ↓), P(direction flip),
+     P(vol and direction both change).
+   - Plus `Q_exit(q → q′ | C, age band, exit direction)`, the quadrant the symbol lands in.
+
+The labels-only decomposition (below) suggests most diagonal jumps happen at regime exits. Jumps
+inside a run (event shocks, for example) are still kept and measured separately.
+
+```mermaid
+flowchart LR
+    subgraph RUN["Within a regime run (cell C, age a): any quadrant → any quadrant"]
+        direction LR
+        RI["edge_rising<br/>X > 0 · Y ≥ 0"]
+        DE["edge_decaying<br/>X > 0 · Y < 0"]
+        RE["edge_recovering<br/>X ≤ 0 · Y ≥ 0"]
+        NE["no_edge<br/>X ≤ 0 · Y < 0"]
+        RI <-->|step · Y| DE
+        RE <-->|step · Y| NE
+        RE <-->|step · X| RI
+        NE <-->|step · X| DE
+        RI <-.->|jump| NE
+        DE <-.->|jump| RE
+    end
+    RUN -->|exit · vol ↑ / vol ↓ / direction flip| NEW["new cell C′<br/>lands in any of the 4 quadrants<br/>(Q_exit)"]
+```
+
+Solid lines are steps (one axis), dotted lines are jumps (both axes). Every line runs both ways.
+Staying in the same quadrant is always possible and isn't drawn.
+
+Concept illustration (schematic, no data): `docs/scopes/assets/20260924_edge_plane_concept.html`.
+
+The 2026-09-23 decomposition (5-symbol TDVA reconstruction, labels only) found about 78% of
+symbol-level edge-state changes and about 83% of diagonal jumps coincide with a regime-cell
+change. That result used the old R-based states. It motivates this layer but must be re-derived
+on the geometry-free plane.
+
+### 3.6 Layer 6: forecast (when and where)
+The HMM is **memoryless**: its chance of leaving a regime is the same at hour 2 and hour 40, so
+its run lengths are geometric. The thesis says regimes age, so v3 uses a **duration (hazard)
+model**, in the hidden semi-Markov family:
+
+- **Hazard:** `h(a | x)` = P(the run ends in the next hour | age a, features x).
+- **Survival:** `S(Δ | a, x)` = P(the run is still alive Δ hours from now).
+- **Destination:** `π(C′ | C, a, x)`.
+- **Next-quadrant forecast:** two routes, both any-to-any.
+  - If the regime exits: `Σ_C′ π(C′ | C, a, x) · 1[quadrant(C′) = q]`.
+  - If it holds: `Q_within(q_now → q | C, a)`.
+  - Combined with the hazard: `P(q) = H · P_exit(q) + (1 − H) · Q_within(q_now → q)`, where H is the exit probability over the forecast window.
+  - No transition is ruled out because it skips a quadrant.
+- **Candidate features (x):** the market-movement factor families in §3.8 (momentum, trend
+  quality, volatility/range, tick-volume activity and flow, liquidity, cross-asset/breadth,
+  multi-timeframe, calendar/session), always tested **against an age-only baseline**.
+- **Baseline to beat:** the HMM's own transition matrix (the source of `p_markov_hold_n`). Scored
+  on labels only with log-loss and Brier, per symbol, out of sample.
+
+### 3.7 Layer 7: time-based knobs (derived, not fitted per cell)
+Fitting each knob separately in every (symbol × cell × quadrant × age) cell would overfit.
+Instead, knobs are derived from two curves:
+
+- **Survival-weighted expected edge:** `E(C, a) = Σ_h edge(C, a, h) · S(h | a, x)`.
+- **Leak risk:** `L(C, a)` = P(the plane point reaches `no_edge` within 24h, whether by a step, a
+  direct jump, or an exit into a `no_edge` cell). The direct-jump share is reported separately
+  because it gives no warning through `edge_decaying`.
+
+| Knob | Rule shape (to be fixed at P3) | Direction of effect | In scope? |
+|---|---|---|---|
+| Risk / size multiplier | ∝ E(C, a), shrunk by L(C, a) | Less risk as the regime ages or leaks; more in a fresh `edge_rising` | ✅ shadow |
+| Entry allowed | Off when E ≤ 0 or L above a threshold | Blocks late-regime entries | ✅ shadow |
+| Gate thresholds (regime_conf, p_win) | Rise with a and L | Demand more certainty late in a run | ✅ shadow |
+| Cooldown / re-entry spacing | Lengthens with a | Fewer stacked entries in stale regimes | ✅ shadow |
+| `p_markov_hold_n` source | Age-aware hazard replaces the memoryless HMM hold probability | Calibration input to the EV blend | ✅ shadow (via the existing shadow pattern) |
+| Max hold / expiry | Peak h\* of edge(h) | Time knob, but it changes outcomes | ➜ handed to geometry track |
+| SL / TP / brick | — | — | ❌ geometry track only |
+
+### 3.8 Market-movement factors (no order book): what's available and what feeds which layer
+
+**Data reality (probed live 2026-09-24):**
+
+| Source | Endpoint | What it gives | History | Use in Kairos |
+|---|---|---|---|---|
+| 1h OHLC**V** candles | `POST /api/price/batch` (already used by the sweeps) | open/close/max/min **plus `volume`** on every bar | 2025-01-01 onward (BTC 2026-01-01; AAPL 2023) | ✅ Primary. Every factor below is computed from this. **`price_fetcher.py` currently discards `volume`.** |
+| Volume type per symbol | `info.volume_type` on the same response | OANDA FX / metals / US30 = **tick** · Coinbase BTC = **base** (real traded units) · Pepperstone US500 = unspecified (broker ticks) · AAPL = exchange volume | Non-zero on 100% of bars for all 14 symbols | Treat as an **activity** measure, normalised per symbol and hour-of-week, never compared across symbols |
+| 4h / D candles | same endpoint, timeframe 240 / D | OHLCV | 4h from 2023, D from 2022 | Higher-timeframe regime and its age |
+| Economic calendar | `GET /api/calendar/economic?from=<unix>&to=<unix>` (unix only; date strings return `no_data`) | title, country, currency, importance (−1/0/1), actual / forecast / previous, timestamp | 2025-01-01 onward confirmed; about 17 importance-1 events/week (FOMC, CPI, NFP, retail sales, PMIs…) | ✅ Event proximity and **surprise** (actual − forecast) |
+| Real-time quote | `GET /api/quote/{sym}` | bid, ask (bid/ask size = 0 on OANDA, so no depth), session volume, average volume | **Live only, no history** | Spread at signal time (start capturing it; history uses OHLC spread estimators) |
+| TA snapshot | `GET /api/ta/{sym}`, `/api/ta/{sym}/indicators` | 81 indicators (RSI, ADX, MACD, Stoch, pivots…) and TradingView recommend scores | **Snapshot only. The `timeframe` parameter is ignored** (identical values for 60/240/1D) | ❌ Not a research input. At most a live sanity cross-check; we compute every indicator ourselves from OHLCV |
+| Order book / depth | — | Not available | — | ❌ Replaced by the flow proxies below |
+
+**Is tick volume usable?** A secondary source cites a vendor study that found hourly EURUSD /
+USDJPY / GBPUSD tick counts correlate with ECN traded volume at r ≈ 0.96–0.99
+(backtestmarket.com, citing fxvolume). The agreement weakens outside liquid sessions and below
+1h aggregation. So: 1h aggregation, per-symbol, hour-of-week normalisation, and never as a
+money-flow amount. This is indicative, not a primary source; **V7 tests usefulness directly** instead of assuming it.
+
+**Factor catalogue.** All are geometry-free, computable at time t from bars ≤ t, and normalised
+per symbol (ATR units, or percentile vs the symbol's own trailing distribution).
+
+| Family | Factors | What it should tell us | Layer it feeds |
+|---|---|---|---|
+| **Momentum** | ROC in ATR units (1h / 4h / 24h); momentum acceleration (Δ ROC); stretch = distance from EMA20/50 in ATR | Is the move still pushing, or decelerating? | Plane Y (momentum), hazard |
+| **Trend quality / persistence** | Kaufman efficiency ratio (net move ÷ path length); ADX / DI spread from OHLC; variance ratio; rolling DFA-Hurst (used cautiously; it can mislabel random walks) | Clean trend vs chop; persistence fading = exhaustion | Hazard (exit timing), edge modifier |
+| **Run geometry** (distances only, not SL/TP) | Distance travelled since T0 in ATR; share of bars in run direction; deepest pullback within run in ATR; bars since run extreme | How "used up" the regime is | Hazard, direction-flip compass |
+| **Volatility / range** | Range-based realised vol (Parkinson, Garman-Klass, Rogers-Satchell); ATR now ÷ ATR at T0 (expansion); Bollinger bandwidth percentile / NR7 (compression); vol-of-vol | Compression precedes vol-↑ exits; expansion late in a run precedes exhaustion | Compass (vol ↑ / vol ↓), hazard |
+| **Activity (tick volume)** | Relative volume vs same hour-of-week baseline; volume trend within the run (slope); volume at run start vs now | Participation rising or drying up | Hazard, compass (vol ↓ when volume dries up) |
+| **Flow proxies (order-book substitute)** | Close-location value CLV = ((C−L) − (H−C)) ÷ (H−L); CLV × relative volume (accumulation/distribution, Chaikin money flow); OBV slope in the run; effort vs result = relative volume ÷ \|move in ATR\| (Wyckoff/VSA); upper/lower wick share (rejection) | Pressure behind the move; divergence = price extending on falling effort; rejection wicks against the run | Direction-flip compass, plane Y |
+| **Liquidity / cost** | Corwin–Schultz and Abdi–Ranaldo spread estimators from OHLC (history); live bid/ask spread (from now on); Amihud-style \|return\| ÷ relative volume | Whether a small edge survives costs; thin-liquidity hours | Edge reported in spread units (§8.9), knob guard |
+| **Cross-asset / breadth** | Synthetic USD index from the 6 FX majors in the universe; symbol's residual vs that USD factor; cluster breadth (share of cluster-mates in the same direction and their regime ages); US500 as risk-on/off; existing `core/correlation_regime.py` rolling correlation | Is this a symbol move or a USD / risk move? USD regime changes shift the FX majors together | Destination compass, portfolio layer (§8.5) |
+| **Multi-timeframe** | 4h and D regime labels and their ages (same HMM, higher timeframe) | A young higher-timeframe regime is a different state from an old one | Hazard, destination |
+| **Calendar / session** | Hours to next / since last importance-1 event for the symbol's currencies; surprise = (actual − forecast) ÷ historical surprise stdev; session (Asia/London/NY/overlap); day of week; month-end / London 4pm fix | A large share of exits may simply be scheduled | Hazard (first test after age), compass |
+
+**How the factors are tested, one family at a time:**
+- **Collinearity.** Many families are correlated with regime age (a stretched, low-efficiency,
+  volume-drying run is usually an old run). Each family is scored on what it adds **beyond an
+  age-only model**, in the fixed order: calendar/session → volatility/range → momentum + trend
+  quality → activity + flow → multi-timeframe → cross-asset.
+- **Stop at the first plateau.** A family that adds nothing out of sample is dropped, not tuned.
+
+---
+
+## 4. Current state (what exists)
+
+| Item | Status | Implication for v3 |
+|---|---|---|
+| Debounced regime label | `regime_label_debounce_mode: live` since 2026-09-22 (3 ticks). In live mode the debounced label **is** what is persisted as `nt_signal_sim.regime` (`orchestrator.py` ~2985–3006) | Runs from 2026-09-22 onward are usable for Clock A |
+| Debouncer state | In memory, one per symbol; a cold start accepts the first raw read | A Studio restart can create an **artificial run break**. The run view must flag breaks that coincide with restarts |
+| Geometry-free forward moves (live) | `drift_1h_pct`, `drift_4h_pct`, `drift_24h_pct` on every resolved row. They are signed, taken from `closes[:48]` regardless of exit, and independent of SL/TP (`eod_resolver._drift_fields`) | h = 1/4/24 already exist. **h = 12 and 48 are missing.** The window holds 48 bars, so index 48 needs one more bar |
+| `mfe` / `mae` | Walked only until the bracket exit (`eod_resolver.py:301`) | **Bracket-truncated, so geometry-dependent.** Excluded from v3 |
+| Retention | `signal_sim_retention_resolved_days: 120` (config, committed `a99d873`, pending Studio update) | Needed: the post-debounce history must not be deleted at 30 days |
+| TDVA 1h history | 2025-01-01 onward (BTC from 2026-01-01); full OHLC path | Geometry-free edge curves can be computed for any h. Reconstructed labels (cold fit per bar) flap: 98% of cell runs are shorter than 6h, so Clock A needs the recon labels passed through the same debouncer (§6 P1) |
+| HMM transition matrices | `RegimeHMM` exposes `transmat_` for vol and trend; `trend_transition_matrix_3state()` | This is the memoryless baseline for Layer 6 |
+| Research tooling | `regime_cell_edge_persistence.py`, `reconstruct_signal_history.py` (`FastPanel`, circular-shift null), `edge_state_gate_test.py` | Reusable for the plane and nulls. Their R-based outputs are **not** v3 evidence |
+| Tick / base volume | Present on every TDVA 1h bar for all 14 symbols (probed 2026-09-24). `price_fetcher.fetch_tradingview_batch` returns closes only and **drops `volume` and the OHLC**. `nt_signal_sim` stores no volume | Activity / flow factors need OHLCV. Research reads TDVA directly; live capture needs `price_fetcher` to keep OHLCV (P0.5) |
+| Economic calendar | `GET /api/calendar/economic` (same RapidAPI key), history to 2025-01-01, importance −1/0/1, actual / forecast / previous | Calendar/session family is available on existing credentials. No new vendor |
+| Live bid/ask | `GET /api/quote/{sym}` (bid, ask; sizes 0 on OANDA) | Spread capture from now on; history must use OHLC spread estimators |
+| Withdrawn | 2026-09-24 worklog §2–§3 (R-based age decay, `age_mult` / `state_mult`) | Kept for history only |
+
+---
+
+## 5. Pre-registered hypotheses (geometry-free)
+
+### 5.0 Frozen definitions (P0.1: frozen 2026-09-24, before any P1 run; user "#2 freeze")
+
+| Item | Frozen definition |
+|---|---|
+| Signal | One per completed 1h bar t: direction d = +1 if the HMM trend label contains "bull", −1 if "bear". Entry = close[t] |
+| ATR | Production `heavy_sweep.compute_atr` (mean \|ΔC\| over the last 14 closes, bars ≤ t) |
+| Edge measure | m_h = d · (C[t+h] − C[t]) / ATR_t, h ∈ {1, 4, 12, 24, 48} **bars** (same bar convention as live `drift_*_pct`). Geometry-free |
+| H_ref | 24 bars |
+| Regime cell | vol tier × direction from the label (`kairos.regime_cell`), 8 per symbol |
+| Labels (reconstruction) | Cold-fit production `RegimeHMM` per bar (existing `.cache/recon_*_labels.json`), then passed through `RegimeLabelDebouncer` with n_confirm ∈ {1..6} chosen to match the live post-debounce hourly cell flip rate (**0.474/h**, measured 2026-09-22 12:00 → 09-24 04:46, 14 symbols, 2,202 ticks) |
+| Run | Consecutive bars with the same cell. Breaks on a cell change or a timestamp gap > 3h. A run starting after a gap is left-censored (excluded from V4). The last run before a gap or data end is right-censored |
+| Regime age a | Hours since the run's first bar (bar timestamps) |
+| Age bands | 0–6, 6–12, 12–24, 24–48, ≥ 48h |
+| Plane X | For cell c at bar t: shrunk mean of m_24 over the symbol's signals in c with s + 24 ≤ t (resolved) and ts_s ≥ ts_t − 14d. Shrinkage k = 10 toward the symbol's all-cell mean over the same window. Defined only if n14 ≥ 10 and n7 ≥ 5 |
+| Plane Y | X7 − X14 (the same estimator on 7d vs 14d windows). The age-slope alternative is reported as secondary only |
+| Edge state | X > 0 & Y ≥ 0 `edge_rising` · X > 0 & Y < 0 `edge_decaying` · X ≤ 0 & Y ≥ 0 `edge_recovering` · X ≤ 0 & Y < 0 `no_edge` |
+| Trajectory / flow | Symbol-level point P_t = (X, Y) of the symbol's current cell. Step v_t = P_{t+1} − P_t (no gap). Region = edge state of P_t |
+| Null | **Circular shift of the label sequence (cell, direction, run, age together) vs the price sequence**, offset ≥ 336 bars (14d), per symbol, 1,000 draws. m, plane, flow and all statistics are recomputed per draw. Preserves label run structure, price autocorrelation and window mechanics; breaks timing |
+| CIs | Cluster bootstrap over symbol-days, 2,000 draws |
+| Discovery symbols | EURUSD, XAUUSD, US500, BTCUSD, USDJPY (one per correlation cluster; BTC from 2026-01-01) |
+
+**Frozen readings of V1–V4 (P1):**
+- **V1:** pass if, for some h ∈ {4, 24}, the pooled mean m_h has a cluster CI lower bound > 0 **and** a circular-shift p < 0.05. p_V1 = 2 · min_h max(p_CI, p_null).
+- **V2:** OLS slope of m_24 (demeaned within symbol) on log(1 + a_cell). Pass if the cluster CI < 0 **and** the per-symbol slope is < 0 in ≥ 3 of 5 symbols.
+- **V3:** regional mean-velocity magnitude \|v̄_r\| vs the circular-shift null. Pass if ≥ 2 of 4 regions have Holm-adjusted p < 0.05.
+- **V4:** discrete-time logistic hazard of run end on log(1 + a). Pass if the pooled slope CI > 0 (rising hazard) **and** a KS test against a geometric distribution (parametric-bootstrap p) rejects in ≥ 3 of 5 symbols.
+- The P1 family is Holm-adjusted over V1–V4. Final confirmation uses Holm over V1–V7.
+- **Amendment before the first P1 run (2026-09-24, no results seen):** the debouncer mechanically
+  prevents a run from ending before n_confirm bars. An unconditional hazard would therefore rise
+  by construction. V4's hazard and KS test use the clock shifted by n_confirm − 1 (conditional on
+  surviving the debounce minimum) and a shifted-geometric reference. Signals in left-censored runs
+  (unknown true age) are excluded from V2 and the age tables.
+- **Amendment 2 (2026-09-24, disclosed as post-smoke):** a 20-draw smoke run at the auto-chosen
+  n_confirm 1 was run, and its V1–V4 output (all fail) **was seen** before this decision. The
+  calibration table shows no n_confirm matches the live rate on hourly bars (n=1 → 0.665/h,
+  n=2 → 0.110/h vs live 0.474/h), because live debounces 15-minute ticks. n=1 is nearer in rate
+  but is effectively undebounced: 98% of signals fall in the 0–6h band, so the age tests (V2/V4)
+  have no old-regime data. **Both are reported, with n_confirm 2 as primary for the age tests
+  (V2, V4) and n_confirm 1 as primary for V1/V3** (the settings where each test has data). This
+  is a forking-path risk and is flagged as such. Any P1 "pass" here is exploratory until the
+  live debounced confirmation data (G2) repeats it.
+
+- **Discovery data:** TDVA reconstruction (debounced labels, §6 P1) plus live data before 2026-09-22.
+- **Confirmation data:** live, debounced, 2026-09-23 onward.
+- **Statistics:** symbol-day cluster bootstrap; circular-shift null for anything built on rolling
+  windows; excess over each symbol's base rate; Holm correction across V1–V7.
+
+| ID | Hypothesis | Test | Pass |
+|---|---|---|---|
+| V1 | The signal has directional edge inside regime cells | edge(C, h) for h ∈ {4, 24}: median m_h and hit rate excess, per cell pooled across symbols | CI > 0 in at least one h, beats the circular-shift null |
+| V2 | Edge decays with regime age | Slope of edge(C, a, h = 24) on log(1 + a) | Slope CI < 0 pooled; same sign in ≥ 3 of 5 recon symbols |
+| V3 | Movement on the plane has structure (it isn't noise) | The 4 × 4 matrices `Q_within` and `Q_exit` (all 16 entries, no cycle order assumed), plus the flow field, vs the same trajectories with the age order circularly shifted | Q differs from the null (permutation test over all 16 entries) in `Q_within` or `Q_exit`, **or** flow magnitude beats the null in ≥ 2 plane regions. The v2 cycle order is reported only as a descriptive comparison |
+| V4 | Regimes age (the exit hazard is not memoryless) | Run-length distribution vs geometric; hazard slope in a | Hazard rises with a (CI > 0) and a KS test rejects geometric, per symbol, on debounced labels |
+| V5 | Exit time and destination are forecastable beyond the HMM | Hazard + destination model vs HMM `transmat_`, log-loss / Brier out of sample | Improvement CI > 0 pooled; no symbol materially worse |
+| V6 | Time-based knobs would have moved risk the right way | Shadow E(C, a) vs realised geometry-free edge on the next signals (rank correlation) | Spearman > 0, CI excluding 0, over the 4-week shadow |
+| V7 | Market-movement factors add forecast information beyond regime age | Each §3.8 family added in the fixed order to the age-only hazard / destination model; out-of-sample log-loss / Brier change | A family is kept only if its improvement CI > 0 pooled. Families are reported individually; no symbol materially worse |
+
+W/L, P/L and R are **not** pass criteria anywhere in V1–V7.
+
+---
+
+## 6. Plan
+
+### P0 — Foundations (no behaviour change)
+1. **Freeze definitions:** edge measure, H_ref = 24h, age bands, plane axes, and ATR-percentile vol anchors.
+2. **Regime-run view (VIEW, not table):** `v_regime_runs` over `nt_signal_sim` sweep-light rows since 2026-09-22.
+   - Built with gaps-and-islands on (symbol, cell) using the first tick per hour.
+   - Columns: run_id, symbol, cell, strength mix, started_at, ended_at, length_h, exit cell, and a restart-break flag.
+3. **Two more geometry-free horizons:** add nullable `drift_12h_pct` and `drift_48h_pct`.
+   - Capture them in `eod_resolver._drift_fields`; the 48h value needs the window extended by one bar.
+   - Schema change is `ALTER TABLE nt_signal_sim ADD COLUMN`, the same pattern as the existing shadow columns. No new table.
+4. **Retention:** the 120-day config goes live with the Studio update (already committed).
+5. **Market-movement inputs, live capture** (nullable columns on `nt_signal_sim`, no new table):
+   - `price_fetcher` keeps the OHLCV it already receives (today it returns closes only). Callers
+     keep their current return shape; the extra fields go on an opt-in path like
+     `include_timestamps`.
+   - At signal time, stamp: `rel_volume_1h` (vs same hour-of-week), `clv_1h`, `efficiency_24h`,
+     `atr_ratio_run`, and live `spread_bps` (from `/api/quote/batch`, one call per ≤ 10 symbols per sweep).
+   - The exact column list is frozen at P0.1 and limited to what the P1 discovery needs for confirmation.
+6. **Event calendar cache:** a daily pull of `/api/calendar/economic` (importance ≥ 1, the
+   universe's currencies) into a config/cache file for research. A table is only considered if
+   live stamping of event proximity is approved later.
+
+### P1 — Discovery (offline, geometry-free)
+5. **Debounced reconstruction labels:** pass the TDVA labels through `RegimeLabelDebouncer`, with
+   n_confirm chosen so the reconstruction's flip rate matches the live post-debounce flip rate.
+   This fixes the compressed Clock A.
+6. **Edge curves** edge(C, a, h) per symbol and pooled, using a hierarchical estimate (symbol
+   deviates from pooled only where n supports it).
+7. **Factor panel:** compute the §3.8 catalogue from TDVA OHLCV (1h, 4h, D) plus the calendar,
+   point-in-time, per symbol. It is a read-only research script that joins onto the run panel.
+8. **Quadrant plane:** trajectories, `Q_within` / `Q_exit`, flow field and exit compass per cell ×
+   age band. Produce an internal scatter-plot artefact:
+   - points = (symbol, cell) at each age band, colour = age;
+   - arrows = mean velocity, with diagonal jumps drawn as separate dashed arrows so the mean doesn't absorb them;
+   - exit markers = destination;
+   - a 4 × 4 transition heatmap next to the plane.
+9. **Run V1–V4** on discovery data.
+
+### P2 — Forecast (offline first)
+10. **Hazard + destination model**, age-only first, against the HMM baseline (V5) on labels only.
+11. **Factor families one at a time** in the §3.8 order (V7). Drop any family that adds nothing out of sample.
+12. **If V5 passes:** shadow-compute an age-aware hold probability next to `p_markov_hold_n`,
+    following the `MARKOV_SOURCE_MODE` shadow pattern (log both; the legacy value still feeds the blend).
+
+### P3 — Knobs (shadow only)
+13. **Derive** E(C, a) and L(C, a), then fix the knob rule shapes from §3.7.
+14. **Stamp** would-values on `nt_signal_sim`:
+    - `kairos_age_h`, `kairos_plane_x`, `kairos_plane_y`, `kairos_edge_state`;
+    - `kairos_exit_hazard_24h`, `kairos_exit_compass` (json: exit direction and the next-quadrant distribution over all four quadrants), `kairos_size_mult_shadow`, `kairos_entry_allowed_shadow`.
+
+    Gated by `kairos_mode: off | shadow | live` (default shadow, following the repo's mode-flag recipe).
+15. **Four-week shadow window:** V6 on confirmation data, then a gate-pass cohort sign check. No live flip in this scope.
+
+### P4 — Handoff to geometry (track D)
+16. **Provide** edge(C, a, h), h\*, S(Δ | a), and the expected remaining move by (cell, age) to the
+    geometry track. The fractional-ATR W/L and P/L simulation of a "tuned" symbol runs there, after
+    geometry is resolved.
+
+---
+
+## 7. Stage gates
+
+| Gate | When | Criterion |
+|---|---|---|
+| G0 | P0 done | `v_regime_runs` row count and median run length reported per symbol. Restart breaks flagged. `drift_12h/48h_pct` and the P0.5 factor stamps non-null on ≥ 95% of new rows. Calendar cache refreshing daily. Full pytest green |
+| G1 | P1 done | V1–V4 results on discovery data. **Stop or rethink** if V1 fails pooled (no geometry-free edge to decay) |
+| G2 | ≥ 6 weeks of debounced live runs | V4, V5 and V7 on confirmation data (labels + factors; independent of geometry) |
+| G3 | P3 + 4-week shadow | V6 passes; gate-pass sign check agrees. Only then is a live-candidate scope written |
+
+A sample check to run at G0: the number of completed runs per symbol per cell. If fewer than
+about 30 runs per (symbol, cell), pooling across symbols is mandatory, not optional.
+
+---
+
+## 8. What's easy to miss, built into the design
+
+1. **Label stability is a precondition.** Clock A only exists if runs are real. That means
+   debounced labels, restart-break flags, and a debounced reconstruction.
+2. **HMM label drift.** State names are relative to a rolling fit, so vol tiers are also anchored
+   to fixed ATR percentiles, and results are reported on both.
+3. **Multiple timeframes.** A 1h regime aged 30h inside a young daily regime is not the same state
+   as one inside an old daily regime. The higher-timeframe regime and its age are forecast features.
+4. **Scheduled events.** Many exits are FOMC, CPI, NFP, BOJ, or session opens. The TDVA
+   economic calendar (§3.8) covers this on the existing key, so it's the first factor family tested
+   after age. Use the event **surprise**, not only its timing. Caveat: the calendar is a
+   point-in-time risk if `actual` values were revised; use the first-published value where the API
+   exposes it and document the risk otherwise.
+5. **Cross-symbol clustering.** The 14 symbols behave like about 5 independent bets, and USD events
+   shift the FX majors together. The plan includes a portfolio or cluster regime layer and a
+   cluster-exposure view (carried over from the K4 idea in the v2 scope).
+6. **Sample size.** Symbols × cells × ages × horizons gets thin fast. The design uses hierarchical
+   pooling and derived knobs (curves) instead of per-cell fitted knobs.
+7. **The matrix decays too.** Refresh cadence and a stability check on its own parameters (rolling
+   out-of-sample V1/V2 each month).
+8. **Selection.** Edge curves are reported on all signals **and** on the gate-pass cohort. The gates
+   change who is in the sample.
+9. **Costs are not geometry.** Spread and slippage vary by regime and session. A small positive
+   geometry-free edge may still be untradeable. Report the edge in spread units alongside ATR units.
+10. **Volume without an order book.** TDVA has no depth, but every 1h bar carries volume
+    (tick volume for OANDA symbols, base volume for Coinbase BTC). Market pressure is proxied from
+    OHLCV (CLV, accumulation/distribution, effort vs result, wicks) plus live bid/ask spread (§3.8).
+    Tick volume is an activity measure, not money: it's normalised per symbol and hour-of-week and
+    never compared across symbols. A true order-book source is **parked** until V7 shows the OHLCV
+    flow proxies carry information.
+11. **Look-ahead in the plane.** X and Y at time t may use only moves whose horizon has completed
+    before t. For h = 24, that means signals at least 24h old.
+12. **Regime-exit censoring.** Runs still open at the end of the data are right-censored. The hazard
+    model must treat them as censored, not as exits.
+13. **Factor collinearity with age.** Stretched, low-efficiency, volume-drying runs are usually old
+    runs. Factors are credited only for what they add beyond age (V7), or they will look like
+    independent evidence when they just re-measure the clock.
+14. **Feed differences.** Volume semantics differ by venue (OANDA ticks, Coinbase base, Pepperstone
+    broker ticks, NASDAQ exchange volume). Any symbol's `tradingview_symbol` change breaks its
+    volume baseline, so re-baseline on a venue change.
+15. **No cycle assumption.** Quadrant movement isn't circular: the point can step either way or
+    jump diagonally. Nothing in the model, the nulls or the knobs may encode a fixed order. A
+    knob that waits for `edge_decaying` before cutting risk misses a direct `edge_rising` →
+    `no_edge` jump, so `L(C, a)` counts jumps explicitly (§3.7).
+
+---
+
+## 9. Open decisions (user)
+
+1. ~~**Name.**~~ **Kairos**, kept (2026-09-24).
+2. **Freeze.** The definitions in P0.1 (edge measure, H_ref, age bands, plane axes, ATR-percentile
+   anchors), the §3.8 factor catalogue and test order, and V1–V7. Changing any of them after G1
+   invalidates confirmation.
+3. **Schema additions on `nt_signal_sim`** (nullable, no new table): `drift_12h_pct`,
+   `drift_48h_pct` (P0.3) and the P0.5 factor stamps (`rel_volume_1h`, `clv_1h`, `efficiency_24h`,
+   `atr_ratio_run`, `spread_bps`). Approve as one migration or split.
+4. **Event calendar.** Use the TDVA `/api/calendar/economic` endpoint on the existing key
+   (verified: history to 2025-01-01, importance levels, actual / forecast). Decide whether a daily
+   research cache is enough, or whether live event-proximity stamping is wanted in P0.
+5. **Market-movement data.** TDVA OHLCV + calendar + live quote spread, per §3.8. Order book is
+   parked until V7. Remaining choice: also pull 4h/D OHLCV live for the multi-timeframe family
+   (extra TDVA calls per sweep), or keep multi-timeframe research-only until V7 says it matters.
+
+## 10. In scope / out of scope
+
+**In scope:** geometry-free edge and decay discovery; the dual-timeline quadrant plane with flow
+and exit compass; the regime exit hazard and destination forecast; the §3.8 market-movement
+factors from TDVA OHLCV, calendar and live quote; derived time-based knobs as `kairos_` shadow
+stamps; handoff curves to the geometry track.
+
+**Out of scope:** SL/TP, brick and expiry tuning; W/L, P/L and R as evidence; any live change to
+qualification, sizing or delivery; order-book / L2 data (parked); TDVA `/api/ta` snapshots as
+research inputs; `/backtest/run` (a generic toy backtester, not this pipeline); Masaniello (on
+hold); `p_win_in_ev_mode` and `dynamic_atr_mode` decisions (own scopes).
+
+---
+
+## 11. Build status and results (2026-09-24)
+
+User decisions applied: #2 freeze (§5.0), #3 approve (migration 167), #4 daily calendar cache,
+#5 TDVA OHLCV + calendar + live quote spread, multi-timeframe deferred to V7.
+
+### 11.1 P0 build
+
+| Item | Status | Where |
+|---|---|---|
+| P0.1 freeze | Done, with two disclosed amendments (§5) | §5.0 |
+| P0.2 regime-run view | **Applied to Supabase**: `v_kairos_regime_runs` (286 runs, 14 symbols) | `supabase/migrations/167_kairos_v3_capture_and_runs.sql` |
+| P0.3 12h/48h drift | Columns applied. Resolver writes 12h; the nightly backfill fills 48h (the resolver window stops at 47 bars). One-off backfill: 4,871 rows got 12h, 4,747 got 48h | `eod_resolver._drift_fields`, `kairos.backfill_drift_horizons` |
+| P0.4 retention | 120 days (`a99d873`, pushed earlier) | `config/feature_flags.yaml` |
+| P0.5 factor stamps | Code done, `kairos_mode: shadow`. **Live rows are still null: Studio runs the old code until it's deployed** | `kairos.py`, `orchestrator._kairos_stamp`, `price_fetcher(ohlcv_out=)`, `quote_fetcher.spread_bps_by_symbol` |
+| P0.6 calendar cache | Seeded: 7,270 events since 2025-01-01 (1,441 top-importance). Daily 00:45 UTC refresh job wired | `.cache/kairos/econ_calendar.json`, scheduler `kairos-daily` |
+| Safety | Capture insert retries without the Kairos columns if PostgREST rejects them, so a signal row is never lost. No gate, sizing, SL/TP or delivery change | `supabase_client` |
+| Tests | New `tests/test_kairos_capture.py`. Full suite: **1164 passed, 21 skipped** | |
+
+### 11.2 G0 status: not yet passable
+
+| Criterion | Result |
+|---|---|
+| Runs per symbol and median length | Reported: 8–26 runs per symbol since 2026-09-22, **median length 1–2h** on live debounced labels |
+| Restart breaks flagged | Yes, `starts_after_gap` / `ended_by_gap` (a gap > 45 min between labels) |
+| Stamps non-null on ≥ 95% of new rows | **Pending deploy** (0% today) |
+| Calendar refreshing daily | Seeded; the daily job runs after deploy |
+| Full pytest green | Yes |
+| Sample check (≥ 30 completed runs per symbol × cell) | **No**: about 20 runs per symbol across all cells, so pooling is mandatory |
+
+**Finding that matters for clock A:** debounced live labels still change cell about every 1–2h,
+and 128 / 79 / 65 of the 272 completed runs exit by vol change / direction flip / both. Regime
+age is currently a very short clock.
+
+### 11.3 P1 discovery (`scripts/kairos_discovery.py`, 1,000 circular-shift nulls, Holm V1–V4)
+
+Data: 5 symbols (EURUSD, XAUUSD, US500, BTCUSD, USDJPY), TDVA 1h OHLCV from 2025-01-01 (BTC from
+2026-01-01), about 47k signals. Reported at n_confirm 2 (primary for V2/V4) and n_confirm 1
+(primary for V1/V3), per amendment 2.
+
+| Test | n_confirm 2 | n_confirm 1 | Verdict |
+|---|---|---|---|
+| V1 edge exists (m₄, m₂₄ vs null) | +0.018 / +0.030 ATR · p_null 0.36 / 0.48 | +0.016 / +0.042 · p 0.34 / 0.45 | **fail** |
+| V2 edge decays with age | slope −0.127 [−0.42, +0.17], 3/5 negative | +0.176 [−0.20, +0.53] | **fail** (sign flips) |
+| V3 plane flow has structure | 0/4 regions beyond null | 0/4 | **fail** |
+| V4 regimes age (hazard changes with age) | flat hazard 0.12/h in every band; KS vs geometric 0/5 | falling hazard, but that is the n=1 undebounced artefact | **fail**: memoryless |
+
+Descriptive (not tests):
+- Hit rate is 0.49–0.50 at every horizon.
+- By cell, bull cells show positive m₂₄ and bear cells show negative m₂₄. That means price tends
+  to rise after both labels, so the label's direction adds nothing beyond drift.
+- The exit compass is close to uniform: vol up / vol down / direction flip / both are each about
+  0.2–0.3 at every run length.
+- No factor correlates with regime age (|ρ| ≤ 0.08), so V7 would not be an age proxy.
+
+### 11.4 G1: the pre-registered stop rule triggers
+
+§7 says "**Stop or rethink** if V1 fails pooled". V1 fails pooled at both settings. On hourly
+bars, following the HMM trend label shows no geometry-free edge at 1–48h, so there is no edge
+to decay. Regime runs are memoryless (a constant exit hazard), so on this data "the longer it's
+in the regime, the riskier" has no basis, and the quadrant plane has no flow beyond the null.
+
+What the result does **not** say:
+- It does not test the live gated signals: a gate-passing subset could still have edge. That is
+  G2/G3 on live data, now possible because drift_12h/48h exist.
+- It does not test the factors as predictors (V7).
+- It does not test geometry.
+
+Options for the user (not decided):
+1. **Rethink the signal the plane is built on.** Direction from the HMM label has no edge.
+   Rebuild the plane on the live qualified signal stream (geometry-free drift) once enough
+   debounced data exists (G2, ~6 weeks).
+2. **Promote V7 into discovery.** Test whether any §3.8 factor predicts m_h directly (against an
+   age-only baseline, circular null). This is a new, separately pre-registered family.
+3. **Fix label stability first.** Live runs last 1–2h, so clock A is barely a clock. Evaluate a
+   longer confirm window or a 4h label (V7 multi-timeframe) before any age-based knob.
+4. **Keep P0 capture running in shadow** regardless; it costs nothing and feeds 1–3.
+
+Artefacts: `.cache/kairos/p1_summary_{nc2,nc1}.json`, `p1_matrix_cell_age_*.csv`,
+`p1_factor_panel_*.pkl`; data plane `docs/scopes/assets/20260924_kairos_edge_plane_discovery.html`
+(n_confirm 2) and `…_nc1.html`.
