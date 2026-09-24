@@ -111,7 +111,7 @@ class TestBuildSignalSimPayload:
 
         captured = {}
 
-        async def fake_insert(table, payload):
+        async def fake_insert(table, payload, **_kw):
             captured["table"] = table
             captured["payload"] = dict(payload)
             return True

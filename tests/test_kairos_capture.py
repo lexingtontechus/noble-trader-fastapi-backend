@@ -188,39 +188,118 @@ class TestPayloadStamp:
         from pathlib import Path
         src = Path(__file__).resolve().parents[1].joinpath(
             "regime_platform/sweep_orchestrator/orchestrator.py").read_text(encoding="utf-8")
-        for reason in ("cooldown_open", "cooldown_time", "content_dedup", "bracket_gate", "geometry_gate"):
+        for reason in ("cooldown_open", "cooldown_time", "content_dedup", "bracket_gate", "bracket_unscored", "geometry_gate"):
             assert f'_suppress_reason = "{reason}"' in src
         assert "_gates_pass = bool(qualified)" in src and "gate_outcome=(" in src
 
 
 class TestInsertFallback:
-    def test_retry_without_kairos_on_failure(self, monkeypatch):
-        from regime_platform.sweep_orchestrator.supabase_client import log_signal_sim
-        calls = []
+    """2026-09-24 transient-failure fix: timeouts retry the FULL row
+    (idempotent via client signal_id, 409 on retry = already written);
+    Kairos/G2 stamps are dropped only on a PGRST204 schema lag."""
 
-        async def fake_insert(table, payload):
-            calls.append(dict(payload))
-            return len(calls) > 1          # first attempt fails (schema lag)
+    @staticmethod
+    def _mock(monkeypatch, responses):
+        import httpx
 
-        monkeypatch.setattr("regime_platform.sweep_orchestrator.supabase_client._insert_row", fake_insert)
+        from regime_platform.sweep_orchestrator import supabase_client as sc
+
+        calls: list[dict] = []
+        seq = list(responses)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+            calls.append(_json.loads(request.content))
+            r = seq.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        real = httpx.AsyncClient
+
+        def factory(*a, **kw):
+            kw["transport"] = httpx.MockTransport(handler)
+            return real(*a, **kw)
+
+        async def no_sleep(_s):
+            return None
+
+        monkeypatch.setattr(sc.httpx, "AsyncClient", factory)
+        monkeypatch.setattr(sc.asyncio, "sleep", no_sleep)
         monkeypatch.setattr("regime_platform.core.settings.settings.SUPABASE_URL", "https://x.supabase.co")
-        asyncio.run(log_signal_sim({"symbol": "EURUSD", "clv_1h": 0.2, "spread_bps": 1.0}))
-        assert len(calls) == 2
-        assert "clv_1h" in calls[0] and "clv_1h" not in calls[1] and "spread_bps" not in calls[1]
-        assert calls[0]["signal_id"] == calls[1]["signal_id"]
+        return sc, calls
 
-    def test_no_retry_when_no_kairos_keys(self, monkeypatch):
-        from regime_platform.sweep_orchestrator.supabase_client import log_signal_sim
-        calls = []
+    def test_timeout_then_409_is_success_and_keeps_stamps(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.ReadTimeout(""), httpx.Response(409, text="23505")])
+        ok = asyncio.run(sc._insert_row("nt_signal_sim", {"signal_id": "a", "gate_outcome": "gate_fail"},
+                                        idempotent=True, drop_on_schema_error=sc._KAIROS_CAPTURE_KEYS))
+        assert ok is True
+        assert len(calls) == 2 and all(c.get("gate_outcome") == "gate_fail" for c in calls)
 
-        async def fake_insert(table, payload):
-            calls.append(payload)
-            return False
+    def test_504_idempotent_retries_full_row(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.Response(504, text="Gateway Timeout"), httpx.Response(201)])
+        ok = asyncio.run(sc._insert_row("nt_signal_sim", {"signal_id": "a", "clv_1h": 0.2},
+                                        idempotent=True, drop_on_schema_error=sc._KAIROS_CAPTURE_KEYS))
+        assert ok is True and len(calls) == 2 and calls[1]["clv_1h"] == 0.2
 
-        monkeypatch.setattr("regime_platform.sweep_orchestrator.supabase_client._insert_row", fake_insert)
-        monkeypatch.setattr("regime_platform.core.settings.settings.SUPABASE_URL", "https://x.supabase.co")
-        asyncio.run(log_signal_sim({"symbol": "EURUSD"}))
+    def test_timeout_not_retried_when_not_idempotent(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.ReadTimeout("")])
+        assert asyncio.run(sc._insert_row("nt_sweep_result", {"symbol": "X"})) is False
         assert len(calls) == 1
+
+    def test_503_retried_even_when_not_idempotent(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.Response(503, text="Unavailable"), httpx.Response(201)])
+        assert asyncio.run(sc._insert_row("nt_sweep_result", {"symbol": "X"})) is True
+        assert len(calls) == 2
+
+    def test_502_not_retried_when_not_idempotent(self, monkeypatch):
+        # nt_eod_actions / nt_calibration_records: a duplicate would double-apply
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.Response(502, text="Bad Gateway")])
+        assert asyncio.run(sc._insert_row("nt_eod_actions", {"symbol": "X"})) is False
+        assert len(calls) == 1
+
+    def test_connect_error_retried_when_not_idempotent(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.ConnectError("refused"), httpx.Response(201)])
+        assert asyncio.run(sc._insert_row("nt_eod_actions", {"symbol": "X"})) is True
+        assert len(calls) == 2
+
+    def test_schema_lag_drops_only_stamp_keys(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.Response(400, text='{"code":"PGRST204"}'), httpx.Response(201)])
+        ok = asyncio.run(sc._insert_row(
+            "nt_signal_sim", {"signal_id": "a", "symbol": "EURUSD", "clv_1h": 0.2, "gate_outcome": "qualified"},
+            idempotent=True, drop_on_schema_error=sc._KAIROS_CAPTURE_KEYS))
+        assert ok is True and len(calls) == 2
+        assert "clv_1h" in calls[0] and "clv_1h" not in calls[1] and "gate_outcome" not in calls[1]
+        assert calls[1]["symbol"] == "EURUSD" and calls[0]["signal_id"] == calls[1]["signal_id"]
+
+    def test_plain_400_not_retried(self, monkeypatch):
+        import httpx
+        sc, calls = self._mock(monkeypatch, [httpx.Response(400, text='{"code":"23514"}')])
+        assert asyncio.run(sc._insert_row("nt_signal_sim", {"signal_id": "a", "clv_1h": 0.2},
+                                          idempotent=True, drop_on_schema_error=sc._KAIROS_CAPTURE_KEYS)) is False
+        assert len(calls) == 1
+
+    def test_log_signal_sim_uses_idempotent_insert(self, monkeypatch):
+        from regime_platform.sweep_orchestrator.supabase_client import log_signal_sim
+        seen = {}
+
+        async def fake_insert(table, payload, **kw):
+            seen.update(kw, table=table, payload=dict(payload))
+            return True
+
+        monkeypatch.setattr("regime_platform.sweep_orchestrator.supabase_client._insert_row", fake_insert)
+        monkeypatch.setattr("regime_platform.core.settings.settings.SUPABASE_URL", "https://x.supabase.co")
+        asyncio.run(log_signal_sim({"symbol": "EURUSD", "clv_1h": 0.2, "gate_outcome": "gate_fail"}))
+        assert seen["table"] == "nt_signal_sim" and seen["idempotent"] is True
+        assert "gate_outcome" in seen["drop_on_schema_error"] and "clv_1h" in seen["drop_on_schema_error"]
+        assert "signal_id" in seen["payload"] and seen["payload"]["gate_outcome"] == "gate_fail"
 
 
 class TestPriceFetcherOhlcvOut:

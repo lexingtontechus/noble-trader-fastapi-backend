@@ -8,6 +8,7 @@ Follows the same pattern as existing backend modules (calibration.py, venue.py).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -145,6 +146,12 @@ async def log_regime_entry(
                         "log_regime_entry %s: HTTP %d — %s",
                         symbol, resp.status_code, resp.text[:300],
                     )
+                    # 2026-09-24: 502/503 = gateway never reached Postgres →
+                    # safe to retry a non-idempotent insert (one AUDUSD row
+                    # lost to a 502 on 2026-09-24 21:45).
+                    if resp.status_code in (502, 503) and attempt == 1:
+                        await asyncio.sleep(1.0)
+                        continue
                 return
         except Exception as exc:
             last_exc = exc
@@ -297,36 +304,81 @@ def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[st
     return clean
 
 
-async def _insert_row(table: str, payload: dict[str, Any]) -> bool:
+async def _insert_row(
+    table: str,
+    payload: dict[str, Any],
+    *,
+    idempotent: bool = False,
+    drop_on_schema_error: tuple[str, ...] = (),
+) -> bool:
     """Insert one row into ``table``. Returns True on success.
 
     Per-row success is DEBUG (EOD catchup can insert hundreds of
     calibration records in a burst — INFO-per-row drowned real signals).
     Failures stay ERROR. Callers that need a summary log it themselves.
+
+    2026-09-24 transient-failure fix (worklog 20260924_SUPABASE_INSERT_RETRY):
+    the 5s timeout lost rows to ReadTimeout under light-sweep write pile-up
+    (Supabase 502/504 bursts), and callers then mis-read a timeout as a
+    schema problem. Now:
+
+    * timeout 15s (same as log_regime_entry's 2026-09-23 fix);
+    * one retry on errors where the first request never reached Postgres
+      (connect/pool errors, HTTP 503) — safe for every table, including
+      non-idempotent ones like nt_eod_actions / nt_calibration_records
+      where a duplicate row would double-apply;
+    * ``idempotent=True`` (the payload carries a client-generated primary
+      key, e.g. nt_signal_sim.signal_id) additionally retries ReadTimeout /
+      HTTP 502 / 504, where the first attempt may have landed — a 409
+      duplicate key on the retry therefore means "already written" → success;
+    * ``drop_on_schema_error``: only on HTTP 400 PGRST204 (unknown column —
+      Studio deployed ahead of a migration) retry once without these keys.
+      A timeout never strips columns.
     """
     if not settings.SUPABASE_URL:
         return False
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                _url(table),
-                headers={**_headers(), "Prefer": "return=minimal"},
-                json=payload,
-            )
-            if not resp.is_success:
-                logger.error(
-                    "%s insert HTTP %d — %s",
-                    table, resp.status_code, resp.text[:300],
+    body = dict(payload)
+    dropped = False
+    for attempt in (1, 2, 3):
+        retry_ok = False
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    _url(table),
+                    headers={**_headers(), "Prefer": "return=minimal"},
+                    json=body,
                 )
-                return False
-            logger.debug(
-                "%s insert OK for %s",
-                table, payload.get("symbol", "unknown"),
-            )
-            return True
-    except Exception as exc:
-        logger.error("%s insert failed: %s: %r", table, type(exc).__name__, exc)
-        return False
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            logger.error("%s insert failed (attempt %d): %s: %r", table, attempt, type(exc).__name__, exc)
+            retry_ok = True
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            logger.error("%s insert failed (attempt %d): %s: %r", table, attempt, type(exc).__name__, exc)
+            retry_ok = idempotent
+        except Exception as exc:
+            logger.error("%s insert failed: %s: %r", table, type(exc).__name__, exc)
+            return False
+        else:
+            if resp.is_success:
+                logger.debug("%s insert OK for %s", table, body.get("symbol", "unknown"))
+                return True
+            if resp.status_code == 409 and idempotent and attempt > 1:
+                # First attempt landed despite the timeout / 504.
+                logger.info("%s insert: attempt %d found the row already written (409) — OK", table, attempt)
+                return True
+            logger.error("%s insert HTTP %d (attempt %d) — %s", table, resp.status_code, attempt, resp.text[:300])
+            if resp.status_code == 400 and "PGRST204" in resp.text and drop_on_schema_error and not dropped:
+                keys = [k for k in drop_on_schema_error if k in body]
+                if keys:
+                    for k in keys:
+                        body.pop(k, None)
+                    dropped = True
+                    logger.warning("%s insert: schema lag — retrying without %s", table, keys)
+                    continue
+            retry_ok = resp.status_code == 503 or (idempotent and resp.status_code in (502, 504))
+        if not retry_ok or attempt >= 2 + int(dropped):
+            return False
+        await asyncio.sleep(1.0)
+    return False
 
 
 async def fetch_all_rows(
@@ -518,20 +570,15 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
     sim_payload["signal_id"] = str(uuid.uuid4())
 
     # Best-effort insert. Failures are logged but don't propagate.
-    ok = await _insert_row("nt_signal_sim", sim_payload)
-    # Kairos v3 P0.5 fail-open (2026-09-24): if the insert failed and the row
-    # carried Kairos stamps (e.g. Studio deployed before migration 167 was
-    # applied → PGRST204 unknown column), retry once without them so a
-    # schema lag can never cost a signal-sim row.
-    kairos_keys = [k for k in _KAIROS_CAPTURE_KEYS if k in sim_payload]
-    if not ok and kairos_keys:
-        for k in kairos_keys:
-            sim_payload.pop(k, None)
-        logger.warning(
-            "nt_signal_sim insert failed with Kairos stamps — retrying without %s",
-            kairos_keys,
-        )
-        await _insert_row("nt_signal_sim", sim_payload)
+    # signal_id is client-generated → the insert is idempotent (a retry
+    # after a timeout that actually landed returns 409 = already written).
+    # Kairos/G2 stamps are dropped ONLY on a PGRST204 schema lag, never on
+    # a timeout (2026-09-24: the old "retry without stamps on any failure"
+    # stripped gate_outcome from 3 rows that simply timed out).
+    await _insert_row(
+        "nt_signal_sim", sim_payload,
+        idempotent=True, drop_on_schema_error=_KAIROS_CAPTURE_KEYS,
+    )
 
 
 _KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
