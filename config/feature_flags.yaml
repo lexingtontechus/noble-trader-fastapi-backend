@@ -534,6 +534,18 @@ settlement_same_bar_policy: "tp_first"
 p_win_bracket_mode: "shadow"
 min_p_win_bracket: 0.20
 
+# p_win_bracket_unscored_policy (2026-09-24, methodology worklog §10 #1):
+# fail_closed | fail_open. Unscored p_win_bracket (no reachability bucket /
+# n_stored below floor / lookup miss) on the QUALIFICATION path.
+#   fail_closed (default): unscored ⇒ qualified=False, suppress_reason=
+#     'bracket_unscored', gate_outcome='suppressed' when other gates passed.
+#     Live book will not publish or size without a scored bracket probability.
+#     Research capture (nt_signal_sim) still writes the row.
+#   fail_open: legacy — keep directional qualified (research comparison only).
+# Threshold reject (p_win_bracket < min_p_win_bracket) still requires
+# p_win_bracket_mode=live; this policy is about MISSING evidence.
+p_win_bracket_unscored_policy: "fail_closed"
+
 # p_win_in_ev_mode (R2, worklog 20260922_L1_CONFIDENT_CALIBRATION_RECOMMENDATIONS.md):
 # off | shadow | live. Which probability prices EV and Kelly.
 #   off: directional p_win (blend) in EV/Kelly — historical.

@@ -222,15 +222,49 @@ async def lookup_bracket_probs(
     )
 
 
+BRACKET_PASS = "pass"
+BRACKET_REJECT_LOW = "reject_low"
+BRACKET_REJECT_UNSCORED = "reject_unscored"
+
+
+def bracket_gate_decision(
+    p_win_bracket: float | None,
+    *,
+    min_p_win_bracket: float = MIN_P_WIN_BRACKET,
+    fail_closed: bool = True,
+) -> str:
+    """Bracket evidence gate decision.
+
+    ``pass``            — scored and ``p_win_bracket >= min_p_win_bracket``
+    ``reject_low``      — scored and below the floor
+    ``reject_unscored`` — no bucket / n_stored too thin / lookup miss
+
+    Fail-closed (default, 2026-09-24 operator decision): unscored cannot
+    qualify for the live book. Fail-open keeps the directional path (legacy
+    shadow behaviour) and is research-only.
+    """
+    if p_win_bracket is None:
+        return BRACKET_REJECT_UNSCORED if fail_closed else BRACKET_PASS
+    return BRACKET_PASS if float(p_win_bracket) >= min_p_win_bracket else BRACKET_REJECT_LOW
+
+
 def would_bracket_gate_reject(
     p_win_bracket: float | None,
     *,
     min_p_win_bracket: float = MIN_P_WIN_BRACKET,
+    fail_closed: bool = True,
 ) -> bool | None:
-    """True = live bracket gate would reject. None = unscored (fail-open keep)."""
-    if p_win_bracket is None:
-        return None
-    return p_win_bracket < min_p_win_bracket
+    """True = gate rejects. False = pass. None = unscored under fail-open.
+
+    Prefer :func:`bracket_gate_decision` — this bool wrapper cannot tell
+    ``reject_low`` from ``reject_unscored`` when ``fail_closed`` is False.
+    """
+    decision = bracket_gate_decision(
+        p_win_bracket, min_p_win_bracket=min_p_win_bracket, fail_closed=fail_closed,
+    )
+    if decision == BRACKET_PASS:
+        return False if p_win_bracket is not None else None
+    return True
 
 
 def expire_prob(p_resolve: float | None) -> float:

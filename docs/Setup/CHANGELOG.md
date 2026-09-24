@@ -1,3 +1,76 @@
+## [8.0.0] - 2026-09-24
+
+### Major — Twin-bar program: calibration + reachability methodology (code version realigned)
+
+#### Shipped in this release (fail-closed unscored bracket)
+
+- `p_win_bracket_unscored_policy: fail_closed` (default) — unscored `p_win_bracket` cannot be QUALIFIED.
+- Bracket evidence gate moved **before** cooldown stamp / Discord so `nt_sweep_result.qualified` and `nt_signal_sim` agree with what was published.
+- G2 stamps: `suppress_reason='bracket_unscored'` (`gate_outcome='suppressed'` when other gates passed); `failed_gates` may include `p_win_bracket_ok` on `gate_fail` rows.
+- `bracket_gate_decision()` distinguishes `reject_low` vs `reject_unscored` (threshold reject still requires `p_win_bracket_mode: live`).
+- Migration **169** — comment + `v_bracket_unscored_rejects` review view.
+- Research capture keeps every non-neutral row (fail-open measurement).
+
+**Scope of this release:** engineering methodology and locked operator decisions. Implementation is phased (E1–E4). No live signal-path behavior flips in this commit; version marks the architecture baseline and the end of measurement-only roadmap items.
+
+> **Note on numbering:** `docs/Setup/CHANGELOG.md` had drifted to a 9.x series while code anchors (`pyproject.toml`, `main.py`, both `openapi.yaml`) tracked `7.9.0`. **8.0.0** is the code/AGENTS.md series. This entry realigns the changelog to the code version. Historical 9.x/5.x blocks below are retained as-is.
+
+#### Why
+
+Two product bars did **not** move 2026-08-25 → 2026-09-24 despite a large shadow-mode program:
+
+| Bar | Miss |
+|---|---|
+| **Calibration** (regime label · direction · strength) | Direction still `substring(regime_label)`; `p_win` bias +0.27 → **+0.34**; gold/FX +0.36…+0.46 |
+| **Reachability** (entry · SL · TP · P/L · W/L) | Close-only TP-first; PnL from brick counts not exit−entry; three `expired` meanings; costs = 0 |
+
+What *did* land and is kept: expiry 60.6%→21.1%, deadline-aware selection live, shadow-leak P0 fixes, gated `p_regime` (Brier 14/14), debounced labels, settlement-contract module, vol-tier keys, `p_win_bracket` shadow.
+
+Root cause: recommended work measured and gated flags around an **unchanged core** (category error in EV, substring direction, non-fill PnL). Shadow logs cannot disprove a model.
+
+#### Added — Definitive methodology (scope)
+
+- `worklog/20260924_CALIBRATION_REACHABILITY_DEFINITIVE_METHODOLOGY.md`
+  - **Lever 1** — Price EV/gates/Kelly on `p_win_bracket` (or formally kill the estimator). Experiment **E1** with pass/kill bars.
+  - **Lever 2** — Replace substring direction with scored multi-source `p_dir` (may abstain / disagree). Label scorecard + direction tournament. Experiment **E2**.
+  - **Lever 3** — Settlement physics: OHLC first-touch, `sl_first`, PnL=`exit−entry−costs`, single expired taxonomy, heavy↔live parity. Experiment **E3**.
+  - **Lever 4** — Experiment protocol: every `*_mode` maps to an E-id or is deleted; max window 28d / n_ep=50; default is **kill**.
+
+#### Changed — Locked operator decisions (2026-09-24)
+
+| Decision | Lock |
+|---|---|
+| Unscored `p_win_bracket` | **Dual-stream:** live book fail-closed (no size); research fail-open + `bracket_unscored` |
+| Same-bar policy | **`sl_first`** going forward (`tp_first` = lineage only) |
+| Direction authority | Shadow may **flip** side; live **veto-to-neutral** until E2 passes |
+| Experiment windows | 28d or n_ep=50 → default **kill** |
+| Orphan shadows | Bind to E-id or **delete** in hygiene PR (`dynamic_min_rr`, `timesfm_k_adaptive`, meta-model, context-alignment) |
+
+#### Changed — Version anchors (AGENTS.md convention)
+
+All moved **7.9.0 → 8.0.0** together:
+
+- `pyproject.toml`
+- `main.py` (FastAPI `version=` + health `version`)
+- `docs/openapi.yaml` + `docs/Setup/openapi.yaml` (info.version + example)
+- `tests/test_version_consistency.py` (asserts `8.0.0`)
+- `AGENTS.md` Version section
+
+#### Not changed (this release)
+
+- Live qualification gates, EV weights, brick_params, Discord delivery
+- `p_win_bracket_mode` / `p_win_in_ev_mode` remain **shadow** until E1
+- Kairos v3 stays parallel research (geometry-free; does not fix PnL/W-L)
+
+#### Next (implementation train)
+
+1. Hygiene PR: orphan flags + version already bumped  
+2. L1.a/b reliability harness + L2.a label scorecard + L3.a/e OHLC fixtures + expired taxonomy  
+3. E1 replay (3-outcome + costs) with fill-PnL dual-report → flip or kill bracket pricing  
+4. E2 direction tournament → E3 settlement defaults → E4 geometry only after E1  
+
+---
+
 ## [9.1.0] - 2026-07-24
 
 ### Major changes — Multivariate Gaussian HMM replaces discrete MarkovChain + TA indicator persistence

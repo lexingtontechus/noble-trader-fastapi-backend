@@ -66,6 +66,7 @@ _DEFAULTS: dict[str, Any] = {
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "shadow",
+    "p_win_bracket_unscored_policy": "fail_closed",
     "geometry_incubation_mode": "shadow",
     "geometry_incubation_min_days": 7,
     "geometry_incubation_min_resolved": 20,
@@ -512,6 +513,25 @@ def get_min_p_win_bracket() -> float:
         return float(_load().get("min_p_win_bracket", _DEFAULTS["min_p_win_bracket"]))
     except (TypeError, ValueError):
         return _DEFAULTS["min_p_win_bracket"]
+
+
+def get_p_win_bracket_unscored_policy() -> str:
+    """``fail_closed`` | ``fail_open`` (2026-09-24 operator decision).
+
+    What to do when ``p_win_bracket`` is unscored (no bucket / thin
+    ``n_stored`` / lookup miss) on the qualification path:
+
+    - ``fail_closed`` (default): unscored cannot be QUALIFIED — live book
+      does not publish or size without a scored bracket probability.
+      ``nt_signal_sim`` still captures the row
+      (``suppress_reason='bracket_unscored'``).
+    - ``fail_open``: legacy behaviour — keep the directional signal
+      (research / comparison only; do not ship this on the live book).
+    """
+    return str(_load().get(
+        "p_win_bracket_unscored_policy",
+        _DEFAULTS["p_win_bracket_unscored_policy"],
+    )).lower()
 
 
 def get_p_win_in_ev_mode() -> str:

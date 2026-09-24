@@ -4291,6 +4291,67 @@ class SweepOrchestrator(HeavySweepMixin):
                 if content_hash:
                     self._last_signal_hash[dedup_key] = content_hash
 
+            # ── 10a. Bracket evidence gate (R2 + fail-closed) ────────
+            # Evaluated BEFORE cooldown stamp / Discord so `qualified` is
+            # FINAL for both nt_sweep_result.qualified and nt_signal_sim
+            # (G2 gate_outcome). Unscored + fail_closed cannot publish.
+            if p_bracket_mode != "off":
+                from regime_platform.core.feature_flags import (
+                    get_p_win_bracket_unscored_policy as _get_unscored_policy,
+                )
+                from regime_platform.sweep_orchestrator.p_win_bracket import (
+                    BRACKET_REJECT_LOW,
+                    BRACKET_REJECT_UNSCORED,
+                    bracket_gate_decision,
+                )
+                _unscored_policy = _get_unscored_policy()
+                _bracket_decision = bracket_gate_decision(
+                    _p_win_bracket,
+                    min_p_win_bracket=get_min_p_win_bracket(),
+                    fail_closed=(_unscored_policy == "fail_closed"),
+                )
+                _bracket_gate_shadow = bool(
+                    qualified and _bracket_decision != "pass"
+                )
+                if _bracket_decision == BRACKET_REJECT_UNSCORED:
+                    gate_results["p_win_bracket_ok"] = False
+                    if qualified and _unscored_policy == "fail_closed":
+                        _suppress_reason = "bracket_unscored"
+                        qualified = False
+                        logger.info(
+                            "[sweep:orch] %s: FAIL-CLOSED unscored p_win_bracket "
+                            "(bucket=%s vol=%s n_stored path) — not QUALIFIED "
+                            "(policy=fail_closed)",
+                            symbol, _bracket_bucket, _bracket_vol_tier,
+                        )
+                    else:
+                        logger.info(
+                            "[sweep:orch] %s: bracket unscored (fail-open keep) "
+                            "bucket=%s vol=%s qualified=%s",
+                            symbol, _bracket_bucket, _bracket_vol_tier, qualified,
+                        )
+                elif _bracket_decision == BRACKET_REJECT_LOW:
+                    gate_results["p_win_bracket_ok"] = False
+                    if p_bracket_mode == "live" and qualified:
+                        _suppress_reason = "bracket_gate"
+                        qualified = False
+                        logger.info(
+                            "[sweep:orch] %s: REJECTED by p_win_bracket=%.4f "
+                            "(min=%.3f, bucket=%s)",
+                            symbol, _p_win_bracket or 0.0,
+                            get_min_p_win_bracket(), _bracket_bucket,
+                        )
+                    elif p_bracket_mode == "shadow" and _bracket_gate_shadow:
+                        logger.info(
+                            "[sweep:orch] %s: bracket gate SHADOW would "
+                            "reject p_win_bracket=%.4f (bucket=%s vol=%s) "
+                            "— live still qualified=%s",
+                            symbol, _p_win_bracket or 0.0, _bracket_bucket,
+                            _bracket_vol_tier, qualified,
+                        )
+                else:
+                    gate_results["p_win_bracket_ok"] = True
+
             if qualified:
                 # ── Record cooldown timestamp ──────────────────────────
                 # Mark this (symbol, direction) as published so subsequent
@@ -4341,35 +4402,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # opt-in — changes what the sim measures).
         if trade_signal["signal"] not in ("neutral", "unknown"):
             try:
-                # ── Batch C / R2: bracket gate (lookup done before EV) ──
+                # Bracket gate already applied (10a, before Discord) so
+                # `qualified` / suppress_reason are final for this capture.
                 _p_win_dir = p_win_raw
-                if p_bracket_mode != "off":
-                    from regime_platform.sweep_orchestrator.p_win_bracket import (
-                        would_bracket_gate_reject,
-                    )
-                    _reject = would_bracket_gate_reject(
-                        _p_win_bracket, min_p_win_bracket=get_min_p_win_bracket(),
-                    )
-                    _bracket_gate_shadow = bool(qualified and _reject is True)
-                    if p_bracket_mode == "live" and _reject is True:
-                        if qualified:
-                            _suppress_reason = "bracket_gate"
-                        qualified = False
-                        gate_results["p_win_bracket_ok"] = False
-                        logger.info(
-                            "[sweep:orch] %s: REJECTED by p_win_bracket=%.4f "
-                            "(min=%.3f, bucket=%s)",
-                            symbol, _p_win_bracket or 0.0,
-                            get_min_p_win_bracket(), _bracket_bucket,
-                        )
-                    elif p_bracket_mode == "shadow" and _bracket_gate_shadow:
-                        logger.info(
-                            "[sweep:orch] %s: bracket gate SHADOW would "
-                            "reject p_win_bracket=%.4f (bucket=%s vol=%s) "
-                            "— live still qualified=%s",
-                            symbol, _p_win_bracket or 0.0, _bracket_bucket,
-                            _bracket_vol_tier, qualified,
-                        )
 
                 # ── Tiered ATR geometry / long-lag risk (Phase C2) ──────
                 from regime_platform.sweep_orchestrator.geometry_risk import (
@@ -4486,6 +4521,15 @@ class SweepOrchestrator(HeavySweepMixin):
                         _qualified_geometry_shadow = False
                 except Exception as _lg_exc:
                     logger.warning("[light:geometry] %s: %s", symbol, _lg_exc)
+
+                # Accurate G2 stamps: if bracket failed on an already-failed
+                # gate set, name it in failed_gates (gate_fail rows only).
+                if (
+                    not _gates_pass
+                    and gate_results.get("p_win_bracket_ok") is False
+                    and "p_win_bracket_ok" not in _failed_gates
+                ):
+                    _failed_gates = sorted(set(_failed_gates) | {"p_win_bracket_ok"})
 
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,

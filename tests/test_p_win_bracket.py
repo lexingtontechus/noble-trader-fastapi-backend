@@ -12,8 +12,12 @@ from regime_platform.sweep_orchestrator.p_win_bracket import (
     BETA_ALPHA,
     BETA_BETA,
     beta_shrunk_win_rate,
+    bracket_gate_decision,
     compute_bracket_probs,
     would_bracket_gate_reject,
+    BRACKET_PASS,
+    BRACKET_REJECT_LOW,
+    BRACKET_REJECT_UNSCORED,
 )
 
 
@@ -95,8 +99,19 @@ class TestComputeBracketProbs:
 
 
 class TestGate:
-    def test_none_is_fail_open(self):
-        assert would_bracket_gate_reject(None) is None
+    def test_none_is_fail_closed_by_default(self):
+        # 2026-09-24 operator decision: unscored cannot qualify.
+        assert would_bracket_gate_reject(None) is True
+        assert bracket_gate_decision(None) == BRACKET_REJECT_UNSCORED
+
+    def test_none_fail_open_when_policy_disabled(self):
+        assert would_bracket_gate_reject(None, fail_closed=False) is None
+        assert bracket_gate_decision(None, fail_closed=False) == BRACKET_PASS
+
+    def test_decision_distinguishes_low_vs_unscored(self):
+        assert bracket_gate_decision(0.05) == BRACKET_REJECT_LOW
+        assert bracket_gate_decision(0.35) == BRACKET_PASS
+        assert bracket_gate_decision(None) == BRACKET_REJECT_UNSCORED
 
 
 def test_expire_prob():
