@@ -45,3 +45,52 @@ def test_orchestrator_sets_shadow_flag_in_gate_block():
     src = inspect.getsource(orchestrator)
     assert "_qualified_geometry_shadow = True" in src
     assert "qualified_geometry_shadow=_qualified_geometry_shadow" in src
+
+
+# ── B5 split (2026-09-24): B gate is geometry-risk only ─────────────────
+
+
+def test_light_gate_rejects_only_on_risk_over_cap():
+    from regime_platform.sweep_orchestrator.geometry_risk import (
+        light_geometry_would_reject,
+    )
+
+    assert light_geometry_would_reject(0.36, risk_cap=0.35) is True
+    assert light_geometry_would_reject(0.35, risk_cap=0.35) is False  # strict >
+    assert light_geometry_would_reject(0.10, risk_cap=0.35) is False
+
+
+def test_light_gate_fails_open_when_risk_unscored():
+    from regime_platform.sweep_orchestrator.geometry_risk import (
+        light_geometry_would_reject,
+    )
+
+    assert light_geometry_would_reject(None, risk_cap=0.35) is False
+
+
+def test_light_gate_signature_has_no_bracket_input():
+    """Bracket floor is R2's gate (p_win_bracket_mode); B must not read it."""
+    import inspect
+
+    from regime_platform.sweep_orchestrator.geometry_risk import (
+        light_geometry_would_reject,
+    )
+
+    params = inspect.signature(light_geometry_would_reject).parameters
+    assert set(params) == {"geometry_risk_hat", "risk_cap"}
+
+
+def test_b_gate_block_no_longer_reads_bracket():
+    import inspect
+
+    from regime_platform.sweep_orchestrator import orchestrator
+
+    src = inspect.getsource(orchestrator)
+    start = src.index("# ── B: light-path geometry QUALIFIED gate")
+    end = src.index("sim_payload = _build_signal_sim_payload(", start)
+    block = src[start:end]
+    assert "light_geometry_would_reject(" in block
+    assert "_p_win_bracket" not in block
+    assert "get_min_p_win_bracket" not in block
+    # false stamp only when risk was actually scored (fail-open → NULL)
+    assert '_light_gate == "shadow" and _risk_scored' in block

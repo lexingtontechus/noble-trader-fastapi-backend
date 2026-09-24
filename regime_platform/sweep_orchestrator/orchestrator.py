@@ -4328,40 +4328,40 @@ class SweepOrchestrator(HeavySweepMixin):
                     logger.warning("[geo:tuning] %s: %s", symbol, _tune_exc)
 
                 # ── B: light-path geometry QUALIFIED gate (2026-09-20) ──
+                # Geometry-risk ONLY since 2026-09-24 (B5 split): bracket floor
+                # is R2's gate (p_win_bracket_mode above), not B's. See
+                # worklog/20260924_B5_VETO_SPLIT_SCOPE.md.
                 _qualified_geometry_shadow: bool | None = None
                 try:
+                    from regime_platform.sweep_orchestrator.geometry_risk import (
+                        light_geometry_would_reject,
+                    )
                     _light_gate = get_light_publish_geometry_gate()
                     _risk_cap_b = get_dynamic_atr_risk_cap()
-                    _min_br = get_min_p_win_bracket()
-                    _risk_over = (
-                        _gm.geometry_risk_hat is not None
-                        and float(_gm.geometry_risk_hat) > _risk_cap_b
+                    _would_reject = light_geometry_would_reject(
+                        _gm.geometry_risk_hat, risk_cap=_risk_cap_b,
                     )
-                    _br_reject = (
-                        _p_win_bracket is not None
-                        and float(_p_win_bracket) < _min_br
-                    )
-                    # Fail-open when neither metric is scored
-                    _would_reject = bool(_risk_over or _br_reject)
+                    # Stamp only when risk is scored (fail-open rows stay NULL)
+                    _risk_scored = _gm.geometry_risk_hat is not None
                     if qualified and _light_gate != "off" and _would_reject:
                         if _light_gate == "live":
                             qualified = False
                             logger.info(
                                 "[light:geometry] %s REJECT qualified — risk=%s cap=%s "
-                                "p_win_bracket=%s min=%s tp_atr=%s",
+                                "tp_atr=%s",
                                 symbol, _gm.geometry_risk_hat, _risk_cap_b,
-                                _p_win_bracket, _min_br, _gm.tp_distance_atr,
+                                _gm.tp_distance_atr,
                             )
                         else:
-                            # B2 stamp (2026-09-23): persist for B5 reject-rate SQL
+                            # B2 stamp (2026-09-23): persist for B5 risk-share SQL
                             _qualified_geometry_shadow = True
                             logger.info(
                                 "[light:geometry] %s SHADOW would reject — risk=%s "
-                                "p_win_bracket=%s tp_atr=%s (still qualified=%s)",
-                                symbol, _gm.geometry_risk_hat, _p_win_bracket,
+                                "cap=%s tp_atr=%s (still qualified=%s)",
+                                symbol, _gm.geometry_risk_hat, _risk_cap_b,
                                 _gm.tp_distance_atr, qualified,
                             )
-                    elif qualified and _light_gate == "shadow":
+                    elif qualified and _light_gate == "shadow" and _risk_scored:
                         _qualified_geometry_shadow = False
                 except Exception as _lg_exc:
                     logger.warning("[light:geometry] %s: %s", symbol, _lg_exc)

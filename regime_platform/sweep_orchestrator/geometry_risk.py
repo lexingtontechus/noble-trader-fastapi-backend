@@ -173,6 +173,25 @@ def compute_geometry_metrics(
     )
 
 
+def light_geometry_would_reject(
+    geometry_risk_hat: Optional[float],
+    *,
+    risk_cap: float,
+) -> bool:
+    """Light-path B gate veto — geometry risk ONLY (B5 split, 2026-09-24).
+
+    The ``p_win_bracket < min_p_win_bracket`` clause was removed: bracket
+    gating is owned by R2 (``p_win_bracket_mode``), which runs earlier in
+    the same capture block. Keeping it here would let a B live flip push the
+    bracket floor live before R2's own flip sequence. It was also mostly
+    redundant: both metrics come from the same ``pct_expired`` (corr ≈ -0.87
+    live), so risk-over without bracket-under was about 0.2% of scored rows.
+
+    Unscored risk (``None``) fails open — no veto (B3).
+    """
+    return geometry_risk_hat is not None and float(geometry_risk_hat) > risk_cap
+
+
 async def lookup_long_lag(
     symbol: str,
     *,

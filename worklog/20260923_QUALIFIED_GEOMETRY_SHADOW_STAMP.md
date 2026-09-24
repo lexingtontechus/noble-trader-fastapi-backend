@@ -41,6 +41,11 @@ WHERE source = 'sweep-light'
 If `reject_rate > ~0.70` → **tune `dynamic_atr_risk_cap`**, do not flip live.
 D1/D2 remain blocked on this review.
 
+> **Superseded 2026-09-24** (`20260924_B5_VETO_SPLIT_SCOPE.md`): the B veto is
+> now geometry-risk only (bracket clause moved to R2 alone). The total
+> `reject_rate` above is retired. Use `scripts/pulse_check_r2.py`
+> `b5_risk_share` / `b5_veto_outcomes` / `b5_cap_replay`.
+
 ## Tests
 
 `tests/test_qualified_geometry_shadow.py` + light-gate / sim-capture / bracket suites: **37 passed**.

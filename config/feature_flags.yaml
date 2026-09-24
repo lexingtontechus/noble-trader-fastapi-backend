@@ -363,7 +363,12 @@ geometry_intraday_scale_mode: "live"
 geometry_tuning_sweep_mode: "live"
 geometry_tuning_cooldown_hours: 6
 geometry_tuning_min_consecutive: 2
-# B: light-path qualified quality gate (shadow until reject-rate reviewed)
+# B: light-path qualified quality gate (shadow until reject-rate reviewed).
+# 2026-09-24 (B5 split): veto = geometry_risk_hat > dynamic_atr_risk_cap ONLY.
+# The p_win_bracket clause was removed — bracket floor is R2's gate
+# (p_win_bracket_mode). B5 bar = risk_reject_rate (scripts/pulse_check_r2.py
+# b5_risk_share) AND vetoed-vs-kept outcomes (b5_veto_outcomes), never total
+# reject. Cap is shared with LIVE consumers — replay offline (b5_cap_replay).
 light_publish_geometry_gate: "shadow"
 
 # min_rr: minimum reward:risk ratio. Source of truth for get_min_rr()
