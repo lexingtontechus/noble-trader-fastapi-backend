@@ -181,7 +181,6 @@ class TestRunEodRetention:
         summary = asyncio.run(self._run(client, patch(
             "regime_platform.sweep_orchestrator.eod_retention.settings",
             SUPABASE_URL="https://x.supabase.co",
-            EOD_RETENTION_RESOLVED_DAYS=30,
             EOD_RETENTION_STALE_DAYS=7,
         )))
 
@@ -203,6 +202,44 @@ class TestRunEodRetention:
         assert "ts" in patch_call["params"]
         assert patch_call["json"] == {"outcome": "expired"}
 
+    def test_resolved_cutoff_reads_config_retention_days(self):
+        """Resolved-row cutoff comes from config/feature_flags.yaml
+        (signal_sim_retention_resolved_days), not env/Settings — Studio only
+        injects Secrets as env (2026-09-23)."""
+        client = FakeClient()
+        client.head_responses = [
+            FakeResponse(headers={"content-range": "0-0/0"}),
+            FakeResponse(headers={"content-range": "0-0/0"}),
+        ]
+        with patch(
+            "regime_platform.sweep_orchestrator.eod_retention.get_signal_sim_retention_resolved_days",
+            return_value=120,
+        ):
+            asyncio.run(self._run(client, patch(
+                "regime_platform.sweep_orchestrator.eod_retention.settings",
+                SUPABASE_URL="https://x.supabase.co",
+                EOD_RETENTION_STALE_DAYS=7,
+            )))
+        cutoffs = [
+            v for c in client.calls for k, v in (c.get("params") or {}).items()
+            if k == "resolved_at" and isinstance(v, str) and v.startswith("lt.")
+        ]
+        assert cutoffs, client.calls
+        cutoff = datetime.fromisoformat(cutoffs[0][3:].replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - cutoff).total_seconds() / 86400
+        assert 119.9 < age_days < 120.1
+
+    def test_retention_days_getter_default_and_floor(self):
+        from regime_platform.core import feature_flags as ff
+
+        with patch.object(ff, "_load", return_value={}):
+            assert ff.get_signal_sim_retention_resolved_days() == 120
+        with patch.object(ff, "_load", return_value={"signal_sim_retention_resolved_days": 2}):
+            assert ff.get_signal_sim_retention_resolved_days() == 7
+        with patch.object(ff, "_load", return_value={"signal_sim_retention_resolved_days": "x"}):
+            assert ff.get_signal_sim_retention_resolved_days() == 120
+        assert ff.get_signal_sim_retention_resolved_days() == 120  # shipped yaml
+
     def test_no_rows_no_writes(self):
         client = FakeClient()
         client.head_responses = [
@@ -212,7 +249,6 @@ class TestRunEodRetention:
         summary = asyncio.run(self._run(client, patch(
             "regime_platform.sweep_orchestrator.eod_retention.settings",
             SUPABASE_URL="https://x.supabase.co",
-            EOD_RETENTION_RESOLVED_DAYS=30,
             EOD_RETENTION_STALE_DAYS=7,
         )))
         assert summary == {"deleted_resolved": 0, "expired_stale": 0, "errors": 0}
@@ -227,7 +263,6 @@ class TestRunEodRetention:
         summary = asyncio.run(self._run(client, patch(
             "regime_platform.sweep_orchestrator.eod_retention.settings",
             SUPABASE_URL="https://x.supabase.co",
-            EOD_RETENTION_RESOLVED_DAYS=30,
             EOD_RETENTION_STALE_DAYS=7,
         )))
         assert summary["errors"] == 2
@@ -262,7 +297,6 @@ class TestRunEodRetention:
         summary = asyncio.run(self._run(client, patch(
             "regime_platform.sweep_orchestrator.eod_retention.settings",
             SUPABASE_URL="https://x.supabase.co",
-            EOD_RETENTION_RESOLVED_DAYS=30,
             EOD_RETENTION_STALE_DAYS=7,
         )))
         assert summary["deleted_resolved"] == 2

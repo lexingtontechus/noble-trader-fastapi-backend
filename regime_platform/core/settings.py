@@ -205,13 +205,12 @@ class Settings(BaseSettings):
     #   and the backlog clears without manual intervention.
     EOD_RESOLVE_MAX_TOTAL: int = 12000
 
-    # EOD_RETENTION_RESOLVED_DAYS (default 30, 2026-08-12):
-    #   Retention pass (eod_retention.run_eod_retention, wired into the
-    #   nightly _run_eod_lookback Part IV) DELETEs resolved nt_signal_sim
-    #   rows (outcome IS NOT NULL) older than this many days. Keeps the
-    #   signal ledger bounded; calibration records live separately in
-    #   nt_calibration_records so no bias data is lost.
-    EOD_RETENTION_RESOLVED_DAYS: int = 30
+    # EOD_RETENTION_RESOLVED_DAYS — MOVED 2026-09-23 to
+    #   config/feature_flags.yaml `signal_sim_retention_resolved_days`
+    #   (getter core.feature_flags.get_signal_sim_retention_resolved_days).
+    #   Studio only injects Secrets as env; every non-secret knob lives in
+    #   config/*. Deliberately removed from Settings (not left as a fallback)
+    #   so there is exactly one source — see AGENTS.md MIN_RR pitfall.
 
     # EOD_RETENTION_STALE_DAYS (default 7, 2026-08-12):
     #   Retention pass marks unresolved nt_signal_sim rows (outcome IS NULL)

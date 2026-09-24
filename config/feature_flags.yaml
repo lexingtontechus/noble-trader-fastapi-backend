@@ -578,6 +578,16 @@ geometry_incubation_min_resolved: 20
 # it resolves worse than what it is replacing.
 geometry_incubation_max_expiry_regression: 0.10
 
+# signal_sim_retention_resolved_days (2026-09-23, user-approved; replaces
+# settings.EOD_RETENTION_RESOLVED_DAYS=30, which Studio never read — Studio
+# injects only Secrets as env, all other knobs live in config/*): the
+# nightly retention pass DELETEs resolved nt_signal_sim rows older than
+# this. 120 keeps enough history for the Kairos edge-state research
+# (docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md K0; needs ≥ 60 days of
+# regime + geometry + MFE/MAE). ≈ 2,400 resolved rows/day → ~290k rows at
+# steady state. Getter floors at 7.
+signal_sim_retention_resolved_days: 120
+
 # regime_warm_start_mode (2026-09-01, worklog
 # 20260901_REGIME_LABEL_STABILITY_SCOPE.md): root-cause fix for
 # regime_label flapping tick-to-tick. RegimeHMM.fit() rebuilds and

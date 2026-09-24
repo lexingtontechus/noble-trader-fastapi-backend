@@ -70,6 +70,7 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_incubation_min_days": 7,
     "geometry_incubation_min_resolved": 20,
     "geometry_incubation_max_expiry_regression": 0.10,
+    "signal_sim_retention_resolved_days": 120,
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -553,6 +554,23 @@ def get_geometry_incubation_min_days() -> float:
         ))
     except (TypeError, ValueError):
         return float(_DEFAULTS["geometry_incubation_min_days"])
+
+
+def get_signal_sim_retention_resolved_days() -> int:
+    """Days to keep RESOLVED nt_signal_sim rows before the nightly retention
+    pass deletes them (eod_retention.run_eod_retention). 120 since
+    2026-09-23 (was 30 via settings.EOD_RETENTION_RESOLVED_DAYS, removed):
+    edge-state research needs ≥ 60 days of regime + geometry + MFE/MAE,
+    which only nt_signal_sim carries. Floored at 7 so a bad value can't
+    wipe the ledger the resolver/correction passes still read."""
+    try:
+        v = int(_load().get(
+            "signal_sim_retention_resolved_days",
+            _DEFAULTS["signal_sim_retention_resolved_days"],
+        ))
+    except (TypeError, ValueError):
+        v = int(_DEFAULTS["signal_sim_retention_resolved_days"])
+    return max(v, 7)
 
 
 def get_geometry_incubation_min_resolved() -> int:

@@ -8,7 +8,9 @@ grows unbounded (17,992 rows / 16,792 pending observed 2026-08-12) and the
 pending partial index keeps growing. This module is the nightly hygiene pass:
 
   1. **Delete resolved** — ``outcome IS NOT NULL`` AND ``resolved_at`` older
-     than ``EOD_RETENTION_RESOLVED_DAYS`` (default 30). Calibration bias data
+     than ``signal_sim_retention_resolved_days`` (config/feature_flags.yaml,
+     default 120; was settings.EOD_RETENTION_RESOLVED_DAYS=30 until
+     2026-09-23). Calibration bias data
      lives separately in ``nt_calibration_records``, so deleting old resolved
      ledger rows loses no bias signal.
   2. **Expire stale pending** — ``outcome IS NULL`` AND ``ts`` older than
@@ -39,6 +41,7 @@ from typing import Any
 
 import httpx
 
+from regime_platform.core.feature_flags import get_signal_sim_retention_resolved_days
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
 
@@ -264,7 +267,8 @@ async def run_eod_retention() -> dict[str, Any]:
         return summary
 
     now_utc = datetime.now(timezone.utc)
-    resolved_cutoff = (now_utc - timedelta(days=settings.EOD_RETENTION_RESOLVED_DAYS)).isoformat()
+    resolved_days = get_signal_sim_retention_resolved_days()
+    resolved_cutoff = (now_utc - timedelta(days=resolved_days)).isoformat()
     stale_cutoff = (now_utc - timedelta(days=settings.EOD_RETENTION_STALE_DAYS)).isoformat()
 
     async with httpx.AsyncClient(timeout=15.0) as client:

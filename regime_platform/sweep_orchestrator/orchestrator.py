@@ -1897,7 +1897,7 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── Part IV: retention / prune (2026-08-12) ───────────────────────
         # Keep nt_signal_sim bounded:
-        #   1. DELETE resolved rows older than EOD_RETENTION_RESOLVED_DAYS.
+        #   1. DELETE resolved rows older than signal_sim_retention_resolved_days (config/feature_flags.yaml).
         #   2. Mark unresolved rows older than EOD_RETENTION_STALE_DAYS as
         #      'expired' (they have sat past the 48-bar window with no touch;
         #      neither win nor loss → no calibration record, same convention
