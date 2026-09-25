@@ -811,9 +811,22 @@ tested.
 - **Expiry** is not dropped. It is a non-result, excluded from error, and a **core open issue**
   expected to be addressed by dynamic (tiered) ATR geometry. Expiry share is reported alongside
   every result.
-- **Today's system assumes** a flat 7-day window (≥ 20 records, `eod_correction`) plus a 48h
-  drift trigger. That is an unmeasured decay assumption (full weight to 7d, then zero), and it
-  is the benchmark.
+- **The production benchmark** is `fetch_calibration_bias` (`supabase_client.py`, used by
+  `eod_correction`). *Corrected 2026-09-25: an earlier draft of this line called it a flat 7-day
+  window, which was wrong.* The actual rule:
+  - `nt_calibration_records` rows are restricted to a 7-day **entry** window
+    (`EOD_BIAS_WINDOW_DAYS=7`).
+  - Overlapping `[entered_at, closed_at]` rows are merged into **episodes**.
+  - Each episode is weighted `0.5 ** (entry_age_days / 3)` (`EOD_BIAS_DECAY_HALFLIFE_DAYS=3`,
+    set in code).
+  - It needs ≥ 28 raw records (`EOD_BIAS_MIN_RECORDS`, Studio env; code default 20) and ≥ 2
+    episodes (`calibration_bias_min_episodes`).
+  - Records exist only after the **daily** resolver run (about 01:00 UTC), so evidence reaches it
+    a median of ~11h after the outcome.
+  - Plus the 48h drift trigger.
+  - The decay is by **entry** age with a 3-day half-life, against the hours-scale carryover the
+    test is looking for. Both the half-life and the resolver latency are unmeasured assumptions.
+    The rule as a whole is the benchmark.
 
 **Test order:**
 
@@ -823,8 +836,9 @@ tested.
 2. **State change.** Does carryover survive a quadrant change between the evidence and S2?
 3. **Covariates.** Do factors (§3.8 / V7 families, events, volatility) change the decay rate?
    Only if step 1 shows persistence.
-4. **Decision.** Does a decayed correction beat the 7-day window on S2 out of sample (Brier and
-   log-loss)?
+4. **Decision.** Does a decayed correction beat the production rule (above) on S2 out of sample
+   (Brier and log-loss)? Latency (nightly vs hourly resolver) and half-life are scored as
+   separate levers.
 
 TimesFM 2.x covariates remain a separate price-forecast scope (p_timesfm).
 
@@ -849,11 +863,12 @@ nulls; symbol-day cluster bootstrap.
   children.
 - Accuracy vs no-skill shows the same shape (0–6h β +0.45, p < 0.002).
 
-**2. The 7-day window is too slow.** Walk-forward correction of S2's p_win:
+**2. A slow window is too slow.** Walk-forward correction of S2's p_win (step 1 used a
+flat-7d proxy, not the production rule. The production rule is scored in §14.2 A):
 
 | Evidence rule | Δ Brier |
 |---|---|
-| flat 7d (today's rule) | −0.019 |
+| flat 7d, ≥ 20 (proxy, *not* the production rule) | −0.019 |
 | decay h = 3h | −0.053 |
 | decay h = 6h | −0.046 |
 
@@ -894,3 +909,71 @@ nulls; symbol-day cluster bootstrap.
 - Covariates should be fast-moving (recent volatility, recent outcome streak), not slow
   regime age.
 - The p_win discrimination problem goes to the calibration workstream, not Kairos.
+
+### 14.2 Production benchmark + step 2 (2026-09-25, `scripts/kairos_calibration_step2.py`, `reports/20260925_calibration_step2.md`)
+
+Same data and targets as step 1 (446 qualified TP/SL S2 signals). 1,000 circular-shift nulls.
+
+**A. Production rule vs latency vs half-life.**
+- Walk-forward Δ Brier on S2; negative = better.
+- The common subset is the 162 S2 targets every rule can score. Uncorrected Brier on it is 0.356.
+- The production rule replicates `fetch_calibration_bias`: 7d entry window, episodes, 3-day
+  entry-age half-life, ≥ 28 raw, ≥ 2 episodes.
+
+| Evidence rule | S2 scorable | Δ Brier (common subset) |
+|---|---|---|
+| production rule, nightly resolver (**today**) | 31% | −0.025 ± 0.012 |
+| production rule, hourly resolver | 40% | −0.043 ± 0.013 |
+| 3h half-life, nightly resolver | 79% | −0.042 ± 0.011 |
+| 3h half-life, hourly resolver | 87% | −0.094 ± 0.016 |
+| 3h half-life, instant (upper bound) | 87% | −0.102 ± 0.017 |
+| 24h half-life, hourly resolver | 87% | −0.046 ± 0.013 |
+
+- **Both levers matter, and together they compound.** Latency alone takes the gain from
+  −0.025 to −0.043; half-life alone takes it to −0.042; both take it to −0.094, i.e. 3.7×
+  today's gain.
+- Hourly latency gets within 0.008 of instant.
+- **Coverage is a third problem.** Today's rule has enough evidence for only **31%** of S2
+  signals; the other 69% get no correction at all. That is caused by the ≥ 28 raw-record floor
+  inside the 7d entry window plus nightly latency.
+
+**B. Step 2: does carryover survive a state change?** 0–6h evidence, known at exit.
+
+| Split | β same state | β different state | Same − different | p (diff vs null) | p (same β vs null) |
+|---|---|---|---|---|---|
+| evidence fired from S2's regime | +0.44 (n 136) | +0.18 (n 285) | +0.26 | 0.28 | 0.02 |
+| same signal direction | +0.28 (256) | +0.10 (221) | +0.18 | 0.28 | 0.04 |
+| symbol regime unchanged since the evidence resolved | +0.55 (171) | +0.25 (257) | +0.30 | 0.10 | < 0.001 |
+| same, decayed h = 3h | +0.56 (171) | +0.26 (257) | +0.30 | 0.09 | < 0.001 |
+
+- Carryover is **roughly twice as strong while the symbol stays in the same regime**, and
+  weaker, but not zero, across a regime change.
+- The same-vs-different gap is **suggestive, not established** (p 0.09–0.10). The null gap
+  median is already +0.13, i.e. part of it is structural.
+- Only 23–31% of 0–6h evidence shares S2's state, so the "same" arm is small.
+
+**Reading:**
+- Calibration error carries over on an hours scale.
+- It carries over more strongly within an unchanged regime state. That is the transition
+  component Kairos is meant to capture, but it is not yet significant on one month of data.
+- The largest measured, deployable win is operational: resolve hourly, not nightly.
+- The next largest is a short half-life.
+- Neither fixes p_win's lack of discrimination (§14.1 item 3). The corrections mostly shrink
+  p_win toward the realised base rate faster and more often.
+
+**Proposed levers (one at a time, shadow first; not built):**
+1. **Latency:** resolve TP/SL into `nt_calibration_records` hourly.
+   - The `kairos-daily` job already runs hourly at :20.
+   - This changes the evidence arrival time, not the correction formula.
+2. **Half-life:** a signal-level 3h-half-life bias computed in shadow next to the production
+   bias.
+   - Logged per sweep.
+   - Scored on S2 as it resolves.
+   - Moves `EOD_BIAS_*` knobs into `config/feature_flags.yaml` when it goes live.
+3. **State conditioning** (weight same-regime evidence higher): only if the §14.2 B gap reaches
+   significance on the post-flip data.
+
+**Geometry caveat:**
+- The hybrid ATR promote went live 2026-09-25 (2af37b8), and the first live heavy is 09-26.
+- Tight brackets resolve in hours, which changes both evidence volume and latency.
+- Re-run steps 1–2 on post-flip data before tuning any lever above.
