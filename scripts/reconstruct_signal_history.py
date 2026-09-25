@@ -5,7 +5,7 @@ symbol from TDVA 1h OHLC history (~21 months; TDVA serves 1h bars back to
 2025-01-01) and run the pre-registered Kairos tests H1–H4 on them.
 
 Read-only against production: nothing is written to Supabase. Outputs go to
-.cache/ (gitignored). Scope: docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md.
+.cache/ (gitignored). Scope: worklog/kairos/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md.
 
 What is reproduced exactly (production code, not re-implementations):
   • regime label  — RegimeHMM (runtime config) fit+predict on the trailing

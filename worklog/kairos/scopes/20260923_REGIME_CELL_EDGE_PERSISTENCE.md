@@ -10,7 +10,7 @@ Every number below comes from one run of that script (sections `== 1` … `== 10
 |---|---|
 | v1 | Persistence test. Result: edge decays in about 3–4 days, and momentum ("trade the Leaders") gates lose. |
 | v2 | **Correction:** `qualified=false` also marks cooldown-suppressed signals, so "1.4% qualified" understated how many signals pass the gates. **Added:** does a quadrant define an edge; regime and quadrant transition probabilities; per-quadrant knob response; a covariance-matrix framing. |
-| v3 | **Stricter statistics; several v2 claims withdrawn.** CIs now use a cluster bootstrap over symbol-days, reversal is measured as excess over each symbol's own base rate, and quadrant transitions are compared with a shuffled-outcome null. See "v3 status" below. Design and next steps: `docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md`. |
+| v3 | **Stricter statistics; several v2 claims withdrawn.** CIs now use a cluster bootstrap over symbol-days, reversal is measured as excess over each symbol's own base rate, and quadrant transitions are compared with a shuffled-outcome null. See "v3 status" below. Design and next steps: `worklog/kairos/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md`. |
 
 ## v3 status — what survives the stricter tests
 

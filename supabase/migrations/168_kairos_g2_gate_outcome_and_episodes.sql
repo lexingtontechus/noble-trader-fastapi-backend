@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Migration 168: Kairos G2 — gate outcome stamps + all-signal episode view
 --
--- docs/scopes/20260924_KAIROS_V3_SCOPE.md §12 (weekly G2 roadmap, user
+-- worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §12 (weekly G2 roadmap, user
 -- 2026-09-24: "I want to be able to ascertain all signals (not just
 -- qualified=true due to the cooldown mechanism)"). Additive only: three
 -- nullable columns on nt_signal_sim + one VIEW. Stamps are written after the
@@ -115,7 +115,7 @@ LEFT JOIN v_kairos_regime_runs run
 WHERE r.rn = 1;
 
 COMMENT ON VIEW v_kairos_signal_episodes IS
-  'Kairos G2: all light-sweep buy/sell signals since 2026-09-22 de-duplicated to (symbol, direction, hour). tier = best outcome in the hour (qualified > suppressed > gate_fail > unknown[pre-168 not-qualified]). m1..m48 = geometry-free signed drift in ATR units from the first tick. regime_age_h from v_kairos_regime_runs. docs/scopes/20260924_KAIROS_V3_SCOPE.md §12.';
+  'Kairos G2: all light-sweep buy/sell signals since 2026-09-22 de-duplicated to (symbol, direction, hour). tier = best outcome in the hour (qualified > suppressed > gate_fail > unknown[pre-168 not-qualified]). m1..m48 = geometry-free signed drift in ATR units from the first tick. regime_age_h from v_kairos_regime_runs. worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §12.';
 
 GRANT SELECT ON v_kairos_signal_episodes TO anon;
 

@@ -1,5 +1,5 @@
 """
-kairos.py — Kairos v3 P0 capture helpers (docs/scopes/20260924_KAIROS_V3_SCOPE.md).
+kairos.py — Kairos v3 P0 capture helpers (worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md).
 
 Geometry-free, read-only-for-trading helpers. Nothing here changes
 qualification, sizing, SL/TP or delivery; it only computes values that are
@@ -20,8 +20,9 @@ offline panels can never drift apart:
   rel_volume     volume of the last completed bar ÷ median volume of the
                  completed bars in the window with the same UTC hour-of-day
                  (excluding itself); None if < 3 same-hour samples.
-  atr_ratio_run  ATR now ÷ ATR at the start of the current cell run (in-memory
-                 run tracker; resets to 1.0 on a process restart).
+  atr_ratio_run  ATR now ÷ ATR at the start of the current cell run (run
+                 tracker, persisted across restarts by regime_state_store
+                 since 2026-09-25; cold only after a > max-age outage).
   spread_bps     (ask − bid)/mid × 1e4 from the /api/quote/batch call the HMM
                  already makes each sweep (no extra API call).
   drift_h        signed close move h completed bars after the entry bar, % of
@@ -182,6 +183,19 @@ class KairosRunTracker:
             cur = self._runs[symbol]
         return (float(now_ts) - cur[1]) / 3600.0, cur[2]
 
+    def to_dict(self) -> dict[str, list]:
+        return {s: [c, t, a] for s, (c, t, a) in self._runs.items()}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "KairosRunTracker":
+        obj = cls()
+        for s, v in (d or {}).items():
+            try:
+                obj._runs[s] = (str(v[0]), float(v[1]), float(v[2]) if v[2] else None)
+            except (TypeError, ValueError, IndexError):
+                continue
+        return obj
+
 
 # ─── Economic calendar cache (P0.6, daily) ───────────────────────────────
 
@@ -274,12 +288,16 @@ def anchor_by_timestamp(bar_ts: Sequence[float | None], signal_epoch: float) -> 
     return None
 
 
-async def backfill_drift_horizons(max_rows: int = 5000, concurrency: int = 8) -> dict[str, int]:
-    """Fill NULL drift_{1,4,12,24,48}h_pct on resolved nt_signal_sim rows
-    whose entry is 49–199h old (the resolver often settles a TP/SL touch
-    before 24/48 bars exist, leaving later horizons NULL). Only NULL fields
-    are written — existing values are never overwritten. Timestamp-anchored.
-    Never raises."""
+async def backfill_drift_horizons(max_rows: int = 12000, concurrency: int = 8,
+                                  min_age_h: int = 2, max_age_h: int = 199) -> dict[str, int]:
+    """Fill NULL drift_{1,4,12,24,48}h_pct on light-sweep buy/sell rows whose
+    entry is ``min_age_h``–``max_age_h`` old, for every horizon whose bar
+    already exists — resolved OR still pending (2026-09-25 accelerated G2:
+    the resolver only writes drift when a signal settles, so young rows had
+    drift only when TP/SL hit early, a geometry-selected subset). Only NULL
+    fields are written — existing values are never overwritten, and the
+    only other drift consumer (calibration_bias_bucket) filters
+    ``outcome IS NOT NULL``. Timestamp-anchored. Never raises."""
     import asyncio
 
     import httpx
@@ -296,8 +314,8 @@ async def backfill_drift_horizons(max_rows: int = 5000, concurrency: int = 8) ->
     if not settings.SUPABASE_URL:
         return summary
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    lo = (now - timedelta(hours=199)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    hi = (now - timedelta(hours=49)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lo = (now - timedelta(hours=max_age_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hi = (now - timedelta(hours=min_age_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
     cols = "signal_id,symbol,signal,ts,entry_price," + ",".join(f"drift_{h}h_pct" for h in DRIFT_HORIZONS)
     rows: list[dict[str, Any]] = []
     try:
@@ -305,7 +323,8 @@ async def backfill_drift_horizons(max_rows: int = 5000, concurrency: int = 8) ->
             off = 0
             while len(rows) < max_rows:
                 resp = await client.get(_url("nt_signal_sim"), headers=_headers(), params=[
-                    ("select", cols), ("outcome", "not.is.null"), ("drift_48h_pct", "is.null"),
+                    ("select", cols), ("drift_48h_pct", "is.null"),
+                    ("signal", "in.(buy,sell)"), ("source", "eq.sweep-light"),
                     ("ts", f"gte.{lo}"), ("ts", f"lte.{hi}"), ("order", "ts.asc"),
                     ("limit", "1000"), ("offset", str(off))])
                 resp.raise_for_status()
@@ -376,3 +395,35 @@ async def backfill_drift_horizons(max_rows: int = 5000, concurrency: int = 8) ->
 
 def epoch_now() -> float:
     return time.time()
+
+
+# ─── Job heartbeat (2026-09-25) ──────────────────────────────────────────
+
+
+def heartbeat_state(summary: dict[str, Any], now: datetime | None = None) -> str:
+    """One-line current_state for the nt_roadmap heartbeat row."""
+    now = now or datetime.now(timezone.utc)
+    return f"last_run {now.strftime('%Y-%m-%dT%H:%M:%SZ')} · " + json.dumps(summary, default=str)[:900]
+
+
+async def write_job_heartbeat(mechanism: str, summary: dict[str, Any]) -> bool:
+    """PATCH nt_roadmap(mechanism).current_state/updated_at — no new table.
+    The row is created once by hand (worklog/kairos/…_ACCELERATED_G2.md); a
+    missing row just returns False. Never raises."""
+    try:
+        import httpx
+
+        from regime_platform.core.settings import settings
+        from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+        if not settings.SUPABASE_URL:
+            return False
+        now = datetime.now(timezone.utc)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(
+                _url("nt_roadmap"), headers={**_headers(), "Prefer": "return=minimal"},
+                params={"mechanism": f"eq.{mechanism}"},
+                json={"current_state": heartbeat_state(summary, now), "updated_at": now.isoformat()})
+        return resp.is_success
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[kairos] heartbeat %s failed: %s", mechanism, exc)
+        return False

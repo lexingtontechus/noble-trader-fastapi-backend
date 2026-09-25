@@ -3,7 +3,7 @@
 """
 kairos_discovery.py — Kairos v3 P1 discovery (offline, geometry-free, read-only).
 
-docs/scopes/20260924_KAIROS_V3_SCOPE.md §5.0 (frozen definitions) and §6 P1.
+worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §5.0 (frozen definitions) and §6 P1.
 No SL/TP, R, W/L or P/L anywhere: the only outcome is the signed forward move
 in ATR units, m_h = d · (C[t+h] − C[t]) / ATR_t.
 
@@ -22,7 +22,7 @@ Steps
 Usage
   PYTHONPATH="$PWD" ./.venv/Scripts/python.exe scripts/kairos_discovery.py \
       [--symbols EURUSD,XAUUSD,US500,BTCUSD,USDJPY] [--n-null 1000] [--n-boot 2000] \
-      [--refresh-volume] [--html docs/scopes/assets/20260924_kairos_edge_plane_discovery.html]
+      [--refresh-volume] [--html worklog/kairos/assets/20260924_kairos_edge_plane_discovery.html]
 """
 
 from __future__ import annotations
@@ -483,7 +483,7 @@ def main() -> int:
     ap.add_argument("--refresh-volume", action="store_true")
     ap.add_argument("--n-confirm", type=int, default=0, help="0 = auto (closest to live flip rate)")
     ap.add_argument("--tag", default="")
-    ap.add_argument("--html", default=str(ROOT / "docs/scopes/assets/20260924_kairos_edge_plane_discovery.html"))
+    ap.add_argument("--html", default=str(ROOT / "worklog/kairos/assets/20260924_kairos_edge_plane_discovery.html"))
     a = ap.parse_args()
     SFX = f"_{a.tag}" if a.tag else ""
     syms = a.symbols.split(",")

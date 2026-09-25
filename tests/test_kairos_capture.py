@@ -1,4 +1,4 @@
-"""Kairos v3 P0 capture (docs/scopes/20260924_KAIROS_V3_SCOPE.md §6 P0).
+"""Kairos v3 P0 capture (worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §6 P0).
 
 Covers the frozen factor definitions, the drift horizons written by the
 resolver, the run tracker, the calendar merge, the payload stamping, the

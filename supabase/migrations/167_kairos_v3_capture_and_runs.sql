@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Migration 167: Kairos v3 P0 — geometry-free capture columns + regime-run view
 --
--- docs/scopes/20260924_KAIROS_V3_SCOPE.md §6 P0.2/P0.3/P0.5 (user-approved
+-- worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §6 P0.2/P0.3/P0.5 (user-approved
 -- 2026-09-24: "#3 approve"). Additive only: nullable columns on nt_signal_sim
 -- and one VIEW. No new table, no data change, no behaviour change —
 -- qualification / sizing / SL/TP / delivery never read these.
@@ -125,7 +125,7 @@ LEFT JOIN runs nxt
   ON nxt.symbol = r.symbol AND nxt.run_seq = r.run_seq + 1;
 
 COMMENT ON VIEW v_kairos_regime_runs IS
-  'Kairos v3 P0.2: regime-cell runs (vol tier x direction) per symbol from sweep-light nt_signal_sim since 2026-09-22 (debounced labels). Hourly grain (first tick per hour). exit_kind is only meaningful when ended_by_gap=false; is_open / ended_by_gap / starts_after_gap mark censored runs. docs/scopes/20260924_KAIROS_V3_SCOPE.md.';
+  'Kairos v3 P0.2: regime-cell runs (vol tier x direction) per symbol from sweep-light nt_signal_sim since 2026-09-22 (debounced labels). Hourly grain (first tick per hour). exit_kind is only meaningful when ended_by_gap=false; is_open / ended_by_gap / starts_after_gap mark censored runs. worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md.';
 
 GRANT SELECT ON v_kairos_regime_runs TO anon;
 

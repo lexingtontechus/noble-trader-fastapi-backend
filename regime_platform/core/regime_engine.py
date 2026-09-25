@@ -196,6 +196,22 @@ class RegimeLabelDebouncer:
 
         return self._confirmed
 
+    # Restart persistence (2026-09-25, worklog/kairos/
+    # 20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md): a Studio restart
+    # used to cold-start every debouncer, and 58% of symbol pairs changed
+    # cell across a restart vs 9% between normal 15-min ticks.
+    def to_dict(self) -> dict:
+        return {"confirmed": self._confirmed, "candidate": self._candidate,
+                "count": self._candidate_count}
+
+    @classmethod
+    def from_dict(cls, d: dict, n_confirm: int = 3) -> "RegimeLabelDebouncer":
+        obj = cls(n_confirm)
+        obj._confirmed = d.get("confirmed")
+        obj._candidate = d.get("candidate")
+        obj._candidate_count = int(d.get("count") or 0)
+        return obj
+
 
 # ─── HMM Wrapper ─────────────────────────────────────────────────────────────
 

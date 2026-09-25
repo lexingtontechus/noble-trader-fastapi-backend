@@ -117,6 +117,6 @@ USDJPY: 10753 bars 2025-01-01..2026-09-23 · labelled 10554 · volume coverage 1
     h_to_event       cov 100% · ρ(age) -0.01
     h_since_event    cov 100% · ρ(age) -0.05
 
-artefacts: C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.cache\kairos/p1_summary.json, p1_matrix_cell_age.csv, p1_factor_panel_*.pkl, docs/scopes/assets/20260924_kairos_edge_plane_discovery.html
+artefacts: C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.cache\kairos/p1_summary.json, p1_matrix_cell_age.csv, p1_factor_panel_*.pkl, worklog/kairos/assets/20260924_kairos_edge_plane_discovery.html
 runtime 76s
 exit=0

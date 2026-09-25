@@ -1,0 +1,28 @@
+{
+ "week": "A092503",
+ "week_end": "2026-09-25T03:00:00+00:00",
+ "n_episodes": 627,
+ "flags": [
+  "drift coverage m12",
+  "drift coverage m48",
+  "kairos-daily heartbeat coverage",
+  "sweep slots uncovered 19"
+ ],
+ "stamp_coverage": {
+  "rel_volume_1h": 0.9932203389830508,
+  "clv_1h": 0.9932203389830508,
+  "efficiency_24h": 0.9932203389830508,
+  "atr_ratio_run": 0.9932203389830508,
+  "spread_bps": 0.9830508474576272
+ },
+ "drift_coverage": {
+  "m4": 0.9739130434782609,
+  "m12": 0.9481481481481482,
+  "m24": 0.960127591706539,
+  "m48": 0.9039301310043668
+ },
+ "ci_halfwidth_m24": 4.77686674012805,
+ "sd_m24": 13.864994265813632,
+ "decidable": false,
+ "n_uncensored_age_ge_12h": 7
+}

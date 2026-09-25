@@ -1,11 +1,14 @@
-# docs/cellpersist — Kairos reports
+# worklog/kairos — Kairos reports
 
 Kairos v3 (geometry-free edge-state research) output. Spec:
-`docs/scopes/20260924_KAIROS_V3_SCOPE.md` (§11 P1 results, §12 weekly G2 roadmap).
+`worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md` (§11 P1 results, §12 weekly G2 roadmap).
 
 | Path | What |
 |---|---|
-| `weekly/YYYYMMDD_Wn.{md,json}` | G2 weekly check — `scripts/kairos_weekly_check.py` writes here by default |
+| `scopes/` | Kairos scopes: edge-state (09-23), regime-cell persistence (09-23), V3 (09-24) |
+| `reports/YYYYMMDD_{Wn,A<mmddHH>}.{md,json}` | G2 looks — `scripts/kairos_weekly_check.py` (weekly, snapped to Thu 08:00) or `--accel` (rolling 48h, daily). `20260924_W0_partial` is the run first mislabelled W1 |
+| `20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md` | Restart-safe regime state, hourly drift backfill + heartbeat, accelerated G2 |
+| `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
 | `backfill/` | 2026-09-24 insert-loss backfill: the script, its validation, the stamp-recompute check, and the `returning` rows it wrote |

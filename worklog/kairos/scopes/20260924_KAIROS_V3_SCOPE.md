@@ -2,9 +2,9 @@
 
 **2026-09-24 · scope / design only.** No code, config, schema, or live behaviour changes. The name
 stays **Kairos** (user decision 2026-09-24). Flags and artefacts use the `kairos_` prefix. This
-supersedes the thesis and plan in `docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md`. Its
+supersedes the thesis and plan in `worklog/kairos/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md`. Its
 terminology, statistical rules, and retention change carry forward. Canonical visual:
-`docs/scopes/assets/20260924_edge_plane_concept.html` (user-confirmed as the representation of the thesis).
+`worklog/kairos/assets/20260924_edge_plane_concept.html` (user-confirmed as the representation of the thesis).
 
 ---
 
@@ -160,7 +160,7 @@ flowchart LR
 Solid lines are steps (one axis), dotted lines are jumps (both axes). Every line runs both ways.
 Staying in the same quadrant is always possible and isn't drawn.
 
-Concept illustration (schematic, no data): `docs/scopes/assets/20260924_edge_plane_concept.html`.
+Concept illustration (schematic, no data): `worklog/kairos/assets/20260924_edge_plane_concept.html`.
 
 The 2026-09-23 decomposition (5-symbol TDVA reconstruction, labels only) found about 78% of
 symbol-level edge-state changes and about 83% of diagonal jumps coincide with a regime-cell
@@ -561,7 +561,7 @@ Options for the user (not decided):
 4. **Keep P0 capture running in shadow** regardless; it costs nothing and feeds 1–3.
 
 Artefacts: `.cache/kairos/p1_summary_{nc2,nc1}.json`, `p1_matrix_cell_age_*.csv`,
-`p1_factor_panel_*.pkl`; data plane `docs/scopes/assets/20260924_kairos_edge_plane_discovery.html`
+`p1_factor_panel_*.pkl`; data plane `worklog/kairos/assets/20260924_kairos_edge_plane_discovery.html`
 (n_confirm 2) and `…_nc1.html`.
 
 ---
@@ -613,7 +613,7 @@ from the same data).
 ### 12.2 Weekly cadence
 
 Run `scripts/kairos_weekly_check.py` (read-only, about 5 s) each Thursday after 08:00 UTC. The
-report is written to `docs/cellpersist/weekly/YYYYMMDD_Wn.md`.
+report is written to `worklog/kairos/reports/YYYYMMDD_Wn.md`.
 
 | Week | Ends (Thu 08:00 UTC) | Must pass (data health) | Monitored (descriptive) | Action if it fails |
 |---|---|---|---|---|
@@ -666,4 +666,23 @@ Stop rules at W6:
   The insert fallback drops these along with the Kairos columns if the schema lags.
 - Tests: `tests/test_kairos_capture.py::TestPayloadStamp` (payload plus a static guard that every
   suppression path sets a reason).
-- Weekly report: `scripts/kairos_weekly_check.py` → `docs/cellpersist/weekly/` (index: `docs/cellpersist/README.md`).
+- Weekly report: `scripts/kairos_weekly_check.py` → `worklog/kairos/reports/` (index: `worklog/kairos/README.md`).
+
+### 12.5 Amendment 2026-09-25: accelerated cadence + restart-safe state
+
+User, 2026-09-25: "I don't want to wait weeks. We have enough signals generated to track
+across 48hrs." Detail: `worklog/kairos/20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md`.
+
+- **Cadence:** a daily `--accel` look over a rolling 48h window replaces the Thursday-only
+  cadence. The decision now fires when the §H power criterion is met: the CI half-width of
+  gates-vs-rest Δm₂₄ is ≤ 0.2·SD. This is the W5 rule, now checked at every look. The W6
+  calendar date no longer triggers the decision. The family, the statistics, Holm and the
+  p < 0.001 interim rule are unchanged.
+- **Maturity:** each horizon matures separately (bar h has closed + 2h). The blanket 84h rule is
+  gone. Drift backfill runs hourly on all light rows (pending ones included).
+- **Pre-168 tiers:** they are reconstructed from stored columns. Agreement with the 910 stamped
+  rows was 1.000. Reports count reconstructed episodes separately.
+- **Restarts:** the "Restarts and gaps" paragraph in §12.2 is superseded. Regime state now
+  persists across restarts (`regime_state_persist_mode: live`). Before the fix, 58% of
+  cross-restart ticks changed cell, against 9% on normal ticks. G2.4/G2.5 use only runs that
+  start after the deploy.

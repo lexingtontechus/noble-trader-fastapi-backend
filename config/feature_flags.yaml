@@ -600,12 +600,12 @@ geometry_incubation_max_expiry_regression: 0.10
 # injects only Secrets as env, all other knobs live in config/*): the
 # nightly retention pass DELETEs resolved nt_signal_sim rows older than
 # this. 120 keeps enough history for the Kairos edge-state research
-# (docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md K0; needs ≥ 60 days of
+# (worklog/kairos/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md K0; needs ≥ 60 days of
 # regime + geometry + MFE/MAE). ≈ 2,400 resolved rows/day → ~290k rows at
 # steady state. Getter floors at 7.
 signal_sim_retention_resolved_days: 120
 
-# kairos_mode (2026-09-24, docs/scopes/20260924_KAIROS_V3_SCOPE.md P0,
+# kairos_mode (2026-09-24, worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md P0,
 # migration 167): off | shadow | live. shadow stamps the geometry-free
 # market-movement capture columns on nt_signal_sim (rel_volume_1h, clv_1h,
 # efficiency_24h, atr_ratio_run, spread_bps) and refreshes the daily
@@ -696,6 +696,21 @@ regime_label_debounce_mode: live
 # noise through; n=4 buys a little more suppression for another hour
 # of lag. 3 was the best balance found in the real-data comparison.
 regime_label_debounce_ticks: 3
+
+# regime_state_persist_mode (2026-09-25, worklog/kairos/
+# 20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md): off | live.
+# Snapshot the debouncers, Kairos run tracker, HMM label-continuity means
+# and Markov/trend EMAs to .cache/kairos/regime_state.json after every
+# light-sweep symbol and restore them on start. Measured over 22 Studio
+# restarts 2026-09-22..25: 58% of symbols changed regime cell across a
+# restart vs 9% between normal ticks — restarts, not markets. Live by
+# default: it restores the pre-restart state and changes no gate,
+# threshold or delivery (the next tick behaves as if nothing stopped).
+# Snapshots older than regime_state_persist_max_age_hours are ignored
+# (same > 3h gap rule v_kairos_regime_runs uses), so a real outage or
+# weekend still cold-starts.
+regime_state_persist_mode: live
+regime_state_persist_max_age_hours: 3.0
 
 # renko_brick_retention_days (2026-09-09, worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2"):

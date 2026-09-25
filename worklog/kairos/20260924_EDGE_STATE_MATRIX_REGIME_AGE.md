@@ -1,7 +1,7 @@
 # 2026-09-24 — Edge-state matrix: regime age (T0→T48h), USDJPY matrix, `/backtest/run` status
 
 **Type:** research worklog (read-only analysis; no live code, config, or schema change).
-**Scope doc:** `docs/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md` (name/rescope pending).
+**Scope doc:** `worklog/kairos/scopes/20260923_KAIROS_EDGE_STATE_SCOPE.md` (name/rescope pending).
 **Script (deleted 2026-09-24):** `scripts/regime_age_decay_test.py` was R-based (geometry-dependent) and is withdrawn with §2–§3; superseded by `scripts/kairos_discovery.py` (Kairos v3 P1).
 
 ---
@@ -37,7 +37,7 @@ wanted later, feed reconstructed signals into `_compute_metrics` rather than ext
 > so they are **not evidence for or against the thesis**. That mixes two tasks: finding edge and
 > decay (the thesis) versus tuning parameters. The `age_mult` / `state_mult` values and the "don't
 > tighten SL" conclusion are withdrawn. Thesis v3 (geometry-free, dual timeline):
-> `docs/scopes/20260924_KAIROS_V3_SCOPE.md`.
+> `worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md`.
 
 ## 2. Regime age: does edge decay from T0 to T+48h? (geometry-dependent; see correction above)
 

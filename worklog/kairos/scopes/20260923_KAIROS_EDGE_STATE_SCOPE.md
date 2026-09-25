@@ -1,7 +1,7 @@
 # KAIROS — per-symbol edge-state matrix: research plan and design scope
 
-**2026-09-23 · scope / design only.** Superseded for thesis and plan by `docs/scopes/20260924_KAIROS_V3_SCOPE.md` (v3, geometry-free, dual timeline). Terminology, statistical rules and retention carry forward. Name and scope pending the user's rename. The only live-code change is retention (config).
-Evidence base: `docs/scopes/20260923_REGIME_CELL_EDGE_PERSISTENCE.md` (v3), reproducible with
+**2026-09-23 · scope / design only.** Superseded for thesis and plan by `worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md` (v3, geometry-free, dual timeline). Terminology, statistical rules and retention carry forward. Name and scope pending the user's rename. The only live-code change is retention (config).
+Evidence base: `worklog/kairos/scopes/20260923_REGIME_CELL_EDGE_PERSISTENCE.md` (v3), reproducible with
 `scripts/regime_cell_edge_persistence.py`.
 
 ## Name

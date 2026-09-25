@@ -76,6 +76,8 @@ _DEFAULTS: dict[str, Any] = {
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
+    "regime_state_persist_mode": "live",
+    "regime_state_persist_max_age_hours": 3.0,
     "qualification_gates": {
         "min_regime_conf": 0.60,
         "min_kelly": 0.02,
@@ -652,6 +654,24 @@ def get_regime_label_debounce_ticks() -> int:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["regime_label_debounce_ticks"]
+
+
+def get_regime_state_persist_mode() -> str:
+    """``off`` | ``live`` (2026-09-25): persist restart-sensitive regime
+    state (debouncers, run tracker, label means, EMAs) across restarts.
+    Unknown values fall back to live."""
+    v = str(_load().get("regime_state_persist_mode", _DEFAULTS["regime_state_persist_mode"])).lower()
+    return v if v in ("off", "live") else "live"
+
+
+def get_regime_state_persist_max_age_hours() -> float:
+    """Snapshots older than this are ignored on restore (cold start)."""
+    try:
+        return float(_load().get(
+            "regime_state_persist_max_age_hours", _DEFAULTS["regime_state_persist_max_age_hours"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["regime_state_persist_max_age_hours"]
 
 
 def _qualification_gate_number(key: str) -> float:

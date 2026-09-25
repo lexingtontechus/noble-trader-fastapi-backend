@@ -1301,6 +1301,8 @@ class SweepOrchestrator(HeavySweepMixin):
 
     async def start(self) -> None:
         """Start the scheduler and background checks."""
+        # Restart-safe regime state (2026-09-25) — before any sweep can run.
+        self._restore_regime_state()
         # ── TimesFM startup self-check (v5) ───────────────────────────
         # Fail loud when TimesFM env vars are unset — every fetch will
         # 401 silently and p_timesfm will be None for all symbols. We
@@ -1564,17 +1566,20 @@ class SweepOrchestrator(HeavySweepMixin):
             coalesce=True,
         )
 
-        # Kairos v3 daily (2026-09-24, docs/scopes/20260924_KAIROS_V3_SCOPE.md
-        # P0.3/P0.6): economic-calendar cache + drift_{12,24,48}h backfill.
-        # 03:15 UTC — after the 01:17 EOD resolve and clear of the 02:xx
-        # jobs. Registered unconditionally (kairos_mode hot-reloads; the job
-        # itself checks the flag), same reasoning as trend-regime-daily.
+        # Kairos v3 (2026-09-24, P0.3/P0.6; hourly since 2026-09-25 for the
+        # accelerated G2 schedule, worklog/kairos/
+        # 20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md): drift backfill
+        # every hour at :20 (clear of the :00/:15/:30/:45 light-sweep grid
+        # and the :17 EOD resolve), so every horizon is filled within ~1h
+        # of its bar closing and a restart costs at most one hour, not a
+        # day. The economic calendar refreshes inside the job at most once
+        # per 20h. Each run heartbeats nt_roadmap(kairos_daily_job).
         self._scheduler.add_job(
             self._run_kairos_daily,
-            trigger=CronTrigger.from_crontab("15 3 * * *"),
+            trigger=CronTrigger.from_crontab("20 * * * *"),
             id="kairos-daily",
-            name="Kairos calendar cache + drift backfill (daily)",
-            misfire_grace_time=3600,
+            name="Kairos drift backfill (hourly) + calendar cache (daily)",
+            misfire_grace_time=1800,
             coalesce=True,
         )
 
@@ -1591,6 +1596,7 @@ class SweepOrchestrator(HeavySweepMixin):
 
     async def stop(self) -> None:
         """Gracefully shut down the scheduler."""
+        self._persist_regime_state()
         if self._scheduler:
             self._scheduler.shutdown(wait=False)
             logger.info("Sweep orchestrator scheduler stopped")
@@ -2327,7 +2333,7 @@ class SweepOrchestrator(HeavySweepMixin):
         self, symbol: str, regime_label: str | None, atr: float | None, source: str,
     ) -> dict[str, float | None] | None:
         """Kairos v3 P0.5 capture stamps for one nt_signal_sim row
-        (docs/scopes/20260924_KAIROS_V3_SCOPE.md). Light sweep only; None
+        (worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md). Light sweep only; None
         when kairos_mode is off or anything fails (fail-open — a stamp
         problem never touches the signal itself)."""
         if source != "sweep-light":
@@ -2349,27 +2355,38 @@ class SweepOrchestrator(HeavySweepMixin):
             return None
 
     async def _run_kairos_daily(self) -> None:
-        """Kairos v3 P0.3 + P0.6 (daily, 03:15 UTC): refresh the economic
-        calendar cache and backfill drift_{12,24,48}h_pct on resolved rows
-        whose later horizons weren't observable at resolve time. Both are
-        best-effort and read-only for trading; calendar refresh respects
-        kairos_mode=off, the drift backfill always runs (outcome data)."""
+        """Kairos v3 P0.3 + P0.6 (hourly at :20 since 2026-09-25): drift
+        backfill on every light-sweep signal whose horizon bars exist, plus
+        the economic-calendar cache (refreshed only when > 20h old). Both
+        best-effort and read-only for trading; the calendar respects
+        kairos_mode=off, the drift backfill always runs (outcome data).
+        Ends with a heartbeat on nt_roadmap(kairos_daily_job) so the weekly
+        check can prove the job ran (scope §12.2 W1 must-pass)."""
         from regime_platform.core.feature_flags import get_kairos_mode
         from regime_platform.sweep_orchestrator.kairos import (
+            DEFAULT_CALENDAR_PATH,
             backfill_drift_horizons,
             refresh_calendar_cache,
+            write_job_heartbeat,
         )
+        cal: dict[str, Any] = {"skipped": "fresh"}
+        bf: dict[str, Any] = {}
         if get_kairos_mode() != "off":
             try:
-                cal = await refresh_calendar_cache()
+                p = DEFAULT_CALENDAR_PATH
+                if not p.exists() or time.time() - p.stat().st_mtime > 20 * 3600:
+                    cal = await refresh_calendar_cache()
                 logger.info("[kairos:daily] calendar %s", cal)
             except Exception as exc:
+                cal = {"error": type(exc).__name__}
                 logger.warning("[kairos:daily] calendar failed: %s", exc)
         try:
             bf = await backfill_drift_horizons()
             logger.info("[kairos:daily] drift backfill %s", bf)
         except Exception as exc:
+            bf = {"error": type(exc).__name__}
             logger.warning("[kairos:daily] drift backfill failed: %s", exc)
+        await write_job_heartbeat("kairos_daily_job", {"drift_backfill": bf, "calendar": cal})
 
     async def _run_trend_regime_refresh(self) -> None:
         """Trend filter daily refresh (2026-09-10, worklog
@@ -2876,9 +2893,44 @@ class SweepOrchestrator(HeavySweepMixin):
                 result["regime_label"],
                 result["kelly_f"],
             )
+            # Restart-safe regime state (2026-09-25): snapshot after every
+            # symbol so a restart mid-group loses at most one tick.
+            self._persist_regime_state()
 
             if i < len(symbols_to_process) - 1:
                 await asyncio.sleep(STAGGER_SECONDS)
+
+    def _persist_regime_state(self) -> None:
+        """Snapshot debouncers / run tracker / label-continuity means /
+        EMAs to disk (regime_state_store). Bookkeeping only; never raises."""
+        try:
+            from regime_platform.core.feature_flags import get_regime_state_persist_mode
+            if get_regime_state_persist_mode() == "off":
+                return
+            from regime_platform.sweep_orchestrator import regime_state_store
+            regime_state_store.save(self)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[regime-state] persist skipped: %s", exc)
+
+    def _restore_regime_state(self) -> None:
+        """Restore the last snapshot on start if it's fresh (see
+        regime_state_store). Never raises."""
+        try:
+            from regime_platform.core.feature_flags import (
+                get_regime_state_persist_max_age_hours,
+                get_regime_state_persist_mode,
+            )
+            if get_regime_state_persist_mode() == "off":
+                return
+            from regime_platform.sweep_orchestrator import regime_state_store
+            res = regime_state_store.restore(
+                self,
+                max_age_hours=get_regime_state_persist_max_age_hours(),
+                n_confirm=get_regime_label_debounce_ticks(),
+            )
+            logger.info("[regime-state] restore %s", res)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[regime-state] restore skipped: %s", exc)
 
     # ─── Per-symbol processing ─────────────────────────────────────
 

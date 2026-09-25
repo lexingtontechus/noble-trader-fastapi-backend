@@ -2,7 +2,7 @@
 """
 kairos_weekly_check.py — Kairos v3 G2 weekly check (live, geometry-free, read-only).
 
-docs/scopes/20260924_KAIROS_V3_SCOPE.md §12. Runs on ALL light-sweep signals
+worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md §12. Runs on ALL light-sweep signals
 (v_kairos_signal_episodes: one row per symbol × direction × hour since the
 2026-09-22 debounce go-live), not just qualified=true — cooldown/dedup
 suppression is split out via gate_outcome (migration 168).
@@ -35,14 +35,88 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 GO_LIVE = datetime(2026, 9, 22, 12, tzinfo=timezone.utc)      # debounce live (runs view start)
-W1_END = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)        # W1 = first full week after stamps went live 2026-09-24 08:00
+W0_END = datetime(2026, 9, 24, 8, tzinfo=timezone.utc)        # §12.2: W0 ends Thu 2026-09-24 08:00; Wk ends W0_END + 7k days
+STAMPS_LIVE = datetime(2026, 9, 24, 8, tzinfo=timezone.utc)
 H = (1, 4, 12, 24, 48)
 FACTORS = ("rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps")
 TIERS = ("all", "qualified", "suppressed", "gate_fail", "unknown")
 EXTREME_P = 0.001
-MATURE_H = 84          # 48h horizon + nightly backfill lag + margin
+BACKFILL_LAG_H = 2     # hourly kairos-daily backfill (:20) + margin; m_h is mature at hr + h + lag
 MIN_COVER = 0.95       # matured-cohort drift coverage required before any edge stat
+HEARTBEAT_MAX_AGE_H = 2.0   # kairos-daily runs hourly; > 2h without a heartbeat = missed run
+POWER_SD_FRAC = 0.2    # §12.2 W5 rule, now checked every look: stop when CI half-width ≤ 0.2·SD
+# Gate reconstruction for pre-168 rows (validated 2026-09-25 against 910
+# stamped rows: tier agreement 1.000; worklog/kairos/20260925_*_ACCELERATED_G2.md).
+RECON = {"min_regime_conf": 0.60, "min_kelly": 0.02, "min_rr": 1.5, "min_p_win": 0.50}
 RNG = np.random.default_rng(20260924)
+
+
+def schedule_week(week_end: datetime) -> tuple[datetime, str]:
+    """Snap to the most recent pre-registered Thu 08:00 boundary ≤ week_end
+    and name it (W0 = 2026-09-24). Fixes the 09-24 23:22 run being called W1."""
+    k = int(np.floor((week_end - W0_END).total_seconds() / (7 * 86400)))
+    snapped = W0_END + timedelta(days=7 * k)
+    return snapped, (f"W{k}" if k >= 0 else "pre-W0")
+
+
+def mature_mask(hr: pd.Series, h: int, now: datetime) -> pd.Series:
+    """Per-horizon maturity: the h-th bar after the entry hour has closed and
+    one hourly backfill has had a pass (replaces the blanket 84h rule)."""
+    return hr <= pd.Timestamp(now) - pd.Timedelta(hours=h + 1 + BACKFILL_LAG_H)
+
+
+def reconstruct_tier(ticks: pd.DataFrame) -> pd.Series:
+    """Per-tick tier for rows without gate_outcome, from stored columns."""
+    rr = ticks.tp_bricks / ticks.sl_bricks
+    pw = ticks.p_win_dir.fillna(ticks.p_win)
+    ok = ((ticks.regime_conf >= RECON["min_regime_conf"]) & (ticks.effective_kelly >= RECON["min_kelly"])
+          & (ticks.ev > 0) & (rr >= RECON["min_rr"]) & (pw >= RECON["min_p_win"]))
+    return pd.Series(np.where(ticks.qualified.astype(bool), "qualified",
+                              np.where(ok, "suppressed", "gate_fail")), index=ticks.index)
+
+
+def fill_unknown_tiers(ep: pd.DataFrame, end: datetime) -> pd.DataFrame:
+    """Replace tier 'unknown' (pre-168) with the best reconstructed per-tick
+    tier in the hour. Adds tier_src ∈ {stamp, recon}."""
+    ep = ep.copy()
+    ep["tier_src"] = np.where(ep.tier == "unknown", "recon", "stamp")
+    if not (ep.tier == "unknown").any():
+        return ep
+    cols = "ts,symbol,signal,qualified,regime_conf,effective_kelly,ev,p_win,p_win_dir,sl_bricks,tp_bricks"
+    t = pd.DataFrame(_get("nt_signal_sim", cols, {
+        "source": "eq.sweep-light", "signal": "in.(buy,sell)", "gate_outcome": "is.null",
+        "ts": f"gte.{GO_LIVE:%Y-%m-%dT%H:%M:%SZ}", "order": "ts.asc"}))
+    if t.empty:
+        return ep
+    t = t[pd.to_datetime(t.ts, utc=True, format="ISO8601") < pd.Timestamp(end)]
+    for c in ("regime_conf", "effective_kelly", "ev", "p_win", "p_win_dir", "sl_bricks", "tp_bricks"):
+        t[c] = pd.to_numeric(t[c], errors="coerce")
+    t["hr"] = pd.to_datetime(t.ts, utc=True, format="ISO8601").dt.floor("h")
+    t["rank"] = reconstruct_tier(t).map({"qualified": 1, "suppressed": 2, "gate_fail": 3})
+    best = t.groupby(["symbol", "signal", "hr"])["rank"].min().map({1: "qualified", 2: "suppressed", 3: "gate_fail"})
+    key = pd.MultiIndex.from_arrays([ep.symbol, ep.direction, ep.hr])
+    rec = pd.Series(best.reindex(key).to_numpy(), index=ep.index)
+    m = (ep.tier == "unknown") & rec.notna()
+    ep.loc[m, "tier"] = rec[m]
+    return ep
+
+
+def fetch_heartbeat(mechanism: str = "kairos_daily_job") -> tuple[datetime | None, str]:
+    try:
+        rows = _get("nt_roadmap", "current_state,updated_at", {"mechanism": f"eq.{mechanism}"})
+    except Exception as exc:  # noqa: BLE001
+        return None, f"query failed: {type(exc).__name__}"
+    if not rows or not rows[0].get("current_state", "").startswith("last_run "):
+        return None, "no heartbeat yet (needs the 2026-09-25 hourly job deployed)"
+    ts = datetime.fromisoformat(rows[0]["current_state"].split()[1].replace("Z", "+00:00"))
+    return ts, rows[0]["current_state"][:160]
+
+
+def projected_halfwidth(a: pd.DataFrame, b: pd.DataFrame, col: str, n_boot: int) -> tuple[float, float]:
+    """(CI half-width of Δ now, pooled SD of col) — §12.2 power criterion."""
+    d = boot_diff(a, b, col, n_boot)
+    sd = float(pd.concat([a[col], b[col]]).std())
+    return (d[2] - d[1]) / 2 if np.isfinite(d[1]) else np.nan, sd
 
 
 # ─── data ──────────────────────────────────────────────────────────────
@@ -167,27 +241,41 @@ def fmt(x, nd=3, sign=True):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--week-end", default="", help="UTC date (YYYY-MM-DD); default = now")
+    ap.add_argument("--week-end", default="", help="UTC date (YYYY-MM-DD); default = now (snapped to Thu 08:00)")
+    ap.add_argument("--accel", action="store_true",
+                    help="accelerated look: rolling --window-h window ending now, no weekly snap (2026-09-25)")
+    ap.add_argument("--window-h", type=int, default=48)
     ap.add_argument("--n-null", type=int, default=1000)
     ap.add_argument("--n-boot", type=int, default=1000)
-    ap.add_argument("--out", default=str(ROOT / "docs/cellpersist/weekly"))
+    ap.add_argument("--out", default=str(ROOT / "worklog/kairos/reports"))
     a = ap.parse_args()
     t0 = time.time()
     now = datetime.now(timezone.utc)
-    week_end = (datetime.fromisoformat(a.week_end).replace(tzinfo=timezone.utc, hour=8)
-                if a.week_end else now)
-    week_start = week_end - timedelta(days=7)
-    wk = max(0, int(np.ceil((week_end - W1_END).total_seconds() / (7 * 86400))) + 1)
-    wlabel = f"W{wk}" if week_end >= W1_END - timedelta(days=7) else "W0"
+    if a.accel:
+        week_end = now.replace(minute=0, second=0, microsecond=0)
+        week_start = week_end - timedelta(hours=a.window_h)
+        wlabel = f"A{week_end:%m%d%H}"
+        wk = None
+    else:
+        raw_end = (datetime.fromisoformat(a.week_end).replace(tzinfo=timezone.utc, hour=8)
+                   if a.week_end else now)
+        week_end, wlabel = schedule_week(raw_end)
+        week_start = week_end - timedelta(days=7)
+        wk = int(wlabel[1:]) if wlabel.startswith("W") else -1
 
     ep, runs = load(week_end)
+    if not ep.empty:
+        ep = fill_unknown_tiers(ep, week_end)
     L: list[str] = []
     P = L.append
-    P(f"# Kairos G2 weekly check — {wlabel} (week ending {week_end:%Y-%m-%d %H:%M} UTC)\n")
+    kind = f"accelerated look {wlabel} (last {a.window_h}h, ending {week_end:%Y-%m-%d %H:%M} UTC)" if a.accel \
+        else f"{wlabel} (week ending {week_end:%Y-%m-%d %H:%M} UTC)"
+    P(f"# Kairos G2 check — {kind}\n")
     P(f"Population: **all** light-sweep buy/sell signals since {GO_LIVE:%Y-%m-%d} (debounced), one episode per "
       f"symbol × direction × hour. Geometry-free: m_h = signed drift / sweep ATR (close-to-close SMA14 — "
       f"magnitudes are NOT comparable to P1's OHLC ATR; compare within live only). Interim looks flag only "
-      f"p < {EXTREME_P}; the G2 decision is at W6.\n")
+      f"p < {EXTREME_P}; the G2 decision fires when the power criterion (§H) is met, not on a calendar date. "
+      f"m_h counts as matured once bar h has closed + {BACKFILL_LAG_H}h (hourly backfill).\n")
     if ep.empty:
         P("No episodes.")
         print("\n".join(L))
@@ -197,15 +285,17 @@ def main() -> int:
 
     # A. data health ----------------------------------------------------
     P("## A. Data health (pass/fail every week)\n")
-    stamped = this_wk[this_wk.hr >= datetime(2026, 9, 24, 8, tzinfo=timezone.utc)]
+    stamped = this_wk[this_wk.hr >= STAMPS_LIVE]
     cov = {f: float(stamped[f].notna().mean()) if len(stamped) else np.nan for f in FACTORS}
-    tier_cov = float((stamped.tier != "unknown").mean()) if len(stamped) else np.nan
-    # Matured cohort: the resolver + nightly kairos backfill (49–199h window)
-    # have both had a pass. Younger rows only carry drift if they resolved
-    # early (TP/SL touch) — that subset is geometry-selected and must never
-    # be read as edge.
-    mat = ep[ep.hr <= now - timedelta(hours=MATURE_H)]
-    dcov = {k: float(mat[k].notna().mean()) if len(mat) else np.nan for k in ("m12", "m24", "m48")}
+    tier_cov = float((stamped.tier_src == "stamp").mean()) if len(stamped) else np.nan
+    # Per-horizon maturity (2026-09-25): m_h is read only once bar h has
+    # closed and one hourly backfill ran. Before that, drift exists only
+    # where TP/SL settled early — geometry-selected, never read as edge.
+    dcov, mats = {}, {}
+    for k, h in (("m4", 4), ("m12", 12), ("m24", 24), ("m48", 48)):
+        mats[k] = ep[mature_mask(ep.hr, h, now)]
+        dcov[k] = float(mats[k][k].notna().mean()) if len(mats[k]) else np.nan
+    mat = mats["m24"]
     P("| Check | Value | Target | Status |\n|---|---|---|---|")
     for f, v in cov.items():
         ok = np.isfinite(v) and v >= (0.90 if f == "spread_bps" else 0.95)
@@ -221,9 +311,18 @@ def main() -> int:
             P(f"| drift `{k}` on matured episodes | – | ≥ 0.95 | ⏳ none matured yet |")
             continue
         ok = v >= 0.95
-        P(f"| drift `{k}` on matured episodes | {fmt(v, 3, False)} | ≥ 0.95 | {'✅' if ok else '❌'} |")
+        P(f"| drift `{k}` on matured episodes (n {len(mats[k])}) | {fmt(v, 3, False)} | ≥ 0.95 | {'✅' if ok else '❌'} |")
         if not ok:
             flags.append(f"drift coverage {k}")
+    hb_ts, hb_txt = fetch_heartbeat()
+    hb_age = (now - hb_ts).total_seconds() / 3600 if hb_ts else np.nan
+    ok = np.isfinite(hb_age) and hb_age <= HEARTBEAT_MAX_AGE_H
+    P(f"| `kairos-daily` heartbeat (hourly) | {fmt(hb_age, 1, False)}h ago | ≤ {HEARTBEAT_MAX_AGE_H:.0f}h | "
+      f"{'✅' if ok else '❌ ' + hb_txt} |")
+    if not ok:
+        flags.append("kairos-daily heartbeat coverage")
+    n_rec = int((ep.tier_src == "recon").sum())
+    P(f"| pre-168 episodes with reconstructed tier | {n_rec} | – | – |")
     if not runs.empty:
         done = runs[~runs.is_open.astype(bool) & ~runs.ended_by_gap.astype(bool)]
         per_cell = done.groupby(["symbol", "cell"]).size()
@@ -298,9 +397,10 @@ def main() -> int:
     P("## C. Geometry-free edge by population (cumulative, matured cohort only)\n")
     cover_ok = len(mat) > 0 and np.isfinite(dcov["m24"]) and dcov["m24"] >= MIN_COVER
     if not cover_ok:
-        P(f"⏳ **Not evaluable yet.** Edge statistics use only episodes ≥ {MATURE_H}h old with m₂₄ coverage "
-          f"≥ {MIN_COVER:.0%} (matured: {len(mat)}, m₂₄ coverage {fmt(dcov['m24'], 3, False)}). Drift on younger "
-          f"rows exists only where TP/SL settled early — geometry-selected, not read.\n")
+        P(f"⏳ **Not evaluable yet.** Edge statistics use only episodes whose m₂₄ bar has closed "
+          f"(+{BACKFILL_LAG_H}h) with m₂₄ coverage ≥ {MIN_COVER:.0%} (matured: {len(mat)}, m₂₄ coverage "
+          f"{fmt(dcov['m24'], 3, False)}). Drift on younger rows exists only where TP/SL settled early — "
+          f"geometry-selected, not read.\n")
     ep_all = ep
     ep = mat.copy() if cover_ok else mat.iloc[0:0].copy()
     for c in ("m4", "m24"):
@@ -375,7 +475,7 @@ def main() -> int:
 
     # F. factors (V7 preview) --------------------------------------------
     P("## F. Factors vs forward edge: all signals (V7 live preview, descriptive)\n")
-    fx = ep[ep.hr >= datetime(2026, 9, 24, 8, tzinfo=timezone.utc)]
+    fx = ep[ep.hr >= STAMPS_LIVE]
     P("| Factor | n | Spearman ρ(factor, m₂₄), within-symbol ranks |\n|---|---|---|")
     for f in FACTORS:
         g = fx[[f, "m24", "symbol"]].dropna()
@@ -395,7 +495,18 @@ def main() -> int:
         P("- Sweep cadence: ⚠️ " + slot_f[0] + " (see A — check on-start logs for restarts)")
     ext = [f for f in flags if "extreme" in f]
     P("- Extreme interim results (p < 0.001): " + ("; ".join(ext) if ext else "none"))
-    P(f"- Next: {'W' + str(wk + 1) if wk < 6 else 'G2 decision (pre-registered family, Holm)'}")
+    # H. power / decision readiness (replaces the W5 calendar check) ---------
+    P("\n## H. Decision readiness (power criterion, checked every look)\n")
+    ga = ep[ep.tier.isin(("qualified", "suppressed"))]
+    gb = ep[ep.tier == "gate_fail"]
+    hw, sd = projected_halfwidth(ga, gb, "m24_dm", a.n_boot) if len(ep) else (np.nan, np.nan)
+    ready = np.isfinite(hw) and np.isfinite(sd) and sd > 0 and hw <= POWER_SD_FRAC * sd
+    unc = ep[~ep.age_left_censored.fillna(True).astype(bool)] if len(ep) else ep
+    n_old = int((unc.regime_age_h >= 12).sum()) if len(unc) else 0
+    P(f"- gates-vs-rest Δm₂₄ 95% CI half-width {fmt(hw, 3, False)} vs {POWER_SD_FRAC}·SD {fmt(POWER_SD_FRAC * sd, 3, False) if np.isfinite(sd) else '–'} "
+      f"→ {'✅ **G2.1–G2.3 decidable now**' if ready else '⏳ keep collecting'} (decided on CI width only, never on the effect)")
+    P(f"- G2.4/G2.5 need uncensored episodes aged ≥ 12h: {n_old} (target ≥ 200; restart-safe state from 2026-09-25 stops restarts censoring runs)")
+    P(f"- Next: {'G2 decision (pre-registered family, Holm)' if ready else ('next accelerated look in 24h' if a.accel else 'W' + str((wk or 0) + 1))}")
     P(f"\n_generated {now:%Y-%m-%d %H:%M} UTC · {a.n_null} nulls · {a.n_boot} bootstraps · {time.time() - t0:.0f}s_")
 
     out = Path(a.out)
@@ -404,7 +515,8 @@ def main() -> int:
     f_md.write_text("\n".join(L), encoding="utf-8")
     (out / f"{week_end:%Y%m%d}_{wlabel}.json").write_text(json.dumps(
         {"week": wlabel, "week_end": week_end.isoformat(), "n_episodes": len(ep), "flags": flags,
-         "stamp_coverage": cov, "drift_coverage": dcov}, indent=1, default=float))
+         "stamp_coverage": cov, "drift_coverage": dcov, "ci_halfwidth_m24": hw, "sd_m24": sd,
+         "decidable": bool(ready), "n_uncensored_age_ge_12h": n_old}, indent=1, default=float))
     print("\n".join(L))
     print(f"\nreport: {f_md}")
     return 0
