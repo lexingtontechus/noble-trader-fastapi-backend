@@ -761,6 +761,56 @@ def _is_stale(
     return (now - last_computed_at) > threshold
 
 
+# Light-sweep startup catch-up (2026-09-25, worklog/kairos/
+# 20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md §6). A fresh
+# APScheduler computes the next */15 fire strictly forward from "now", so a
+# restart spanning a slot silently drops it (found live 2026-09-25: the
+# deploy restart at 04:18 lost the 04:15 slot for all 14 symbols). Only the
+# MOST RECENT slot is caught up — a catch-up tick runs on current bars, so it
+# stands in for the missed tick (keeping the debouncer's tick count honest)
+# but can't reconstruct older ones. Skipped when the next scheduled fire is
+# too close, so a catch-up never overlaps or doubles a real tick.
+LIGHT_CATCHUP_LOOKBACK = timedelta(minutes=60)
+LIGHT_CATCHUP_MIN_LEAD = timedelta(minutes=5)
+
+
+def _missed_light_slot(
+    trigger: Any,
+    now: datetime,
+    *,
+    lookback: timedelta = LIGHT_CATCHUP_LOOKBACK,
+    min_lead: timedelta = LIGHT_CATCHUP_MIN_LEAD,
+) -> datetime | None:
+    """Most recent scheduled fire time ``<= now`` for ``trigger`` (an
+    APScheduler ``CronTrigger``), or ``None`` when there is none inside
+    ``lookback`` or the next fire is less than ``min_lead`` away. Pure: no
+    I/O; whether that slot was actually swept is the caller's question."""
+    t = trigger.get_next_fire_time(None, now - lookback)
+    last: datetime | None = None
+    nxt: datetime | None = None
+    for _ in range(10_000):  # bounded; */1 over 60 min is 61 steps
+        if t is None:
+            break
+        if t > now:
+            nxt = t
+            break
+        last = t
+        t = trigger.get_next_fire_time(t, t + timedelta(seconds=1))
+    if last is None:
+        return None
+    if nxt is not None and nxt - now < min_lead:
+        return None
+    return last
+
+
+def _unswept_symbols(
+    sym_list: list[dict[str, Any]], swept_since_slot: set[str],
+) -> list[dict[str, Any]]:
+    """Symbols of a cron group with no ``sweep-light`` row since the slot
+    (also covers a slot the old process died part-way through)."""
+    return [s for s in sym_list if s.get("symbol") not in swept_since_slot]
+
+
 def _evaluate_regime_shift(
     ev_engine: EVEngine,
     prev_regime: str | None,
@@ -2527,6 +2577,50 @@ class SweepOrchestrator(HeavySweepMixin):
                     "[startup-catchup] eod-correction-intraday staleness check "
                     "failed: %s", exc,
                 )
+
+        await self._catch_up_light_sweep_slot()
+
+    async def _catch_up_light_sweep_slot(self, now: datetime | None = None) -> None:
+        """Re-run the most recent light-sweep slot a restart dropped, for
+        the symbols that have no ``sweep-light`` row since it (see
+        ``_missed_light_slot``). Flag ``light_sweep_catchup_mode``
+        (off | live). Fail-safe: if the swept-symbols read fails, nothing
+        runs — a double tick is worse than a missed one. Never raises."""
+        from regime_platform.core.feature_flags import get_light_sweep_catchup_mode
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            fetch_light_swept_symbols_since,
+        )
+
+        try:
+            if get_light_sweep_catchup_mode() == "off" or self._scheduler is None:
+                return
+            now = now or datetime.now(timezone.utc)
+            for job in list(self._scheduler.get_jobs()):
+                if not job.id.startswith("sweep-") or len(job.args) < 2:
+                    continue
+                cron_expr, sym_list = job.args[0], job.args[1]
+                slot = _missed_light_slot(job.trigger, now)
+                if slot is None:
+                    continue
+                swept = await fetch_light_swept_symbols_since(slot)
+                if swept is None:
+                    logger.warning(
+                        "[startup-catchup] light sweep [%s]: swept-symbols read "
+                        "failed — skipping catch-up (fail-safe)", cron_expr,
+                    )
+                    continue
+                missing = _unswept_symbols(sym_list, swept)
+                if not missing:
+                    continue
+                logger.warning(
+                    "[startup-catchup] light sweep [%s] slot %s missed for %d/%d "
+                    "symbols — running it now: %s",
+                    cron_expr, slot.isoformat(), len(missing), len(sym_list),
+                    [s.get("symbol") for s in missing],
+                )
+                asyncio.create_task(self._sweep_group(cron_expr, missing))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[startup-catchup] light sweep catch-up failed: %s", exc)
 
     async def _write_regime_shift_alert(self, symbol: str, shift_info: dict[str, Any]) -> None:
         """Write a ``regime_shift_alert`` row to ``nt_eod_actions`` (Layer 2,

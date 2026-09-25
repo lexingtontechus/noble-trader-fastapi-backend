@@ -712,6 +712,16 @@ regime_label_debounce_ticks: 3
 regime_state_persist_mode: live
 regime_state_persist_max_age_hours: 3.0
 
+# light_sweep_catchup_mode (2026-09-25, worklog/kairos/
+# 20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md §6): off | live.
+# On start, re-run the most recent light-sweep slot (within 60 min) for any
+# symbol with no sweep-light row since it — a fresh APScheduler never fires
+# a slot that passed while the process was down (the 04:18 deploy restart
+# on 2026-09-25 dropped the 04:15 slot for all 14 symbols). Skipped when
+# the next scheduled tick is < 5 min away and when the swept-symbols read
+# fails, so it can never double a tick. Same pipeline, same gates.
+light_sweep_catchup_mode: live
+
 # renko_brick_retention_days (2026-09-09, worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2"):
 # nightly retention (regime_platform/sweep_orchestrator/renko_retention.py,

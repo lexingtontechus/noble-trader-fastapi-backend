@@ -137,3 +137,39 @@ Three `nt_roadmap` rows were upserted: `kairos_g2`, `kairos_daily_job` and `regi
 - the hourly cron.
 
 Full suite 2026-09-25: 1189 passed, 21 skipped, 2 failed. The 2 failures are in `tests/test_hmm_batch_consolidation.py` (quote-fetcher push count 0) and fail the same way with this change stashed, so they were already there. First live look: `reports/20260925_A092503.md`.
+
+## 6. Post-deploy findings (2026-09-25 04:18/04:23 UTC restarts) + light-sweep catch-up
+
+**Observed after the first deploy:**
+
+- Both starts logged `[regime-state] restore {'restored': False, 'reason': 'no_snapshot'}`. That is
+  expected: the previous code never wrote a snapshot, and the 04:18 instance ran no sweep before
+  the 04:23 restart. The first snapshot was written at 04:31:44 (14 symbols, every section). The
+  first restore is therefore the *next* restart.
+- The cold start is visible. 12 of 14 cells changed between the 04:00 and 04:30 ticks, against
+  5 of 14 between 03:30 and 04:00.
+- **`stop()` never runs on the Studio.** The log has 0 "scheduler stopped" lines: `on_stop.sh`
+  kills the process before the asyncio shutdown path runs. The per-symbol save is the part that
+  matters, and loses at most the symbol in flight.
+- **The 04:15 slot was dropped for all 14 symbols.** The process was down 04:01:51 → 04:18:01,
+  and a fresh APScheduler only computes fires forward from "now". Every other slot in the 3h
+  window had 14/14 with no errors.
+
+**Fix: light-sweep startup catch-up** (`light_sweep_catchup_mode: live`)
+
+- `_catch_up_stale_jobs()` now ends with `_catch_up_light_sweep_slot()`. For each `sweep-*` job
+  it finds the most recent scheduled fire within 60 min (`_missed_light_slot`). It then reads
+  which symbols have a `sweep-light` `nt_sweep_result` row since that slot
+  (`fetch_light_swept_symbols_since`), and runs `_sweep_group` for the rest.
+- Guards:
+  1. Only the latest slot is caught up. A catch-up runs on current bars, so it stands in for one
+     tick and can't rebuild older ones.
+  2. It is skipped if the next tick is less than 5 min away.
+  3. It is skipped if the read fails (a double tick is worse than a missed one).
+  4. It uses the same pipeline and gates as a normal tick, so a caught-up signal is an ordinary
+     `sweep-light` row.
+- It also covers a slot the old process died part-way through, because only the unswept
+  symbols are re-run.
+- Tests: `tests/test_light_sweep_catchup.py` has 17 tests. They cover the live 04:18 → 04:15
+  case, the lead-time boundary, most-recent-only, lookback, a partial slot, and the wiring (runs,
+  no-op, fail-safe, off flag, non-light jobs ignored).

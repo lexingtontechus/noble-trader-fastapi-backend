@@ -78,6 +78,7 @@ _DEFAULTS: dict[str, Any] = {
     "regime_label_debounce_ticks": 3,
     "regime_state_persist_mode": "live",
     "regime_state_persist_max_age_hours": 3.0,
+    "light_sweep_catchup_mode": "live",
     "qualification_gates": {
         "min_regime_conf": 0.60,
         "min_kelly": 0.02,
@@ -672,6 +673,13 @@ def get_regime_state_persist_max_age_hours() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["regime_state_persist_max_age_hours"]
+
+
+def get_light_sweep_catchup_mode() -> str:
+    """``off`` | ``live`` (2026-09-25): on start, re-run the most recent
+    light-sweep slot a restart dropped. Unknown values fall back to live."""
+    v = str(_load().get("light_sweep_catchup_mode", _DEFAULTS["light_sweep_catchup_mode"])).lower()
+    return v if v in ("off", "live") else "live"
 
 
 def _qualification_gate_number(key: str) -> float:

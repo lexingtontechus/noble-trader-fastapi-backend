@@ -1564,6 +1564,37 @@ async def fetch_max_computed_at(table: str, column: str = "computed_at") -> date
         return None
 
 
+async def fetch_light_swept_symbols_since(since: datetime) -> set[str] | None:
+    """Symbols with a ``sweep-light`` ``nt_sweep_result`` row at or after
+    ``since`` (2026-09-25 light-sweep startup catch-up). ``None`` on any
+    failure — the caller treats that as "unknown, don't re-run". The
+    timestamp is sent second-truncated with ``Z`` (PostgREST ``+``/``.``
+    pitfalls)."""
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        ts = since.astimezone(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_sweep_result"),
+                headers=_headers(),
+                params={
+                    "select": "symbol",
+                    "source": "eq.sweep-light",
+                    "sweep_timestamp": f"gte.{ts}",
+                    "limit": "1000",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        if not isinstance(data, list):
+            return None
+        return {str(r.get("symbol")) for r in data if r.get("symbol")}
+    except Exception as exc:
+        logger.warning("fetch_light_swept_symbols_since: read failed: %s", exc)
+        return None
+
+
 NT_MARKOV_SOURCE_SHADOW_COLUMNS: frozenset[str] = frozenset({
     "symbol", "n_compared", "n_state_disagree", "sum_abs_p_up_diff",
     "last_legacy_state", "last_trend_hmm_state", "updated_at",
