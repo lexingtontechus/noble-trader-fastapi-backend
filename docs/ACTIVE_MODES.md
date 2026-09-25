@@ -52,6 +52,7 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss); `p_win_ok` keeps gating `p_win_raw`. Flip after `nt_live_expectancy_daily` bar (see `worklog/20260922_R2_ADDENDUM_LIVE_DIST_AND_NEXT.md` + `20260923_L1_STATUS_AND_NT_ROADMAP.md`). |
 | `heavy_sweep_reachability_mode` | Reachability-aware pick comparison only |
 | `heavy_sweep_atr_anchored_bricks_mode` | Extra ATR brick candidates in grid (shadow scoring) |
+| `atr_anchored_evidence_mode` | **live** (2026-09-25 hybrid) — ATR candidates enter deadline pool when evidence rule promotes (pick changed + long-lag/Sharpe). Full ATR grid still shadow (P0.4). |
 | `macro_regime_mode` | Capture macro_label; Kelly only if flipped live |
 | `trend_regime_mode` | Capture trend_label |
 | `context_alignment_gate_mode` | 8th gate computed, not in `qualified` |

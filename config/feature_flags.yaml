@@ -349,7 +349,13 @@ dynamic_atr_risk_cap: 0.35
 # long-lag than baseline, allow ATR candidates into deadline-aware pool
 # without flipping global heavy_sweep_atr_anchored_bricks_mode to live.
 # shadow: evaluate + log only; pool stays original (leak-safe).
-atr_anchored_evidence_mode: "shadow"
+# 2026-09-25: shadow -> live (hybrid promote only). Operator GO after
+# 13/14 widened Sharpe wins (nt_heavy_sweep_atr_anchored_shadow). Full
+# heavy_sweep_atr_anchored_bricks_mode stays shadow until P0.4.
+# Worklog: 20260925_DYNAMIC_ATR_LIVE_FLIP_ASSESSMENT.md. Kill/rollback:
+# set back to "shadow" if promoted symbols do not improve tp_atr/exp%/closed PnL.
+# Hot-reload on mtime — Studio restart not required if the loader is watching.
+atr_anchored_evidence_mode: "live"
 
 # heavy_publish_geometry_gate: off | shadow | live.
 # live: heavy QUALIFIED blocked if deadline_aware_sharpe < 0 or

@@ -1,3 +1,31 @@
+## [8.0.0] - 2026-09-25 (assessment addendum — no version bump)
+
+### Dynamic / tiered ATR — live-flip assessment (hybrid promote first)
+
+No production flags flipped in this release. Decision + roadmap + clarifications only.
+
+#### Assessment
+
+- **Wide grid** = live `config/brick_params.yaml` (price-% heavy pick) → `tp_distance_atr` ~10–50, bucket `4+`.
+- **Tight ATR** = ATR-anchored candidates (~0.15/0.3/0.6 ATR) in shadow — **13/14** symbols, widened Sharpe wins.
+- **Dynamic ATR** = risk-capped tiered picker (`dynamic_atr_mode`, cap 0.35) that would write those tight bricks.
+
+**Decision:** flip **`atr_anchored_evidence_mode: live`** (hybrid promote only). Hold `dynamic_atr_mode` and full `heavy_sweep_atr_anchored_bricks_mode` until one heavy cycle + ~7d show promoted `tp_atr`↓ / long-lag↓ / closed PnL↑ (**P0.4**).
+
+**Activated 2026-09-25:** `atr_anchored_evidence_mode: live` in `config/feature_flags.yaml` (hybrid promote). 18/18 `test_p0_p1_geometry_promote` + `test_tiered_atr` pass. Full ATR grid and `dynamic_atr_mode` remain shadow.
+
+#### Clarifications
+
+- **P0.4** is the *full* ATR-grid live flip bar (`20260919_HEAVY_GEOMETRY_PROMOTE…`): Stage 1 green **or** hybrid already live with one cycle of promoted-symbol improvement. Shadow Sharpe alone does not satisfy it.
+- **`min_rr` stays inert** on light qualification (2026-09-20). Tight ATR changes `brick_size` / ATR distance, not necessarily `tp_bricks/sl_bricks`. RR remains a heavy-grid **geometry pre-filter** only; no MIN_RR code change. See `worklog/20260925_DYNAMIC_ATR_LIVE_FLIP_ASSESSMENT.md` §1.2.
+
+#### Docs / roadmap
+
+- Worklog: `worklog/20260925_DYNAMIC_ATR_LIVE_FLIP_ASSESSMENT.md`
+- `nt_roadmap`: `atr_anchored_evidence_mode_flip`, `dynamic_atr_mode_flip`, `heavy_sweep_atr_anchored_full_flip`, `min_rr_geometry_guard`
+
+---
+
 ## [8.0.0] - 2026-09-24
 
 ### Major — Twin-bar program: calibration + reachability methodology (code version realigned)
