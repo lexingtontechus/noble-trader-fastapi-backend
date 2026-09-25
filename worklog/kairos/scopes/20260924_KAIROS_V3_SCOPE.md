@@ -783,3 +783,114 @@ Tool: `scripts/kairos_repeatability.py`. Reports: `reports/20260925_repeatabilit
    `kairos_repeatability.py` on it.
 5. **TimesFM 2.x covariates for the price forecast** (p_timesfm): a separate scope, not Kairos.
 6. Capture stays as is.
+
+---
+
+## 14. V3 premise (agreed 2026-09-25, frozen before step 1 was run)
+
+This replaces the drift-based framing (§3.3–3.5, §5). §13 findings still hold for what they
+tested.
+
+**Kairos is a transition model of calibration state, not of price drift.**
+
+- **Edge** = the *accuracy* of a signal fired from its state (quadrant): regime, direction and
+  strength correctly identified. It is not raw win rate.
+- **Accuracy is measured against the no-skill line.** For a bracket with distances TP and SL,
+  P(TP first | resolved) under no skill is SL / (TP + SL). An SL hit can mean a wrong direction
+  *or* a stop inside normal noise, so accuracy excess = 1{TP first} − SL/(TP+SL). Raw SL/TP
+  counts are never compared across geometries (e.g. the tiered-ATR flip).
+- **Calibration error** at a signal = predicted p_win − 1{TP first}, on resolved signals only.
+  This is the sign convention of `eod_correction` bias: positive = overconfident.
+- **The question:** when S1 (or its children, i.e. the same symbol's later suppressed and
+  gate-fail signals) is over- or underconfident, how much of that error carries into **S2 = the
+  same symbol's next qualified signal**, and how fast does it decay?
+- **Information set:** only outcomes determinable before S2 fires (`exit_ts < ts_S2`). S1 itself
+  usually has not resolved by then (median about 26h).
+- **Overlap trap:** rolling-window states share evidence. Persistence counts only in excess of
+  a circular-shift null (targets rotated against the error history within symbol).
+- **Expiry** is not dropped. It is a non-result, excluded from error, and a **core open issue**
+  expected to be addressed by dynamic (tiered) ATR geometry. Expiry share is reported alongside
+  every result.
+- **Today's system assumes** a flat 7-day window (≥ 20 records, `eod_correction`) plus a 48h
+  drift trigger. That is an unmeasured decay assumption (full weight to 7d, then zero), and it
+  is the benchmark.
+
+**Test order:**
+
+1. **Persistence and decay.** Correlation of S2's calibration error with the mean error of prior
+   resolved signals, by evidence age, against the null. Output: persistence by lag and a
+   half-life.
+2. **State change.** Does carryover survive a quadrant change between the evidence and S2?
+3. **Covariates.** Do factors (§3.8 / V7 families, events, volatility) change the decay rate?
+   Only if step 1 shows persistence.
+4. **Decision.** Does a decayed correction beat the 7-day window on S2 out of sample (Brier and
+   log-loss)?
+
+TimesFM 2.x covariates remain a separate price-forecast scope (p_timesfm).
+
+### 14.1 Step 1 result (2026-09-25, `scripts/kairos_calibration_persistence.py`, `reports/20260925_calibration_persistence.md`)
+
+Data: 73,595 light buy/sell signals with an outcome (2026-08-23 → 09-24). 979 of them are
+qualified: 116 TP, 330 SL, 533 expired, giving **446 scored S2 targets**. 500 circular-shift
+nulls; symbol-day cluster bootstrap.
+
+**1. Carryover exists, and it is short: hours, not days.**
+
+| Evidence age | β carryover into S2 [95% CI] | Null median | p |
+|---|---|---|---|
+| 0–6h | +0.41 [+0.14, +0.64] | +0.11 | 0.004 |
+| 6–24h | +0.24 [−0.03, +0.50] | +0.14 | 0.19 |
+| 24–72h | +0.03 | −0.00 | 0.41 |
+| ≥ 72h | ≤ 0 | – | n.s. |
+
+- The best half-life is about 3h (within-symbol dynamic β +0.19, p 0.06). Carryover is gone
+  by about 24h.
+- Same-direction children carry most of it: β +0.30 against +0.10 for opposite-direction
+  children.
+- Accuracy vs no-skill shows the same shape (0–6h β +0.45, p < 0.002).
+
+**2. The 7-day window is too slow.** Walk-forward correction of S2's p_win:
+
+| Evidence rule | Δ Brier |
+|---|---|
+| flat 7d (today's rule) | −0.019 |
+| decay h = 3h | −0.053 |
+| decay h = 6h | −0.046 |
+
+**3. The dominant problem is static, and p_win does not discriminate.**
+- Qualified p_win averages 0.60 while the realised TP rate is 0.26 (err +0.34).
+- Across every p_win bin (0.22 → 0.78) the realised TP rate is flat at 0.24–0.30, which is
+  *below* the no-skill line (about 0.33).
+- The AUC of p_win for S2's outcome is **0.48**, i.e. no ranking.
+- The constant no-skill line scores a better Brier (0.192) than p_win (0.320), and better than
+  any correction of it (0.265). Most of the "correction gain" is shrinking p_win toward the base
+  rate.
+- The one discriminating input found: the symbol's recent TP rate across all tiers (h = 3h)
+  has **AUC 0.62** for S2's outcome.
+
+**4. Expiry decides where calibration can be measured at all.**
+- Qualified expiry is 98% for EURUSD, 96% GBPUSD, 92% AUDUSD, 85% USDJPY and 79% USDCAD.
+- The scored sample is therefore dominated by AAPL, XAGUSD, XAUAUD and BTCUSD.
+- For most FX majors there is almost no calibration feedback. This is the core open issue
+  (dynamic ATR).
+
+**Reading:**
+- Kairos can partly predict S2's calibration, but only from children resolved in the last few
+  hours.
+- The carryover is fast-decaying and direction-specific: recent same-direction outcomes, which
+  looks like short-term market behaviour (volatility and follow-through).
+- It is not a slow regime property.
+- Before any decay correction matters, p_win itself needs discrimination. Today it is
+  miscalibrated *and* uninformative on scored qualified signals.
+
+**Caveats:**
+- 1 month of data; 446 targets.
+- p_win is the post-correction value.
+- The result is pre-tiered-ATR geometry.
+- Selection effects from expiry, as above.
+
+**Next:**
+- Step 2 (does carryover survive a state change) on the same targets.
+- Covariates should be fast-moving (recent volatility, recent outcome streak), not slow
+  regime age.
+- The p_win discrimination problem goes to the calibration workstream, not Kairos.
