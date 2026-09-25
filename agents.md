@@ -45,8 +45,9 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `worklog/20260904_MIN_RR_REGRESSION.md` | MIN_RR/MAX_SHARPE/MIN_TRADES silently tightened 08-30, fixed |
 || `worklog/20260904_SIGNAL_ENGINE_MATH_TRIAGE.md` | Full financial logic triage — Masaniello exponent inverted, fractional kelly cap bug, kelly_edge unbounded, orchestrator _mu direction-blind |
 || `worklog/kairos/20260924_EDGE_STATE_MATRIX_REGIME_AGE.md` | Edge-state matrix research: regime age T0→T48h decay test, USDJPY matrix + candidate knobs (mermaid), `/backtest/run` status (generic toy backtester, not the walk-forward reconstruction) |
-|| `worklog/kairos/README.md` | Kairos index (branch `kairos` only): scopes/, reports/ (G2 looks), p1/, backfill/, tests/, assets/ + 15-min slot cadence rules + 2026-09-24 insert-loss fix/backfill record |
+|| `worklog/kairos/README.md` | Kairos index (developed on branch `kairos`, merged to `main`): scopes/, reports/ (G2 looks), p1/, backfill/, tests/, assets/ + 15-min slot cadence rules + 2026-09-24 insert-loss fix/backfill record |
 || `worklog/kairos/20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md` | Restart-safe regime state (`regime_state_persist_mode`, 58%→restored cell flips across restarts), hourly `kairos-daily` + `nt_roadmap` heartbeat, accelerated 48h G2 looks (`--accel`), W-label snap, pre-168 tier reconstruction |
+|| `worklog/kairos/20260925_PATH_RISK_AND_REGIME_SURVIVAL.md` | Fixed-horizon MAE/MFE (migration 170, geometry-free "ghost edge" check, report §E2) + Kaplan-Meier regime survival and the S2 "remaining regime clock" (§E); parked S2-context / TimesFM-3 covariate plan |
 || `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |
