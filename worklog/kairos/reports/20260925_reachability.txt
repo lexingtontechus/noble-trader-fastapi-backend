@@ -1,0 +1,45 @@
+LIVE resolved buy/sell since 09-12: 13836
+outcome share: {'expired': 0.453, 'sl_hit': 0.399, 'tp_hit': 0.148}
+TP/ATR quantiles: {0.25: 8.34, 0.5: 17.04, 0.75: 34.23}  SL/ATR: {0.25: 3.77, 0.5: 8.63, 0.75: 19.28}
+hours to tp_hit: p25 17.6 · median 26.1 · p75 42.5 · p90 53.0 (n 2049)
+hours to sl_hit: p25 19.4 · median 28.3 · p75 41.6 · p90 51.1 (n 5525)
+resolved within 6h/12h/24h (share of all): [0.01, 0.065, 0.221]
+per symbol median TP/ATR & tp_hit%:
+          tp_atr  sl_atr    tp   exp     n
+symbol                                   
+AAPL       7.18    4.31  0.29  0.02   970
+AUDUSD    63.02   36.76  0.07  0.77   982
+BTCUSD    13.00    4.92  0.20  0.26   953
+EURUSD    28.93   17.35  0.13  0.57   955
+GBPUSD    28.26   17.16  0.08  0.59   981
+US30USD   17.13    7.25  0.15  0.61  1004
+US500     15.08    8.78  0.21  0.30   988
+USDCAD    36.82   22.10  0.11  0.74   995
+USDCHF    32.22   19.27  0.13  0.74  1005
+USDJPY    21.34    9.18  0.11  0.55   968
+XAGUSD     9.17    3.27  0.20  0.20  1062
+XAUAUD    10.89    4.91  0.15  0.31   959
+XAUEUR    11.84    4.75  0.14  0.31  1022
+XAUUSD    13.67    6.83  0.11  0.36   992
+
+HISTORY first-passage, bracket TP 17.04 / SL 8.63 sweep-ATR, 14690 signals (every 3rd bar), SL-first on same-bar ties
+ within_h  P(TP)  P(SL)  P(open)
+        2  0.004  0.030    0.967
+        4  0.012  0.074    0.913
+        6  0.023  0.119    0.858
+        8  0.033  0.156    0.810
+       12  0.054  0.221    0.725
+       24  0.114  0.364    0.522
+       48  0.199  0.502    0.300
+hours to TP: median 21 · p75 33 · p90 42; to SL median 15
+regime remaining at entry: median 6h · p75 11h
+TP hit while the entry regime is still alive: 0.031 of signals · 0.16 of all TP hits
+SL hit while regime alive: 0.140
+
+bracket scale sweep (TP=SL=k sweep-ATR, symmetric), P(TP first) within 8h / 24h / 48h:
+  k= 1: 8h TP 0.35/SL 0.65 · 24h TP 0.35/SL 0.65 · 48h TP 0.35/SL 0.65 · median hrs to first touch 1
+  k= 2: 8h TP 0.44/SL 0.51 · 24h TP 0.46/SL 0.53 · 48h TP 0.46/SL 0.54 · median hrs to first touch 1
+  k= 3: 8h TP 0.42/SL 0.43 · 24h TP 0.49/SL 0.50 · 48h TP 0.49/SL 0.51 · median hrs to first touch 3
+  k= 5: 8h TP 0.31/SL 0.30 · 24h TP 0.46/SL 0.47 · 48h TP 0.49/SL 0.50 · median hrs to first touch 6
+  k= 8: 8h TP 0.17/SL 0.17 · 24h TP 0.36/SL 0.36 · 48h TP 0.45/SL 0.45 · median hrs to first touch 14
+  k=12: 8h TP 0.08/SL 0.08 · 24h TP 0.23/SL 0.23 · 48h TP 0.34/SL 0.35 · median hrs to first touch 27

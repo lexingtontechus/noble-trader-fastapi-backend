@@ -686,3 +686,100 @@ across 48hrs." Detail: `worklog/kairos/20260925_RESTART_SAFE_STATE_AND_ACCELERAT
   persists across restarts (`regime_state_persist_mode: live`). Before the fix, 58% of
   cross-restart ticks changed cell, against 9% on normal ticks. G2.4/G2.5 use only runs that
   start after the deploy.
+
+---
+
+## 13. Findings and method change (2026-09-25)
+
+User, 2026-09-25: "original v1-4 is disproved not failed. V2 is the most relevant test, V3 that
+is a known fact based on market behavior. V4 is a positive - less knob tuning." And: "keep the
+capture, adjust the thinking and methodology as the disproves guide us towards new decisions."
+
+### 13.1 Method: map, don't pass/fail
+
+Kairos exists to find **when** (horizon, regime age) and **where** (cell, symbol) edge or decay
+is, and whether that map **repeats** out of sample. A pooled pass/fail threshold is secondary.
+From here on, each finding is reported as:
+
+1. the map (cell × age × horizon, per symbol);
+2. its repeatability, meaning the block-to-block rank correlation and the sign persistence of
+   stand-out keys, both against the circular-shift null;
+3. edge measured in excess of the symbol's trailing 30-day drift (no look-ahead), as well as raw.
+
+Tool: `scripts/kairos_repeatability.py`. Reports: `reports/20260925_repeatability_nc{1,2}.md`.
+
+### 13.2 What P1 established (disproved, not "failed")
+
+| Idea | Status | What the data says |
+|---|---|---|
+| V1 label direction carries edge | Disproved | Bull and bear labels are both followed by rises: +0.60 / +0.61 ATR raw 24h move. The "edge" was market drift |
+| **V2 edge decays with regime age** | **Disproved for ages under 24h**; untestable above | The slope flips sign by quarter (4 of 7 negative, null 3 of 7, p 0.46). No cell × age key repeats half to half. Only 3.4% of signals are 24–48h old and 0.1% are 48h or older |
+| V3 plane flow | Known market behaviour | Quadrant movement is noise |
+| **V4 regimes age** | **Disproved, and that is a positive** | Exit hazard is flat and stable in all 7 quarters: 0.09–0.13/h per age band, median run 6–7h. Age carries no timing information, so there are no age-based knobs to maintain |
+| Repeatable "where" | Slow momentum, not the regime | The nc1 symbol × cell raw map repeats (ρ 0.46, p < 0.01). Drift-adjusted it falls to ρ 0.30 (p 0.05). The label tracks the 30-day trend |
+
+**Consequences:**
+- Layers 4, 5 and 7 (quadrant plane, flow, time-based knobs) are parked.
+- The S1/S2 regime-context idea is disproved on 1h labels. A regime surviving 61h is about
+  0.04% likely at the historical hazard, and its remaining life does not depend on its age.
+- TimesFM covariates stay relevant, but for *price forecasting* (TimesFM 2.x dynamic
+  covariates), not for regime-age context.
+
+### 13.3 Reachability vs regime life (`scripts/kairos_reachability.py`, `reports/20260925_reachability.txt`)
+
+**Live brackets** (13,836 resolved buy/sell rows since 09-12):
+- Outcomes: expired 45%, SL 40%, TP 15%.
+- Median bracket: TP 17 and SL 8.6 in sweep ATR (close-to-close SMA14).
+- Median time to TP is 26h (p90 53h); to SL, 28h. Only 1% resolve within 6h and 22% within 24h.
+- By symbol, expiry runs from 2% (AAPL, TP ≈ 7 ATR) to 77% (AUDUSD, TP ≈ 63 ATR).
+
+**History** (5 symbols, 1h OHLC, the live median bracket, SL counted first on a same-bar tie):
+- P(TP) is 3% within 8h, 11% within 24h and 20% within 48h.
+- P(SL) is 16%, 36% and 50% over the same windows.
+- The regime left at entry is a median of 6h. Only 16% of TP hits happen while the entry
+  regime is still alive.
+- **The bracket outlives the regime that produced it by about 4×.**
+
+**Symmetric TP = SL = k·ATR, the P(TP) / P(SL) split:**
+
+| k | 8h | 24h | 48h | median first touch |
+|---|---|---|---|---|
+| 1 | 0.35 / 0.65 | 0.35 / 0.65 | 0.35 / 0.65 | 1h |
+| 3 | 0.42 / 0.43 | 0.49 / 0.50 | 0.49 / 0.51 | 3h |
+| 5 | 0.31 / 0.30 | 0.46 / 0.47 | 0.49 / 0.50 | 6h |
+| 8 | 0.17 / 0.17 | 0.36 / 0.36 | 0.45 / 0.45 | 14h |
+| 12 | 0.08 / 0.08 | 0.23 / 0.23 | 0.34 / 0.35 | 27h |
+
+- A bracket of about 3–5 sweep ATR resolves within one regime life (a median first touch of
+  3–6h).
+- At every k, TP and SL are about 50/50. The symmetric bracket has no directional edge, which
+  matches V1.
+- So a regime-sized bracket makes outcomes **attributable** to the regime that fired them. It
+  does not make them profitable. Profit still depends on the gates selecting direction.
+
+### 13.4 Rolling window: 48h is fine for health, too short for the decision
+
+- For data health and the live monitor, 48h is right: about 1,000 episodes, and 24h results
+  mature inside the window.
+- For the G2 edge decision, 48h is too short on its own. There are about 17 qualified episodes
+  per 48h, and the power criterion (§H) needs about 3× today's precision.
+- **Decision:**
+  - Keep the rolling 48h look for health and monitoring.
+  - The G2 decision uses the **cumulative** matured cohort since go-live, as §H already does.
+  - Add a **repeatability read**: consecutive 48h windows must agree in sign on the gates-vs-rest
+    Δm₂₄ before any claim. This is the same rule as §13.1, applied live.
+
+### 13.5 Next (in order)
+
+1. **Do the gates select direction?** This is G2, the only live open question. It runs on the
+   cumulative cohort with the 48h-window repeatability read.
+2. **Benchmark against a 30-day trend filter.** Do qualified signals add anything beyond "trade
+   with the 30d trend"? It runs on existing capture. If they don't, the HMM direction isn't
+   earning its place.
+3. **Horizon matched to regime life.** Test brackets of about 3–5 sweep ATR against today's
+   (about 17/9) on existing capture (MAE/MFE columns, migration 170). Geometry-only;
+   shadow-only.
+4. **Slower regime (4h labels)**, only if an age-conditioned idea returns. Rerun
+   `kairos_repeatability.py` on it.
+5. **TimesFM 2.x covariates for the price forecast** (p_timesfm): a separate scope, not Kairos.
+6. Capture stays as is.
