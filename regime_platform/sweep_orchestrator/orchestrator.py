@@ -1236,6 +1236,15 @@ class SweepOrchestrator(HeavySweepMixin):
         # symbol on first use.
         self._sweep_locks: dict[str, asyncio.Lock] = {}
 
+        # Serializes every writing resolver pass (nightly eod-lookback,
+        # its startup catch-up, and the hourly calibration resolve,
+        # 2026-09-25) — two concurrent resolve_pending_signals() calls
+        # would read the same outcome-IS-NULL rows and double-write
+        # nt_calibration_records (the insert has no signal_id uniqueness).
+        # Accessed via _get_resolver_lock() so instances built without
+        # __init__ (tests use object.__new__) still get one.
+        self._resolver_lock: asyncio.Lock | None = asyncio.Lock()
+
         # Track last-successful-sweep timestamps for stale detection
         self._last_ok: dict[str, float] = {}
         # Last-known regime labels per symbol (for shift detection)
@@ -1633,6 +1642,22 @@ class SweepOrchestrator(HeavySweepMixin):
             coalesce=True,
         )
 
+        # Hourly calibration resolve (2026-09-25, Kairos V3 §14.2 lever 1,
+        # worklog/kairos/20260926_HOURLY_CALIBRATION_RESOLVE.md): TP/SL
+        # outcomes reach nt_calibration_records within ~1h instead of at the
+        # 01:17 nightly. :38 sits clear of the :00/:15/:30/:45 light sweeps
+        # (TradingView batch collisions, 2026-08-24), :17 nightly and :20
+        # Kairos job. Registered unconditionally; the mode (off | shadow |
+        # live) is read per run so a feature_flags.yaml flip needs no restart.
+        self._scheduler.add_job(
+            self._run_calibration_resolve_hourly,
+            trigger=CronTrigger.from_crontab("38 * * * *"),
+            id="calibration-resolve-hourly",
+            name="Calibration resolve (hourly)",
+            misfire_grace_time=1200,
+            coalesce=True,
+        )
+
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
 
@@ -1922,10 +1947,11 @@ class SweepOrchestrator(HeavySweepMixin):
         from regime_platform.sweep_orchestrator.paper_book import reconcile
 
         try:
-            resolver_summary = await resolve_pending_signals(
-                limit=settings.EOD_RESOLVE_LIMIT,
-                max_total=settings.EOD_RESOLVE_MAX_TOTAL,
-            )
+            async with self._get_resolver_lock():
+                resolver_summary = await resolve_pending_signals(
+                    limit=settings.EOD_RESOLVE_LIMIT,
+                    max_total=settings.EOD_RESOLVE_MAX_TOTAL,
+                )
             logger.info(
                 "[eod:lookback] resolver done: %s",
                 {k: v for k, v in resolver_summary.items() if k != "errors"},
@@ -2437,6 +2463,82 @@ class SweepOrchestrator(HeavySweepMixin):
             bf = {"error": type(exc).__name__}
             logger.warning("[kairos:daily] drift backfill failed: %s", exc)
         await write_job_heartbeat("kairos_daily_job", {"drift_backfill": bf, "calendar": cal})
+
+    def _get_resolver_lock(self) -> asyncio.Lock:
+        """The shared writing-resolver lock (created lazily if __init__
+        was bypassed)."""
+        lock = getattr(self, "_resolver_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._resolver_lock = lock
+        return lock
+
+    async def _run_calibration_resolve_hourly(self) -> None:
+        """Hourly calibration resolve (Kairos V3 §14.2 lever 1, 2026-09-25).
+
+        ``calibration_resolve_hourly_mode``:
+          off    — nothing.
+          shadow — ``dry_run_pending_signals``: read-only, same judge and
+                   windowing as the writing resolver; logs what would
+                   resolve now and the evidence-hours saved vs the next
+                   nightly run. No writes.
+          live   — ``resolve_pending_signals`` (the nightly's own function)
+                   under the shared resolver lock; skipped, not queued, if
+                   another resolver pass holds the lock.
+        Heartbeats nt_roadmap(calibration_resolve_hourly) either way. Never
+        raises out of the scheduler tick.
+        """
+        from regime_platform.core.feature_flags import get_calibration_resolve_hourly_mode
+        from regime_platform.sweep_orchestrator.eod_resolver import (
+            dry_run_pending_signals,
+            evidence_hours_saved,
+            resolve_pending_signals,
+        )
+        from regime_platform.sweep_orchestrator.kairos import write_job_heartbeat
+
+        mode = get_calibration_resolve_hourly_mode()
+        if mode == "off":
+            return
+        summary: dict[str, Any] = {"mode": mode}
+        try:
+            if mode == "shadow":
+                dry = await dry_run_pending_signals(
+                    limit=settings.EOD_RESOLVE_LIMIT,
+                    max_total=settings.EOD_RESOLVE_MAX_TOTAL,
+                )
+                summary.update(dry)
+                tp_sl = dry["by_outcome"].get("tp_hit", 0) + dry["by_outcome"].get("sl_hit", 0)
+                logger.info(
+                    "[calib:hourly] shadow — would resolve %d now (%s), %d TP/SL "
+                    "(qualified %d) reaching calibration %.1fh before the nightly; "
+                    "insufficient_bars=%d windowed_out=%d errors=%d scanned=%d",
+                    dry["would_resolve"], dry["by_outcome"], tp_sl, dry["qualified_tp_sl"],
+                    dry["hours_saved"], dry["insufficient_bars"], dry["windowed_out"],
+                    dry["errors"], dry["scanned"],
+                )
+            else:
+                lock = self._get_resolver_lock()
+                if lock.locked():
+                    summary["skipped"] = "resolver_busy"
+                    logger.info("[calib:hourly] live — skipped, another resolver pass is running")
+                else:
+                    hours = evidence_hours_saved(datetime.now(timezone.utc))
+                    async with lock:
+                        res = await resolve_pending_signals(
+                            limit=settings.EOD_RESOLVE_LIMIT,
+                            max_total=settings.EOD_RESOLVE_MAX_TOTAL,
+                        )
+                    summary.update(res)
+                    summary["hours_saved"] = hours
+                    logger.info(
+                        "[calib:hourly] live — resolved %d (%s), %.1fh before the nightly",
+                        res.get("resolved", 0), res.get("by_outcome"), hours,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            summary["error"] = type(exc).__name__
+            logger.warning("[calib:hourly] %s failed: %s", mode, exc)
+        summary.pop("by_symbol", None)
+        await write_job_heartbeat("calibration_resolve_hourly", summary)
 
     async def _run_trend_regime_refresh(self) -> None:
         """Trend filter daily refresh (2026-09-10, worklog

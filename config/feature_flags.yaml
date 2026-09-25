@@ -728,6 +728,23 @@ regime_state_persist_max_age_hours: 3.0
 # fails, so it can never double a tick. Same pipeline, same gates.
 light_sweep_catchup_mode: live
 
+# calibration_resolve_hourly_mode (2026-09-25, worklog/kairos/
+# 20260926_HOURLY_CALIBRATION_RESOLVE.md; Kairos V3 scope §14.2 lever 1):
+# off | shadow | live. TP/SL outcomes reach nt_calibration_records only at
+# the 01:17 UTC nightly resolver (median ~11h after the outcome), so the
+# bias that corrects the next qualified signal is built on stale evidence.
+# Measured on 446 S2 targets: the hourly-evidence version of the SAME bias
+# rule improves S2 Brier -0.043 vs -0.025 nightly. Hourly job at :38 (clear
+# of the :00/:15/:30/:45 light sweeps, :17 nightly, :20 Kairos job).
+#   shadow: read-only dry run — logs what would resolve now (TP/SL/expired
+#           counts per symbol) and the evidence-hours saved vs the next
+#           nightly. No writes.
+#   live:   runs the existing resolver (same close-walk, same minimum-age
+#           gate, same calibration-record writer) hourly. Only the timing
+#           changes; the bias formula (fetch_calibration_bias) does not.
+# The resolver is serialized with the nightly by an in-process lock.
+calibration_resolve_hourly_mode: shadow
+
 # renko_brick_retention_days (2026-09-09, worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2"):
 # nightly retention (regime_platform/sweep_orchestrator/renko_retention.py,

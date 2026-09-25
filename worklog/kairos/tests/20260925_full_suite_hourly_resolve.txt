@@ -1,0 +1,122 @@
+........................................................................ [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 16%]
+........................................................................ [ 22%]
+........................................................................ [ 28%]
+........ssssssss.....ss................................................. [ 33%]
+..................FF.................................................... [ 39%]
+........................................................................ [ 45%]
+........................................................................ [ 50%]
+........................................................................ [ 56%]
+........................................................................ [ 62%]
+........................................................................ [ 67%]
+........................................................................ [ 73%]
+..............................................sssssssssss............... [ 79%]
+........................................................................ [ 84%]
+........................................................................ [ 90%]
+........................................................................ [ 96%]
+.................................................                        [100%]
+================================== FAILURES ===================================
+______________ test_quote_fetcher_chunks_11_symbols_into_2_calls ______________
+
+    def test_quote_fetcher_chunks_11_symbols_into_2_calls():
+        """11 symbols → 2 batched POSTs (10 + 1), NOT 11 concurrent GETs."""
+        symbols = [
+            {"symbol": f"SYM{i}", "tradingview_symbol": f"EXCHANGE:SYM{i}"}
+            for i in range(11)
+        ]
+        buffer = FeatureBuffer()
+        prev_closes = {f"SYM{i}": 100.0 for i in range(11)}
+    
+        calls: list[dict] = []
+    
+        class _FakeResp:
+            status_code = 200
+    
+            def json(self):
+                return _fake_batch_response(calls[-1]["symbols"])
+    
+        async def _fake_post(self, url, headers=None, json=None):
+            calls.append({"url": url, "symbols": json["symbols"]})
+            return _FakeResp()
+    
+        with patch.object(quote_fetcher.httpx.AsyncClient, "post", _fake_post):
+            import asyncio
+    
+            pushed = asyncio.run(
+                quote_fetcher.fetch_and_update(symbols, buffer, prev_closes)
+            )
+    
+>       assert pushed == 11
+E       assert 0 == 11
+
+tests\test_hmm_batch_consolidation.py:89: AssertionError
+---------------------------- Captured stderr call -----------------------------
+2026-09-25 16:14:22,224 [WARNING] regime.hmm.quote_fetcher: hmm.quote: TRADINGVIEW_API_KEY not set — skipping
+------------------------------ Captured log call ------------------------------
+WARNING  regime.hmm.quote_fetcher:quote_fetcher.py:92 hmm.quote: TRADINGVIEW_API_KEY not set — skipping
+_________________ test_quote_fetcher_extracts_microstructure __________________
+
+    def test_quote_fetcher_extracts_microstructure():
+        symbols = [{"symbol": "XAUUSD", "tradingview_symbol": "OANDA:XAUUSD"}]
+        buffer = FeatureBuffer()
+        prev_closes = {"XAUUSD": 100.0}
+    
+        async def _fake_post(self, url, headers=None, json=None):
+            class _FakeResp:
+                status_code = 200
+    
+                def json(self):
+                    return _fake_batch_response(["XAUUSD"])
+    
+            return _FakeResp()
+    
+        with patch.object(quote_fetcher.httpx.AsyncClient, "post", _fake_post):
+            import asyncio
+    
+            pushed = asyncio.run(
+                quote_fetcher.fetch_and_update(symbols, buffer, prev_closes)
+            )
+    
+>       assert pushed == 1
+E       assert 0 == 1
+
+tests\test_hmm_batch_consolidation.py:116: AssertionError
+---------------------------- Captured stderr call -----------------------------
+2026-09-25 16:14:23,713 [WARNING] regime.hmm.quote_fetcher: hmm.quote: TRADINGVIEW_API_KEY not set — skipping
+------------------------------ Captured log call ------------------------------
+WARNING  regime.hmm.quote_fetcher:quote_fetcher.py:92 hmm.quote: TRADINGVIEW_API_KEY not set — skipping
+============================== warnings summary ===============================
+tests/test_backtest.py: 4475 warnings
+tests/test_hmm_model.py: 27 warnings
+tests/test_meta_regime_model.py: 32 warnings
+tests/test_meta_regime_shadow_wiring.py: 6 warnings
+tests/test_regime_stability.py: 274 warnings
+tests/test_regime_warm_start.py: 353 warnings
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.venv\Lib\site-packages\hmmlearn\utils.py:27: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    a_sum.shape = shape
+
+tests/test_degeneracy_backtest.py::test_audusd_degeneracy_recovery
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.venv\Lib\site-packages\_pytest\python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/test_degeneracy_backtest.py::test_audusd_degeneracy_recovery returned <class 'tuple'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_uses_raw_fetcher_in_raw_mode
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_does_not_use_enforced_fetcher_in_raw_mode
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_calibrated_symbol_upserts_state_action_none
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_overconfident_writes_three_actions
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_bayesian_shrink_uses_raw_pwin
+tests/test_raw_bias_cycle_reset.py::TestRunEodCorrectionRawMode::test_standard_mode_uses_enforced_fetcher
+  C:\Users\aloys\OneDrive\Documents\GitHub\noble-trader-workspace\noble-trader-fastapi-backend\.worktrees\kairos\regime_platform\sweep_orchestrator\eod_correction.py:403: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    f"{_settings.SUPABASE_URL.rstrip('/')}/rest/v1/nt_signal_sim",
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_hmm_batch_consolidation.py::test_quote_fetcher_chunks_11_symbols_into_2_calls
+FAILED tests/test_hmm_batch_consolidation.py::test_quote_fetcher_extracts_microstructure
+2 failed, 1250 passed, 21 skipped, 5174 warnings in 133.80s (0:02:13)
+EXIT 1

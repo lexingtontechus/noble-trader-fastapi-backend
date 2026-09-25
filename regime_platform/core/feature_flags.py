@@ -79,6 +79,7 @@ _DEFAULTS: dict[str, Any] = {
     "regime_state_persist_mode": "live",
     "regime_state_persist_max_age_hours": 3.0,
     "light_sweep_catchup_mode": "live",
+    "calibration_resolve_hourly_mode": "shadow",
     "qualification_gates": {
         "min_regime_conf": 0.60,
         "min_kelly": 0.02,
@@ -680,6 +681,19 @@ def get_light_sweep_catchup_mode() -> str:
     light-sweep slot a restart dropped. Unknown values fall back to live."""
     v = str(_load().get("light_sweep_catchup_mode", _DEFAULTS["light_sweep_catchup_mode"])).lower()
     return v if v in ("off", "live") else "live"
+
+
+def get_calibration_resolve_hourly_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-09-25, worklog/kairos/
+    20260926_HOURLY_CALIBRATION_RESOLVE.md). Hourly TP/SL resolution into
+    nt_signal_sim + nt_calibration_records so calibration evidence arrives
+    within ~1h of the outcome instead of at the next 01:17 UTC nightly run.
+    shadow: read-only dry run that logs what would resolve now and the
+    evidence hours it would save. Unknown values fall back to shadow."""
+    v = str(_load().get(
+        "calibration_resolve_hourly_mode", _DEFAULTS["calibration_resolve_hourly_mode"],
+    )).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
 
 
 def _qualification_gate_number(key: str) -> float:

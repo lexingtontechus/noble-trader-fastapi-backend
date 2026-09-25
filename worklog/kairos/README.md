@@ -9,6 +9,7 @@ Kairos v3 (geometry-free edge-state research) output. Spec:
 | `reports/YYYYMMDD_{Wn,A<mmddHH>}.{md,json}` | G2 looks — `scripts/kairos_weekly_check.py` (weekly, snapped to Thu 08:00) or `--accel` (rolling 48h, daily). `20260924_W0_partial` is the run first mislabelled W1 |
 | `20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md` | Restart-safe regime state, hourly drift backfill + heartbeat, accelerated G2 |
 | `20260925_PATH_RISK_AND_REGIME_SURVIVAL.md` | Fixed-horizon MAE/MFE (migration 170, report §E2), Kaplan-Meier survival + remaining regime clock (§E), parked S2/TimesFM-3 covariate plan |
+| `20260926_HOURLY_CALIBRATION_RESOLVE.md` | V3 §14.2 lever 1: hourly (`:38`) calibration resolve, `calibration_resolve_hourly_mode` shadow → live. Nightly-only resolver delays evidence ~11h (S2 Brier −0.025 nightly vs −0.043 hourly); shared resolver lock; promotion bar |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |

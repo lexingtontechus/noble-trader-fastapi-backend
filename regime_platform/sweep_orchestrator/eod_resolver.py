@@ -419,7 +419,9 @@ def _filter_payload(payload: dict[str, Any], allowed: frozenset[str]) -> dict[st
     return {k: v for k, v in payload.items() if k in allowed}
 
 
-async def _fetch_pending(limit: int, min_ts: str | None = None) -> list[dict[str, Any]]:
+async def _fetch_pending(
+    limit: int, min_ts: str | None = None, offset: int = 0,
+) -> list[dict[str, Any]]:
     """Rows of nt_signal_sim where outcome IS NULL, oldest first.
 
     ``min_ts`` (ISO UTC string) bounds the fetch to signals whose entry
@@ -427,6 +429,10 @@ async def _fetch_pending(limit: int, min_ts: str | None = None) -> list[dict[str
     cannot be resolved against bars that predate them (window-anchoring
     fix 2026-08-12), so they stay pending and are handled by retention
     (expired after EOD_RETENTION_STALE_DAYS).
+
+    ``offset`` pages past rows already seen. Only the read-only dry run
+    uses it (its rows never leave the ``outcome IS NULL`` pool, so without
+    paging it would re-read the same oldest batch forever).
     """
     url = _url("nt_signal_sim")
     params = {
@@ -435,6 +441,8 @@ async def _fetch_pending(limit: int, min_ts: str | None = None) -> list[dict[str
         "order": "ts.asc",
         "limit": str(int(limit)),
     }
+    if offset:
+        params["offset"] = str(int(offset))
     if min_ts:
         params["ts"] = f"gte.{min_ts}"
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -539,19 +547,22 @@ async def _write_calibration_record(
         )
 
 
-async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
-    """Resolve + persist one signal. Returns outcome key, ``"pending"`` if
-    it's not old enough to judge yet (see minimum-age gate below), or None
-    on error."""
+def _judge(
+    sig: dict[str, Any], closes: list[float],
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Pure verdict for one pending signal — no I/O.
+
+    Returns ``(None, None)`` when entry/stop/tp is missing, ``("pending",
+    resolved)`` when the close-walk would only say "expired" because fewer
+    than EXPIRY_BARS closes exist yet (minimum-age gate below), otherwise
+    ``(outcome, resolved)``. Shared by the writing resolver and the
+    read-only hourly dry run so both judge identically.
+    """
     entry = _as_float(sig.get("entry_price"))
     stop = _as_float(sig.get("stop_loss"))
     tp = _as_float(sig.get("take_profit"))
     if entry is None or stop is None or tp is None:
-        logger.warning(
-            "eod_resolver: signal %s missing entry/stop/tp — left pending",
-            sig.get("signal_id"),
-        )
-        return None
+        return None, None
 
     resolved = resolve_signal_outcome(
         entry, stop, tp,
@@ -576,8 +587,24 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
     # worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md root cause 3 and
     # worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md.
     if resolved["outcome"] == "expired" and len(closes) < EXPIRY_BARS:
-        return "pending"
+        return "pending", resolved
+    return resolved["outcome"], resolved
 
+
+async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
+    """Resolve + persist one signal. Returns outcome key, ``"pending"`` if
+    it's not old enough to judge yet (see the minimum-age gate in
+    ``_judge``), or None on error."""
+    verdict, resolved = _judge(sig, closes)
+    if verdict is None or resolved is None:
+        logger.warning(
+            "eod_resolver: signal %s missing entry/stop/tp — left pending",
+            sig.get("signal_id"),
+        )
+        return None
+    if verdict == "pending":
+        return "pending"
+    entry = _as_float(sig.get("entry_price"))
     pnl = compute_pnl(
         resolved["outcome"],
         sig.get("tp_bricks"), sig.get("sl_bricks"), sig.get("brick_size"),
@@ -804,6 +831,124 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
         summary["windowed_out"], summary["insufficient_bars"], summary["errors"],
     )
     return summary
+
+
+# ─── Hourly calibration resolve (Kairos V3 §14.2 lever 1, 2026-09-25) ──
+#
+# worklog/kairos/20260926_HOURLY_CALIBRATION_RESOLVE.md. The nightly
+# eod-lookback (01:17 UTC) is the only writer of nt_calibration_records,
+# so a TP/SL outcome waits a median ~11h before fetch_calibration_bias can
+# see it. `calibration_resolve_hourly_mode` (config/feature_flags.yaml):
+#   shadow → dry_run_pending_signals(): read-only, same judge (_judge) and
+#            the same windowing as the writing resolver, reports what would
+#            resolve now + the evidence-hours saved vs the next nightly.
+#   live   → the orchestrator calls resolve_pending_signals() hourly (no
+#            new write path — the same function the nightly runs).
+
+NIGHTLY_RESOLVE_UTC = (1, 17)  # eod-lookback cron "17 1 * * *"
+
+
+def next_nightly_resolve(now: datetime) -> datetime:
+    """First nightly eod-lookback fire strictly after ``now`` (UTC)."""
+    h, m = NIGHTLY_RESOLVE_UTC
+    cand = now.astimezone(timezone.utc).replace(hour=h, minute=m, second=0, microsecond=0)
+    return cand if cand > now else cand + timedelta(days=1)
+
+
+def evidence_hours_saved(now: datetime) -> float:
+    """Hours an outcome resolved at ``now`` reaches nt_calibration_records
+    earlier than it would at the next nightly run."""
+    return round((next_nightly_resolve(now) - now).total_seconds() / 3600.0, 2)
+
+
+async def dry_run_pending_signals(
+    limit: int = 1000, max_total: int = 12000, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Read-only twin of ``resolve_pending_signals``: same pending query,
+    same candle window + post-entry anchoring, same ``_judge``. Writes
+    nothing (no PATCH, no calibration record). Pages with ``offset``
+    because judged rows stay in the ``outcome IS NULL`` pool.
+
+    Returns ``{would_resolve, by_outcome, by_symbol, qualified_tp_sl,
+    insufficient_bars, windowed_out, errors, scanned, hours_saved}``.
+    ``hours_saved`` = evidence latency removed for every TP/SL found now
+    (each would otherwise wait for the next 01:17 UTC nightly run).
+    Never raises.
+    """
+    now = now or datetime.now(timezone.utc)
+    out: dict[str, Any] = {
+        "would_resolve": 0, "by_outcome": {}, "by_symbol": {}, "qualified_tp_sl": 0,
+        "insufficient_bars": 0, "windowed_out": 0, "errors": 0, "scanned": 0,
+        "hours_saved": evidence_hours_saved(now),
+    }
+    if not settings.SUPABASE_URL:
+        return out
+    min_ts = (now - timedelta(hours=LIGHT_BARS)).isoformat()
+    rows: list[dict[str, Any]] = []
+    try:
+        offset = 0
+        while offset < max_total:
+            batch = await _fetch_pending(limit, min_ts=min_ts, offset=offset)
+            rows.extend(batch)
+            offset += len(batch)
+            if len(batch) < limit:
+                break
+    except Exception as exc:
+        logger.warning("eod_resolver: dry-run pending query failed: %s", exc)
+        out["errors"] += 1
+        return out
+    out["scanned"] = len(rows)
+    if not rows:
+        return out
+
+    from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
+
+    tv_map: dict[str, Any] = {}
+    try:
+        for sym in await fetch_active_symbols():
+            tv_map.setdefault(sym.get("symbol"), sym.get("tradingview_symbol"))
+    except Exception as exc:
+        logger.warning("eod_resolver: dry-run active symbols failed: %s", exc)
+    by_symbol_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        tv_map.setdefault(row.get("symbol"), row.get("tradingview_symbol"))
+        by_symbol_rows.setdefault(row.get("symbol"), []).append(row)
+    specs = [{"symbol": s, "tradingview_symbol": tv_map[s]} for s in by_symbol_rows if tv_map.get(s)]
+    out["errors"] += sum(len(v) for s, v in by_symbol_rows.items() if not tv_map.get(s))
+    try:
+        candles = await fetch_candles_for_symbols(specs, n_bars=LIGHT_BARS, interval=INTERVAL) if specs else {}
+    except Exception as exc:
+        logger.warning("eod_resolver: dry-run candle fetch failed: %s", exc)
+        out["errors"] += sum(len(by_symbol_rows[s["symbol"]]) for s in specs)
+        return out
+
+    outcomes: Counter[str] = Counter()
+    for spec in specs:
+        symbol = spec["symbol"]
+        closes = candles.get(symbol, [])
+        if not closes:
+            out["errors"] += len(by_symbol_rows[symbol])
+            continue
+        for sig in by_symbol_rows[symbol]:
+            post = anchor_post_entry_closes(closes, sig.get("ts"), now)
+            if post is None:
+                out["windowed_out"] += 1
+                continue
+            verdict, _ = _judge(sig, post)
+            if verdict is None:
+                out["errors"] += 1
+            elif verdict == "pending":
+                out["insufficient_bars"] += 1
+            else:
+                outcomes[verdict] += 1
+                if verdict in ("tp_hit", "sl_hit"):
+                    sym_c = out["by_symbol"].setdefault(symbol, {"tp_hit": 0, "sl_hit": 0})
+                    sym_c[verdict] += 1
+                    if sig.get("qualified"):
+                        out["qualified_tp_sl"] += 1
+    out["by_outcome"] = dict(outcomes)
+    out["would_resolve"] = sum(outcomes.values())
+    return out
 
 
 async def main() -> None:
