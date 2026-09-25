@@ -156,6 +156,40 @@ def drift_fields(entry_price: float, closes: Sequence[float], is_buy: bool,
     return out
 
 
+PATH_HORIZONS: tuple[int, ...] = (4, 12, 24, 48)
+PATH_COLUMNS: tuple[str, ...] = tuple(f"{k}_{h}h_pct" for k in ("mae", "mfe") for h in PATH_HORIZONS)
+
+
+def path_excursions(entry_price: float, bars: Sequence[dict[str, Any]], is_buy: bool,
+                    horizons: Sequence[int] = PATH_HORIZONS) -> dict[str, float | None]:
+    """Fixed-horizon max adverse / favourable excursion, % of entry, ≥ 0
+    (migration 170, worklog/kairos/20260925_PATH_RISK_AND_REGIME_SURVIVAL.md).
+
+    ``bars[0]`` is the entry bar (excluded: its range includes prices from
+    before the signal); the window is bars 1..h, ending on the same close as
+    ``drift_fields``' drift_h, so drift_h ∈ [−mae_h, +mfe_h]. Independent of
+    TP/SL: every bar is walked no matter where a bracket would have closed.
+    A missing high/low on any bar in the window makes that horizon None
+    (an under-stated excursion would read as safer than it was)."""
+    out: dict[str, float | None] = {f"{k}_{h}h_pct": None for k in ("mae", "mfe") for h in horizons}
+    if not entry_price or entry_price <= 0:
+        return out
+    for h in horizons:
+        if h >= len(bars):
+            continue
+        win = bars[1:h + 1]
+        try:
+            hi = max(float(b["h"]) for b in win)
+            lo = min(float(b["l"]) for b in win)
+        except (TypeError, ValueError, KeyError):
+            continue
+        up, down = max(0.0, hi - entry_price), max(0.0, entry_price - lo)
+        fav, adv = (up, down) if is_buy else (down, up)
+        out[f"mae_{h}h_pct"] = round(adv / entry_price * 100.0, 4)
+        out[f"mfe_{h}h_pct"] = round(fav / entry_price * 100.0, 4)
+    return out
+
+
 # ─── Run tracker (in-memory, per symbol) ─────────────────────────────────
 
 
@@ -303,36 +337,51 @@ async def backfill_drift_horizons(max_rows: int = 12000, concurrency: int = 8,
     import httpx
 
     from regime_platform.core.settings import settings
-    from regime_platform.sweep_orchestrator.price_fetcher import fetch_candles_for_symbols
+    from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
     from regime_platform.sweep_orchestrator.supabase_client import (
         _headers,
         _url,
         fetch_active_symbols,
     )
 
-    summary = {"candidates": 0, "patched": 0, "no_bars": 0, "errors": 0}
+    summary = {"candidates": 0, "patched": 0, "no_bars": 0, "errors": 0, "path_cols": 1}
     if not settings.SUPABASE_URL:
         return summary
     now = datetime.now(timezone.utc).replace(microsecond=0)
     lo = (now - timedelta(hours=max_age_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
     hi = (now - timedelta(hours=min_age_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    cols = "signal_id,symbol,signal,ts,entry_price," + ",".join(f"drift_{h}h_pct" for h in DRIFT_HORIZONS)
-    rows: list[dict[str, Any]] = []
-    try:
+    base = "signal_id,symbol,signal,ts,entry_price," + ",".join(f"drift_{h}h_pct" for h in DRIFT_HORIZONS)
+
+    async def _query(with_path: bool) -> list[dict[str, Any]]:
+        cols = base + ("," + ",".join(PATH_COLUMNS) if with_path else "")
+        null_filter = (("or", "(drift_48h_pct.is.null,mae_48h_pct.is.null)") if with_path
+                       else ("drift_48h_pct", "is.null"))
+        out: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
             off = 0
-            while len(rows) < max_rows:
+            while len(out) < max_rows:
                 resp = await client.get(_url("nt_signal_sim"), headers=_headers(), params=[
-                    ("select", cols), ("drift_48h_pct", "is.null"),
+                    ("select", cols), null_filter,
                     ("signal", "in.(buy,sell)"), ("source", "eq.sweep-light"),
                     ("ts", f"gte.{lo}"), ("ts", f"lte.{hi}"), ("order", "ts.asc"),
                     ("limit", "1000"), ("offset", str(off))])
                 resp.raise_for_status()
                 page = resp.json() or []
-                rows += page
+                out += page
                 if len(page) < 1000:
                     break
                 off += 1000
+        return out
+
+    try:
+        try:
+            rows = await _query(True)
+        except httpx.HTTPStatusError as exc:
+            # Migration 170 not applied yet (unknown column) → drift only.
+            if exc.response.status_code != 400:
+                raise
+            summary["path_cols"] = 0
+            rows = await _query(False)
     except Exception as exc:
         logger.warning("[kairos:drift-backfill] query failed: %s", exc)
         summary["errors"] += 1
@@ -344,8 +393,9 @@ async def backfill_drift_horizons(max_rows: int = 12000, concurrency: int = 8,
 
     tv = {s.get("symbol"): s.get("tradingview_symbol") for s in await fetch_active_symbols()}
     specs = [{"symbol": s, "tradingview_symbol": tv[s]} for s in sorted({r["symbol"] for r in rows}) if tv.get(s)]
+    ohlc: dict[str, list[dict[str, Any]]] = {}
     try:
-        closes, stamps = await fetch_candles_for_symbols(specs, n_bars=240, include_timestamps=True)
+        closes, stamps = await fetch_tradingview_batch(specs, hours=240, include_timestamps=True, ohlcv_out=ohlc)
     except Exception as exc:
         logger.warning("[kairos:drift-backfill] candle fetch failed: %s", exc)
         summary["errors"] += 1
@@ -367,8 +417,12 @@ async def backfill_drift_horizons(max_rows: int = 12000, concurrency: int = 8,
         if i is None:
             summary["no_bars"] += 1
             continue
+        is_buy = str(r.get("signal") or "buy").lower() not in ("sell", "short")
         post = cs[i:-1] if len(cs) - 1 > i else []          # drop the forming bar
-        vals = drift_fields(entry, post, str(r.get("signal") or "buy").lower() not in ("sell", "short"))
+        vals = drift_fields(entry, post, is_buy)
+        bars = ohlc.get(r["symbol"]) or []
+        if summary["path_cols"] and len(bars) == len(cs):
+            vals.update(path_excursions(entry, bars[i:-1] if len(bars) - 1 > i else [], is_buy))
         fill = {k: v for k, v in vals.items() if v is not None and r.get(k) is None}
         if fill:
             patches.append((r["signal_id"], fill))

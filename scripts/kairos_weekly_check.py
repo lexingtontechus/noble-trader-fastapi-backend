@@ -145,9 +145,17 @@ def _get(view: str, select: str, extra: dict | None = None) -> list[dict]:
 def load(week_end: datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
     cols = ("symbol,direction,hr,tier,suppress_reason,any_cooldown,failed_gates,cell,"
             "m1,m4,m12,m24,m48," + ",".join(FACTORS) + ",regime_age_h,age_left_censored,run_id")
+    path_cols = ",".join(f"{k}{h}" for k in ("mae", "mfe") for h in PATH_H)
     end = week_end.strftime("%Y-%m-%dT%H:%M:%SZ")
-    ep = pd.DataFrame(_get("v_kairos_signal_episodes", cols,
-                           {"hr": f"lt.{end}", "order": "symbol.asc,hr.asc,direction.asc"}))
+    q = {"hr": f"lt.{end}", "order": "symbol.asc,hr.asc,direction.asc"}
+    try:
+        ep = pd.DataFrame(_get("v_kairos_signal_episodes", cols + "," + path_cols, q))
+    except Exception as exc:  # noqa: BLE001 — migration 170 not applied yet
+        if "400" not in str(exc):
+            raise
+        ep = pd.DataFrame(_get("v_kairos_signal_episodes", cols, q))
+        for c in path_cols.split(","):
+            ep[c] = np.nan
     runs = pd.DataFrame(_get("v_kairos_regime_runs",
                              "symbol,run_id,cell,started_at,ended_at,length_h,exit_kind,"
                              "starts_after_gap,ended_by_gap,is_open",
@@ -157,7 +165,8 @@ def load(week_end: datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
         ep["d"] = np.where(ep["direction"] == "buy", 1.0, -1.0)
         ep["day"] = ep["hr"].dt.strftime("%Y-%m-%d")
         ep["clu"] = ep["symbol"] + "|" + ep["day"]
-        for c in ("m1", "m4", "m12", "m24", "m48", *FACTORS, "regime_age_h"):
+        for c in ("m1", "m4", "m12", "m24", "m48", *FACTORS, "regime_age_h",
+                  *(f"{k}{h}" for k in ("mae", "mfe") for h in PATH_H)):
             ep[c] = pd.to_numeric(ep[c], errors="coerce")
     if not runs.empty:
         for c in ("started_at", "ended_at"):
@@ -228,6 +237,80 @@ def circ_null(ep: pd.DataFrame, col: str, n_null: int, min_shift: int = 24) -> t
 
 def band(age: pd.Series) -> pd.Series:
     return pd.cut(age, [-0.01, 6, 12, 24, 48, np.inf], labels=["0–6h", "6–12h", "12–24h", "24–48h", "≥48h"])
+
+
+# ─── survival + path risk (2026-09-25, worklog/kairos/20260925_PATH_RISK_AND_REGIME_SURVIVAL.md) ──
+
+PATH_H = (4, 12, 24, 48)
+STOP_K = (1.0, 2.0, 3.0)     # fixed stop distances in sweep-ATR units (reporting grid, not a knob)
+
+
+def kaplan_meier(durations, events) -> pd.DataFrame:
+    """Product-limit estimator with Greenwood 95% CI (log-log). ``durations``
+    in hours (ties at the same t are handled together); ``events`` True =
+    the run ended by a regime change, False = right-censored (still open, or
+    ended by a data gap). Returns one row per distinct event time:
+    t, n_risk, d, S, lo, hi."""
+    t = np.asarray(durations, dtype=float)
+    e = np.asarray(events, dtype=bool)
+    ok = np.isfinite(t) & (t >= 0)
+    t, e = t[ok], e[ok]
+    out, S, gw = [], 1.0, 0.0
+    for u in np.unique(t[e]):
+        n = int((t >= u).sum())
+        d = int(((t == u) & e).sum())
+        if n == 0:
+            break
+        S *= 1.0 - d / n
+        gw += d / (n * (n - d)) if n > d else np.inf
+        if 0 < S < 1 and np.isfinite(gw):
+            se = np.sqrt(gw) / abs(np.log(S))
+            lo, hi = S ** np.exp(1.96 * se), S ** np.exp(-1.96 * se)
+        else:
+            lo = hi = S
+        out.append((u, n, d, S, lo, hi))
+    return pd.DataFrame(out, columns=["t", "n_risk", "d", "S", "lo", "hi"])
+
+
+def km_at(km: pd.DataFrame, x: float) -> float:
+    """S(x): the step function evaluated at x (1.0 before the first event;
+    NaN past the last observed time when the curve hasn't reached 0)."""
+    if km.empty:
+        return np.nan
+    past = km[km.t <= x]
+    return 1.0 if past.empty else float(past.S.iloc[-1])
+
+
+def km_median(km: pd.DataFrame) -> float:
+    hit = km[km.S <= 0.5]
+    return float(hit.t.iloc[0]) if len(hit) else np.nan
+
+
+def conditional_survival(km: pd.DataFrame, age: float, delta: float) -> float:
+    """P(run still alive at age+Δ | alive at age) = S(age+Δ)/S(age). The
+    'remaining regime clock' a later signal (S2) in the same run inherits."""
+    s0 = km_at(km, age)
+    s1 = km_at(km, age + delta)
+    return s1 / s0 if s0 and np.isfinite(s0) and np.isfinite(s1) and s0 > 0 else np.nan
+
+
+def geometric_survival(durations, events, x: float) -> float:
+    """Memoryless reference: constant hazard λ = events / hours at risk."""
+    t = np.asarray(durations, dtype=float)
+    e = np.asarray(events, dtype=bool)
+    at = np.nansum(t)
+    return float(np.exp(-(e.sum() / at) * x)) if at > 0 else np.nan
+
+
+def stop_truncated(m: np.ndarray, mae: np.ndarray, k: float) -> np.ndarray:
+    """Endpoint drift with a k-ATR stop and no target: −k if the adverse
+    excursion reached k before h, else m_h. NaN where either is missing.
+    (Intrabar order and gaps are ignored — a stop that gaps through k reads
+    as −k, so this is optimistic by the gap size.)"""
+    m, mae = np.asarray(m, dtype=float), np.asarray(mae, dtype=float)
+    out = np.where(mae >= k, -k, m)
+    out[~(np.isfinite(m) & np.isfinite(mae))] = np.nan
+    return out
 
 
 # ─── report ────────────────────────────────────────────────────────────
@@ -323,6 +406,15 @@ def main() -> int:
         flags.append("kairos-daily heartbeat coverage")
     n_rec = int((ep.tier_src == "recon").sum())
     P(f"| pre-168 episodes with reconstructed tier | {n_rec} | – | – |")
+    m24c = mats["m24"]
+    pcov = float(m24c.mae24.notna().mean()) if len(m24c) else np.nan
+    if not (np.isfinite(pcov) and pcov > 0):
+        P("| path `mae24` on matured episodes | – | ≥ 0.95 | ⏳ migration 170 / backfill pending |")
+    else:
+        ok = pcov >= MIN_COVER
+        P(f"| path `mae24` on matured episodes (n {len(m24c)}) | {fmt(pcov, 3, False)} | ≥ 0.95 | {'✅' if ok else '❌'} |")
+        if not ok:
+            flags.append("path coverage mae24")
     if not runs.empty:
         done = runs[~runs.is_open.astype(bool) & ~runs.ended_by_gap.astype(bool)]
         per_cell = done.groupby(["symbol", "cell"]).size()
@@ -471,6 +563,74 @@ def main() -> int:
             P(f"| {lab} | {e} | {at} | {fmt(hz, 3, False)} |")
         ek = r[r.event].exit_kind.value_counts(normalize=True)
         P("\nExit compass (completed runs): " + " · ".join(f"{k} {v:.0%}" for k, v in ek.items()))
+        # Kaplan-Meier (non-parametric, censoring-aware) vs the memoryless
+        # geometric reference, and the conditional "remaining regime clock".
+        km = kaplan_meier(r.length_h.to_numpy(), ev)
+        if len(km):
+            P(f"\nKaplan-Meier survival of regime runs (n {len(r)}, {int(ev.sum())} exits, "
+              f"{int((~ev).sum())} censored; median {fmt(km_median(km), 1, False)}h):\n")
+            P("| Age x | S(x) KM [95% CI] | S(x) geometric (memoryless) | at risk |\n|---|---|---|---|")
+            for x in (2, 6, 12, 24, 48):
+                row = km[km.t <= x]
+                lo_, hi_ = (row.lo.iloc[-1], row.hi.iloc[-1]) if len(row) else (1.0, 1.0)
+                n_at = int((r.length_h.to_numpy() >= x).sum())
+                P(f"| {x}h | {fmt(km_at(km, x), 3, False)} [{fmt(lo_, 3, False)}, {fmt(hi_, 3, False)}] | "
+                  f"{fmt(geometric_survival(r.length_h.to_numpy(), ev, x), 3, False)} | {n_at} |")
+            P("\nRemaining regime clock — P(same run still alive Δ later | a signal fires at run age a) "
+              "(KM; '–' = beyond observed run lengths):\n")
+            P("| Signal at age a | Δ 4h | Δ 12h | Δ 24h | Δ 48h |\n|---|---|---|---|---|")
+            for a0 in (0, 2, 6, 12, 24):
+                P(f"| {a0}h | " + " | ".join(fmt(conditional_survival(km, a0, dd), 3, False)
+                                           for dd in (4, 12, 24, 48)) + " |")
+    P("")
+
+    # E2. fixed-horizon path risk (geometry-free MAE/MFE, migration 170) ---
+    P("## E2. Path risk: fixed-horizon adverse excursion (all signals, matured per horizon)\n")
+    P("MAE_h / MFE_h = worst / best move against / with the signal over bars 1..h, sweep-ATR units, "
+      "walked the full h bars (independent of TP/SL). `m_h | stop k` = endpoint drift with a k-ATR "
+      "stop and no target (stopped → −k). Reporting grid only — no knob reads it.\n")
+    have_path = ep_all.mae24.notna().any()
+    if not have_path:
+        P("⏳ No path columns yet (migration 170 + the hourly backfill).")
+    else:
+        P("| h | n | median MAE | median MFE | P(MAE ≥ 1) | P(MAE ≥ 2) | P(MAE ≥ 3) | m_h mean / median | m_h \\| stop 2 mean [95% CI] / median | ghost share† |")
+        P("|---|---|---|---|---|---|---|---|---|---|")
+        for h in PATH_H:
+            g = ep_all[mature_mask(ep_all.hr, h, now)]
+            g = g[g[f"mae{h}"].notna() & g[f"m{h}"].notna()]
+            if len(g) < 5:
+                P(f"| {h}h | {len(g)} | – | – | – | – | – | – | – | – |")
+                continue
+            mae, m = g[f"mae{h}"].to_numpy(), g[f"m{h}"].to_numpy()
+            stv = stop_truncated(m, mae, 2.0)
+            st = boot_mean(stv, g.clu.to_numpy(), a.n_boot)
+            pos = m > 0
+            ghost = float((mae[pos] >= 2.0).mean()) if pos.any() else np.nan
+            P(f"| {h}h | {len(g)} | {fmt(np.median(mae), 2, False)} | {fmt(np.median(g[f'mfe{h}']), 2, False)} | "
+              + " | ".join(fmt(float((mae >= k).mean()), 3, False) for k in STOP_K)
+              + f" | {fmt(float(np.mean(m)))} / {fmt(float(np.median(m)))} | {fmt(st[0])} [{fmt(st[1])}, {fmt(st[2])}] / "
+                f"{fmt(float(np.nanmedian(stv)))} | {fmt(ghost, 3, False)} |")
+        P("\n† share of episodes with m_h > 0 whose MAE_h reached 2 ATR first (the 'ghost edge' case). "
+          "Read medians first: means are dominated by a few large-ATR moves, and the stop caps exactly those, "
+          "so a stopped mean above the endpoint mean is tail-capping, not edge. Both the stop fill (−k, no gap) "
+          "and the MAE window (starts at the first full bar after entry) are optimistic.\n")
+        g = ep_all[mature_mask(ep_all.hr, 24, now) & ep_all.mae24.notna() & ep_all.m24.notna()]
+        P("By tier (h = 24):\n")
+        P("| Tier | n | P(MAE₂₄ ≥ 1) | P(MAE₂₄ ≥ 2) | m₂₄ | m₂₄ \\| stop 2 [95% CI] |\n|---|---|---|---|---|---|")
+        for t in ("qualified", "suppressed", "gate_fail"):
+            gt = g[g.tier == t]
+            if len(gt) < 5:
+                P(f"| {t} | {len(gt)} | – | – | – | – |")
+                continue
+            st = boot_mean(stop_truncated(gt.m24.to_numpy(), gt.mae24.to_numpy(), 2.0), gt.clu.to_numpy(), a.n_boot)
+            P(f"| {t} | {len(gt)} | {fmt(float((gt.mae24 >= 1).mean()), 3, False)} | "
+              f"{fmt(float((gt.mae24 >= 2).mean()), 3, False)} | {fmt(float(gt.m24.mean()))} | "
+              f"{fmt(st[0])} [{fmt(st[1])}, {fmt(st[2])}] |")
+        viol = int(((g.m24 < -g.mae24 - 1e-6) | (g.m24 > g.mfe24 + 1e-6)).sum())
+        P(f"\nInvariant m₂₄ ∈ [−MAE₂₄, +MFE₂₄]: {viol} violations of {len(g)}"
+          + (" ❌" if viol else " ✅"))
+        if viol:
+            flags.append(f"path coverage invariant: {viol} m24 outside excursion band")
     P("")
 
     # F. factors (V7 preview) --------------------------------------------

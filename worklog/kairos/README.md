@@ -8,6 +8,7 @@ Kairos v3 (geometry-free edge-state research) output. Spec:
 | `scopes/` | Kairos scopes: edge-state (09-23), regime-cell persistence (09-23), V3 (09-24) |
 | `reports/YYYYMMDD_{Wn,A<mmddHH>}.{md,json}` | G2 looks — `scripts/kairos_weekly_check.py` (weekly, snapped to Thu 08:00) or `--accel` (rolling 48h, daily). `20260924_W0_partial` is the run first mislabelled W1 |
 | `20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md` | Restart-safe regime state, hourly drift backfill + heartbeat, accelerated G2 |
+| `20260925_PATH_RISK_AND_REGIME_SURVIVAL.md` | Fixed-horizon MAE/MFE (migration 170, report §E2), Kaplan-Meier survival + remaining regime clock (§E), parked S2/TimesFM-3 covariate plan |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
