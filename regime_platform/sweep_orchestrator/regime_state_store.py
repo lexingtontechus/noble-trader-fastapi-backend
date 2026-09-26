@@ -70,6 +70,7 @@ def snapshot(orch: Any, now: float | None = None) -> dict[str, Any]:
             sym: d.to_dict() for sym, d in getattr(orch, "_regime_debouncers", {}).items()
         },
         "kairos_runs": orch._kairos_runs.to_dict() if getattr(orch, "_kairos_runs", None) else {},
+        "kairos_rank": orch._kairos_rank.to_dict() if getattr(orch, "_kairos_rank", None) else {},
         "markov_ema": _clean_float_map(getattr(orch, "_markov_ema", {})),
         "regime_trend_ema": {
             sym: _clean_float_map(m) for sym, m in getattr(orch, "_regime_trend_ema", {}).items()
@@ -127,6 +128,11 @@ def restore(orch: Any, *, max_age_hours: float, n_confirm: int,
             for sym, d in (data.get("debouncers") or {}).items()
         })
         orch._kairos_runs = KairosRunTracker.from_dict(data.get("kairos_runs") or {})
+        try:
+            from regime_platform.sweep_orchestrator.kairos_rank import RankScoreTracker
+            orch._kairos_rank = RankScoreTracker.from_dict(data.get("kairos_rank") or {})
+        except Exception:
+            pass
         orch._markov_ema.update(_clean_float_map(data.get("markov_ema")))
         orch._regime_trend_ema.update({
             sym: _clean_float_map(m) for sym, m in (data.get("regime_trend_ema") or {}).items()

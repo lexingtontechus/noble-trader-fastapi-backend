@@ -273,6 +273,8 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
     # Kairos G2 (migration 168): qualified | suppressed | gate_fail
     "gate_outcome", "suppress_reason", "failed_gates",
+    # Kairos rank shadow (migration 172): composite rank_score + would-publish
+    "kairos_rank_score", "kairos_rank_gate_shadow",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -379,6 +381,25 @@ async def _insert_row(
             return False
         await asyncio.sleep(1.0)
     return False
+
+
+async def fetch_recent_decided_signals(limit: int = 500) -> list[dict[str, Any]]:
+    """Recent decided TP/SL light-sweep rows for RankScoreTracker ingest.
+
+    Worklog/kairos/20260926_DIRECTIONAL_EDGE_PWIN_RANKING_AND_TRANSITIONS.md §9.
+    Returns [] on any failure (shadow bookkeeping must never break the job).
+    """
+    return await fetch_all_rows(
+        "nt_signal_sim",
+        "symbol,regime,outcome,ts,exit_ts",
+        filters={
+            "source": "eq.sweep-light",
+            "signal": "in.(buy,sell)",
+            "outcome": "in.(tp_hit,sl_hit)",
+        },
+        order="exit_ts.desc",
+        max_rows=max(1, int(limit)),
+    )
 
 
 async def fetch_all_rows(
@@ -584,6 +605,7 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
 _KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
     "gate_outcome", "suppress_reason", "failed_gates",
+    "kairos_rank_score", "kairos_rank_gate_shadow",
 )
 
 

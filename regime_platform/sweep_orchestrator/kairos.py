@@ -46,6 +46,7 @@ DRIFT_HORIZONS: tuple[int, ...] = (1, 4, 12, 24, 48)
 KAIROS_CAPTURE_COLUMNS: tuple[str, ...] = (
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
 )
+KAIROS_RANK_COLUMNS: tuple[str, ...] = ("kairos_rank_score", "kairos_rank_gate_shadow")
 KAIROS_DRIFT_COLUMNS: tuple[str, ...] = ("drift_12h_pct", "drift_48h_pct")
 
 

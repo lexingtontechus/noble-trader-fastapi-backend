@@ -305,6 +305,21 @@ Contrast: `p_win` IC ≤ 0 everywhere; top-vs-bot tercile of p_win is flat or in
 
 ---
 
+## 10. Shadow stamp build (2026-09-26)
+
+| Piece | What |
+|---|---|
+| Migration **172** | `nt_signal_sim.kairos_rank_score` (double), `kairos_rank_gate_shadow` (boolean) — additive, nullable |
+| `kairos_rank.RankScoreTracker` | Trailing decided outcomes + cell hit-rates + event-time (τ, type). `score()` uses prior state only; `to_dict`/`from_dict` restart-safe |
+| `kairos_rank.ingest_decided_rows` | Feeds TP/SL rows (kairos-daily) |
+| Orchestrator | `note_regime` on every light tick; `_kairos_rank_stamp` fail-open at capture; never read by gates |
+| `supabase_client` | Allowlist + `fetch_recent_decided_signals` for daily ingest |
+| `regime_state_store` | Persists `_kairos_rank` with debouncers/run tracker |
+
+Stamp is written only when `kairos_mode != off` and the tracker has trailing evidence (no invented priors). Schema-lag retries drop these columns like other Kairos stamps. **Still shadow:** `kairos_rank_gate_shadow` is a would-publish bit, not a gate.
+
+---
+
 ## 7. Decision summary
 
 1. **Keep the transition thesis**, drop *duration* as the state variable. Study **events**: fresh vs deep, typed flips, surprise, cluster agreement.  

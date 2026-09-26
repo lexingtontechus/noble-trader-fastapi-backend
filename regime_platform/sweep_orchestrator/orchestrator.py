@@ -952,6 +952,8 @@ def _build_signal_sim_payload(
     gate_outcome: str | None = None,
     suppress_reason: str | None = None,
     failed_gates: list[str] | None = None,
+    kairos_rank_score: float | None = None,
+    kairos_rank_gate_shadow: bool | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1093,6 +1095,12 @@ def _build_signal_sim_payload(
         payload["suppress_reason"] = suppress_reason
     if failed_gates:
         payload["failed_gates"] = ",".join(failed_gates)
+    # Kairos rank shadow (migration 172): composite score + would-publish.
+    # Measurement only — never read back into qualification.
+    if kairos_rank_score is not None:
+        payload["kairos_rank_score"] = round(float(kairos_rank_score), 4)
+    if kairos_rank_gate_shadow is not None:
+        payload["kairos_rank_gate_shadow"] = bool(kairos_rank_gate_shadow)
     return payload
 
 
@@ -1297,6 +1305,8 @@ class SweepOrchestrator(HeavySweepMixin):
         # lifecycle as the debouncers above.
         from regime_platform.sweep_orchestrator.kairos import KairosRunTracker
         self._kairos_runs = KairosRunTracker()
+        from regime_platform.sweep_orchestrator.kairos_rank import RankScoreTracker
+        self._kairos_rank = RankScoreTracker()
         self._kairos_ohlcv: dict[str, list[dict[str, Any]]] = {}
         # symbol → (run_age_hours, atr_at_run_start) from this tick's update
         self._kairos_run_state: dict[str, tuple[float | None, float | None]] = {}
@@ -2405,6 +2415,32 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[macro-regime] failed: %s", exc)
 
+    def _kairos_rank_stamp(
+        self, symbol: str, regime_label: str | None, source: str,
+    ) -> tuple[float | None, bool | None]:
+        """Shadow composite rank_score + would-publish (migration 172).
+
+        Fail-open: any problem → (None, None). Never gates the signal."""
+        if source != "sweep-light":
+            return None, None
+        try:
+            from regime_platform.core.feature_flags import get_kairos_mode
+            if get_kairos_mode() == "off":
+                return None, None
+            tracker = getattr(self, "_kairos_rank", None)
+            if tracker is None:
+                return None, None
+            from regime_platform.sweep_orchestrator.kairos import regime_cell
+            from regime_platform.sweep_orchestrator.kairos_rank import shadow_entry_gate
+            cell = regime_cell(regime_label)
+            score = tracker.score(symbol, cell, now_ts=time.time())
+            if score is None:
+                return None, None
+            return round(float(score), 4), bool(shadow_entry_gate(score, 0.55))
+        except Exception as exc:
+            logger.debug("[kairos] rank stamp %s failed: %s", symbol, exc)
+            return None, None
+
     def _kairos_stamp(
         self, symbol: str, regime_label: str | None, atr: float | None, source: str,
     ) -> dict[str, float | None] | None:
@@ -2462,7 +2498,19 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             bf = {"error": type(exc).__name__}
             logger.warning("[kairos:daily] drift backfill failed: %s", exc)
-        await write_job_heartbeat("kairos_daily_job", {"drift_backfill": bf, "calendar": cal})
+        rank_ing = {"skipped": "off"}
+        if get_kairos_mode() != "off" and getattr(self, "_kairos_rank", None) is not None:
+            try:
+                from regime_platform.sweep_orchestrator.kairos_rank import ingest_decided_rows
+                from regime_platform.sweep_orchestrator.supabase_client import fetch_recent_decided_signals
+                rows = await fetch_recent_decided_signals(limit=500)
+                n = ingest_decided_rows(self._kairos_rank, rows)
+                rank_ing = {"ingested": n}
+                logger.info("[kairos:daily] rank outcomes %s", rank_ing)
+            except Exception as exc:
+                rank_ing = {"error": type(exc).__name__}
+                logger.debug("[kairos:daily] rank ingest failed: %s", exc)
+        await write_job_heartbeat("kairos_daily_job", {"drift_backfill": bf, "calendar": cal, "rank_ingest": rank_ing})
 
     def _get_resolver_lock(self) -> asyncio.Lock:
         """The shared writing-resolver lock (created lazily if __init__
@@ -3484,6 +3532,11 @@ class SweepOrchestrator(HeavySweepMixin):
                 self._kairos_run_state[symbol] = self._kairos_runs.update(
                     symbol, regime_label, time.time(), atr,
                 )
+                # rank_score event-time bookkeeping (migration 172, shadow)
+                from regime_platform.sweep_orchestrator.kairos import regime_cell
+                _cell = regime_cell(regime_label)
+                if _cell and getattr(self, "_kairos_rank", None) is not None:
+                    self._kairos_rank.note_regime(symbol, _cell, time.time())
             except Exception as _k_exc:
                 logger.debug("[kairos] run tracker %s: %s", symbol, _k_exc)
 
@@ -4779,6 +4832,8 @@ class SweepOrchestrator(HeavySweepMixin):
                 ):
                     _failed_gates = sorted(set(_failed_gates) | {"p_win_bracket_ok"})
 
+                _rank_score, _rank_gate = self._kairos_rank_stamp(symbol, regime_label, source)
+
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
                     venue=venue_name,
@@ -4823,6 +4878,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     raw_p_regime=_sim_raw_p_regime,
                     gated_p_regime=_sim_gated_p_regime,
                     kairos=self._kairos_stamp(symbol, regime_label, atr, source),
+                    kairos_rank_score=_rank_score,
+                    kairos_rank_gate_shadow=_rank_gate,
                     gate_outcome=(
                         "qualified" if qualified
                         else "suppressed" if _gates_pass

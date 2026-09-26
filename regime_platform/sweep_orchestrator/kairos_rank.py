@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from regime_platform.sweep_orchestrator.kairos_quant import no_skill_line
 
@@ -377,3 +377,180 @@ def delta_d_bootstrap(
         b = rng.choice(r, size=len(r), replace=True)
         stats_.append(float(a.mean() - b.mean()))
     return (point, float(np.percentile(stats_, 2.5)), float(np.percentile(stats_, 97.5)))
+
+
+# ─── Live shadow tracker (migration 172) ─────────────────────────────────
+
+
+class RankScoreTracker:
+    """Trailing decided outcomes + regime bookkeeping for the shadow stamp.
+
+    ``score()`` uses only state from *before* the current tick (no lookahead).
+    ``observe_outcome()`` is called later when TP/SL is known (resolver /
+    kairos-daily). ``note_regime()`` feeds event-time (τ, transition type)
+    from the live label stream.
+
+    Restart-safe via to_dict/from_dict (regime_state_store).
+    """
+
+    def __init__(self, max_recent: int = 200) -> None:
+        self.max_recent = int(max_recent)
+        self._recent: dict[str, list[tuple[float, bool]]] = {}
+        self._cell: dict[tuple[str, str], list[float]] = {}
+        self._last_cell: dict[str, str] = {}
+        self._last_change_ts: dict[str, float] = {}
+        self._last_ttype: dict[str, str] = {}
+
+    def note_regime(self, symbol: str, cell: str | None, now_ts: float) -> tuple[str | None, float | None]:
+        """Record the current regime cell. Returns (transition_type, tau_h)."""
+        if not symbol or not cell:
+            return None, None
+        prev = self._last_cell.get(symbol)
+        now_ts = float(now_ts)
+        if prev is None:
+            self._last_cell[symbol] = cell
+            self._last_change_ts[symbol] = now_ts
+            return None, 0.0
+        if prev != cell:
+            prev_vol, prev_dir = (prev.split("|", 1) + [None])[:2]
+            new_vol, new_dir = (cell.split("|", 1) + [None])[:2]
+            ttype = transition_type(prev_vol, prev_dir, new_vol, new_dir)
+            self._last_cell[symbol] = cell
+            self._last_change_ts[symbol] = now_ts
+            if ttype:
+                self._last_ttype[symbol] = ttype
+            return ttype, 0.0
+        t0 = self._last_change_ts.get(symbol, now_ts)
+        return self._last_ttype.get(symbol), (now_ts - t0) / 3600.0
+
+    def observe_outcome(self, symbol: str, cell: str | None, tp_first: bool, ts: float) -> None:
+        """Ingest a decided outcome (TP/SL). Expired outcomes are not passed in."""
+        if not symbol:
+            return
+        ts = float(ts)
+        rec = self._recent.setdefault(symbol, [])
+        rec.append((ts, bool(tp_first)))
+        if len(rec) > self.max_recent:
+            del rec[: len(rec) - self.max_recent]
+        if cell:
+            self._cell.setdefault((symbol, cell), []).append(1.0 if tp_first else 0.0)
+
+    def _recent_tp(self, symbol: str, now_ts: float, half_life_h: float = 3.0) -> float | None:
+        rec = self._recent.get(symbol) or []
+        wsum = tsum = 0.0
+        for ts, tp in rec:
+            age_h = max(0.0, (float(now_ts) - ts) / 3600.0)
+            w = 0.5 ** (age_h / max(half_life_h, 1e-9))
+            wsum += w
+            tsum += w * (1.0 if tp else 0.0)
+        if wsum <= 0:
+            return None
+        return tsum / wsum
+
+    def _cell_p(self, symbol: str, cell: str | None, k: float = 10.0) -> float | None:
+        if not cell:
+            return None
+        vals = self._cell.get((symbol, cell)) or []
+        if not vals:
+            # no observations in this cell yet — do not invent a prior
+            return None
+        all_vals = [v for key, vs in self._cell.items() if key[0] == symbol for v in vs]
+        if not all_vals:
+            all_vals = [v for vs in self._cell.values() for v in vs]
+        global_mean = statistics.fmean(all_vals) if all_vals else 0.3
+        return shrink_cell_mean(vals, global_mean, k=k)
+
+    def score(
+        self,
+        symbol: str,
+        cell: str | None,
+        *,
+        transition: str | None = None,
+        tau_h: float | None = None,
+        now_ts: float | None = None,
+        weights: dict[str, float] | None = None,
+    ) -> float | None:
+        """Composite rank score from trailing state. None if no trailing evidence."""
+        if not symbol:
+            return None
+        now_ts = float(now_ts if now_ts is not None else 0.0)
+        if tau_h is None and symbol in self._last_change_ts and now_ts > 0:
+            tau_h = (now_ts - self._last_change_ts[symbol]) / 3600.0
+        if transition is None:
+            transition = self._last_ttype.get(symbol)
+        ewin = event_window(tau_h)
+        rec = self._recent_tp(symbol, now_ts) if now_ts > 0 else None
+        cell_p = self._cell_p(symbol, cell)
+        if rec is None and cell_p is None:
+            return None
+        return rank_score(
+            event_window=ewin,
+            transition=transition,
+            recent_tp_rate=rec,
+            cell_p=cell_p,
+            weights=weights,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "recent": {s: [[t, bool(tp)] for t, tp in v] for s, v in self._recent.items()},
+            "cell": {f"{s}|{c}": list(vs) for (s, c), vs in self._cell.items()},
+            "last_cell": dict(self._last_cell),
+            "last_change_ts": dict(self._last_change_ts),
+            "last_ttype": dict(self._last_ttype),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "RankScoreTracker":
+        obj = cls()
+        d = d or {}
+        for s, rows in (d.get("recent") or {}).items():
+            try:
+                obj._recent[str(s)] = [(float(t), bool(tp)) for t, tp in rows]
+            except (TypeError, ValueError):
+                continue
+        for key, vs in (d.get("cell") or {}).items():
+            if "|" not in str(key):
+                continue
+            sym, cell = str(key).split("|", 1)
+            try:
+                obj._cell[(sym, cell)] = [float(v) for v in vs]
+            except (TypeError, ValueError):
+                continue
+        obj._last_cell = {str(k): str(v) for k, v in (d.get("last_cell") or {}).items()}
+        obj._last_ttype = {str(k): str(v) for k, v in (d.get("last_ttype") or {}).items()}
+        try:
+            obj._last_change_ts = {str(k): float(v) for k, v in (d.get("last_change_ts") or {}).items()}
+        except (TypeError, ValueError):
+            obj._last_change_ts = {}
+        return obj
+
+
+def ingest_decided_rows(tracker: RankScoreTracker, rows: Sequence[dict[str, Any]]) -> int:
+    """Feed decided TP/SL rows into the tracker (kairos-daily).
+
+    Each row needs: symbol, regime, outcome, ts (or exit_ts). Returns n ingested.
+    """
+    from regime_platform.sweep_orchestrator.kairos import regime_cell
+
+    n = 0
+    for r in rows or []:
+        outcome = r.get("outcome")
+        if outcome not in ("tp_hit", "sl_hit"):
+            continue
+        sym = r.get("symbol")
+        if not sym:
+            continue
+        cell = regime_cell(r.get("regime")) or r.get("regime")
+        ts = r.get("exit_ts") or r.get("ts") or r.get("resolved_at")
+        try:
+            # PostgREST may return ISO strings
+            if isinstance(ts, str):
+                from datetime import datetime, timezone
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            ts_f = float(ts)
+        except (TypeError, ValueError):
+            continue
+        tracker.observe_outcome(sym, str(cell) if cell else None, outcome == "tp_hit", ts_f)
+        n += 1
+    return n

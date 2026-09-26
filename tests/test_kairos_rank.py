@@ -108,3 +108,44 @@ class TestRankScore:
         dd = R.delta_d([0.1, 0.1], [-0.1, -0.1])
         assert dd == pytest.approx(0.2)
         assert R.delta_d([], [1.0]) is None
+
+
+class TestRankScoreTracker:
+    def test_note_regime_event_time(self):
+        t = R.RankScoreTracker()
+        typ, tau = t.note_regime("AAPL", "low_vol|bull", 0.0)
+        assert tau == 0.0
+        typ, tau = t.note_regime("AAPL", "low_vol|bull", 3600.0)
+        assert typ is None
+        assert tau == pytest.approx(1.0)
+        typ, tau = t.note_regime("AAPL", "low_vol|bear", 7200.0)
+        assert typ == "dir_flip"
+        assert tau == 0.0
+
+    def test_score_uses_trailing_outcomes_only(self):
+        t = R.RankScoreTracker()
+        t.note_regime("AAPL", "low_vol|bull", 0.0)
+        # no outcomes yet → None
+        assert t.score("AAPL", "low_vol|bull", now_ts=100.0) is None
+        t.observe_outcome("AAPL", "low_vol|bull", True, 50.0)
+        t.observe_outcome("AAPL", "low_vol|bull", True, 80.0)
+        s = t.score("AAPL", "low_vol|bull", now_ts=100.0)
+        assert s is not None and 0.0 < s < 1.0
+
+    def test_roundtrip(self):
+        t = R.RankScoreTracker()
+        t.note_regime("XAUUSD", "high_vol|bear", 10.0)
+        t.observe_outcome("XAUUSD", "high_vol|bear", False, 20.0)
+        d = t.to_dict()
+        t2 = R.RankScoreTracker.from_dict(d)
+        assert t2._last_cell["XAUUSD"] == "high_vol|bear"
+        assert t2._recent["XAUUSD"][0][1] is False
+
+    def test_ingest_decided_rows(self):
+        t = R.RankScoreTracker()
+        n = R.ingest_decided_rows(t, [
+            {"symbol": "AAPL", "regime": "low_vol_bull", "outcome": "tp_hit", "ts": "2026-09-26T12:00:00Z"},
+            {"symbol": "AAPL", "regime": "low_vol_bull", "outcome": "expired", "ts": "2026-09-26T13:00:00Z"},
+        ])
+        assert n == 1
+        assert len(t._recent["AAPL"]) == 1
