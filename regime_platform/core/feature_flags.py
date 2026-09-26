@@ -707,7 +707,7 @@ def get_calibration_evidence_pool_mode() -> str:
     shadow: the all-tier bias still drives enforcement; the tier-filtered
     bias (``calibration_evidence_tiers``) is computed and logged beside it.
     live: the tier-filtered bias drives enforcement (all-tier fallback when
-    the pool is too thin for a verdict). Unknown values fall back to shadow."""
+    the pool bias is INSUFFICIENT). Unknown values fall back to shadow."""
     v = str(_load().get(
         "calibration_evidence_pool_mode", _DEFAULTS["calibration_evidence_pool_mode"],
     )).lower()

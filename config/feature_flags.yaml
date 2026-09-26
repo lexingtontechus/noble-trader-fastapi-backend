@@ -756,7 +756,7 @@ calibration_resolve_hourly_mode: shadow
 # (migration 171, a view: nt_calibration_records ⋈ nt_signal_sim on
 # signal_id). shadow: all-tier bias still enforces; the pooled bias is
 # computed and logged as [eod:pool]. live: the pooled bias enforces, with
-# an all-tier fallback when the pool is too thin for a verdict.
+# an all-tier fallback when the pool bias is INSUFFICIENT.
 calibration_evidence_pool_mode: shadow
 calibration_evidence_tiers: [qualified, suppressed]
 

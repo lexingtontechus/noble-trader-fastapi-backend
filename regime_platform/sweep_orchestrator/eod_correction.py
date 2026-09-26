@@ -510,7 +510,7 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             # shadow: also compute the bias from the configured tiers only
             # (default qualified + suppressed), log the pair, keep `cal`.
             # live:   the pooled bias drives enforcement; when the pool is
-            #         too thin for a verdict, fall back to all tiers (logged)
+            #         INSUFFICIENT (too few decided records), fall back to all tiers (logged)
             #         so a symbol never loses enforcement just from the switch.
             cal = await _apply_evidence_pool(
                 symbol, venue, cal, raw_bias_mode, summary,

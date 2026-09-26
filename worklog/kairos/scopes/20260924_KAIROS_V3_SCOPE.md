@@ -796,16 +796,16 @@ tested.
 - **Edge** = the *accuracy* of a signal fired from its state (quadrant): regime, direction and
   strength correctly identified. It is not raw win rate.
 - **Accuracy is measured against the no-skill line.** For a bracket with distances TP and SL,
-  P(TP first | resolved) under no skill is SL / (TP + SL). An SL hit can mean a wrong direction
+  P(TP first | decided) under no skill is SL / (TP + SL). An SL hit can mean a wrong direction
   *or* a stop inside normal noise, so accuracy excess = 1{TP first} − SL/(TP+SL). Raw SL/TP
   counts are never compared across geometries (e.g. the tiered-ATR flip).
-- **Calibration error** at a signal = predicted p_win − 1{TP first}, on resolved signals only.
+- **Calibration error** at a signal = predicted p_win − 1{TP first}, on decided signals only (TP or SL; expired excluded).
   This is the sign convention of `eod_correction` bias: positive = overconfident.
 - **The question:** when S1 (or its children, i.e. the same symbol's later suppressed and
   gate-fail signals) is over- or underconfident, how much of that error carries into **S2 = the
   same symbol's next qualified signal**, and how fast does it decay?
 - **Information set:** only outcomes determinable before S2 fires (`exit_ts < ts_S2`). S1 itself
-  usually has not resolved by then (median about 26h).
+  usually has not closed by then (median about 26h).
 - **Overlap trap:** rolling-window states share evidence. Persistence counts only in excess of
   a circular-shift null (targets rotated against the error history within symbol).
 - **Expiry** is not dropped. It is a non-result, excluded from error, and a **core open issue**
@@ -831,7 +831,7 @@ tested.
 **Test order:**
 
 1. **Persistence and decay.** Correlation of S2's calibration error with the mean error of prior
-   resolved signals, by evidence age, against the null. Output: persistence by lag and a
+   decided signals, by evidence age, against the null. Output: persistence by lag and a
    half-life.
 2. **State change.** Does carryover survive a quadrant change between the evidence and S2?
 3. **Covariates.** Do factors (§3.8 / V7 families, events, volatility) change the decay rate?
@@ -890,7 +890,7 @@ flat-7d proxy, not the production rule. The production rule is scored in §14.2 
   (dynamic ATR).
 
 **Reading:**
-- Kairos can partly predict S2's calibration, but only from children resolved in the last few
+- Kairos can partly predict S2's calibration, but only from children decided in the last few
   hours.
 - The carryover is fast-decaying and direction-specific: recent same-direction outcomes, which
   looks like short-term market behaviour (volatility and follow-through).
@@ -943,7 +943,7 @@ Same data and targets as step 1 (446 qualified TP/SL S2 signals). 1,000 circular
 |---|---|---|---|---|---|
 | evidence fired from S2's regime | +0.44 (n 136) | +0.18 (n 285) | +0.26 | 0.28 | 0.02 |
 | same signal direction | +0.28 (256) | +0.10 (221) | +0.18 | 0.28 | 0.04 |
-| symbol regime unchanged since the evidence resolved | +0.55 (171) | +0.25 (257) | +0.30 | 0.10 | < 0.001 |
+| symbol regime unchanged since the evidence was decided | +0.55 (171) | +0.25 (257) | +0.30 | 0.10 | < 0.001 |
 | same, decayed h = 3h | +0.56 (171) | +0.26 (257) | +0.30 | 0.09 | < 0.001 |
 
 - Carryover is **roughly twice as strong while the symbol stays in the same regime**, and
@@ -968,14 +968,14 @@ Same data and targets as step 1 (446 qualified TP/SL S2 signals). 1,000 circular
 2. **Half-life:** a signal-level 3h-half-life bias computed in shadow next to the production
    bias.
    - Logged per sweep.
-   - Scored on S2 as it resolves.
+   - Scored on S2 once it is decided.
    - Moves `EOD_BIAS_*` knobs into `config/feature_flags.yaml` when it goes live.
 3. **State conditioning** (weight same-regime evidence higher): only if the §14.2 B gap reaches
    significance on the post-flip data.
 
 **Geometry caveat:**
 - The hybrid ATR promote went live 2026-09-25 (2af37b8), and the first live heavy is 09-26.
-- Tight brackets resolve in hours, which changes both evidence volume and latency.
+- Tight brackets decide in hours, which changes both evidence volume and latency.
 - Re-run steps 1–2 on post-flip data before tuning any lever above.
 
 ### 14.3 Evidence-tier split (2026-09-26, `scripts/kairos_calibration_tier_split.py`, report `reports/20260926_calibration_tier_split.md`)
@@ -1024,3 +1024,89 @@ Caveats: 90–104 targets over one month, and FX majors are mostly absent (quali
 q+s pool are 97% reconstructed. These are the same S2 targets used to pick the pool, so the re-run on post-ATR-flip
 data is the real test. `nt_calibration_records` has no tier column, so a live pool filter needs the tier joined via
 `signal_id` (or stamped at insert).
+
+### 14.4 Calibration scorecard: fixed terms and per-cell definition (2026-09-26)
+
+Kairos evaluates **calibration**: whether a signal's stated p_win is true, and whether the
+correction loop fixes a miss before the next qualified signal (S2). Every Kairos read from W2
+onwards reports this scorecard in these terms.
+
+#### Terms (used everywhere from here on; earlier text is aligned to them)
+
+| Term | Meaning | Not |
+|---|---|---|
+| **closed** | the signal has an outcome: `tp_hit`, `sl_hit` or `expired` (48 bars, no touch) | – |
+| **decided** | closed as **TP or SL**. Only decided signals enter calibration (`nt_calibration_records`) | not expired |
+| **expired** | closed with no TP/SL within 48 bars; a non-result, excluded from error, always reported as **expiry share** = expired / closed | not a loss |
+| **pending** | no outcome yet (inside its 48-bar window) | – |
+| **TP rate** | TP / decided. Never TP / closed (that mixes in expiries) | not "win rate" over all signals |
+| **no-skill line** | SL / (TP + SL) per signal; the TP rate a coin-flip direction earns for that bracket and that volatility | – |
+| **calibration error** | p_win − 1{TP}, on decided signals; positive = overconfident | – |
+| **bias** | decay-weighted mean calibration error over the evidence (the production rule, §14 benchmark) | – |
+| **bias status** | the `eod_correction` classification of the bias: OVERCONFIDENT / CALIBRATED / UNDERCONFIDENT (enforced: `EOD_BIAS_ENFORCED_THRESHOLD`; 4h raw pass: `EOD_BIAS_RAW_OVERCONFIDENT` 0.30 / `EOD_BIAS_RAW_UNDERCONFIDENT` −0.20) | not a TP/SL outcome |
+| **INSUFFICIENT** | the bias is not computed: fewer than `EOD_BIAS_MIN_RECORDS` decided records (Studio 28) or fewer than 2 episodes in the 7-day window. No correction is applied | not "calibrated" |
+| **status coverage** | share of symbols (or of S2 signals) whose evidence is *not* INSUFFICIENT | – |
+| **evidence tier** | qualified / suppressed / gate_fail of the signal that produced the evidence (`v_calibration_records_tiered`, migration 171) | – |
+| **evidence delay** | exit_ts → the calibration record being written (the resolver) | – |
+
+*"Verdict" is retired.* It was used for both a TP/SL outcome and a bias status. Say **decided**
+for the outcome and **bias status** for the classification. The resolver's internal function
+`_judge` keeps its name.
+
+#### Worked example: the 2026-09-26 catch-up (207 closed)
+
+207 closed = 9 TP + 115 SL + 83 expired. TP rate = 9 / 124 decided = **7.3%**, not 0.07%, and
+not 9 / 207 = 4.3% (that counts expiries as losses). Mean no-skill line for those 124 = **28.8%**.
+
+This batch is **not** a representative TP rate. It is the backlog the head-of-line bug left
+behind (`20260926_RESOLVER_HEAD_OF_LINE_FIX.md`). Those were signals decided early, median **2h** entry → exit, and at a
+9 ATR SL / 17 ATR TP geometry an early close is almost always a stop. The early-decided backlog
+is therefore SL-heavy by construction. The pooled 7-day picture, by exit_ts:
+
+| tier | closed | TP | SL | expired | expiry share | TP rate | no-skill | mean p_win |
+|---|---|---|---|---|---|---|---|---|
+| qualified | 58 | 4 | 19 | 35 | 60% | 0.17 | 0.32 | 0.62 |
+| suppressed | 53 | 6 | 47 | 0 | 0% | 0.11 | 0.30 | 0.66 |
+| gate_fail | 232 | 65 | 167 | 0 | 0% | 0.28 | 0.31 | 0.43 |
+| unstamped (pre-168 rows) | 7,488 | 535 | 2,065 | 4,888 | 65% | 0.21 | 0.33 | 0.48 |
+| **all** | 7,831 | 610 | 2,298 | 4,923 | 63% | **0.21** | **0.33** | 0.48 |
+
+Every tier's TP rate is below its no-skill line, and every tier's p_win is above both.
+Suppressed signals are the most overconfident (0.66 stated against 0.11 realised).
+
+#### The scorecard (per cell = symbol × regime state; pooled rows are weighted cell sums, never raw pools)
+
+| # | Metric | Question | Definition |
+|---|---|---|---|
+| A | **Evidence completeness** | Is every decided outcome recorded? | decided outcomes written ÷ decided outcomes determinable (resolver dry run); target 1.0 |
+| B | **Evidence delay** | How fresh is it? | median / p90 exit_ts → record |
+| C | **Expiry share** | How much never becomes evidence? | expired / closed, per tier |
+| D | **Edge vs no-skill** | Does the signal beat its own bracket geometry? | mean(1{TP} − no-skill line) over decided, per cell |
+| E | **Calibration level** | Is p_win right on average? | mean(p_win − 1{TP}) over decided, per cell, per evidence tier; and mean(p_win − no-skill line), i.e. the *claimed* edge against D, the *realised* edge |
+| F | **Status coverage** | How often is a correction even possible? | share of S2 signals whose production bias is not INSUFFICIENT |
+| G | **Correction gain** | Does the loop fix S2? | Δ Brier / log-loss on S2, production rule vs uncorrected (§14.2), and each shadow lever vs the production rule |
+| H | **Carryover** | How long is evidence useful, and does a regime change break it? | half-life (§14.1); same-regime vs changed (§14.2 B) |
+| I | **Discrimination within a cell** | At similar volatility and geometry, do signals with more claimed edge win more? | within-cell rank correlation of (p_win − no-skill) with (1{TP} − no-skill); reported only for cells with ≥ 30 decided |
+| R | **Repeatability** | Do D–I hold across windows? | sign agreement across rolling windows vs the circular-shift null (§13.1) |
+
+**Rules:**
+- **Normalise against no-skill before comparing anything.** Symbols, regimes and brackets
+  are never compared on raw TP rate.
+- **Expired never enters error.** Expiry share is always shown next to it.
+- **Pre- and post-fix data are separate eras,** compared only via no-skill (D) and levels (E):
+  pre 2026-09-27 01:17 UTC for the resolver fix, and the ATR flips.
+- **Pooled cross-cell AUC is withdrawn** (the 0.48 in §14.1). It mixes base rates across
+  symbols, regimes and volatility, so it measures the cell mix rather than skill. Metric I
+  replaces it.
+
+**Status at 2026-09-26:**
+- **A** was < 1 until the head-of-line fix; complete from the 09-26 03:24 catch-up.
+- **B** median ~11h (nightly), with the hourly resolve in shadow.
+- **C** 60% qualified, 63% all tiers.
+- **D** negative in every tier.
+- **E** qualified: claimed edge +0.29 (p_win 0.62 − no-skill 0.32) vs realised −0.15 (TP rate 0.17 − 0.32); error +0.44.
+- **F** 31% of S2 (§14.2). Symbols not INSUFFICIENT: 8/14 all-tier, 3/14 qualified + suppressed.
+- **G** −0.025 production (optimistic, pre-fix evidence), −0.118 with the qualified + suppressed pool.
+- **H** ~3h; same-regime stronger, p ≈ 0.10.
+- **I** not yet measurable (thin cells).
+- **R** pending W2.

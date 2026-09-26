@@ -47,7 +47,7 @@ That split is the whole point.
 |---|---|
 | `supabase/migrations/171_calibration_records_tiered.sql` | `v_calibration_records_tiered` (`security_invoker`): `nt_calibration_records.*` + `evidence_tier` (qualified / suppressed / gate_fail / unknown) + `tier_src` (stamp / recon / missing) + `sim_source`. No table, column or insert. |
 | `regime_platform/sweep_orchestrator/supabase_client.py` | `fetch_calibration_bias` and `_raw` gain `evidence_tiers=None`. When set, they read the view with an `evidence_tier=in.(…)` filter. Everything else is identical: window, episodes, decay, floors, classification. `None` keeps the current behaviour for every existing caller. |
-| `regime_platform/sweep_orchestrator/eod_correction.py` | `_apply_evidence_pool()` after the all-tier fetch, in both the nightly and the 4h raw passes. **off:** nothing. **shadow:** also compute the pooled bias and log `[eod:pool]`; the all-tier bias still enforces. **live:** the pooled bias enforces, falling back to all-tier when the pool is too thin for a verdict. Never raises. Comparison rows go to `summary["evidence_pool"]`. |
+| `regime_platform/sweep_orchestrator/eod_correction.py` | `_apply_evidence_pool()` after the all-tier fetch, in both the nightly and the 4h raw passes. **off:** nothing. **shadow:** also compute the pooled bias and log `[eod:pool]`; the all-tier bias still enforces. **live:** the pooled bias enforces, falling back to all-tier when the pool is INSUFFICIENT. Never raises. Comparison rows go to `summary["evidence_pool"]`. |
 | `regime_platform/core/feature_flags.py`, `config/feature_flags.yaml` | `calibration_evidence_pool_mode: shadow`, `calibration_evidence_tiers: [qualified, suppressed]`. Invalid tiers fall back to the default, never to all tiers. |
 | `tests/test_calibration_evidence_pool.py` | 26 tests. `tests/test_raw_bias_cycle_reset.py` pins pool mode to off, because those tests count fetcher calls on the all-tier path. |
 
@@ -67,7 +67,7 @@ only once the pool goes live and proves itself.
 
 - **Direction matches the offline finding.** Where the pool has enough evidence, it reads more
   overconfident.
-- **AAPL flips verdict.** Gate-failed outcomes are hiding a +0.43 overconfidence in its qualified and
+- **AAPL flips bias status.** Gate-failed outcomes are hiding a +0.43 overconfidence in its qualified and
   suppressed signals.
 - **The pool is thin.** Only 2/14 symbols pass the 20-raw / 2-episode floor. The Studio floor is
   `EOD_BIAS_MIN_RECORDS=28`, which is stricter still.
@@ -78,9 +78,9 @@ only once the pool goes live and proves itself.
 ## 5. Promotion bar (shadow → live)
 
 - **≥ 3 days of `[eod:pool]` lines**, spanning the 09-26 heavy sweep (first live hybrid geometry).
-- **Status disagreements are reviewed per symbol** (the AAPL type), with the pooled verdict checked
+- **Status disagreements are reviewed per symbol** (the AAPL type), with the pooled bias status checked
   against realised qualified outcomes.
-- **Pool coverage grows:** ≥ 6/14 symbols get a pooled verdict. Otherwise live is mostly fallback, and
+- **Pool coverage grows:** ≥ 6/14 symbols are not INSUFFICIENT in the pool. Otherwise live is mostly fallback, and
   flipping it changes little.
 - **One lever at a time:** don't flip this in the same read window as `calibration_resolve_hourly_mode`
   or `dynamic_atr_mode`.

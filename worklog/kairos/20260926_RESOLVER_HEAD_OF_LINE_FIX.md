@@ -36,8 +36,8 @@ evidence leaned toward wins.
 
 Where the nightly did reach, it matched the shadow (unknown tier: 12 SL = 12 SL).
 
-**Downstream effect:** AAPL alone had 21 of the unwritten SL. Its all-tier verdict that night was
-*underconfident* (−0.25), and the 4h correction passes enforce that verdict. It is at least partly an
+**Downstream effect:** AAPL alone had 21 of the unwritten SL. Its all-tier bias status that night was
+*underconfident* (−0.25), and the 4h correction passes enforce that status. It is at least partly an
 artifact of missing losses.
 
 The old code also wasted work. Whenever a batch resolved a few rows (expiries at the head), it re-read from
@@ -55,7 +55,7 @@ offset 0 and re-judged the same young head, fetching candles again each time.
   (≤ 2 HTTP requests for 14 symbols). With about 2,300 pending signals that's 3 batches, about 4s of pauses.
 - **`head`**: the old behaviour, kept for rollback only.
 
-Unchanged: the verdict function `_judge` (shared with the dry run), window anchoring, the minimum-age gate,
+Unchanged: the outcome function `_judge` (shared with the dry run), window anchoring, the minimum-age gate,
 the 48-bar expiry, the PATCH and calibration writers, the resolver lock, the schedule, and the bias formula.
 
 **The hourly resolve is now consistent.** Its shadow dry run already scanned the whole queue, while live
