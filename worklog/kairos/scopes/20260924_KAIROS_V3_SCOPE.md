@@ -1110,3 +1110,50 @@ Suppressed signals are the most overconfident (0.66 stated against 0.11 realised
 - **H** ~3h; same-regime stronger, p ≈ 0.10.
 - **I** not yet measurable (thin cells).
 - **R** pending W2.
+
+### 14.5 Geometry replay: answering the dynamic-ATR question from history (2026-09-26, `scripts/kairos_geometry_replay.py`, `reports/20260926_geometry_replay.md`)
+
+**What was run.** The dynamic-ATR question doesn't need a live shadow. Past signals already have entry,
+direction and ATR recorded, and the 1h closes after them exist, so any bracket can be re-walked offline in
+about a minute.
+
+- **Data:** 8,252 light-sweep signals, 09-01 → 09-24, 14 symbols. Deduplicated to one signal per
+  symbol × direction × hour.
+- **Walk:** 48-bar close-only, the same rule as the live resolver. **Parity:** the recorded geometry
+  reproduces the recorded live outcome on 87.3% of signals.
+- **Pnl:** booked at the triggering close, so stop overshoot is included.
+
+**Recorded geometry** (median TP 15.8 / SL 7.5 ATR): expiry share 43%, TP rate 0.293 vs no-skill 0.324,
+expectancy −0.87 ATR per signal.
+
+| Shape | Example | Expiry share | Edge vs no-skill | Expectancy (ATR/signal), h1 / h2 |
+|---|---|---|---|---|
+| Recorded (wide TP, wide SL) | 15.8 / 7.5 | 43% | −0.03 | −0.87 |
+| **Dynamic ATR feasible set** (TP 0.3–2 ATR, TP/SL ≥ 1.5) | 2 / 0.5 | 0% | +0.15 | +0.08 (+0.01 / +0.14) |
+| | 1.5 / 1 | 0% | +0.04 | −0.03 |
+| Symmetric or wider SL | 2 / 2, 1 / 2 | 0% | ≤ 0 | −0.06 … −0.20 |
+| **Wide TP, tight SL** | 12 / 1.5, 17 / 1.5, 9 / 1 | 5–16% | +0.02 … +0.08 | **+0.45 … +0.56**, positive in both halves |
+
+**Findings:**
+1. **TP too wide: confirmed.** The recorded geometry expires 43% of the time and loses 0.87 ATR per signal.
+2. **SL too tight: not supported.** Every shape with SL ≥ TP has edge ≤ 0. Tighter stops improve
+   expectancy. The losses come from the SL sitting *far* away (7.5 ATR), not close.
+3. **Dynamic ATR fixes expiry (0%, decided in 2–3h), not profitability.** Its best cell is about
+   +0.08 ATR per signal, near zero and not stable across the halves. Its TP band (0.3–2 ATR) rules out
+   the best region.
+4. **Best region: TP 9–17 ATR with SL 0.5–2 ATR.** It is positive in both halves. The payoff is
+   trend-following, small frequent losses and rare large wins: TP rate 8–23%, expiry share 4–19%.
+   Direction has little skill in the median (symmetric brackets ≈ no-skill), but the moves that follow
+   in the signal's direction have a fat tail.
+
+**Caveats:**
+- Hourly signals overlap heavily, so there are far fewer independent episodes than 8,252. One month is
+  one set of trends.
+- The grid is in-sample. Per-symbol best cells are noise-prone.
+- Entries and directions are held fixed; a different geometry changes which signals pass the gates.
+- The q+s tier alone is 82 signals, with halves that disagree, so it can't be read.
+- Live `compute_bricks_pnl` books nominal ±bricks. That's fine at a 7.5 ATR SL, but it overstates
+  results for tight stops under the close-only walk.
+
+**Method consequence:** geometry questions are answered by replay first. A live shadow is only needed
+for what replay can't see, which is how gate pass rates change.
