@@ -49,6 +49,7 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `worklog/kairos/20260925_RESTART_SAFE_STATE_AND_ACCELERATED_G2.md` | Restart-safe regime state (`regime_state_persist_mode`, 58%→restored cell flips across restarts), hourly `kairos-daily` + `nt_roadmap` heartbeat, accelerated 48h G2 looks (`--accel`), W-label snap, pre-168 tier reconstruction |
 || `worklog/kairos/20260925_PATH_RISK_AND_REGIME_SURVIVAL.md` | Fixed-horizon MAE/MFE (migration 170, geometry-free "ghost edge" check, report §E2) + Kaplan-Meier regime survival and the S2 "remaining regime clock" (§E); parked S2-context / TimesFM-3 covariate plan |
 || `worklog/kairos/20260926_HOURLY_CALIBRATION_RESOLVE.md` | Hourly calibration resolve (`:38`, `calibration_resolve_hourly_mode` shadow): TP/SL reach `nt_calibration_records` ~1h after exit instead of the 01:17 nightly (median 11h lag); shared resolver lock; promotion bar |
+|| `worklog/kairos/20260926_CALIBRATION_EVIDENCE_POOL.md` | Calibration evidence pool (`calibration_evidence_pool_mode` shadow): bias from qualified+suppressed outcomes via view `v_calibration_records_tiered` (migration 171, join on `signal_id`); `[eod:pool]` log; promotion bar |
 || `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |

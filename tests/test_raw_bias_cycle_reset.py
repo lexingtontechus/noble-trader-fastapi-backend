@@ -363,6 +363,11 @@ def _run_eod_correction_mocked(
         patch("regime_platform.sweep_orchestrator.orchestrator._derive_venue",
               return_value=None),
         patch("regime_platform.core.settings.settings", mock_settings),
+        # Evidence pool (Kairos §14.3) makes a second, tier-filtered fetch in
+        # shadow/live; these tests pin the all-tier path, so pool mode = off.
+        # Pool behaviour is covered in tests/test_calibration_evidence_pool.py.
+        patch("regime_platform.core.feature_flags.get_calibration_evidence_pool_mode",
+              return_value="off"),
     ]
 
     with ExitStack() as stack:

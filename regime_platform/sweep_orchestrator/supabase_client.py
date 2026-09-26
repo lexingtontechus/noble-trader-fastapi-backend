@@ -2021,6 +2021,22 @@ def _decay_weighted_episode_stats(
     return weighted_pred / total_weight, weighted_wins / total_weight
 
 
+TIERED_CALIBRATION_VIEW = "v_calibration_records_tiered"  # migration 171
+_EVIDENCE_TIERS = frozenset({"qualified", "suppressed", "gate_fail", "unknown"})
+
+
+def _apply_evidence_tiers(params: dict[str, str], tiers: tuple[str, ...] | None) -> None:
+    """Add the PostgREST ``evidence_tier=in.(...)`` filter (migration 171).
+    Unknown names are dropped; an empty result after filtering is a
+    programming error, so it raises instead of silently reading every tier."""
+    if not tiers:
+        return
+    clean = [t for t in tiers if t in _EVIDENCE_TIERS]
+    if not clean:
+        raise ValueError(f"evidence_tiers has no valid tier: {tiers!r}")
+    params["evidence_tier"] = f"in.({','.join(clean)})"
+
+
 async def fetch_calibration_bias(
     symbol: str,
     venue: str | None = None,
@@ -2028,8 +2044,16 @@ async def fetch_calibration_bias(
     window_days: int | None = None,
     min_records: int | None = None,
     min_episodes: int | None = None,
+    evidence_tiers: tuple[str, ...] | None = None,
 ) -> dict[str, float | str] | None:
     """Query nt_calibration_records and return calibration bias.
+
+    ``evidence_tiers`` (2026-09-26, Kairos V3 §14.3, migration 171): when
+    set, reads ``v_calibration_records_tiered`` instead of the table and
+    keeps only records whose producing signal's tier is in the tuple, e.g.
+    ``("qualified", "suppressed")``. Every other step (window, episodes,
+    decay, thresholds, classification) is identical. ``None`` (default) =
+    the table, every tier — unchanged behaviour for every existing caller.
 
     Returns ``{bias: float, status: str, n: int, raw_n: int,
     distinct_days: int, win_rate: float, avg_pred: float}`` or ``None`` on
@@ -2087,6 +2111,9 @@ async def fetch_calibration_bias(
         "select": "predicted_p_win,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
+    _apply_evidence_tiers(params, evidence_tiers)
+    if evidence_tiers:
+        url = _url(TIERED_CALIBRATION_VIEW)
     if venue:
         params["venue"] = f"eq.{venue}"
     if win_days and win_days > 0:
@@ -2147,10 +2174,14 @@ async def fetch_calibration_bias_raw(
     window_days: int | None = None,
     min_records: int | None = None,
     min_episodes: int | None = None,
+    evidence_tiers: tuple[str, ...] | None = None,
 ) -> dict[str, float | str | int] | None:
     """Query nt_calibration_records and return calibration bias computed from
     ``predicted_p_win_raw`` (the PRE-enforcement p_win) rather than the
     enforced ``predicted_p_win``.
+
+    ``evidence_tiers``: same as ``fetch_calibration_bias`` (migration 171
+    view, tier filter; ``None`` = unchanged).
 
     This is the raw-model-bias variant used by the 4h intraday correction
     pass (``run_eod_correction(raw_bias_mode=True)``). It separates model
@@ -2198,6 +2229,9 @@ async def fetch_calibration_bias_raw(
         "select": "predicted_p_win,predicted_p_win_raw,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
+    _apply_evidence_tiers(params, evidence_tiers)
+    if evidence_tiers:
+        url = _url(TIERED_CALIBRATION_VIEW)
     if venue:
         params["venue"] = f"eq.{venue}"
     if win_days and win_days > 0:

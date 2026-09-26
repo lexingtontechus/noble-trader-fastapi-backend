@@ -745,6 +745,21 @@ light_sweep_catchup_mode: live
 # The resolver is serialized with the nightly by an in-process lock.
 calibration_resolve_hourly_mode: shadow
 
+# calibration_evidence_pool_mode (2026-09-26, Kairos V3 scope §14.3,
+# worklog/kairos/20260926_CALIBRATION_EVIDENCE_POOL.md): off | shadow | live.
+# Which signals' TP/SL outcomes count as evidence for eod_correction's
+# calibration bias. Today every tier counts, and gate_fail is ~84% of it
+# (its p_win error is +0.15 vs +0.34/+0.39 for qualified/suppressed), so the
+# all-tier bias understates how overconfident qualified signals are.
+# Walk-forward on S2: qualified+suppressed pool Δ Brier −0.118 vs all-tier
+# −0.043 (both halves of the month). Reads v_calibration_records_tiered
+# (migration 171, a view: nt_calibration_records ⋈ nt_signal_sim on
+# signal_id). shadow: all-tier bias still enforces; the pooled bias is
+# computed and logged as [eod:pool]. live: the pooled bias enforces, with
+# an all-tier fallback when the pool is too thin for a verdict.
+calibration_evidence_pool_mode: shadow
+calibration_evidence_tiers: [qualified, suppressed]
+
 # renko_brick_retention_days (2026-09-09, worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2"):
 # nightly retention (regime_platform/sweep_orchestrator/renko_retention.py,

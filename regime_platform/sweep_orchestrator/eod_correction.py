@@ -347,6 +347,67 @@ async def _fetch_recent_win_rates(symbol: str) -> dict[str, float]:
     }
 
 
+async def _apply_evidence_pool(
+    symbol: str,
+    venue: str | None,
+    cal: dict[str, Any] | None,
+    raw_bias_mode: bool,
+    summary: dict[str, Any],
+    fetch_bias,
+    fetch_bias_raw,
+) -> dict[str, Any] | None:
+    """calibration_evidence_pool_mode (off | shadow | live) — Kairos V3
+    §14.3. Returns the ``cal`` dict enforcement should use. Records one
+    comparison row per symbol in ``summary["evidence_pool"]``. Never raises:
+    any failure returns the all-tier ``cal`` unchanged.
+    """
+    from regime_platform.core.feature_flags import (
+        get_calibration_evidence_pool_mode,
+        get_calibration_evidence_tiers,
+    )
+
+    mode = get_calibration_evidence_pool_mode()
+    if mode == "off":
+        return cal
+    tiers = get_calibration_evidence_tiers()
+    try:
+        fn = fetch_bias_raw if raw_bias_mode else fetch_bias
+        pooled = await fn(symbol, venue=venue, evidence_tiers=tiers)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[eod:pool] %s pooled bias failed (%s) — all-tier kept", symbol, exc)
+        return cal
+
+    def _s(c):
+        return (c or {}).get("status") or "INSUFFICIENT"
+
+    def _b(c):
+        v = (c or {}).get("bias")
+        return None if v is None else float(v)
+
+    row = {
+        "symbol": symbol, "mode": mode, "tiers": list(tiers),
+        "all_status": _s(cal), "all_bias": _b(cal), "all_n": (cal or {}).get("n"),
+        "pool_status": _s(pooled), "pool_bias": _b(pooled), "pool_n": (pooled or {}).get("n"),
+    }
+    use = cal
+    if mode == "live":
+        if pooled is not None and pooled.get("bias") is not None:
+            use = pooled
+            row["used"] = "pool"
+        else:
+            row["used"] = "all_tiers_fallback"
+    else:
+        row["used"] = "all_tiers"
+    row["status_differs"] = row["all_status"] != row["pool_status"]
+    summary.setdefault("evidence_pool", []).append(row)
+    logger.info(
+        "[eod:pool] %s %s — all-tier %s bias=%s n=%s | %s %s bias=%s n=%s | used=%s",
+        symbol, mode, row["all_status"], row["all_bias"], row["all_n"],
+        "+".join(tiers), row["pool_status"], row["pool_bias"], row["pool_n"], row["used"],
+    )
+    return use
+
+
 async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
     """Run the self-correction audit pass over all active symbols.
 
@@ -443,6 +504,18 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
             else:
                 # ── Nightly pass — standard enforced-bias mode ──
                 cal = await fetch_calibration_bias(symbol, venue=venue)
+
+            # ── Evidence pool (2026-09-26, Kairos V3 §14.3, migration 171,
+            # worklog/kairos/20260926_CALIBRATION_EVIDENCE_POOL.md) ──
+            # shadow: also compute the bias from the configured tiers only
+            # (default qualified + suppressed), log the pair, keep `cal`.
+            # live:   the pooled bias drives enforcement; when the pool is
+            #         too thin for a verdict, fall back to all tiers (logged)
+            #         so a symbol never loses enforcement just from the switch.
+            cal = await _apply_evidence_pool(
+                symbol, venue, cal, raw_bias_mode, summary,
+                fetch_calibration_bias, fetch_calibration_bias_raw,
+            )
 
             bias = cal.get("bias") if cal else None
 

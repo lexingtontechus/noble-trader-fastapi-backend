@@ -80,6 +80,8 @@ _DEFAULTS: dict[str, Any] = {
     "regime_state_persist_max_age_hours": 3.0,
     "light_sweep_catchup_mode": "live",
     "calibration_resolve_hourly_mode": "shadow",
+    "calibration_evidence_pool_mode": "shadow",
+    "calibration_evidence_tiers": ["qualified", "suppressed"],
     "qualification_gates": {
         "min_regime_conf": 0.60,
         "min_kelly": 0.02,
@@ -694,6 +696,36 @@ def get_calibration_resolve_hourly_mode() -> str:
         "calibration_resolve_hourly_mode", _DEFAULTS["calibration_resolve_hourly_mode"],
     )).lower()
     return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_calibration_evidence_pool_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-09-26, Kairos V3 §14.3,
+    worklog/kairos/20260926_CALIBRATION_EVIDENCE_POOL.md). Which signals'
+    outcomes count as calibration evidence for eod_correction's bias.
+    shadow: the all-tier bias still drives enforcement; the tier-filtered
+    bias (``calibration_evidence_tiers``) is computed and logged beside it.
+    live: the tier-filtered bias drives enforcement (all-tier fallback when
+    the pool is too thin for a verdict). Unknown values fall back to shadow."""
+    v = str(_load().get(
+        "calibration_evidence_pool_mode", _DEFAULTS["calibration_evidence_pool_mode"],
+    )).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_calibration_evidence_tiers() -> tuple[str, ...]:
+    """Tiers counted by the evidence pool (migration 171 ``evidence_tier``).
+    Default ``("qualified", "suppressed")``. Unknown names are dropped; an
+    empty or invalid list falls back to the default rather than silently
+    meaning 'every tier'."""
+    allowed = ("qualified", "suppressed", "gate_fail", "unknown")
+    raw = _load().get("calibration_evidence_tiers", _DEFAULTS["calibration_evidence_tiers"])
+    if isinstance(raw, str):
+        raw = [p.strip() for p in raw.split(",")]
+    try:
+        clean = tuple(dict.fromkeys(str(t).lower() for t in raw if str(t).lower() in allowed))
+    except TypeError:
+        clean = ()
+    return clean or tuple(_DEFAULTS["calibration_evidence_tiers"])
 
 
 def _qualification_gate_number(key: str) -> float:
