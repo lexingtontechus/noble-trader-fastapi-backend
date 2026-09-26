@@ -688,12 +688,38 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
     min_ts = (fetch_ts - timedelta(hours=LIGHT_BARS)).isoformat()
     attempted_total = 0
 
+    # ── Full-queue scan (2026-09-26, worklog/kairos/
+    # 20260926_RESOLVER_HEAD_OF_LINE_FIX.md) ──────────────────────────────
+    # Found live: the pending query is oldest-first, and the loop used to
+    # stop at the first batch that resolved nothing. The oldest `limit` rows
+    # are mostly signals still inside their 48-bar window, so every TP/SL
+    # already decided further down the queue (72 on 2026-09-26 01:25 UTC,
+    # queue positions 1,024–1,893) waited for the head to expire — and the
+    # nightly wrote 15 TP / 21 SL while 12 TP / 83 SL were decided. Losses
+    # were under-written, skewing the calibration pool toward wins.
+    # `full` (default) pages with an offset past rows that stay pending
+    # (they never leave the `outcome IS NULL` pool, so the offset only needs
+    # to skip those) and scans to the end of the queue; `head` restores the
+    # old stop-at-first-empty-batch behaviour (rollback).
+    from regime_platform.core.feature_flags import (
+        get_eod_resolver_page_pause_s,
+        get_eod_resolver_scan_mode,
+    )
+    full_scan = get_eod_resolver_scan_mode() == "full"
+    page_pause_s = get_eod_resolver_page_pause_s()
+    skip = 0  # rows at the head of the pool this run has seen and left pending
+    summary["scan_mode"] = "full" if full_scan else "head"
+
     while True:
         if max_total > 0 and attempted_total >= max_total:
             logger.info("eod_resolver: reached max_total=%d — stopping", max_total)
             break
+        if summary["batches"] and page_pause_s > 0:
+            # Space the per-batch TradingView candle fetches (the 2026-08-23/24
+            # 429 incidents were back-to-back fetches with no delay).
+            await asyncio.sleep(page_pause_s)
         try:
-            rows = await _fetch_pending(limit, min_ts=min_ts)
+            rows = await _fetch_pending(limit, min_ts=min_ts, offset=skip if full_scan else 0)
         except Exception as exc:
             logger.error("eod_resolver: pending query failed: %s", exc)
             summary["errors"] += 1
@@ -814,7 +840,22 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
         # within seconds. Stop as soon as a batch makes no progress —
         # there's nothing more this invocation can do; a later run (once
         # signals mature or the cron fires again) will pick it back up.
-        if sum(outcomes.values()) == 0:
+        progressed = sum(outcomes.values())
+        if full_scan:
+            # Rows that reached a terminal outcome left the pool; everything
+            # else in this batch is still there, ahead of the unseen rows.
+            skip += len(rows) - progressed
+            if len(rows) < limit and progressed == 0:
+                logger.info(
+                    "eod_resolver: reached end of pending queue (%d scanned past, "
+                    "%d insufficient_bars / %d windowed_out / %d errors)",
+                    skip, summary["insufficient_bars"], summary["windowed_out"],
+                    summary["errors"],
+                )
+                break
+            continue
+
+        if progressed == 0:
             logger.info(
                 "eod_resolver: batch made no forward progress (0 resolved this "
                 "batch) — stopping to avoid refetching the same unresolvable "

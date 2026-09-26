@@ -760,6 +760,18 @@ calibration_resolve_hourly_mode: shadow
 calibration_evidence_pool_mode: shadow
 calibration_evidence_tiers: [qualified, suppressed]
 
+# eod_resolver_scan_mode (2026-09-26, worklog/kairos/
+# 20260926_RESOLVER_HEAD_OF_LINE_FIX.md): full | head. The resolver reads the
+# pending queue oldest-first and used to stop at the first batch that
+# resolved nothing — so TP/SL already decided behind ~1,000 still-young
+# signals waited for the head to expire (2026-09-26 nightly wrote 15 TP /
+# 21 SL while 12 TP / 83 SL were decided: losses under-written). full pages
+# past still-pending rows to the end of the queue (nightly + hourly live);
+# head = old behaviour, rollback only. page_pause_s spaces the batched
+# TradingView candle fetches.
+eod_resolver_scan_mode: full
+eod_resolver_page_pause_s: 2.0
+
 # renko_brick_retention_days (2026-09-09, worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7 "Finding 2"):
 # nightly retention (regime_platform/sweep_orchestrator/renko_retention.py,

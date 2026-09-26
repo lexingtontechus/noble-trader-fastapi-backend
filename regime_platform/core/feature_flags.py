@@ -82,6 +82,8 @@ _DEFAULTS: dict[str, Any] = {
     "calibration_resolve_hourly_mode": "shadow",
     "calibration_evidence_pool_mode": "shadow",
     "calibration_evidence_tiers": ["qualified", "suppressed"],
+    "eod_resolver_scan_mode": "full",
+    "eod_resolver_page_pause_s": 2.0,
     "qualification_gates": {
         "min_regime_conf": 0.60,
         "min_kelly": 0.02,
@@ -726,6 +728,28 @@ def get_calibration_evidence_tiers() -> tuple[str, ...]:
     except TypeError:
         clean = ()
     return clean or tuple(_DEFAULTS["calibration_evidence_tiers"])
+
+
+def get_eod_resolver_scan_mode() -> str:
+    """``full`` | ``head`` (2026-09-26, worklog/kairos/
+    20260926_RESOLVER_HEAD_OF_LINE_FIX.md). How ``resolve_pending_signals``
+    walks the oldest-first pending queue. ``full`` pages past rows that stay
+    pending and scans to the end of the queue, so an already-decided TP/SL
+    behind a head of still-young signals is written on this run. ``head`` is
+    the pre-fix behaviour (stop at the first batch that resolves nothing) —
+    rollback only. Unknown values fall back to ``full``."""
+    v = str(_load().get("eod_resolver_scan_mode", _DEFAULTS["eod_resolver_scan_mode"])).lower()
+    return v if v in ("full", "head") else "full"
+
+
+def get_eod_resolver_page_pause_s() -> float:
+    """Seconds to wait between resolver batches (each batch is one batched
+    TradingView candle fetch). Default 2.0, clamped to [0, 30]."""
+    try:
+        v = float(_load().get("eod_resolver_page_pause_s", _DEFAULTS["eod_resolver_page_pause_s"]))
+    except (TypeError, ValueError):
+        v = float(_DEFAULTS["eod_resolver_page_pause_s"])
+    return min(max(v, 0.0), 30.0)
 
 
 def _qualification_gate_number(key: str) -> float:
