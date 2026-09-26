@@ -121,15 +121,16 @@ Reports: one scorecard template (A–I + ESS + era); drop bespoke MD layouts.
 
 | # | Action | Owner track | Done when |
 |---|---|---|---|
-| 1 | Integrate `kairos` → `main`, remove worktree, single worklog tree | platform | This change |
-| 2 | This decision record + scope §15 archive | research | This change |
-| 3 | Post-flip re-run: tier split + step 2 + scorecard A–I on post-09-26 data | research | Report with era split |
-| 4 | Promote `calibration_evidence_pool_mode` if bar met | calibration | Flag `live` + monitoring |
-| 5 | Promote `calibration_resolve_hourly_mode` | calibration | Flag `live` |
-| 6 | G2.2 primary look at power bar; write go/no-go | research | One page decision |
-| 7 | Scorecard I (within-cell discrimination) once cells ≥ 30 decided | research | I metric + call on D2 |
-| 8 | Shadow cluster-cap stamps | risk | `kairos_cluster_open_risk` logged |
-| 9 | Geometry track: replay-confirm wide-TP/tight-SL vs tiered ATR | geometry | Own scope, not Kairos |
+| 1 | Integrate `kairos` → `main`, remove worktree, single worklog tree | platform | **Done 2026-09-26** (`b5a63b0`) |
+| 2 | This decision record + scope §15 archive | research | **Done 2026-09-26** |
+| 3 | Pure scorecard maths in `regime_platform/sweep_orchestrator/kairos_quant.py` (eras, no-skill, calibration error, ESS clusters, cluster risk) + `tests/test_kairos_quant.py` | research | **Done 2026-09-26** |
+| 4 | Post-flip re-run: tier split + step 2 + scorecard A–I on post-09-26 data | research | Report with era split |
+| 5 | Promote `calibration_evidence_pool_mode` if bar met | calibration | Flag `live` + monitoring |
+| 6 | Promote `calibration_resolve_hourly_mode` | calibration | Flag `live` |
+| 7 | G2.2 primary look at power bar; write go/no-go | research | One page decision |
+| 8 | Scorecard I (within-cell discrimination) once cells ≥ 30 decided | research | I metric + call on D2 |
+| 9 | Shadow cluster-cap stamps | risk | `kairos_cluster_open_risk` logged |
+| 10 | Geometry track: replay-confirm wide-TP/tight-SL vs tiered ATR | geometry | Own scope, not Kairos |
 
 ---
 
