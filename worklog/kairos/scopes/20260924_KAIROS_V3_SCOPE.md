@@ -1161,3 +1161,40 @@ expectancy −0.87 ATR per signal.
 
 **Method consequence:** geometry questions are answered by replay first. A live shadow is only needed
 for what replay can't see, which is how gate pass rates change.
+
+---
+
+## 15. Methodology triage and binding quant decisions (2026-09-26)
+
+Canonical record: `worklog/kairos/20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md`.
+This section is the in-scope cut-list so the plan matches the decisions.
+
+### 15.1 Archived — do not rebuild without a new scope
+
+| Item | Why archived |
+|---|---|
+| **L4** quadrant plane, **L5** flow field / exit compass / Q_within / Q_exit | P1 V3: plane movement is noise; rolling-window artifacts already handled by nulls |
+| **L7** time-based knobs (age_mult, quadrant knobs, E(C,a) live knobs) | V2 age decay disproved on 1h labels; V4 hazard memoryless |
+| HSMM / destination π(C′\|C,a,x) forecast stack | V4: exit hazard flat 0.09–0.13/h — age carries no timing information on this clock |
+| §3.8 factor families 6–10 (liquidity, cross-asset, multi-TF, calendar, extended flow) | Frozen until G2.2 passes; only the five live stamps remain |
+| `/backtest/run` as a Kairos validator | Wrong pipeline (see 20260924_EDGE_STATE_MATRIX worklog §1) |
+| Order-book / L2 | Parked; OHLCV proxies have not shown incremental value |
+| V2 “edge decays with regime age → tighten knobs” as a product thesis | Disproved; keep only as a negative result |
+
+**Still live and kept:** L0 runs + debounce + persist, L3 geometry-free `m_h`, L2 horizon h, scorecard A–I, G2 episode/tier capture, path MAE/MFE, KM (descriptive), calibration persistence (hours-scale), geometry replay method.
+
+### 15.2 Binding decisions (summary)
+
+1. **Primary confirmatory test = G2.2** (gates select direction). G2.3 secondary. G2.4/G2.5 optional / demoted. G2.6 only after G2.2 passes.
+2. **`p_win` must gain within-cell discrimination (scorecard I) or be replaced** by a calibrated cell rate. Do not add transition models to “fix” a non-ranking score.
+3. **Promote in order:** evidence pool (q+s) → hourly resolve → keep resolver full-scan. Half-life 3h stays shadow until I is measured.
+4. **Era splits** (09-22 debounce, 09-25 ATR flip, 09-26 resolver fix) mandatory on every scorecard read.
+5. **ESS** (episodes + symbol-day clusters) is a reported column; no new Holm families on n < 100 targets; §H power bar gates claims.
+6. **ATR scale:** live Kairos metrics are sweep ATR; never mix with P1 OHLC ATR in one table.
+7. **Geometry = replay-first**; wide TP 9–17 / SL 0.5–2 is a geometry-track hypothesis, not a Kairos rebuild.
+8. **Cluster exposure cap** moves to the risk/size track (Σ only).
+9. **Repo:** Kairos worklog and code live on `main`; long-lived `.worktrees/kairos` retired after sanitize.
+
+### 15.3 Next build order
+
+Post-flip scorecard re-run → evidence-pool promote bar → hourly promote → G2.2 at power → scorecard I → cluster-cap shadow.

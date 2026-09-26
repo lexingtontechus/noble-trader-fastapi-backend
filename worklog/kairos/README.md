@@ -2,6 +2,8 @@
 
 Kairos v3 (geometry-free edge-state research) output. Spec:
 `worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md` (§11 P1 results, §12 weekly G2 roadmap).
+**Binding cut-list / quant decisions (2026-09-26):** `20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md` and scope §15 —
+primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktree retired onto `main`.
 
 | Path | What |
 |---|---|
@@ -12,6 +14,7 @@ Kairos v3 (geometry-free edge-state research) output. Spec:
 | `20260926_HOURLY_CALIBRATION_RESOLVE.md` | V3 §14.2 lever 1: hourly (`:38`) calibration resolve, `calibration_resolve_hourly_mode` shadow → live. Nightly-only resolver delays evidence ~11h (S2 Brier −0.025 nightly vs −0.043 hourly); shared resolver lock; promotion bar |
 | `20260926_CALIBRATION_EVIDENCE_POOL.md` | V3 §14.3: bias from qualified+suppressed evidence only (`calibration_evidence_pool_mode` shadow). View `v_calibration_records_tiered` (migration 171, join on `signal_id`, not a new column / `nt_sweep_result`); AAPL flips CALIBRATED→OVERCONFIDENT; pool thin (2/14) until geometry tightens |
 | `20260926_RESOLVER_HEAD_OF_LINE_FIX.md` | Resolver skipped decided TP/SL behind ~1,000 still-young pending signals (nightly wrote 21 SL while 83 were decided; losses under-written → bias skewed to wins). `eod_resolver_scan_mode: full` scans the whole queue; live on deploy |
+| `20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md` | Methodology triage + binding quant decisions: G2.2 primary, p_win discrimination or replacement, promote order (pool → hourly), era splits, ESS/power, archive list, worktree → main |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
