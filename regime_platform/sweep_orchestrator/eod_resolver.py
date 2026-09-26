@@ -877,7 +877,7 @@ async def dry_run_pending_signals(
     """
     now = now or datetime.now(timezone.utc)
     out: dict[str, Any] = {
-        "would_resolve": 0, "by_outcome": {}, "by_symbol": {}, "qualified_tp_sl": 0,
+        "would_resolve": 0, "by_outcome": {}, "by_symbol": {}, "by_gate": {}, "qualified_tp_sl": 0,
         "insufficient_bars": 0, "windowed_out": 0, "errors": 0, "scanned": 0,
         "hours_saved": evidence_hours_saved(now),
     }
@@ -946,6 +946,13 @@ async def dry_run_pending_signals(
                     sym_c[verdict] += 1
                     if sig.get("qualified"):
                         out["qualified_tp_sl"] += 1
+                    # Kairos G2 tier (migration 168): qualified | suppressed |
+                    # gate_fail. Suppressed = passed every gate but was held
+                    # back (suppress_reason); gate_fail = failed ≥ 1 gate.
+                    # NULL on pre-G2 rows → "unknown".
+                    tier = str(sig.get("gate_outcome") or "unknown")
+                    tier_c = out["by_gate"].setdefault(tier, {"tp_hit": 0, "sl_hit": 0})
+                    tier_c[verdict] += 1
     out["by_outcome"] = dict(outcomes)
     out["would_resolve"] = sum(outcomes.values())
     return out

@@ -131,15 +131,27 @@ def _run_dry(pages, candles, active=None, **kw):
 
 class TestDryRun:
     def test_counts_and_writes_nothing(self):
-        rows = [_sig(1, "AAPL", qualified=True), _sig(2, "AAPL"), _sig(3, "US500")]
+        rows = [
+            _sig(1, "AAPL", qualified=True, gate_outcome="qualified"),
+            _sig(2, "AAPL", gate_outcome="suppressed"),
+            _sig(3, "US500", gate_outcome="gate_fail"),
+            _sig(4, "AAPL", gate_outcome="gate_fail"),
+            _sig(5, "AAPL"),  # pre-G2 row, gate_outcome NULL
+        ]
         candles = {"AAPL": [105.0, 111.0], "US500": [101.0, 102.0]}
         out, _, p, i, c = _run_dry([rows], candles, limit=10)
-        assert out["would_resolve"] == 2
-        assert out["by_outcome"] == {"tp_hit": 2}
-        assert out["by_symbol"] == {"AAPL": {"tp_hit": 2, "sl_hit": 0}}
+        assert out["would_resolve"] == 4
+        assert out["by_outcome"] == {"tp_hit": 4}
+        assert out["by_symbol"] == {"AAPL": {"tp_hit": 4, "sl_hit": 0}}
         assert out["qualified_tp_sl"] == 1
+        assert out["by_gate"] == {
+            "qualified": {"tp_hit": 1, "sl_hit": 0},
+            "suppressed": {"tp_hit": 1, "sl_hit": 0},
+            "gate_fail": {"tp_hit": 1, "sl_hit": 0},
+            "unknown": {"tp_hit": 1, "sl_hit": 0},
+        }
         assert out["insufficient_bars"] == 1
-        assert out["scanned"] == 3
+        assert out["scanned"] == 5
         p.assert_not_awaited()
         i.assert_not_awaited()
         c.assert_not_awaited()

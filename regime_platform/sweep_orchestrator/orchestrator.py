@@ -2510,9 +2510,9 @@ class SweepOrchestrator(HeavySweepMixin):
                 tp_sl = dry["by_outcome"].get("tp_hit", 0) + dry["by_outcome"].get("sl_hit", 0)
                 logger.info(
                     "[calib:hourly] shadow — would resolve %d now (%s), %d TP/SL "
-                    "(qualified %d) reaching calibration %.1fh before the nightly; "
+                    "(by gate %s) reaching calibration %.1fh before the nightly; "
                     "insufficient_bars=%d windowed_out=%d errors=%d scanned=%d",
-                    dry["would_resolve"], dry["by_outcome"], tp_sl, dry["qualified_tp_sl"],
+                    dry["would_resolve"], dry["by_outcome"], tp_sl, dry.get("by_gate", {}),
                     dry["hours_saved"], dry["insufficient_bars"], dry["windowed_out"],
                     dry["errors"], dry["scanned"],
                 )

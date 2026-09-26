@@ -64,7 +64,7 @@ In live mode the hourly job only moves outcomes earlier. The correction passes s
 | Mode | Behaviour | Writes |
 |---|---|---|
 | `off` | job fires, returns | none |
-| `shadow` (default) | `dry_run_pending_signals()`. Logs `[calib:hourly] shadow — would resolve N now ({...}), K TP/SL (qualified q) reaching calibration X.Xh before the nightly; insufficient_bars=… windowed_out=… errors=… scanned=…` | heartbeat row only |
+| `shadow` (default) | `dry_run_pending_signals()`. Logs `[calib:hourly] shadow — would resolve N now ({...}), K TP/SL (by gate {qualified|suppressed|gate_fail|unknown: {tp_hit, sl_hit}}) reaching calibration X.Xh before the nightly; insufficient_bars=… windowed_out=… errors=… scanned=…` | heartbeat row only |
 | `live` | `resolve_pending_signals()` under the shared lock. Logs `[calib:hourly] live — resolved N ({...}), X.Xh before the nightly` | `nt_signal_sim` outcome/exit/pnl/drift + `nt_calibration_records` (same as nightly) |
 
 The flag is read on every run, so flipping it in `config/feature_flags.yaml` needs no restart.
