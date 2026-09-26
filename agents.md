@@ -52,6 +52,7 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `worklog/kairos/20260926_CALIBRATION_EVIDENCE_POOL.md` | Calibration evidence pool (`calibration_evidence_pool_mode` shadow): bias from qualified+suppressed outcomes via view `v_calibration_records_tiered` (migration 171, join on `signal_id`); `[eod:pool]` log; promotion bar |
 || `worklog/kairos/20260926_RESOLVER_HEAD_OF_LINE_FIX.md` | Resolver head-of-line fix (`eod_resolver_scan_mode: full`, live): nightly/hourly resolver now scans the whole pending queue — decided TP/SL behind young signals were skipped, under-writing losses |
 | `worklog/kairos/20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md` | Binding quant cut-list (scope §15): G2.2 primary; p_win discrimination or replacement; promote pool→hourly; era splits + ESS/power; L4/L5/L7 + HSMM archived; `kairos_quant.py` pure scorecard maths; worktree retired onto `main` |
+| `worklog/kairos/20260926_LIVE_G22_DECISION_AND_PROMOTION.md` | Live G2.2 **NO PASS at power** (Δm₂₄ −0.32 demeaned); p_win overconfident all eras; evidence-pool/hourly **HOLD** (post-flip S2 n=0); 3h half-life not promoted |
 || `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |

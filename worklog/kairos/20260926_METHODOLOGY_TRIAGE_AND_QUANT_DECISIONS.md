@@ -124,10 +124,10 @@ Reports: one scorecard template (A–I + ESS + era); drop bespoke MD layouts.
 | 1 | Integrate `kairos` → `main`, remove worktree, single worklog tree | platform | **Done 2026-09-26** (`b5a63b0`) |
 | 2 | This decision record + scope §15 archive | research | **Done 2026-09-26** |
 | 3 | Pure scorecard maths in `regime_platform/sweep_orchestrator/kairos_quant.py` (eras, no-skill, calibration error, ESS clusters, cluster risk) + `tests/test_kairos_quant.py` | research | **Done 2026-09-26** |
-| 4 | Post-flip re-run: tier split + step 2 + scorecard A–I on post-09-26 data | research | Report with era split |
-| 5 | Promote `calibration_evidence_pool_mode` if bar met | calibration | Flag `live` + monitoring |
-| 6 | Promote `calibration_resolve_hourly_mode` | calibration | Flag `live` |
-| 7 | G2.2 primary look at power bar; write go/no-go | research | One page decision |
+| 4 | Post-flip re-run: tier split + step 2 + scorecard A–I on post-09-26 data | research | **Done 2026-09-26** (`20260926_LIVE_G22_DECISION_AND_PROMOTION.md`) — post-resolver S2 too thin for D3 bar |
+| 5 | Promote `calibration_evidence_pool_mode` if bar met | calibration | **HOLD** — D3 bar not measurable yet (0 qualified decided post-resolver) |
+| 6 | Promote `calibration_resolve_hourly_mode` | calibration | **HOLD** — secondary to pool |
+| 7 | G2.2 primary look at power bar; write go/no-go | research | **Done: NO PASS at power** (Δm₂₄ −0.32 [−1.87, +0.82]); park age/time knobs |
 | 8 | Scorecard I (within-cell discrimination) once cells ≥ 30 decided | research | I metric + call on D2 |
 | 9 | Shadow cluster-cap stamps | risk | `kairos_cluster_open_risk` logged |
 | 10 | Geometry track: replay-confirm wide-TP/tight-SL vs tiered ATR | geometry | Own scope, not Kairos |
