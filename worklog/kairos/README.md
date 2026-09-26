@@ -17,6 +17,8 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md` | Methodology triage + binding quant decisions: G2.2 primary, p_win discrimination or replacement, promote order (pool → hourly), era splits, ESS/power, archive list, worktree → main |
 | `20260926_LIVE_G22_DECISION_AND_PROMOTION.md` | Live read: G2.2 **NO PASS at power** (Δm₂₄ −0.32); overconfident p_win every era; pool/hourly **HOLD** (post-flip S2 n=0); 3h HL not promoted |
 | `reports/20260926_postflip_rescore.md` | Era-split scorecard + evidence-pool Brier proxy + G2.2 power (script `scripts/kairos_postflip_rescore.py`) |
+| `20260926_DIRECTIONAL_EDGE_PWIN_RANKING_AND_TRANSITIONS.md` | Event-time regime transitions (fresh vs deep **T1 supported** +0.117), type split (`dir_flip` best), p_win ranking **fails** (IC≈0); build `kairos_rank.py` |
+| `reports/20260926_rank_transition.md` | Live R1 ranking IC + transition event study |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
