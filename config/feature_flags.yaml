@@ -356,7 +356,7 @@ dynamic_atr_risk_cap: 0.35
 # Classes (tiered_atr.asset_class_key): forex, equity, commodity, crypto, …
 # Absent or null = keep heavy geometry (crypto: walk-forward lost to recorded).
 # Supersedes dynamic_atr_mode for listed classes (its TP band tops out at 2 ATR).
-payoff_geometry_mode: "shadow"
+payoff_geometry_mode: "live"   # flipped 2026-09-26 ~04:55 UTC after 04:45 shadow check (13/13 symbols, 0 failures)
 payoff_geometry_brick_atr: 0.5
 payoff_geometry:
   forex:     {tp_atr: 24.0, sl_atr: 1.5}   # wf h1→h2 +0.90, h2→h1 +0.90 ATR/signal (recorded −3.18 / +0.40)

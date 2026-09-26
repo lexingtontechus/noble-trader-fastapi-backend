@@ -1,7 +1,7 @@
 # Payoff geometry: per-asset-class TP/SL in ATR, chosen by replay
 
 > **Date:** 2026-09-26 · **Branch:** `kairos` → `main`
-> **Flag:** `payoff_geometry_mode` (`off | shadow | live`), ships **`shadow`**
+> **Flag:** `payoff_geometry_mode` (`off | shadow | live`), shipped `shadow`; **`live` since 2026-09-26 ~04:55 UTC** (see §7)
 > **Config:** `config/feature_flags.yaml` → `payoff_geometry_brick_atr`, `payoff_geometry` (per-class table)
 > **Code:** `regime_platform/sweep_orchestrator/payoff_geometry.py`; wired in `orchestrator._process_symbol` after `[geo:intraday]`
 > **Evidence:** `scripts/kairos_geometry_replay.py` → `reports/20260926_geometry_replay.md` §7–§8; scope §14.5
@@ -124,3 +124,38 @@ in ATR against the §2 test column.
 - One month is one set of trends. The trend-following payoff depends on trends continuing.
 - Live `compute_bricks_pnl` books nominal ±bricks. At a 1–2 ATR stop that understates losses under the
   close-only walk. Treat `pnl_bricks` as nominal and use the replay's close-based numbers for expectancy.
+
+## 7. Activation record
+
+**Shadow check, 04:45 UTC light sweep** (Studio `12f5dfc`, orchestrator started 04:42:52): 13 of 13
+non-crypto symbols logged `[payoff:geometry] … would set`, with 0 `failed` warnings and 0 tracebacks.
+BTCUSD correctly kept the heavy geometry.
+
+| Class | Would set (bricks of 0.5 ATR) | Heavy bracket at the time (TP / SL, ATR) |
+|---|---|---|
+| forex ×6 | 48 / 3 (24 / 1.5 ATR) | AUDUSD 64.7 / 37.8, EURUSD 33.1 / 19.9, GBPUSD 33.9 / 20.4, USDCAD 68.1 / 40.9, USDCHF 56.5 / 32.9, USDJPY 13.6 / 8.1 |
+| equity ×3 | 34 / 4 (17 / 2 ATR) | AAPL 17.2 / 10.0, US30USD 12.6 / 7.5, US500 1.2 / 0.45 |
+| commodity ×4 | 12 / 2 (6 / 1 ATR) | XAGUSD 1.2 / 0.45, XAUAUD 0.75 / 0.45, XAUEUR 10.5 / 3.9, XAUUSD 1.8 / 1.05 |
+
+**Notes from the check:**
+- **Four symbols had already moved to tight brackets.** US500, XAGUSD, XAUAUD and XAUUSD were at
+  0.45–1.05 ATR stops, most likely from the hybrid-promoted heavy sweep (`atr_anchored_evidence_mode`
+  live). For these four the flip *widens* the stop to 1–2 ATR. The replay's "recorded" baseline was the
+  wide 09-01→09-24 geometry, so compare these four against the tight-shape rows of the replay report
+  instead.
+- **Forex heavy brackets are fixed in price, so they swell in ATR terms when ATR is low** (Asia session).
+  Payoff geometry scales with live ATR, so the forex stop is tightest in quiet hours. The replay walked
+  signals from all hours, so the effect is already in its numbers. Watch London-open stop-outs anyway.
+
+**Flip:** `payoff_geometry_mode: "live"` ~04:55 UTC. It is the only new lever in the read window. The
+resolver full-scan fix is live (it's evidence plumbing, not a signal change). The hourly resolve and the
+evidence pool stay in shadow; dynamic ATR stays in shadow and is superseded for the listed classes.
+
+**Read at 48h and 72h after the flip, per class, via the §14.4 scorecard:**
+- expiry share;
+- TP rate vs the no-skill line;
+- realised expectancy (ATR/signal, close-based);
+- qualified count vs the prior 72h (the calibration shrink is expected to cut it).
+
+Compare against the §2 test column: forex +0.90, equity +0.67…+2.65, commodity +0.28…+0.73 ATR/signal.
+Rollback: `payoff_geometry_mode: off`.
