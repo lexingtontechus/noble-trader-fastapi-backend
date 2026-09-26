@@ -49,7 +49,7 @@ H = {"apikey": S.SUPABASE_KEY, "Authorization": f"Bearer {S.SUPABASE_KEY}"}
 
 
 def load_signals(since: str, until: str) -> pd.DataFrame:
-    cols = "signal_id,symbol,signal,ts,entry_price,stop_loss,take_profit,atr,outcome,gate_outcome,qualified"
+    cols = "signal_id,symbol,signal,ts,entry_price,stop_loss,take_profit,atr,outcome,gate_outcome,qualified,p_win"
     rows, off = [], 0
     while True:
         r = httpx.get(U + "nt_signal_sim", headers=H, timeout=60, params={
@@ -130,13 +130,78 @@ def walk(P: np.ndarray, tp: np.ndarray, sl: np.ndarray):
     return out, hrs, pnl
 
 
-def score(out, hrs, pnl, tp, sl) -> dict:
+def score(out, hrs, pnl, tp, sl, cost_atr: float = 0.0) -> dict:
     dec = out != "expired"; nd = int(dec.sum())
     tpr = float((out == "tp_hit").sum() / nd) if nd else np.nan
     ns = float(np.mean((sl / (tp + sl))[dec])) if nd else np.nan
+    # round-trip cost charged on every entry (expired trades are closed at bar 48 too)
+    net = pnl - cost_atr
     return {"n": len(out), "expiry": float((~dec).mean()), "decided": nd, "tp_rate": tpr,
-            "no_skill": ns, "edge": tpr - ns, "exp_atr": float(np.mean(pnl)),
+            "no_skill": ns, "edge": tpr - ns, "exp_atr": float(np.mean(net)),
             "med_h": float(np.nanmedian(hrs)) if nd else np.nan}
+
+
+# ─── Walk-forward selection (payoff geometry, 2026-09-26) ─────────────────
+# worklog/kairos/20260926_PAYOFF_GEOMETRY.md. Picks one TP/SL (ATR units)
+# per asset class on one time half and scores it on the other, both ways.
+WF_TP = [3.0, 4.0, 6.0, 9.0, 12.0, 17.0, 24.0]
+WF_SL = [1.0, 1.5, 2.0, 3.0]          # ≥ 1 ATR: a sub-ATR stop is inside one bar's noise
+WF_MAX_EXPIRY = 0.25                   # keep the 48h contract meaningful
+
+
+def select_geometry(P: np.ndarray, m: np.ndarray, cost_atr: float) -> tuple[float, float, dict]:
+    best = None
+    for tpk in WF_TP:
+        for slk in WF_SL:
+            if tpk / slk < MIN_RR:
+                continue
+            tp = np.full(int(m.sum()), tpk); sl = np.full(int(m.sum()), slk)
+            s = score(*walk(P[m], tp, sl), tp, sl, cost_atr)
+            if s["expiry"] > WF_MAX_EXPIRY:
+                continue
+            if best is None or s["exp_atr"] > best[2]["exp_atr"]:
+                best = (tpk, slk, s)
+    return best
+
+
+def walk_forward(P: np.ndarray, df: pd.DataFrame, tp0: np.ndarray, sl0: np.ndarray, cost_atr: float) -> list[str]:
+    half = (df.ts < df.ts.min() + (df.ts.max() - df.ts.min()) / 2).to_numpy()
+    L = [f"## 7. Walk-forward per asset class (fit one half, score the other; cost {cost_atr:g} ATR/trade)", "",
+         "| class | fit→test | picked TP/SL | test exp | test expiry | recorded exp (test) | Δ |", "|" + "---|" * 7]
+    picks: dict[str, list] = {}
+    for ac in sorted(df.ac.unique()):
+        acm = (df.ac == ac).to_numpy()
+        for name, fit, test in (("h1→h2", half, ~half), ("h2→h1", ~half, half)):
+            f, t = acm & fit, acm & test
+            if f.sum() < 50 or t.sum() < 50:
+                continue
+            tpk, slk, _ = select_geometry(P, f, cost_atr)
+            tp = np.full(int(t.sum()), tpk); sl = np.full(int(t.sum()), slk)
+            st = score(*walk(P[t], tp, sl), tp, sl, cost_atr)
+            sr = score(*walk(P[t], tp0[t], sl0[t]), tp0[t], sl0[t], cost_atr)
+            picks.setdefault(ac, []).append((tpk, slk))
+            L.append(f"| {ac} | {name} | {tpk:g}/{slk:g} | {st['exp_atr']:+.3f} | {st['expiry']:.0%} | "
+                     f"{sr['exp_atr']:+.3f} | {st['exp_atr'] - sr['exp_atr']:+.3f} |")
+        allm = acm
+        tpk, slk, sa = select_geometry(P, allm, cost_atr)
+        picks.setdefault(ac, []).append(("full", tpk, slk, round(sa["exp_atr"], 3)))
+    L += ["", "Full-period pick per class (the value to configure): " +
+          ", ".join(f"{ac} {p[-1][1]:g}/{p[-1][2]:g} ({p[-1][3]:+.3f})" for ac, p in picks.items()), ""]
+    return L
+
+
+def pwin_strata(P: np.ndarray, df: pd.DataFrame, tpk: float, slk: float, cost_atr: float) -> list[str]:
+    pw = pd.to_numeric(df.p_win, errors="coerce").to_numpy()
+    L = [f"## 8. Does the directional p_win gate add value at {tpk:g}/{slk:g}?", "",
+         "| p_win band | n | TP rate | expiry | exp/ATR |", "|---|---|---|---|---|"]
+    for lo, hi in ((0, 0.45), (0.45, 0.55), (0.55, 0.65), (0.65, 1.01)):
+        m = (pw >= lo) & (pw < hi)
+        if m.sum() < 30:
+            continue
+        tp = np.full(int(m.sum()), tpk); sl = np.full(int(m.sum()), slk)
+        s = score(*walk(P[m], tp, sl), tp, sl, cost_atr)
+        L.append(f"| {lo:.2f}–{min(hi, 1):.2f} | {int(m.sum())} | {s['tp_rate']:.3f} | {s['expiry']:.0%} | {s['exp_atr']:+.3f} |")
+    return L + [""]
 
 
 def main() -> None:
@@ -144,6 +209,8 @@ def main() -> None:
     ap.add_argument("--since", default="2026-09-01T00:00:00Z")
     ap.add_argument("--tier", default="all", help="all | qualified | suppressed | gate_fail | q+s")
     ap.add_argument("--out", default="worklog/kairos/reports/20260926_geometry_replay.md")
+    ap.add_argument("--cost", type=float, nargs="+", default=[0.0, 0.1],
+                    help="round-trip cost per trade in ATR units for the walk-forward (spread + slippage)")
     a = ap.parse_args()
     until = (datetime.now(timezone.utc) - timedelta(hours=EXPIRY + 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     df = load_signals(a.since, until)
@@ -233,6 +300,9 @@ def main() -> None:
                  f"{bdyn[0]:g}/{bdyn[1]:g} {bdyn[2]['exp_atr']:+.2f} |" if bdyn else "| – |")
     L += ["", "Caveats: entries/directions held fixed (a new geometry would change which signals pass the gates); "
           "grid picked in-sample (see h1/h2); close-only walk like live; ATR is the recorded close-to-close sweep ATR.", ""]
+    for c in a.cost:
+        L += walk_forward(P, df, tp0, sl0, c)
+    L += pwin_strata(P, df, 12.0, 1.5, a.cost[-1])
     Path(a.out).write_text("\n".join(L), encoding="utf-8")
     print("\n".join(L))
 

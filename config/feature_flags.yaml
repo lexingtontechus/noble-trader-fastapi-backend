@@ -344,6 +344,26 @@ heavy_sweep_reachability_mode: shadow
 dynamic_atr_mode: "shadow"
 dynamic_atr_risk_cap: 0.35
 
+# payoff_geometry_mode (2026-09-26, worklog/kairos/20260926_PAYOFF_GEOMETRY.md):
+# off | shadow | live. Light-path bracket set per asset class in ATR units,
+# replacing the heavy-sweep brick geometry for classes listed below.
+# Chosen by replay (scripts/kairos_geometry_replay.py §7 walk-forward: pick on
+# one half of 09-01→09-24, score on the other, 0.1 ATR cost) — not by shadow.
+#   shadow: log "[payoff:geometry] would set" per tick; live bracket unchanged.
+#   live:   stop_loss/take_profit/EV profit+stake use the table. p_win is NOT
+#           changed (Markov T^N keeps the heavy tp_bricks horizon), so every
+#           probability gate and the calibration loop are unaffected.
+# Classes (tiered_atr.asset_class_key): forex, equity, commodity, crypto, …
+# Absent or null = keep heavy geometry (crypto: walk-forward lost to recorded).
+# Supersedes dynamic_atr_mode for listed classes (its TP band tops out at 2 ATR).
+payoff_geometry_mode: "shadow"
+payoff_geometry_brick_atr: 0.5
+payoff_geometry:
+  forex:     {tp_atr: 24.0, sl_atr: 1.5}   # wf h1→h2 +0.90, h2→h1 +0.90 ATR/signal (recorded −3.18 / +0.40)
+  equity:    {tp_atr: 17.0, sl_atr: 2.0}   # wf +2.65 / +0.67 (recorded +0.36 / −1.31); halves picked 17/2 and 12/2
+  commodity: {tp_atr: 6.0,  sl_atr: 1.0}   # wf +0.28 / +0.73 (recorded −1.38 / −1.00); metals map here
+  crypto:    null                          # wf −0.41 / 0.00 vs recorded +1.01 / +1.44 — keep heavy
+
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
 # long-lag than baseline, allow ATR candidates into deadline-aware pool
