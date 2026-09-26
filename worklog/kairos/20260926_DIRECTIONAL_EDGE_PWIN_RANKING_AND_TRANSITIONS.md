@@ -272,6 +272,39 @@ Gates: start measuring selection as **ΔD (accuracy vs no-skill)**, and treat `f
 
 ---
 
+## 9. Composite rank score — walk-forward (2026-09-26)
+
+Build: `rank_score()` in `kairos_rank.py` (weights frozen before scoring):
+`0.35·freshness + 0.25·type + 0.25·recent_tp_rate(3h) + 0.15·cell_p` (shrunk cell hit-rate).
+Unit: **episode** (symbol × direction × hour), not raw light rows. Eval: `scripts/kairos_rank_score_eval.py` → `reports/20260926_rank_score_eval.md`.
+
+### 9.1 Results (episode-deduped, walk-forward, no lookahead)
+
+| block | n | rank IC(y_acc) | AUC(y_bin) | ΔD @P60 gate | ΔD CI |
+|---|---:|---:|---:|---:|---|
+| All eras | 6,300 | **0.126** | 0.67 | **+0.233** | [+0.212, +0.256] |
+| Post-debounce | 518 | **0.199** | 0.785 | **+0.295** | [+0.234, +0.359] |
+| **Post-ATR** | **43** | 0.183 | 0.671 | +0.113 | **[−0.096, +0.356]** |
+| Qualified only | 89 | −0.049 | 0.557 | +0.028 | [−0.102, +0.190] |
+
+Contrast: `p_win` IC ≤ 0 everywhere; top-vs-bot tercile of p_win is flat or inverted.
+
+### 9.2 Reading (quant-honest)
+
+1. **R2 discovery: PASS** on broader samples — composite **ranks** `y_acc` / `y_bin` where `p_win` does not. Gated arms are **above no-skill** in all-eras (y_acc +0.10) and post-debounce (+0.04).
+2. **R3 post-ATR: NOT YET** — n=43 episodes, ΔD CI spans 0. Do **not** flip a live gate on this.
+3. **Qualified-only does not separate** (ΔD +0.03). The current 7-gate pass set is not aligned with this score; consistent with G2.2.
+4. Raw-row (no dedupe) AUC ~0.86 was **overlapping-hour inflation**. Episode unit is the only one we report.
+5. Much of the lift is **`cell_p` persistence** (trailing hit-rate) + freshness. That is real but path-overlapping — keep symbol-day cluster CIs in any promote memo.
+
+### 9.3 Shadow gate (built, not live)
+
+- `shadow_entry_gate(score, thr)` + `delta_d` / `delta_d_bootstrap` in `kairos_rank.py`.
+- Rule shape: publish / size-up when `rank_score` ≥ trailing P60 (threshold recomputed on the trailing score history).
+- **Status:** shadow only (R4). Next bar: ≥200 post-ATR episodes with ΔD CI > 0 on the same rule, then a `kairos_rank_score` stamp on `nt_signal_sim` (additive column) and one lever at a time vs the 7 gates.
+
+---
+
 ## 7. Decision summary
 
 1. **Keep the transition thesis**, drop *duration* as the state variable. Study **events**: fresh vs deep, typed flips, surprise, cluster agreement.  

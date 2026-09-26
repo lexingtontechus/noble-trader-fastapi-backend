@@ -255,3 +255,125 @@ class RankRow:
     rank_ic_y_acc: float | None
     auc_y_bin: float | None
     cell: str | None = None
+
+
+# ─── Composite rank score (worklog §8.5 / production score) ──────────────
+# Weights are the R1 event-time / type contrasts, frozen 2026-09-26 before
+# walk-forward scoring. Not re-fit per day (overfit risk).
+
+FRESHNESS_W: dict[str, float] = {
+    "fresh": 1.00,
+    "warm": 0.55,
+    "stale": 0.20,
+    "pre": 0.40,
+    "deep": 0.00,
+}
+TYPE_W: dict[str, float] = {
+    "dir_flip": 1.00,
+    "both": 0.65,
+    "none": 0.35,
+    "vol_expand": 0.25,
+    "vol_contract": 0.25,
+}
+DEFAULT_RANK_W = {
+    "freshness": 0.35,
+    "type": 0.25,
+    "recent_tp": 0.25,
+    "cell_p": 0.15,
+}
+
+
+def freshness_score(window: str | None) -> float:
+    """0–1 information freshness from the event-time window (R1)."""
+    if not window:
+        return 0.35
+    return float(FRESHNESS_W.get(window, 0.35))
+
+
+def type_score(ttype: str | None) -> float:
+    """0–1 transition-type prior (R1: dir_flip only non-negative)."""
+    if not ttype:
+        return 0.35
+    return float(TYPE_W.get(ttype, 0.35))
+
+
+def clip01(x: float | None, default: float = 0.5) -> float:
+    if x is None:
+        return default
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
+        return default
+    return max(0.0, min(1.0, v))
+
+
+def rank_score(
+    *,
+    event_window: str | None,
+    transition: str | None,
+    recent_tp_rate: float | None,
+    cell_p: float | None,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Composite 0–1 ranking score (higher = more likely to beat no-skill).
+
+    Inputs must be known at signal time. `cell_p` is a shrunk empirical
+    P(TP|decided) for the cell (not the live p_win blend).
+    """
+    w = dict(DEFAULT_RANK_W)
+    if weights:
+        w.update({k: float(v) for k, v in weights.items() if k in w})
+    total = sum(w.values()) or 1.0
+    parts = {
+        "freshness": freshness_score(event_window),
+        "type": type_score(transition),
+        "recent_tp": clip01(recent_tp_rate, 0.35),
+        "cell_p": clip01(cell_p, 0.35),
+    }
+    return sum(w[k] * parts[k] for k in w) / total
+
+
+def shadow_entry_gate(score: float, threshold: float = 0.55) -> bool:
+    """Would-publish rule for shadow stamping only (never live-enforced here)."""
+    try:
+        return float(score) >= float(threshold)
+    except (TypeError, ValueError):
+        return False
+
+
+def delta_d(y_acc_gated: Sequence[float | None], y_acc_rest: Sequence[float | None]) -> float | None:
+    """ΔD = mean(y_acc | gated) − mean(y_acc | rest). Selection metric (worklog §4)."""
+    g = [float(v) for v in y_acc_gated if v is not None]
+    r = [float(v) for v in y_acc_rest if v is not None]
+    if not g or not r:
+        return None
+    return statistics.fmean(g) - statistics.fmean(r)
+
+
+def delta_d_bootstrap(
+    y_acc_gated: Sequence[float | None],
+    y_acc_rest: Sequence[float | None],
+    n_boot: int = 500,
+    seed: int = 20260926,
+) -> tuple[float | None, float | None, float | None]:
+    """(ΔD, lo, hi) with a simple iid bootstrap on the two arms."""
+    point = delta_d(y_acc_gated, y_acc_rest)
+    if point is None:
+        return (None, None, None)
+    g = [float(v) for v in y_acc_gated if v is not None]
+    r = [float(v) for v in y_acc_rest if v is not None]
+    if len(g) < 5 or len(r) < 5:
+        return (point, None, None)
+    try:
+        import numpy as np
+    except ImportError:
+        return (point, None, None)
+    rng = np.random.default_rng(seed)
+    stats_: list[float] = []
+    for _ in range(n_boot):
+        a = rng.choice(g, size=len(g), replace=True)
+        b = rng.choice(r, size=len(r), replace=True)
+        stats_.append(float(a.mean() - b.mean()))
+    return (point, float(np.percentile(stats_, 2.5)), float(np.percentile(stats_, 97.5)))

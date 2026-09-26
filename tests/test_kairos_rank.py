@@ -86,3 +86,25 @@ class TestClusterAgree:
         out = R.cluster_agree(flips, clusters, window_h=2.0)
         assert out["XAUUSD"] == pytest.approx(1.0)
         assert out["EURUSD"] == pytest.approx(0.0)
+
+
+class TestRankScore:
+    def test_fresh_dir_flip_beats_deep_vol(self):
+        good = R.rank_score(
+            event_window="fresh", transition="dir_flip",
+            recent_tp_rate=0.4, cell_p=0.4,
+        )
+        bad = R.rank_score(
+            event_window="deep", transition="vol_expand",
+            recent_tp_rate=0.2, cell_p=0.2,
+        )
+        assert good > bad
+        assert 0.0 <= bad <= 1.0
+        assert 0.0 <= good <= 1.0
+
+    def test_shadow_gate_and_delta_d(self):
+        assert R.shadow_entry_gate(0.6, 0.55) is True
+        assert R.shadow_entry_gate(0.5, 0.55) is False
+        dd = R.delta_d([0.1, 0.1], [-0.1, -0.1])
+        assert dd == pytest.approx(0.2)
+        assert R.delta_d([], [1.0]) is None

@@ -19,6 +19,7 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `reports/20260926_postflip_rescore.md` | Era-split scorecard + evidence-pool Brier proxy + G2.2 power (script `scripts/kairos_postflip_rescore.py`) |
 | `20260926_DIRECTIONAL_EDGE_PWIN_RANKING_AND_TRANSITIONS.md` | Event-time regime transitions (fresh vs deep **T1 supported** +0.117), type split (`dir_flip` best), p_win ranking **fails** (IC≈0); build `kairos_rank.py` |
 | `reports/20260926_rank_transition.md` | Live R1 ranking IC + transition event study |
+| `reports/20260926_rank_score_eval.md` | Walk-forward composite `rank_score` + shadow ΔD gate (episode-deduped) |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
