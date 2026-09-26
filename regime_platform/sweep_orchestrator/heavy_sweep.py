@@ -84,6 +84,7 @@ This module is a mix-in: ``SweepOrchestrator`` inherits from
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
@@ -1095,58 +1096,52 @@ class HeavySweepMixin:
                         symbol, type(exc).__name__, exc,
                     )
 
-                # ── Tiered ATR / dynamic risk-capped pick (2026-09-18) ──
-                # Shadow by default. Does not replace reachability/ATR
-                # roadmap live flips (nt_roadmap 2026-10-05).
+                # ── Dynamic ATR (tiered_atr.py): TP/SL in ATR picked by
+                # realised expectancy on the class's recent signals. live
+                # replaces the bracket (brick/sl/tp); no qualifying pick →
+                # heavy pick kept. shadow logs the pick only.
                 try:
                     from regime_platform.core.feature_flags import (
+                        get_dynamic_atr_config,
                         get_dynamic_atr_mode,
-                        get_dynamic_atr_risk_cap,
                     )
                     from regime_platform.sweep_orchestrator.tiered_atr import (
-                        fetch_bucket_long_lag,
-                        risk_capped_pick,
+                        dynamic_atr_pick,
                     )
 
                     dyn_mode = get_dynamic_atr_mode()
-                    if dyn_mode != "off":
-                        exp_map, p90_map = await fetch_bucket_long_lag(symbol)
-                        risk_pick = risk_capped_pick(
-                            deadline_candidates,
-                            atr=atr,
-                            asset_class=sym.get("asset_class"),
+                    if dyn_mode != "off" and atr and atr > 0:
+                        _dyn = await dynamic_atr_pick(
+                            sym.get("asset_class"),
+                            cfg=get_dynamic_atr_config(),
                             min_rr=MIN_RR,
-                            max_sharpe=MAX_SHARPE,
-                            min_trades=MIN_TRADES,
-                            risk_cap=get_dynamic_atr_risk_cap(),
-                            pct_expired_by_bucket=exp_map,
-                            p90_by_bucket=p90_map,
-                            mode=dyn_mode,
                         )
-                        logger.info(
-                            "[tiered:atr] %s mode=%s ac=%s baseline tp_atr=%s risk=%s | "
-                            "capped tp_atr=%s risk=%s changed=%s none_survived=%s",
-                            symbol, dyn_mode, risk_pick.asset_class,
-                            risk_pick.baseline_tp_atr, risk_pick.baseline_risk,
-                            risk_pick.capped_tp_atr, risk_pick.capped_risk,
-                            risk_pick.pick_changed, risk_pick.nothing_survived,
-                        )
-                        if dyn_mode == "live" and risk_pick.pick_changed and not risk_pick.nothing_survived:
-                            # Map capped key back to combo object
-                            for _c in deadline_candidates:
-                                if (_c.brick_size, _c.sl_bricks, _c.tp_bricks) == risk_pick.capped_key:
-                                    best = _c
-                                    result.best_combo = best
-                                    logger.info(
-                                        "[tiered:atr] %s LIVE risk-capped pick — "
-                                        "brick=%.4f sl=%d tp=%d sharpe=%.4f",
-                                        symbol, best.brick_size, best.sl_bricks,
-                                        best.tp_bricks, best.sharpe,
-                                    )
-                                    break
+                        _heavy_tp_atr = best.brick_size * best.tp_bricks / atr
+                        _heavy_sl_atr = best.brick_size * best.sl_bricks / atr
+                        if _dyn is None:
+                            logger.info(
+                                "[dynamic:atr] %s mode=%s no qualifying TP/SL — heavy kept "
+                                "(tp=%.2fATR sl=%.2fATR)",
+                                symbol, dyn_mode, _heavy_tp_atr, _heavy_sl_atr,
+                            )
+                        else:
+                            _b, _sl, _tp = _dyn.to_bricks(atr, best.sl_bricks)
+                            logger.info(
+                                "[dynamic:atr] %s mode=%s %s %s → brick=%.6f sl=%d tp=%d | "
+                                "heavy tp=%.2fATR sl=%.2fATR",
+                                symbol, dyn_mode,
+                                "SET" if dyn_mode == "live" else "would set",
+                                _dyn.as_log(), _b, _sl, _tp,
+                                _heavy_tp_atr, _heavy_sl_atr,
+                            )
+                            if dyn_mode == "live":
+                                best = dataclasses.replace(
+                                    best, brick_size=_b, sl_bricks=_sl, tp_bricks=_tp,
+                                )
+                                result.best_combo = best
                 except Exception as exc:
                     logger.warning(
-                        "[tiered:atr] %s failed (%s: %s)",
+                        "[dynamic:atr] %s failed (%s: %s) — heavy pick kept",
                         symbol, type(exc).__name__, exc,
                     )
 

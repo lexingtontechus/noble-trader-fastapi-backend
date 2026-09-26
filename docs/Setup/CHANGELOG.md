@@ -1,3 +1,15 @@
+## [8.0.0] - 2026-09-26 (no version bump)
+
+### Changed — dynamic ATR selector (`dynamic_atr_mode`, still shadow)
+- `tiered_atr.py` now picks TP/SL in ATR per asset class by re-walking the class's last 10 days of signals (48-bar resolver rule) and taking the best expectancy that is positive in both halves, expiry <= 25%, TP/SL >= min_rr. No qualifying pick -> heavy pick kept. Settings in the new `dynamic_atr:` block of `config/feature_flags.yaml`. Log tag `[dynamic:atr]`.
+- Removed the old band-limited risk pick (TP <= 2 ATR, `risk_capped_pick`, `TIER_TP_ATR_BAND`); it could not reach the far-TP / close-SL region that pays.
+- Rolling walk-forward 08-26 -> 09-24 (4,647 signals, cost 0.1 ATR): recorded -1.55 ATR/signal, new selector +0.82, old selector -1.50.
+
+### Removed
+- `payoff_geometry` (reverted in `5d96872`) and `scripts/kairos_geometry_replay.py`.
+
+---
+
 ## [8.0.0] - 2026-09-25 (assessment addendum — no version bump)
 
 ### Dynamic / tiered ATR — live-flip assessment (hybrid promote first)

@@ -47,6 +47,14 @@ _DEFAULTS: dict[str, Any] = {
     "heavy_sweep_reachability_mode": "off",
     "dynamic_atr_mode": "shadow",
     "dynamic_atr_risk_cap": 0.35,
+    "dynamic_atr": {
+        "lookback_days": 10,
+        "tp_atr": [1.5, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0, 17.0, 24.0],
+        "sl_atr": [1.0, 1.5, 2.0, 3.0],
+        "max_expiry": 0.25,
+        "cost_atr": 0.1,
+        "min_signals": 60,
+    },
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
     "geometry_intraday_scale_mode": "live",
@@ -371,6 +379,15 @@ def get_dynamic_atr_mode() -> str:
     return str(_load().get(
         "dynamic_atr_mode", _DEFAULTS.get("dynamic_atr_mode", "shadow"),
     )).lower()
+
+
+def get_dynamic_atr_config() -> dict[str, Any]:
+    """Dynamic ATR selector settings (``dynamic_atr`` block); missing keys fall back to defaults."""
+    cfg = dict(_DEFAULTS["dynamic_atr"])
+    raw = _load().get("dynamic_atr")
+    if isinstance(raw, dict):
+        cfg.update({k: v for k, v in raw.items() if k in cfg and v is not None})
+    return cfg
 
 
 def get_dynamic_atr_risk_cap() -> float:

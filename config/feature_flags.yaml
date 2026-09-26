@@ -334,15 +334,28 @@ timesfm_k_ceiling: 60.0  # defensive upper bound -- caps k at 3x the default bas
 # zero live-behavior change (still shadow, not live).
 heavy_sweep_reachability_mode: shadow
 
-# dynamic_atr_mode (2026-09-18, worklog 20260918_TIERED_ATR_GEOMETRY_SCOPE.md):
-# off | shadow | live. Tiered ATR = asset-class preferred TP-ATR bands +
-# long-lag risk-capped combo pick. shadow: log comparison, persist write
-# provenance (nt_brick_params_state), do NOT change live pick.
-# live: risk-capped pick replaces Sharpe pick when a survivor exists.
-# Live geometry flips of atr_anchored/reachability remain nt_roadmap
-# 2026-10-05; this flag is a separate risk layer, not a substitute for Stage 1.
+# dynamic_atr_mode (2026-09-18; reworked 2026-09-26): off | shadow | live.
+# The platform's geometry lever (regime_platform/sweep_orchestrator/tiered_atr.py).
+# Each heavy sweep picks TP/SL in ATR for the symbol's asset class by
+# re-walking the class's last `lookback_days` of signals (48-bar resolver
+# rule) under every tp_atr x sl_atr candidate. Kept: TP/SL >= min_rr, expiry
+# share <= max_expiry, expectancy net of cost_atr > 0 in both halves of the
+# window; highest expectancy wins. No qualifying pick -> heavy pick kept.
+# shadow: logs "[dynamic:atr] ... would set"; live: replaces brick/sl/tp.
+# Replaced the old band-limited risk pick (TP <= 2 ATR), which could not
+# reach the far-TP / close-SL region the replay found profitable
+# (worklog/kairos/reports/20260926_geometry_replay.md, scope §14.5).
+# dynamic_atr_risk_cap is the geometry-risk cap used by the publish gates
+# and geometry_tuning_sweep; it is not part of the selector.
 dynamic_atr_mode: "shadow"
 dynamic_atr_risk_cap: 0.35
+dynamic_atr:
+  lookback_days: 10
+  tp_atr: [1.5, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0, 17.0, 24.0]
+  sl_atr: [1.0, 1.5, 2.0, 3.0]
+  max_expiry: 0.25
+  cost_atr: 0.1
+  min_signals: 60
 
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better

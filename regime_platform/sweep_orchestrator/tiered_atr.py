@@ -1,51 +1,50 @@
 """
-Tiered / dynamic ATR — asset-class priors + long-lag risk-capped pick
-═════════════════════════════════════════════════════════════════════
+Dynamic ATR — TP/SL picked by realised expectancy on the platform's own signals
+═══════════════════════════════════════════════════════════════════════════════
 
-worklog/20260918_TIERED_ATR_GEOMETRY_SCOPE.md
+worklog/20260918_TIERED_ATR_GEOMETRY_SCOPE.md; evidence: scope §14.5
+(worklog/kairos/scopes/20260924_KAIROS_V3_SCOPE.md) and
+worklog/kairos/reports/20260926_geometry_replay.md.
 
-Language (canonical):
-  * Short-horizon resolve — tp/sl within 48h (platform contract)
-  * Long-lag / geometry   — expired past 48h; risk from wide brackets
+``dynamic_atr_mode`` (off | shadow | live) is the platform's geometry lever.
+On each heavy sweep it chooses the bracket (TP and SL distance in ATR units)
+for the symbol's asset class:
 
-This module does **not** flip production geometry by itself. It:
-  1. Supplies **tier priors** (asset-class × vol_tier → preferred TP ATR bands)
-  2. Ranks quality-filtered combos by **geometry risk** (long-lag / p90)
-  3. Returns a **risk-capped pick** for shadow comparison / later live use
+  1. Load the class's signals from the last ``lookback_days`` whose 48-bar
+     window has finished (nt_signal_sim, one per symbol x direction x hour).
+  2. Re-walk each one under every TP x SL candidate with the live resolver's
+     rule (1h closes, first touch, 48-bar expiry, TP first on a tie).
+  3. Keep candidates with TP/SL >= min_rr, expiry share <= ``max_expiry`` and
+     positive expectancy (net of ``cost_atr``) in BOTH halves of the window.
+  4. Pick the highest expectancy. Nothing qualifies -> keep the heavy pick.
 
-Live flips of heavy_sweep_atr_anchored_bricks_mode / reachability_mode
-remain roadmap-gated (nt_roadmap review_at 2026-10-05). Shadow comparison
-is allowed now; dynamic_atr_mode=live is opt-in after evidence.
+The pick is expressed in bricks with ``sl_bricks`` fixed, so
+brick = sl_atr x ATR / sl_bricks and tp_bricks = round(tp_atr / sl_atr x sl_bricks).
+
+Rolling walk-forward (fit on the trailing 10 days, apply the next day,
+08-26 -> 09-24, 4,647 signals, cost 0.1 ATR): recorded geometry -1.55 ATR per
+signal, this selector +0.82; the old band-limited pick (TP <= 2 ATR) -1.50.
+
+Also here: the ATR-anchored evidence promote helpers used by the heavy
+sweep's candidate pool (``should_promote_atr_candidates``,
+``compose_deadline_candidate_pool``, ``fetch_bucket_long_lag``).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
-from regime_platform.sweep_orchestrator.geometry_risk import (
-    GEOMETRY_RISK_CAP,
-    geometry_risk_hat,
-)
+import numpy as np
+
+from regime_platform.sweep_orchestrator.geometry_risk import GEOMETRY_RISK_CAP
 
 logger = logging.getLogger("regime.sweep.tiered_atr")
 
-# Preferred TP distance / ATR bands by (asset_class, vol_tier family).
-# Priors only — risk cap still wins if the bucket is known-bad.
-# vol families collapse the HMM tier string for lookup.
-TIER_TP_ATR_BAND: dict[str, tuple[float, float]] = {
-    "crypto": (0.5, 2.0),
-    "equity": (0.5, 2.0),
-    "etf": (0.5, 2.0),
-    "forex": (0.3, 1.5),
-    "metal": (0.5, 2.0),
-    "commodity": (0.5, 2.0),
-    "index": (0.5, 2.0),
-    "default": (0.5, 2.0),
-}
-
-# Long-lag / geometry risk cap for accepting a pick when dynamic_atr_mode=live.
+EXPIRY_BARS = 48
 DEFAULT_RISK_CAP = GEOMETRY_RISK_CAP
 
 
@@ -70,202 +69,198 @@ def asset_class_key(asset_class: str | None) -> str:
     return "default"
 
 
-def preferred_tp_atr_band(asset_class: str | None) -> tuple[float, float]:
-    return TIER_TP_ATR_BAND.get(asset_class_key(asset_class), TIER_TP_ATR_BAND["default"])
+# ─── Replay walk (same rule as the live resolver) ──────────────────────────
 
+def walk(paths: np.ndarray, tp_atr: float, sl_atr: float) -> tuple[np.ndarray, np.ndarray]:
+    """First-passage over direction-signed, ATR-scaled close paths.
 
-def vol_family(vol_tier: str | None) -> str:
-    """Collapse HMM vol tier to a coarse family for logging/priors."""
-    if not vol_tier:
-        return "unknown"
-    t = str(vol_tier).lower()
-    if "high" in t:
-        return "high"
-    if "low" in t:
-        return "low"
-    if "med" in t or "mid" in t:
-        return "med"
-    return t
-
-
-def in_preferred_band(tp_distance_atr: float | None, asset_class: str | None) -> bool:
-    if tp_distance_atr is None:
-        return False
-    lo, hi = preferred_tp_atr_band(asset_class)
-    return lo <= float(tp_distance_atr) <= hi
+    ``paths`` is (n, 48): (close - entry) * dir / atr. Returns
+    (realised pnl in ATR at the triggering close, expired mask). TP first on
+    a same-bar tie; expired trades are marked to market at bar 48.
+    """
+    n = len(paths)
+    hit_tp = paths >= tp_atr
+    hit_sl = paths <= -sl_atr
+    ti = np.where(hit_tp.any(1), hit_tp.argmax(1), EXPIRY_BARS)
+    si = np.where(hit_sl.any(1), hit_sl.argmax(1), EXPIRY_BARS)
+    tp_first = (ti < EXPIRY_BARS) & (ti <= si)
+    sl_first = ~tp_first & (si < EXPIRY_BARS)
+    exit_bar = np.where(tp_first, ti, np.where(sl_first, si, EXPIRY_BARS - 1))
+    pnl = paths[np.arange(n), exit_bar]
+    return pnl, ~(tp_first | sl_first)
 
 
 @dataclass(frozen=True)
-class RiskPickResult:
-    baseline_key: tuple | None
-    baseline_tp_atr: float | None
-    baseline_risk: float | None
-    capped_key: tuple | None
-    capped_tp_atr: float | None
-    capped_risk: float | None
-    pick_changed: bool
-    nothing_survived: bool
-    asset_class: str
-    risk_cap: float
-    mode: str
+class DynamicAtrPick:
+    tp_atr: float
+    sl_atr: float
+    exp_atr: float          # mean realised pnl per signal, ATR, net of cost
+    exp_h1: float
+    exp_h2: float
+    expiry: float           # share of signals expired at 48 bars
+    n: int
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "baseline_key": self.baseline_key,
-            "baseline_tp_atr": self.baseline_tp_atr,
-            "baseline_risk": self.baseline_risk,
-            "capped_key": self.capped_key,
-            "capped_tp_atr": self.capped_tp_atr,
-            "capped_risk": self.capped_risk,
-            "pick_changed": self.pick_changed,
-            "nothing_survived": self.nothing_survived,
-            "asset_class": self.asset_class,
-            "risk_cap": self.risk_cap,
-            "mode": self.mode,
-        }
+    def to_bricks(self, atr: float, sl_bricks: int) -> tuple[float, int, int]:
+        brick = self.sl_atr * float(atr) / sl_bricks
+        tp_bricks = max(1, int(round(self.tp_atr / self.sl_atr * sl_bricks)))
+        return brick, int(sl_bricks), tp_bricks
+
+    def as_log(self) -> str:
+        return (f"tp={self.tp_atr:g}ATR sl={self.sl_atr:g}ATR exp={self.exp_atr:+.3f} "
+                f"(h1 {self.exp_h1:+.3f} h2 {self.exp_h2:+.3f}) expiry={self.expiry:.0%} n={self.n}")
 
 
-def _combo_key(c: Any) -> tuple:
-    return (c.brick_size, c.sl_bricks, c.tp_bricks)
-
-
-def combo_tp_distance_atr(c: Any, atr: float | None) -> Optional[float]:
-    if not atr or atr <= 0:
-        return None
-    return abs(float(c.tp_bricks) * float(c.brick_size)) / float(atr)
-
-
-def combo_geometry_risk(
-    c: Any,
-    atr: float | None,
+def select_tp_sl(
+    paths: np.ndarray,
     *,
-    pct_expired_by_bucket: dict[str, float | None] | None = None,
-    p90_by_bucket: dict[str, float | None] | None = None,
-    long_lag_prior: float = 0.40,
-) -> float:
-    """Long-lag risk for one combo; missing bucket data uses prior."""
-    from regime_platform.sweep_orchestrator.bracket_reachability import _bucket_for
-
-    tp_atr = combo_tp_distance_atr(c, atr)
-    bucket = _bucket_for(tp_atr) if tp_atr is not None else None
-    lag = long_lag_prior
-    p90 = None
-    if bucket and pct_expired_by_bucket:
-        v = pct_expired_by_bucket.get(bucket)
-        if v is not None:
-            lag = float(v)
-    if bucket and p90_by_bucket:
-        p90 = p90_by_bucket.get(bucket)
-    return geometry_risk_hat(lag, p90)
-
-
-def quality_filter(
-    combos: Iterable[Any],
-    *,
+    tp_grid: list[float],
+    sl_grid: list[float],
     min_rr: float,
-    max_sharpe: float,
-    min_trades: int,
-) -> list[Any]:
+    max_expiry: float,
+    cost_atr: float,
+    min_signals: int,
+) -> Optional[DynamicAtrPick]:
+    """Best TP/SL by expectancy; must be positive in both halves (rows are time-ordered)."""
+    n = len(paths)
+    if n < min_signals:
+        return None
+    mid = n // 2
+    best: Optional[DynamicAtrPick] = None
+    for tp in tp_grid:
+        for sl in sl_grid:
+            if sl <= 0 or tp / sl < min_rr:
+                continue
+            pnl, expired = walk(paths, float(tp), float(sl))
+            if expired.mean() > max_expiry:
+                continue
+            net = pnl - cost_atr
+            e1, e2 = float(net[:mid].mean()), float(net[mid:].mean())
+            if e1 <= 0 or e2 <= 0:
+                continue
+            e = float(net.mean())
+            if best is None or e > best.exp_atr:
+                best = DynamicAtrPick(float(tp), float(sl), e, e1, e2, float(expired.mean()), n)
+    return best
+
+
+def build_paths(signals: list[dict], bars: dict[str, list[dict]]) -> np.ndarray:
+    """(n, 48) ATR-scaled paths for signals with a full 48-bar window, time-ordered."""
+    tcache = {s: np.array([float(b["t"]) for b in rows], dtype="float64") for s, rows in bars.items()}
+    ccache = {s: np.array([float(b["c"]) for b in rows], dtype="float64") for s, rows in bars.items()}
     out = []
-    for c in combos:
-        try:
-            rr = float(c.tp_bricks) / max(float(c.sl_bricks), 1.0)
-            if rr < min_rr:
-                continue
-            if float(c.sharpe) > max_sharpe:
-                continue
-            if int(c.total_trades) < min_trades:
-                continue
-            out.append(c)
-        except Exception:
+    for r in sorted(signals, key=lambda x: x["_ts"]):
+        t = tcache.get(r["symbol"])
+        if t is None or not len(t):
             continue
+        j = int(np.searchsorted(t, r["_ts"], side="right")) - 1   # bar in progress at entry
+        if j < 0 or j + EXPIRY_BARS > len(t):
+            continue
+        d = 1.0 if r["signal"] == "buy" else -1.0
+        out.append((ccache[r["symbol"]][j:j + EXPIRY_BARS] - r["entry_price"]) * d / r["atr"])
+    return np.vstack(out) if out else np.empty((0, EXPIRY_BARS))
+
+
+# ─── Production entry point ────────────────────────────────────────────────
+
+_PICK_CACHE: dict[str, tuple[float, Optional[DynamicAtrPick]]] = {}
+_PICK_TTL_S = 6 * 3600
+
+
+async def _load_class_signals(symbols: list[str], since: datetime, until: datetime) -> list[dict]:
+    import httpx
+
+    from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+    rows: list[dict] = []
+    off = 0
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(_url("nt_signal_sim"), headers=_headers(), params={
+                "select": "symbol,signal,ts,entry_price,atr",
+                "source": "eq.sweep-light",
+                "signal": "in.(buy,sell)",
+                "symbol": f"in.({','.join(symbols)})",
+                "and": f"(ts.gte.{since.isoformat()},ts.lt.{until.isoformat()})",
+                "order": "ts.asc",
+                "limit": "1000",
+                "offset": str(off),
+            })
+            resp.raise_for_status()
+            batch = resp.json() or []
+            rows += batch
+            off += len(batch)
+            if len(batch) < 1000:
+                break
+    out, seen = [], set()
+    for r in rows:
+        try:
+            atr = float(r.get("atr") or 0)
+            entry = float(r["entry_price"])
+            ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, KeyError):
+            continue
+        if atr <= 0:
+            continue
+        key = (r["symbol"], r["signal"], int(ts // 3600))   # 15-min sweeps repeat the call
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"symbol": r["symbol"], "signal": r["signal"], "entry_price": entry,
+                    "atr": atr, "_ts": ts})
     return out
 
 
-def risk_capped_pick(
-    combos: Iterable[Any],
+async def dynamic_atr_pick(
+    asset_class: str | None,
     *,
-    atr: float | None,
-    asset_class: str | None = None,
-    min_rr: float = 1.5,
-    max_sharpe: float = 10.0,
-    min_trades: int = 5,
-    risk_cap: float = DEFAULT_RISK_CAP,
-    pct_expired_by_bucket: dict[str, float | None] | None = None,
-    p90_by_bucket: dict[str, float | None] | None = None,
-    mode: str = "shadow",
-) -> RiskPickResult:
-    """Baseline = max Sharpe among quality-filtered.
+    cfg: dict[str, Any],
+    min_rr: float,
+) -> Optional[DynamicAtrPick]:
+    """TP/SL for this asset class from its recent signals; None -> keep heavy pick.
 
-    Capped pick = max Sharpe among quality-filtered **and** risk ≤ cap,
-    preferring combos whose TP ATR sits in the asset-class preferred band
-    (tier prior). Unscored geometry uses the prior risk (not fail-open 0).
+    Cached per class for 6h so a daily heavy group walks each class once.
     """
+    from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
+    from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
+
     ac = asset_class_key(asset_class)
-    lo, hi = preferred_tp_atr_band(ac)
-    pool = quality_filter(
-        combos, min_rr=min_rr, max_sharpe=max_sharpe, min_trades=min_trades,
+    hit = _PICK_CACHE.get(ac)
+    if hit and time.time() - hit[0] < _PICK_TTL_S:
+        return hit[1]
+
+    peers = await fetch_active_symbols()
+    members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
+    if not members:
+        return None
+    lookback = int(cfg["lookback_days"])
+    until = datetime.now(timezone.utc) - timedelta(hours=EXPIRY_BARS + 2)
+    since = until - timedelta(days=lookback)
+    signals = await _load_class_signals([m["symbol"] for m in members], since, until)
+    if len(signals) < int(cfg["min_signals"]):
+        _PICK_CACHE[ac] = (time.time(), None)
+        return None
+    bars: dict[str, list[dict]] = {}
+    await fetch_tradingview_batch(
+        [{"symbol": m["symbol"], "tradingview_symbol": m["tradingview_symbol"]} for m in members],
+        hours=24 * (lookback + 5), interval="1h", ohlcv_out=bars,
     )
-    if not pool:
-        return RiskPickResult(
-            None, None, None, None, None, None, False, True,
-            ac, risk_cap, mode,
-        )
-
-    baseline = max(pool, key=lambda c: c.sharpe)
-    b_tp_atr = combo_tp_distance_atr(baseline, atr)
-    b_risk = combo_geometry_risk(
-        baseline, atr,
-        pct_expired_by_bucket=pct_expired_by_bucket,
-        p90_by_bucket=p90_by_bucket,
+    bars = {s: [b for b in rows if b.get("t") is not None and b.get("c") is not None]
+            for s, rows in bars.items()}
+    paths = build_paths(signals, bars)
+    pick = select_tp_sl(
+        paths,
+        tp_grid=[float(x) for x in cfg["tp_atr"]],
+        sl_grid=[float(x) for x in cfg["sl_atr"]],
+        min_rr=min_rr,
+        max_expiry=float(cfg["max_expiry"]),
+        cost_atr=float(cfg["cost_atr"]),
+        min_signals=int(cfg["min_signals"]),
     )
+    _PICK_CACHE[ac] = (time.time(), pick)
+    return pick
 
-    def _rank(c: Any) -> tuple:
-        tp_atr = combo_tp_distance_atr(c, atr)
-        risk = combo_geometry_risk(
-            c, atr,
-            pct_expired_by_bucket=pct_expired_by_bucket,
-            p90_by_bucket=p90_by_bucket,
-        )
-        in_band = 0 if (tp_atr is not None and lo <= tp_atr <= hi) else 1
-        return (in_band, risk, -float(c.sharpe))
 
-    survivors = [
-        c for c in pool
-        if combo_geometry_risk(
-            c, atr,
-            pct_expired_by_bucket=pct_expired_by_bucket,
-            p90_by_bucket=p90_by_bucket,
-        ) <= risk_cap
-    ]
-    if survivors:
-        capped = min(survivors, key=_rank)
-        nothing = False
-    else:
-        # No combo under cap — return best-risk combo for shadow visibility
-        capped = min(pool, key=_rank)
-        nothing = True
-
-    c_tp_atr = combo_tp_distance_atr(capped, atr)
-    c_risk = combo_geometry_risk(
-        capped, atr,
-        pct_expired_by_bucket=pct_expired_by_bucket,
-        p90_by_bucket=p90_by_bucket,
-    )
-    return RiskPickResult(
-        baseline_key=_combo_key(baseline),
-        baseline_tp_atr=round(b_tp_atr, 4) if b_tp_atr is not None else None,
-        baseline_risk=round(b_risk, 4),
-        capped_key=_combo_key(capped),
-        capped_tp_atr=round(c_tp_atr, 4) if c_tp_atr is not None else None,
-        capped_risk=round(c_risk, 4),
-        pick_changed=_combo_key(capped) != _combo_key(baseline),
-        nothing_survived=nothing,
-        asset_class=ac,
-        risk_cap=risk_cap,
-        mode=mode,
-    )
-
+# ─── ATR-anchored evidence promote (heavy candidate pool) ─────────────────
 
 def should_promote_atr_candidates(
     *,

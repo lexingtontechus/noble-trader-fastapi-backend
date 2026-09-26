@@ -1111,7 +1111,11 @@ Suppressed signals are the most overconfident (0.66 stated against 0.11 realised
 - **I** not yet measurable (thin cells).
 - **R** pending W2.
 
-### 14.5 Geometry replay: answering the dynamic-ATR question from history (2026-09-26, `scripts/kairos_geometry_replay.py`, `reports/20260926_geometry_replay.md`)
+### 14.5 Geometry replay: answering the dynamic-ATR question from history (2026-09-26, `reports/20260926_geometry_replay.md`)
+
+> **Now in production:** the replay walk lives in `tiered_atr.py` and drives `dynamic_atr_mode`, which
+> picks TP/SL per asset class from each class's trailing 10 days of signals. The one-off replay script was
+> removed with the payoff-geometry revert.
 
 **What was run.** The dynamic-ATR question doesn't need a live shadow. Past signals already have entry,
 direction and ATR recorded, and the 1h closes after them exist, so any bracket can be re-walked offline in
