@@ -1,20 +1,3 @@
-## [8.0.0] - 2026-09-26 (Kairos calibration + geometry — no version bump)
-
-### Added
-- **Payoff geometry** (`payoff_geometry_mode: live` since 2026-09-26 ~04:55 UTC after a 13/13-symbol shadow check; `payoff_geometry_brick_atr: 0.5`, `payoff_geometry` table in `config/feature_flags.yaml`): light-path TP/SL per asset class in ATR units: forex 24/1.5, equity 17/2, commodity 6/1, crypto keeps heavy. Chosen by replay walk-forward, not a shadow period. Live changes the bracket only (SL/TP, EV profit/stake/RR); the Markov T^N horizon keeps the heavy `tp_bricks`, so p_win and every probability gate are unchanged. Supersedes `dynamic_atr_mode` for listed classes (its TP band tops out at 2 ATR; the heavy grid's max TP:SL is 4:1). Module `regime_platform/sweep_orchestrator/payoff_geometry.py`; 34 tests. Worklog: `worklog/kairos/20260926_PAYOFF_GEOMETRY.md`.
-- **Geometry replay** `scripts/kairos_geometry_replay.py`: re-walks past signals under any TP/SL (48-bar close-only, same rule as the live resolver; 87% parity with recorded outcomes), with a per-class walk-forward (§7) and p_win strata (§8). Report: `worklog/kairos/reports/20260926_geometry_replay.md`.
-- **Calibration evidence pool** (`calibration_evidence_pool_mode: shadow`) + migration 171 view `v_calibration_records_tiered`. **Hourly calibration resolve** (`calibration_resolve_hourly_mode: shadow`).
-
-### Fixed
-- **Resolver head-of-line** (`eod_resolver_scan_mode: full`, live): the nightly/hourly resolver now pages the whole pending queue instead of stopping at the first batch that doesn't progress. Decided TP/SL behind young signals were skipped, mostly SL, which biased calibration toward wins. A one-off catch-up on 09-26 wrote 207 outcomes (9 TP / 115 SL / 83 expired).
-
-### Findings (replay, 09-01 → 09-24, 8,252 signals)
-- Recorded geometry (median TP ≈16 / SL ≈7.5 ATR): expiry share 43%, −0.87 ATR/signal. The TP is too wide; the SL is **not** too tight (it is 7.5 ATR, and wider stops do worse).
-- The paying region is a far TP with a close SL (a trend-following payoff, TP rate 15–20%). Out of sample it holds for forex, equity and commodities; crypto doesn't beat its recorded geometry.
-- At that geometry directional p_win ranks expectancy (+0.21 → +0.77 ATR from < 0.45 to ≥ 0.65); the pooled AUC 0.48 is withdrawn (§14.4).
-
----
-
 ## [8.0.0] - 2026-09-25 (assessment addendum — no version bump)
 
 ### Dynamic / tiered ATR — live-flip assessment (hybrid promote first)

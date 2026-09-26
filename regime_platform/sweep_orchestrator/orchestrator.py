@@ -3526,47 +3526,6 @@ class SweepOrchestrator(HeavySweepMixin):
             except Exception as exc:
                 logger.warning("[geo:intraday] %s failed: %s", symbol, exc)
 
-        # ── Payoff geometry (2026-09-26, worklog/kairos/
-        # 20260926_PAYOFF_GEOMETRY.md; payoff_geometry_mode off|shadow|live).
-        # Per-asset-class TP/SL in ATR units, chosen by replay walk-forward.
-        # live replaces ONLY the bracket (SL/TP prices, EV profit/stake/RR).
-        # The Markov T^N horizon keeps the heavy-sweep tp_bricks so p_win —
-        # and every probability gate + the calibration loop — is unchanged.
-        _markov_tp_bricks = tp_bricks
-        try:
-            from regime_platform.core.feature_flags import (
-                get_payoff_geometry,
-                get_payoff_geometry_brick_atr,
-                get_payoff_geometry_mode,
-            )
-            _pg_mode = get_payoff_geometry_mode()
-            if _pg_mode != "off":
-                from regime_platform.sweep_orchestrator.payoff_geometry import (
-                    resolve_payoff_geometry,
-                )
-                _pg = resolve_payoff_geometry(
-                    sym.get("asset_class"), atr,
-                    table=get_payoff_geometry(),
-                    brick_atr=get_payoff_geometry_brick_atr(),
-                )
-                if _pg is not None:
-                    _heavy_tp_atr = (brick_size * tp_bricks / atr) if atr else None
-                    _heavy_sl_atr = (brick_size * sl_bricks / atr) if atr else None
-                    logger.info(
-                        "[payoff:geometry] %s mode=%s %s | heavy tp=%sATR sl=%sATR",
-                        symbol, _pg_mode,
-                        ("SET " if _pg_mode == "live" else "would set ") + _pg.as_log(),
-                        f"{_heavy_tp_atr:.2f}" if _heavy_tp_atr is not None else "?",
-                        f"{_heavy_sl_atr:.2f}" if _heavy_sl_atr is not None else "?",
-                    )
-                    if _pg_mode == "live":
-                        brick_size, sl_bricks, tp_bricks = (
-                            _pg.brick_size, _pg.sl_bricks, _pg.tp_bricks,
-                        )
-        except Exception as exc:
-            logger.warning("[payoff:geometry] %s failed (%s: %s) — heavy geometry kept",
-                           symbol, type(exc).__name__, exc)
-
         # Extract p_up / p_dn from the HMM's 3x3 transition matrix
         #
         # The "markov diag" log line that used to live here (2026-08-22,
@@ -3711,7 +3670,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 brick_size=brick_size,
                 sl_bricks=sl_bricks,
                 tp_bricks=tp_bricks,
-                n_steps=resolve_markov_n_steps(_markov_tp_bricks),
+                n_steps=resolve_markov_n_steps(tp_bricks),
                 p_markov_override=_smoothed_p_markov,
             )
         # EVFullResult is a dataclass — use attribute access.
@@ -3787,7 +3746,7 @@ class SweepOrchestrator(HeavySweepMixin):
                             brick_size=brick_size,
                             sl_bricks=sl_bricks,
                             tp_bricks=tp_bricks,
-                            n_steps=resolve_markov_n_steps(_markov_tp_bricks),
+                            n_steps=resolve_markov_n_steps(tp_bricks),
                             # Reuse the SAME smoothed values computed above —
                             # not fresh calls — so both compute_ev() calls in
                             # this tick agree on P_markov_hold_N (fix #3a) and

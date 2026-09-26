@@ -141,8 +141,8 @@ def score(out, hrs, pnl, tp, sl, cost_atr: float = 0.0) -> dict:
             "med_h": float(np.nanmedian(hrs)) if nd else np.nan}
 
 
-# ─── Walk-forward selection (payoff geometry, 2026-09-26) ─────────────────
-# worklog/kairos/20260926_PAYOFF_GEOMETRY.md. Picks one TP/SL (ATR units)
+# ─── Walk-forward selection (2026-09-26, offline evidence for dynamic ATR) ─
+# Scope §14.5. Picks one TP/SL (ATR units)
 # per asset class on one time half and scores it on the other, both ways.
 WF_TP = [3.0, 4.0, 6.0, 9.0, 12.0, 17.0, 24.0]
 WF_SL = [1.0, 1.5, 2.0, 3.0]          # ≥ 1 ATR: a sub-ATR stop is inside one bar's noise

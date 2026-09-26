@@ -47,9 +47,6 @@ _DEFAULTS: dict[str, Any] = {
     "heavy_sweep_reachability_mode": "off",
     "dynamic_atr_mode": "shadow",
     "dynamic_atr_risk_cap": 0.35,
-    "payoff_geometry_mode": "shadow",
-    "payoff_geometry_brick_atr": 0.5,
-    "payoff_geometry": {},
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
     "geometry_intraday_scale_mode": "live",
@@ -381,29 +378,6 @@ def get_dynamic_atr_risk_cap() -> float:
         return float(_load().get("dynamic_atr_risk_cap", 0.35))
     except (TypeError, ValueError):
         return 0.35
-
-
-def get_payoff_geometry_mode() -> str:
-    """``off`` | ``shadow`` | ``live`` — light-path per-class TP/SL in ATR
-    (worklog/kairos/20260926_PAYOFF_GEOMETRY.md). Invalid → ``shadow``."""
-    v = str(_load().get("payoff_geometry_mode", _DEFAULTS["payoff_geometry_mode"])).lower()
-    return v if v in ("off", "shadow", "live") else "shadow"
-
-
-def get_payoff_geometry_brick_atr() -> float:
-    """Brick unit (× ATR) used to express the payoff bracket as brick counts."""
-    try:
-        v = float(_load().get("payoff_geometry_brick_atr", _DEFAULTS["payoff_geometry_brick_atr"]))
-    except (TypeError, ValueError):
-        return float(_DEFAULTS["payoff_geometry_brick_atr"])
-    return v if v > 0 else float(_DEFAULTS["payoff_geometry_brick_atr"])
-
-
-def get_payoff_geometry() -> dict:
-    """Per-asset-class ``{tp_atr, sl_atr}`` table; classes absent/null keep
-    the heavy-sweep geometry. Non-dict config → empty (no override)."""
-    v = _load().get("payoff_geometry", _DEFAULTS["payoff_geometry"])
-    return dict(v) if isinstance(v, dict) else {}
 
 
 def get_atr_anchored_evidence_mode() -> str:
