@@ -977,3 +977,50 @@ Same data and targets as step 1 (446 qualified TP/SL S2 signals). 1,000 circular
 - The hybrid ATR promote went live 2026-09-25 (2af37b8), and the first live heavy is 09-26.
 - Tight brackets resolve in hours, which changes both evidence volume and latency.
 - Re-run steps 1–2 on post-flip data before tuning any lever above.
+
+### 14.3 Evidence-tier split (2026-09-26, `scripts/kairos_calibration_tier_split.py`, report `reports/20260926_calibration_tier_split.md`)
+
+Why: the hourly resolver shadow (`worklog/kairos/20260926_HOURLY_CALIBRATION_RESOLVE.md`) showed that ~80% of the
+TP/SL it speeds up is **gate_fail** evidence, 5–7% suppressed and ~1% qualified. So the hourly lever mostly delivers
+rejected-signal evidence faster. Question: which tier's evidence actually helps correct S2?
+
+Same S2 targets, correction and rules as §14.2 A; only the evidence pool changes. Tier is the stamped `gate_outcome`,
+or the validated reconstruction for older rows (97% of rows; agreement 1.000 on 910 stamped rows).
+
+Evidence pool: qualified 449 (1.2%), suppressed 5,224 (14.4%), gate_fail 30,528 (84.3%). The TP rate is similar in every
+tier (0.25–0.27). Mean error (p_win − y) differs: qualified **+0.34**, suppressed **+0.39**, gate_fail **+0.15**.
+Gate-failed signals carry lower p_win, so they look less overconfident.
+
+Δ Brier on the 90 S2 targets every rule scores (negative = better), split by time at 09-11:
+
+| pool | rule | full | first half | second half |
+|---|---|---|---|---|
+| all tiers (today) | production, nightly | −0.043 | −0.078 | −0.008 |
+| all tiers | production, hourly | −0.059 | −0.093 | −0.026 |
+| all tiers | 3h half-life, hourly | −0.064 | −0.055 | −0.072 |
+| **qualified + suppressed** | **production, nightly** | **−0.118** | **−0.113** | **−0.122** |
+| qualified + suppressed | production, hourly | −0.128 | −0.119 | −0.138 |
+| qualified + suppressed | 3h half-life, hourly | −0.025 | −0.010 | −0.040 |
+| gate_fail only | production, nightly | −0.026 | −0.067 | **+0.014** |
+| gate_fail only | production, hourly | −0.035 | −0.087 | **+0.017** |
+| gate_fail only | 3h half-life, hourly | −0.044 | −0.048 | −0.041 |
+
+Paired, production rule: q+s beats all tiers by −0.075 ± 0.016 (nightly) and −0.069 ± 0.017 (hourly), in both halves.
+
+Findings:
+1. **Who counts as evidence matters more than when it arrives.** Restricting the production bias to qualified +
+   suppressed evidence roughly triples its S2 gain (−0.043 → −0.118). The gain holds in both halves. Hourly adds
+   only −0.01 on top.
+2. **Gate-failed evidence dilutes the slow rule.** Under the 7d/3-day rule it helped in the first half and hurt in
+   the second. Because its error level is lower (+0.15 vs +0.34/+0.39), mixing it in understates how overconfident
+   qualified signals are.
+3. **Gate-failed evidence still carries fast timing information.** Under a 3h half-life it helps in both halves
+   (−0.048 / −0.041). The q+s pool is too sparse for 3h decay. Level and timing are two separate things.
+4. **Consequence for §14.2 lever 1:** with today's all-tier pool, going hourly mainly speeds up the tier that hurts
+   the slow rule. The hourly job stays in shadow (harmless, and needed later). **The evidence pool is the bigger
+   lever and should be read first.**
+
+Caveats: 90–104 targets over one month, and FX majors are mostly absent (qualified expiry). Tier labels for the
+q+s pool are 97% reconstructed. These are the same S2 targets used to pick the pool, so the re-run on post-ATR-flip
+data is the real test. `nt_calibration_records` has no tier column, so a live pool filter needs the tier joined via
+`signal_id` (or stamped at insert).
