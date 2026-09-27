@@ -956,6 +956,9 @@ def _build_signal_sim_payload(
     failed_gates: list[str] | None = None,
     kairos_rank_score: float | None = None,
     kairos_rank_gate_shadow: bool | None = None,
+    kelly_binary_f: float | None = None,
+    kelly_context_mult: float | None = None,
+    kelly_effective_shadow: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1103,6 +1106,12 @@ def _build_signal_sim_payload(
         payload["kairos_rank_score"] = round(float(kairos_rank_score), 4)
     if kairos_rank_gate_shadow is not None:
         payload["kairos_rank_gate_shadow"] = bool(kairos_rank_gate_shadow)
+    if kelly_binary_f is not None:
+        payload["kelly_binary_f"] = round(float(kelly_binary_f), 6)
+    if kelly_context_mult is not None:
+        payload["kelly_context_mult"] = round(float(kelly_context_mult), 4)
+    if kelly_effective_shadow is not None:
+        payload["kelly_effective_shadow"] = round(float(kelly_effective_shadow), 6)
     return payload
 
 
@@ -2332,6 +2341,46 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.debug("[kairos] rank stamp %s failed: %s", symbol, exc)
             return None, None
+
+    def _variable_kelly_shadow(
+        self,
+        *,
+        p_win: float | None,
+        reward_risk: float | None,
+        symbol: str,
+        regime_label: str | None,
+        vol_tier: str | None = None,
+    ) -> tuple[float | None, float | None, float | None]:
+        """(binary_f, context_mult, effective_shadow) — fail-open Nones."""
+        try:
+            from regime_platform.sweep_orchestrator.kairos import regime_cell
+            from regime_platform.sweep_orchestrator.kairos_rank import freshness_score  # noqa: F401
+            from regime_platform.sweep_orchestrator.variable_kelly import variable_kelly
+
+            event_window = None
+            transition = None
+            tracker = getattr(self, "_kairos_rank", None)
+            cell = regime_cell(regime_label)
+            if tracker is not None and hasattr(tracker, "note_regime"):
+                try:
+                    transition, tau_h = tracker.note_regime(symbol, cell, now_ts=time.time())
+                    from regime_platform.sweep_orchestrator.kairos_rank import (
+                        event_window as _ew,
+                    )
+                    event_window = _ew(tau_h)
+                except Exception:
+                    pass
+            res = variable_kelly(
+                p_win=p_win,
+                reward_risk=reward_risk,
+                event_window=event_window,
+                transition_type=transition,
+                vol_tier=vol_tier,
+            )
+            return res.binary_f, res.context_mult, res.effective_shadow
+        except Exception as exc:
+            logger.debug("[variable-kelly] %s shadow failed: %s", symbol, exc)
+            return None, None, None
 
     def _kairos_stamp(
         self, symbol: str, regime_label: str | None, atr: float | None, source: str,
@@ -4043,10 +4092,11 @@ class SweepOrchestrator(HeavySweepMixin):
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
             "regime_conf_ok": regime_conf >= MIN_REGIME_CONF,
-            # Gate on the FINAL effective kelly (post calibration-enforcement
-            # shrink), not the raw kelly: a raw-kelly gate could qualify a
-            # symbol that publishes below MIN_KELLY after the ×0.5 penalty.
-            "kelly_min_ok": effective_kelly >= MIN_KELLY,
+            # kelly_min_ok REMOVED 2026-09-27 (changelog
+            # 20260927_CHANGELOG_EV_ENGINE_KELLY_GATE.md). Historical-mu
+            # Kelly is sizing research only — it zeroed 61% of directional
+            # scans the model liked. Publish quality is p_win / EV / regime /
+            # TimesFM. Variable binary Kelly is stamped shadow-only.
             "timesfm_available": p_timesfm is not None,
             "timesfm_confidence_ok": timesfm_confidence_ok,
             "ev_allowed": effective_ev_result.allowed,
@@ -4163,8 +4213,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 f"(must be 'buy' or 'sell')\n"
                 f"      regime_conf={regime_conf:.4f}  >= {MIN_REGIME_CONF}? "
                 f"{'✓' if gate_results['regime_conf_ok'] else '✗ FAIL'}\n"
-                f"      kelly_f={kelly_f:.6f}  >= {MIN_KELLY}? "
-                f"{'✓' if gate_results['kelly_min_ok'] else '✗ FAIL'}\n"
+                f"      kelly_f={kelly_f:.6f} (historical; not a gate)\n"
                 f"      p_timesfm={'None' if p_timesfm is None else f'{p_timesfm:.4f}'}  "
                 f"available={gate_results['timesfm_available']}  "
                 f"confidence={conf_str}\n"
@@ -4672,6 +4721,15 @@ class SweepOrchestrator(HeavySweepMixin):
                     _failed_gates = sorted(set(_failed_gates) | {"p_win_bracket_ok"})
 
                 _rank_score, _rank_gate = self._kairos_rank_stamp(symbol, regime_label, source)
+                # Variable binary Kelly — SHADOW only (never a gate).
+                # Context = Kairos event-time transition, not regime age.
+                _vk = self._variable_kelly_shadow(
+                    p_win=ev_result.p_win,
+                    reward_risk=effective_ev_result.rr,
+                    symbol=symbol,
+                    regime_label=regime_label,
+                    vol_tier=_gm.vol_tier if _gm else None,
+                )
 
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
@@ -4721,6 +4779,9 @@ class SweepOrchestrator(HeavySweepMixin):
                     kairos=self._kairos_stamp(symbol, regime_label, atr, source),
                     kairos_rank_score=_rank_score,
                     kairos_rank_gate_shadow=_rank_gate,
+                    kelly_binary_f=_vk[0],
+                    kelly_context_mult=_vk[1],
+                    kelly_effective_shadow=_vk[2],
                     gate_outcome=(
                         "qualified" if published
                         else "suppressed" if _gates_pass
