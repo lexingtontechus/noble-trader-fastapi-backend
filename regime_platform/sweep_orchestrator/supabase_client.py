@@ -275,6 +275,8 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "gate_outcome", "suppress_reason", "failed_gates",
     # Kairos rank shadow (migration 172): composite rank_score + would-publish
     "kairos_rank_score", "kairos_rank_gate_shadow",
+    # Variable binary Kelly shadow (migration 174)
+    "kelly_binary_f", "kelly_context_mult", "kelly_effective_shadow",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -606,6 +608,7 @@ _KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
     "rel_volume_1h", "clv_1h", "efficiency_24h", "atr_ratio_run", "spread_bps",
     "gate_outcome", "suppress_reason", "failed_gates",
     "kairos_rank_score", "kairos_rank_gate_shadow",
+    "kelly_binary_f", "kelly_context_mult", "kelly_effective_shadow",
 )
 
 
