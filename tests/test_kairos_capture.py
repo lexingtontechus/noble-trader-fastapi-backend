@@ -183,13 +183,15 @@ class TestPayloadStamp:
         assert {"gate_outcome", "suppress_reason", "failed_gates"} <= NT_SIGNAL_SIM_COLUMNS
 
     def test_gate_outcome_wired_in_orchestrator(self):
-        """Every suppression path that flips a gate-passing signal to
-        qualified=False must set a suppress_reason (static guard)."""
+        """Suppression paths set suppress_reason and never leave a
+        gate-pass without a stamp (static guard). cooldown_open removed
+        2026-09-27 (D4) — prior-open is not a publish veto."""
         from pathlib import Path
         src = Path(__file__).resolve().parents[1].joinpath(
             "regime_platform/sweep_orchestrator/orchestrator.py").read_text(encoding="utf-8")
-        for reason in ("cooldown_open", "cooldown_time", "content_dedup", "bracket_gate", "bracket_unscored", "geometry_gate"):
+        for reason in ("cooldown_time", "content_dedup", "bracket_gate", "bracket_unscored", "geometry_gate"):
             assert f'_suppress_reason = "{reason}"' in src
+        assert "cooldown_open" not in src
         assert "_gates_pass = bool(qualified)" in src and "gate_outcome=(" in src
 
 

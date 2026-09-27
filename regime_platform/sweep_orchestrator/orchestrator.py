@@ -68,7 +68,6 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     log_renko_bricks,
     log_error,
     fetch_calibration_bias,
-    fetch_latest_qualified_signal,
 )
 from regime_platform.sweep_orchestrator.heavy_sweep import HeavySweepMixin, compute_atr
 
@@ -231,16 +230,19 @@ TIMESFM_GATE_MODE = get_timesfm_gate_mode()
 # mtime-cached" hot-reload pattern above. _sweep_group() now calls
 # get_sweep_after_hours() directly instead of reading this name.
 
-# ── Signal cooldown (prevents signal spam) ────────────────────────────────
-# After a qualified signal is published for a (symbol, direction) pair,
-# suppress subsequent qualified signals for the same pair until the
-# cooldown expires. This prevents the same BUY/SELL from being published
-# every 5 minutes when the regime is stable.
+# ── Signal cooldown (anti-spam only; never a quality gate) ────────────────
+# After a gate-passing signal is published for a (symbol, direction) pair,
+# suppress the next publish for the same pair until SIGNAL_COOLDOWN_MINUTES
+# have elapsed. This is pure wall-clock from the last publish.
 #
-# Set to 0 to disable cooldown (every qualified sweep is published).
-# Recommended: 60 (1 hour) — gives ~3-8 signals per day per symbol.
-# 2026-09-08 config-centralization fix — see feature_flags.yaml's
-# signal_cooldown_minutes entry.
+# 2026-09-27 (worklog 20260927_QUALIFIED_VS_SUPPRESSED_PUBLISH_PATH_REDESIGN.md):
+#   * Cooldown SUPPRESSES (gate_outcome=suppressed) — it must not write
+#     qualified=false (reserved for gate failures).
+#   * Prior-open / trade resolve is NOT a publish veto (D4 removed).
+#   * D1 = 15 min = one publish per light-sweep slot. Kairos V2/V4 disproved
+#     age-based silence; 15-min cadence already caps scan noise.
+#
+# Set to 0 to publish every gate-pass (slots still 15 min apart).
 SIGNAL_COOLDOWN_MINUTES = get_signal_cooldown_minutes()
 
 # ── Minimum p_win threshold ───────────────────────────────────────────────
@@ -1104,119 +1106,9 @@ def _build_signal_sim_payload(
     return payload
 
 
-class CooldownRestartProbe(NamedTuple):
-    """Result of ``_probe_cooldown_restart`` (cooldown-restart fix,
-    2026-09-08, worklog 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md
-    — user directive "after a sl/tp hits > the cooldown should restart").
-
-    ``status``:
-      * ``"open"`` — a prior qualified signal exists for this
-        ``(symbol, direction)`` and is still open (DB shows no outcome yet,
-        neither TP nor SL has been crossed by the current price, and
-        ``EXPIRY_BARS`` hours have not yet elapsed since entry). The
-        caller must block the new signal unconditionally, regardless of
-        elapsed wall-clock time.
-      * ``"resolved"`` — the prior signal has resolved, one of three ways:
-        the batch EOD resolver already recorded an outcome, the current
-        price has already crossed TP/SL (detected live, ahead of the
-        once-daily batch), or ``EXPIRY_BARS`` hours have elapsed with
-        neither level touched (time-expired). ``resolved_at`` is the
-        epoch-seconds moment the cooldown clock should restart from.
-      * ``"unknown"`` — no prior qualified signal was found, or the
-        Supabase lookup failed. The caller falls back to the existing
-        wall-clock-only cooldown behavior, unchanged.
-    """
-    status: str
-    resolved_at: float | None = None
-
-
-async def _probe_cooldown_restart(
-    symbol: str, direction: str, current_price: float | None,
-) -> CooldownRestartProbe:
-    """Is the last qualified ``(symbol, direction)`` signal still open?
-
-    The official record of resolution (``nt_signal_sim.outcome``) is only
-    populated once a day by ``eod_resolver.py``'s batch pass — waiting on
-    it here would leave a just-closed position looking "open" for up to
-    24h. Instead: check the DB-recorded outcome first, then fall back to
-    a REAL-TIME check using the exact same TP/SL-crossing comparison
-    ``eod_resolver.resolve_signal_outcome`` uses for the batch pass
-    (imported, not re-implemented, so the two never drift), applied to
-    just the current price rather than a full historical bar walk. This
-    is intentionally a lighter check than the batch resolver: no mfe/mae,
-    no exact hold_bars — just "would this already be closed."
-
-    Best-effort: any failure here must never block a signal from
-    qualifying — callers should catch and fall back to the existing
-    wall-clock-only cooldown on exception, matching this module's
-    pervasive "never break the sweep" convention.
-    """
-    row = await fetch_latest_qualified_signal(symbol, direction)
-    if not row:
-        return CooldownRestartProbe("unknown")
-
-    # Lazy import (matches this module's existing eod_resolver-import
-    # convention, e.g. `_run_eod_lookback` above) — avoids a module-level
-    # dependency on the EOD resolver from the hot per-tick sweep path.
-    from regime_platform.sweep_orchestrator.eod_resolver import (
-        EXPIRY_BARS,
-        resolve_signal_outcome,
-    )
-    from regime_platform.sweep_orchestrator.paper_book import _signal_epoch_ts
-
-    # 1. Already resolved by the daily batch resolver (tp_hit/sl_hit/expired
-    #    all count — a timed-out signal is not "still open" for cooldown
-    #    purposes either). Prefer exit_ts (the resolver's own entry+hold_bars
-    #    estimate of when it actually closed) over resolved_at (merely when
-    #    last night's batch happened to run) as the restart moment.
-    outcome = row.get("outcome")
-    if outcome:
-        resolved_ts = row.get("exit_ts") or row.get("resolved_at") or row.get("ts")
-        return CooldownRestartProbe("resolved", _signal_epoch_ts({"ts": resolved_ts}))
-
-    # 2. Not yet resolved in the DB. Figure out how old the entry is.
-    entry_epoch = _signal_epoch_ts(row)
-    age_hours = (time.time() - entry_epoch) / 3600.0
-
-    # 3. Time-based expiry — EXPIRY_BARS post-entry 1h bars with neither
-    #    level touched. The resolution moment is deterministic here
-    #    (entry + EXPIRY_BARS hours), unlike the live-crossing case below.
-    if age_hours >= EXPIRY_BARS:
-        return CooldownRestartProbe("resolved", entry_epoch + EXPIRY_BARS * 3600.0)
-
-    # 4. Live TP/SL-crossing check against the current price. Reuses
-    #    resolve_signal_outcome with a single-element closes window
-    #    (expiry_bars=1) — this is the SAME same-bar TP-priority
-    #    comparison eod_resolver.py runs, just over one bar instead of a
-    #    full historical walk, so "closed" can never mean something
-    #    subtly different here than it does in the batch pass. An
-    #    "expired" result from this 1-bar call means only "not crossed at
-    #    this instant" — real expiry is decided by step 3 above, not here.
-    entry_price = row.get("entry_price")
-    stop_loss = row.get("stop_loss")
-    take_profit = row.get("take_profit")
-    if current_price is not None and None not in (entry_price, stop_loss, take_profit):
-        try:
-            live = resolve_signal_outcome(
-                float(entry_price), float(stop_loss), float(take_profit),
-                [float(current_price)],
-                direction=row.get("signal") or direction,
-                expiry_bars=1,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[sweep:orch] %s: cooldown live TP/SL check failed (%s)",
-                symbol, exc,
-            )
-            live = None
-        if live is not None and live["outcome"] in ("tp_hit", "sl_hit"):
-            # The exact intra-window crossing moment isn't knowable from a
-            # single current-price sample — "now" is the documented
-            # fallback (spec: crossing time if determinable, else "now").
-            return CooldownRestartProbe("resolved", time.time())
-
-    # 5. Neither DB-resolved, expired-by-time, nor live-crossed: still open.
-    return CooldownRestartProbe("open")
+# CooldownRestartProbe / _probe_cooldown_restart removed 2026-09-27 (D4).
+# Prior-open / trade-resolve must not gate publish. See worklog
+# 20260927_QUALIFIED_VS_SUPPRESSED_PUBLISH_PATH_REDESIGN.md.
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────
@@ -4216,82 +4108,32 @@ class SweepOrchestrator(HeavySweepMixin):
         )
         _suppress_reason: str | None = None
 
-        # ── Cooldown check (suppress signal spam) ────────────────────
-        # Even if all gates pass, suppress the signal if the same
-        # (symbol, direction) was published recently. This prevents the
-        # same BUY/SELL from being published every 5 minutes when the
-        # regime is stable.
-        #
-        # 2026-09-08 cooldown-restart fix (worklog
-        # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md, user
-        # directive "after a sl/tp hits > the cooldown should restart"):
-        # pure wall-clock elapsed time has zero awareness of whether the
-        # ORIGINAL signal actually resolved — it could let a brand-new
-        # same-direction signal qualify while the original position was
-        # still open, tracking toward its own EXPIRY_BARS-hour deadline.
-        # Before applying the elapsed-time check, ask
-        # `_probe_cooldown_restart` whether the last qualified signal for
-        # this (symbol, direction) is still open. If it is, block
-        # unconditionally regardless of elapsed time. If it has resolved
-        # (DB-recorded outcome, a live TP/SL crossing, or time-based
-        # expiry), restart the cooldown clock from the resolution moment
-        # instead of the original qualification moment. Best-effort: any
-        # probe failure falls back to the original wall-clock-only check.
+        # ── Publish policy: wall-clock cooldown only (anti-spam) ────────
+        # SUPPRESSES delivery; never flips qualified (reserved for gate
+        # failures). Prior-open / trade resolve is not a publish veto (D4).
+        # D2: clock is pure time from the last publish.
+        published = True
         cooldown_suppressed = False
-        if qualified and SIGNAL_COOLDOWN_MINUTES > 0:
+        if _gates_pass and SIGNAL_COOLDOWN_MINUTES > 0:
             cooldown_key = (symbol, trade_signal["signal"])
             last_ts = self._last_qualified_signal.get(cooldown_key, 0)
-
-            try:
-                restart_probe = await _probe_cooldown_restart(
-                    symbol, trade_signal["signal"], current_price,
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[sweep:orch] {symbol}: cooldown-restart probe failed "
-                    f"({type(exc).__name__}: {exc}) — falling back to "
-                    f"wall-clock-only cooldown"
-                )
-                restart_probe = CooldownRestartProbe("unknown")
-
-            if restart_probe.status == "open":
+            elapsed_min = (time.time() - last_ts) / 60.0
+            if elapsed_min < SIGNAL_COOLDOWN_MINUTES:
                 cooldown_suppressed = True
+                published = False
                 logger.info(
-                    f"[sweep:orch] {symbol}: COOLDOWN SUPPRESSED — "
-                    f"{trade_signal['signal']} signal suppressed "
-                    f"(prior qualified signal for this direction is still "
-                    f"OPEN — neither TP/SL hit nor expired yet)"
+                    f"[sweep:orch] {symbol}: SUPPRESSED (cooldown_time) — "
+                    f"{trade_signal['signal']} ({elapsed_min:.1f}min since last "
+                    f"publish, cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
                 )
-                qualified = False
+                _suppress_reason = "cooldown_time"
                 gate_results["cooldown_ok"] = False
-                _suppress_reason = "cooldown_open"
             else:
-                if restart_probe.status == "resolved" and restart_probe.resolved_at is not None:
-                    # Restart the cooldown clock from the resolution
-                    # moment, not the original qualification moment — and
-                    # persist it so the elapsed-time check keeps working
-                    # unchanged on subsequent ticks.
-                    last_ts = restart_probe.resolved_at
-                    self._last_qualified_signal[cooldown_key] = last_ts
-
-                elapsed_min = (time.time() - last_ts) / 60.0
-                if elapsed_min < SIGNAL_COOLDOWN_MINUTES:
-                    cooldown_suppressed = True
-                    logger.info(
-                        f"[sweep:orch] {symbol}: COOLDOWN SUPPRESSED — "
-                        f"{trade_signal['signal']} signal suppressed "
-                        f"({elapsed_min:.1f}min since last, cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
-                    )
-                    # Mark as not qualified so it doesn't get published
-                    qualified = False
-                    gate_results["cooldown_ok"] = False
-                    _suppress_reason = "cooldown_time"
-                else:
-                    gate_results["cooldown_ok"] = True
+                gate_results["cooldown_ok"] = True
         else:
             gate_results["cooldown_ok"] = True
 
-        if not qualified and not cooldown_suppressed:
+        if not _gates_pass:
             # ── Detailed rejection log ────────────────────────────────
             # Show EVERY gate's status + actual value vs threshold, so
             # the user can see exactly what's blocking signals and tune
@@ -4579,12 +4421,12 @@ class SweepOrchestrator(HeavySweepMixin):
                 content_hash
                 and content_hash == self._last_signal_hash.get(dedup_key)
             ):
-                # Same content as last publish — suppress even if cooldown expired
-                qualified = False
+                # Same content as last publish — SUPPRESS delivery (not a gate fail)
+                published = False
                 gate_results["content_dedup_ok"] = False
                 _suppress_reason = "content_dedup"
                 logger.info(
-                    f"[sweep:orch] {symbol}: DEDUP SUPPRESSED — "
+                    f"[sweep:orch] {symbol}: SUPPRESSED (content_dedup) — "
                     f"signal content unchanged (hash={content_hash[:8]}...)"
                 )
             else:
@@ -4616,13 +4458,12 @@ class SweepOrchestrator(HeavySweepMixin):
                 )
                 if _bracket_decision == BRACKET_REJECT_UNSCORED:
                     gate_results["p_win_bracket_ok"] = False
-                    if qualified and _unscored_policy == "fail_closed":
+                    if published and _unscored_policy == "fail_closed":
                         _suppress_reason = "bracket_unscored"
-                        qualified = False
+                        published = False
                         logger.info(
-                            "[sweep:orch] %s: FAIL-CLOSED unscored p_win_bracket "
-                            "(bucket=%s vol=%s n_stored path) — not QUALIFIED "
-                            "(policy=fail_closed)",
+                            "[sweep:orch] %s: SUPPRESSED (bracket_unscored) "
+                            "fail_closed (bucket=%s vol=%s)",
                             symbol, _bracket_bucket, _bracket_vol_tier,
                         )
                     else:
@@ -4633,12 +4474,12 @@ class SweepOrchestrator(HeavySweepMixin):
                         )
                 elif _bracket_decision == BRACKET_REJECT_LOW:
                     gate_results["p_win_bracket_ok"] = False
-                    if p_bracket_mode == "live" and qualified:
+                    if p_bracket_mode == "live" and published:
                         _suppress_reason = "bracket_gate"
-                        qualified = False
+                        published = False
                         logger.info(
-                            "[sweep:orch] %s: REJECTED by p_win_bracket=%.4f "
-                            "(min=%.3f, bucket=%s)",
+                            "[sweep:orch] %s: SUPPRESSED (bracket_gate) "
+                            "p_win_bracket=%.4f (min=%.3f, bucket=%s)",
                             symbol, _p_win_bracket or 0.0,
                             get_min_p_win_bracket(), _bracket_bucket,
                         )
@@ -4653,21 +4494,19 @@ class SweepOrchestrator(HeavySweepMixin):
                 else:
                     gate_results["p_win_bracket_ok"] = True
 
-            if qualified:
-                # ── Record cooldown timestamp ──────────────────────────
-                # Mark this (symbol, direction) as published so subsequent
-                # sweeps within the cooldown window are suppressed.
+            if published:
+                # ── Record publish timestamp (wall-clock cooldown) ──────
                 self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
                 logger.info(
-                    f"[sweep:orch] {symbol}: QUALIFIED {trade_signal['signal']} signal "
-                    f"(cooldown timer started: {SIGNAL_COOLDOWN_MINUTES}min)"
+                    f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} "
+                    f"(gate_pass={_gates_pass}; cooldown={SIGNAL_COOLDOWN_MINUTES}min)"
                 )
 
         # ── 10b. Direct Discord delivery ────────────────────────────
         # Placed here — AFTER the dedup block above — so `qualified` is
         # FINAL (cooldown suppression AND content-dedup suppression have
         # both already flipped it to False where applicable).
-        if qualified and settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED:
+        if published and settings.NOBLE_TRADER_DISCORD_SIGNALS_ENABLED:
             try:
                 from regime_platform.sweep_orchestrator.discord_delivery import (
                     maybe_send_discord_signal,
@@ -4799,13 +4638,13 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                     # Stamp only when risk is scored (fail-open rows stay NULL)
                     _risk_scored = _gm.geometry_risk_hat is not None
-                    if qualified and _light_gate != "off" and _would_reject:
+                    if published and _light_gate != "off" and _would_reject:
                         if _light_gate == "live":
-                            qualified = False
+                            published = False
                             _suppress_reason = "geometry_gate"
                             logger.info(
-                                "[light:geometry] %s REJECT qualified — risk=%s cap=%s "
-                                "tp_atr=%s",
+                                "[light:geometry] %s SUPPRESSED (geometry_gate) "
+                                "risk=%s cap=%s tp_atr=%s",
                                 symbol, _gm.geometry_risk_hat, _risk_cap_b,
                                 _gm.tp_distance_atr,
                             )
@@ -4850,7 +4689,9 @@ class SweepOrchestrator(HeavySweepMixin):
                     regime=regime_label,
                     regime_conf=regime_conf,
                     source=source,
-                    qualified=qualified,
+                    # D3: qualified column = quality gate_pass only.
+                    # Delivery is gate_outcome=qualified (published).
+                    qualified=_gates_pass,
                     kelly_f=kelly_f,
                     effective_kelly=effective_kelly,
                     predicted_p_win_raw=p_win_raw,
@@ -4881,16 +4722,16 @@ class SweepOrchestrator(HeavySweepMixin):
                     kairos_rank_score=_rank_score,
                     kairos_rank_gate_shadow=_rank_gate,
                     gate_outcome=(
-                        "qualified" if qualified
+                        "qualified" if published
                         else "suppressed" if _gates_pass
                         else "gate_fail"
                     ),
                     suppress_reason=(
-                        _suppress_reason if (_gates_pass and not qualified) else None
+                        _suppress_reason if (_gates_pass and not published) else None
                     ),
                     failed_gates=_failed_gates or None,
                 )
-                if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not qualified:
+                if settings.NOBLE_TRADER_SIM_CAPTURE_QUALIFIED_ONLY and not _gates_pass:
                     logger.debug(
                         "[sweep:orch] %s: signal-sim capture skipped (qualified-only mode)",
                         symbol,

@@ -107,7 +107,7 @@ _DEFAULTS: dict[str, Any] = {
         "clamp_max": 0.95,
     },
     "sweep_after_hours": False,
-    "signal_cooldown_minutes": 60.0,
+    "signal_cooldown_minutes": 15.0,
     "expiry_rate_alert": {
         "enabled": True,
         "threshold_pct": 50.0,

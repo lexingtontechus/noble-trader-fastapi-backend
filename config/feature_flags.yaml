@@ -77,10 +77,11 @@ timesfm_map_mode: "zmap_live"
 # intentional rather than assuming either way.
 sweep_after_hours: true
 
-# signal_cooldown_minutes: suppress repeat qualified signals for the same
-# (symbol, direction) pair within this many minutes of the last one, to
-# prevent spam when a regime is stable. Same config-centralization fix.
-signal_cooldown_minutes: 60
+# signal_cooldown_minutes: suppress (not fail) repeat publishes for the same
+# (symbol, direction) within this many minutes of the last publish. Pure
+# wall-clock anti-spam — never gated on trade open/resolve. 2026-09-27 D1:
+# 15 min = one publish per light-sweep slot (was 60, a 5-min-era leftover).
+signal_cooldown_minutes: 15
 
 # expiry_rate_alert (2026-09-08, worklog
 # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md, priority #3): a signal
