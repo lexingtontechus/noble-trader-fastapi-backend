@@ -4112,7 +4112,7 @@ class SweepOrchestrator(HeavySweepMixin):
         # SUPPRESSES delivery; never flips qualified (reserved for gate
         # failures). Prior-open / trade resolve is not a publish veto (D4).
         # D2: clock is pure time from the last publish.
-        published = True
+        published = bool(_gates_pass)
         cooldown_suppressed = False
         if _gates_pass and SIGNAL_COOLDOWN_MINUTES > 0:
             cooldown_key = (symbol, trade_signal["signal"])

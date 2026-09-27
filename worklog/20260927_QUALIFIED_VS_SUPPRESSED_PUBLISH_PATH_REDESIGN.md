@@ -312,3 +312,7 @@ If you prefer maximum S2 throughput for promote bars, **D1 = 0** is also coheren
 | Tests rewritten | `tests/test_cooldown_restart.py`, `test_kairos_capture.py` |
 
 **Verification:** full suite `1314 passed, 21 skipped`.
+
+### Post-restart fix (2026-09-27 04:16 UTC)
+
+Live check after Studio restart: open-veto gone (GBPUSD/EURUSD/AAPL **published**). Bug found: `published` was initialized `True`, so gate fails stamped `gate_outcome=qualified` with `failed_gates` set. Fix: `published = bool(_gates_pass)`. Rows from ~04:15–04:16 UTC carry the bad stamp; treat `failed_gates is not null` as gate_fail until a cleanup (optional). **Needs restart to pick up the fix.**
