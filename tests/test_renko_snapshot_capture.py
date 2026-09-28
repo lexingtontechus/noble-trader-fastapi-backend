@@ -99,6 +99,7 @@ async def test_log_renko_bricks_uses_on_conflict(monkeypatch):
         is_success = True
         status_code = 201
         text = ""
+        headers = {"content-range": "0-0/0"}
 
     class FakeClient:
         def __init__(self, *a, **k):
@@ -114,6 +115,10 @@ async def test_log_renko_bricks_uses_on_conflict(monkeypatch):
             captured["url"] = url
             captured["headers"] = headers
             captured["json"] = json
+            return FakeResp()
+
+        async def delete(self, url, headers=None, params=None):
+            captured["delete"] = {"url": url, "headers": headers, "params": params or {}}
             return FakeResp()
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
@@ -143,7 +148,10 @@ async def test_log_renko_bricks_uses_on_conflict(monkeypatch):
 
 def _fake_post_capture(monkeypatch):
     """Patch httpx.AsyncClient.post to capture the POSTed rows; returns the
-    ``captured`` dict the test can inspect after awaiting log_renko_bricks."""
+    ``captured`` dict the test can inspect after awaiting log_renko_bricks.
+
+    Also captures the follow-up orphan-purge DELETE (if any) under
+    ``captured["delete"]``."""
     import httpx
 
     captured = {}
@@ -152,6 +160,11 @@ def _fake_post_capture(monkeypatch):
         is_success = True
         status_code = 201
         text = ""
+        headers = {"content-range": "0-0/0"}
+
+        def __init__(self, status_code=201, headers=None):
+            self.status_code = status_code
+            self.headers = headers or {"content-range": "0-0/0"}
 
     class FakeClient:
         def __init__(self, *a, **k):
@@ -168,6 +181,10 @@ def _fake_post_capture(monkeypatch):
             captured["headers"] = headers
             captured["json"] = json
             return FakeResp()
+
+        async def delete(self, url, headers=None, params=None):
+            captured["delete"] = {"url": url, "headers": headers, "params": params or {}}
+            return FakeResp(200, {"content-range": "0-0/3"})
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
@@ -283,3 +300,136 @@ async def test_has_real_timestamps_true_ignores_sweep_ts_even_if_provided(monkey
     # hourly reconstruction.
     real_ts_used = [b.to_dict()["timestamp"] for b in bricks]
     assert persisted_ts == pytest.approx(real_ts_used)
+
+
+# ─── Orphan high-brick_index purge (2026-09-28) ────────────────────────────
+# build_from_prices resets index to 0 and upserts only 0..N-1. A prior longer
+# build's rows N..M on the same (symbol, brick_size, session_date) are never
+# overwritten and win brick_index DESC — charts plot them as "last 10".
+
+
+@pytest.mark.asyncio
+async def test_log_renko_bricks_purges_orphan_high_indices(monkeypatch):
+    """After upserting 0..2, DELETE same-grid rows with brick_index > 2."""
+    captured = _fake_post_capture(monkeypatch)
+
+    await log_renko_bricks(
+        "XAUAUD",
+        [
+            {"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0},
+            {"index": 1, "direction": "up", "open_price": 101.0, "close_price": 102.0},
+            {"index": 2, "direction": "down", "open_price": 102.0, "close_price": 101.0},
+        ],
+        brick_size=1.474358,
+        session_date="2026-09-28",
+    )
+
+    assert "delete" in captured, "orphan purge DELETE was not issued"
+    params = captured["delete"]["params"]
+    assert params["symbol"] == "eq.XAUAUD"
+    assert params["session_date"] == "eq.2026-09-28"
+    assert params["brick_index"] == "gt.2"
+    # brick_size band must be present (same 0.1% tol as renko_retention)
+    assert "brick_size.gte." in params["and"]
+    assert "brick_size.lte." in params["and"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_purge_brick_size_band_covers_roundtrip(monkeypatch):
+    """Tolerance band is relative 0.1% so float round-trip never misses."""
+    captured = _fake_post_capture(monkeypatch)
+
+    await log_renko_bricks(
+        "XAGUSD",
+        [{"index": 7, "direction": "up", "open_price": 60.0, "close_price": 60.1}],
+        brick_size=0.114717,
+        session_date="2026-09-28",
+    )
+
+    params = captured["delete"]["params"]
+    assert params["brick_index"] == "gt.7"
+    # 0.114717 * 1e-3 = 1.14717e-4 → band ≈ [0.114602, 0.114832]
+    and_clause = params["and"]
+    assert "brick_size.gte." in and_clause
+    assert "brick_size.lte." in and_clause
+    # Parse the band endpoints and check they bracket the value within 0.1%.
+    import re
+    m = re.search(r"brick_size\.gte\.([0-9.]+),brick_size\.lte\.([0-9.]+)", and_clause)
+    assert m, f"band not parseable: {and_clause}"
+    low, high = float(m.group(1)), float(m.group(2))
+    assert low < 0.114717 < high
+    assert (high - low) == pytest.approx(0.114717 * 2e-3, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_orphan_purge_skipped_when_insert_fails(monkeypatch):
+    """A failed upsert must not DELETE — orphans would be the only remaining
+    live rows if we purged on error."""
+    import httpx
+
+    captured = {}
+
+    class FakeResp:
+        def __init__(self, status_code=201, text="", headers=None):
+            self.status_code = status_code
+            self.is_success = status_code < 400
+            self.text = text
+            self.headers = headers or {}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["post"] = True
+            return FakeResp(409, "conflict")
+
+        async def delete(self, url, headers=None, params=None):
+            captured["delete"] = params or {}
+            return FakeResp(200)
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_URL",
+        "https://test.supabase.co",
+    )
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "test-key",
+    )
+
+    await log_renko_bricks(
+        "AAPL",
+        [{"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0}],
+        brick_size=0.088433,
+        session_date="2026-09-28",
+    )
+    assert captured.get("post") is True
+    assert "delete" not in captured
+
+
+@pytest.mark.asyncio
+async def test_purge_orphan_helper_never_raises_on_delete_error(monkeypatch):
+    """_purge_orphan_renko_bricks is best-effort — network failure returns 0."""
+    from regime_platform.sweep_orchestrator.supabase_client import (
+        _purge_orphan_renko_bricks,
+    )
+
+    class BoomClient:
+        async def delete(self, *a, **k):
+            raise RuntimeError("network down")
+
+    result = await _purge_orphan_renko_bricks(
+        BoomClient(),
+        symbol="US500",
+        brick_size=2.278393,
+        session_date="2026-09-28",
+        max_brick_index=10,
+    )
+    assert result == 0

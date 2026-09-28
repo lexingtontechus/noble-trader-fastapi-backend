@@ -618,6 +618,57 @@ NT_RENKO_BRICKS_COLUMNS: frozenset[str] = frozenset({
 })
 
 
+async def _purge_orphan_renko_bricks(
+    client: httpx.AsyncClient,
+    symbol: str,
+    brick_size: float,
+    session_date: str,
+    max_brick_index: int,
+) -> int:
+    """Delete leftover high ``brick_index`` rows from a longer prior build.
+
+    ``log_renko_bricks`` upserts indices ``0..N-1`` of the current
+    ``build_from_prices`` series. A previous longer build may have written
+    indices ``N..M`` on the same ``(symbol, brick_size, session_date)``
+    grid; those rows are never overwritten and sort first under
+    ``brick_index DESC``, so charts pick stale prices as "last 10".
+
+    Deletes only same-grid orphans (``brick_index > max_brick_index`` with
+    brick_size inside the same 0.1% band as retention). Best-effort —
+    returns the deleted-row count, never raises.
+    """
+    tol = max(abs(brick_size) * 1e-3, 1e-9)
+    low = brick_size - tol
+    high = brick_size + tol
+    params = {
+        "symbol": f"eq.{symbol}",
+        "session_date": f"eq.{session_date}",
+        "brick_index": f"gt.{int(max_brick_index)}",
+        "and": f"(brick_size.gte.{low:.10f},brick_size.lte.{high:.10f})",
+        "select": "brick_id",
+    }
+    try:
+        resp = await client.delete(
+            _url("nt_renko_bricks"),
+            headers={**_headers(), "Prefer": "count=exact"},
+            params=params,
+        )
+        if not resp.is_success:
+            logger.warning(
+                "log_renko_bricks: orphan purge HTTP %d — %s",
+                resp.status_code, resp.text[:200],
+            )
+            return 0
+        content_range = resp.headers.get("content-range") or ""
+        if "/" in content_range:
+            total = content_range.split("/", 1)[1].strip()
+            return int(total) if total.isdigit() else 0
+        return 0
+    except Exception as exc:
+        logger.warning("log_renko_bricks: orphan purge failed: %s", exc)
+        return 0
+
+
 async def log_renko_bricks(
     symbol: str,
     bricks: list[dict[str, Any]],
@@ -707,6 +758,17 @@ async def log_renko_bricks(
         logger.debug("log_renko_bricks: no bricks for %s — skipping", symbol)
         return
 
+    # Live grid identity for the orphan purge — same symbol/brick_size/
+    # session_date as the upserted rows, max index of THIS build.
+    idx_vals = [r["brick_index"] for r in rows if r.get("brick_index") is not None]
+    max_brick_index = max(int(i) for i in idx_vals) if idx_vals else None
+    eff_brick_size = float(brick_size or rows[0].get("brick_size") or 0)
+    eff_session_date = (
+        session_date
+        or rows[0].get("session_date")
+        or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    )
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -723,6 +785,24 @@ async def log_renko_bricks(
                     "log_renko_bricks: insert HTTP %d — %s",
                     resp.status_code, resp.text[:300],
                 )
+                return
+            # Self-heal orphans from a prior longer build on this grid.
+            # Upstream only overwrites 0..N-1; rows N..M must go or charts
+            # ordered by brick_index DESC plot the stale tail as "latest".
+            if max_brick_index is not None and eff_brick_size > 0:
+                purged = await _purge_orphan_renko_bricks(
+                    client,
+                    symbol=symbol,
+                    brick_size=eff_brick_size,
+                    session_date=eff_session_date,
+                    max_brick_index=max_brick_index,
+                )
+                if purged:
+                    logger.info(
+                        "log_renko_bricks: purged %d orphan brick(s) for %s "
+                        "(bs=%s session=%s index>%d)",
+                        purged, symbol, eff_brick_size, eff_session_date, max_brick_index,
+                    )
     except Exception as exc:
         logger.error("log_renko_bricks: insert failed: %s", exc)
 
