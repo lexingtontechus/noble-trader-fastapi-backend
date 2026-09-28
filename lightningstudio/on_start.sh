@@ -19,6 +19,8 @@
 # Service order (important):
 #   1. TimesFM (port 8002)   — START FIRST, slowest to load (30-60s model
 #                              load, 2-3 min on first run downloading weights)
+#   1b. Local LLM (port 8004) — small instruct model (LFM/Qwen) for macro
+#                              classify/pivots; optional but preferred over cloud
 #   2. Main app (port 8001)  — starts in parallel with TimesFM loading
 #   3. Gateway (port 8000)   — starts once main app is healthy
 #   4. Orchestrator (8003)   — starts LAST, only after TimesFM model is loaded
@@ -43,6 +45,7 @@ mkdir -p "$LOG_DIR"
 
 # Log file paths
 LOG_TIMESFM="$LOG_DIR/timesfm.log"
+LOG_LLM="$LOG_DIR/llm.log"
 LOG_MAIN="$LOG_DIR/main.log"
 LOG_GATEWAY="$LOG_DIR/gateway.log"
 LOG_ORCH="$LOG_DIR/orchestrator.log"
@@ -67,6 +70,7 @@ truncate_log() {
 
 # Truncate all service logs on startup
 truncate_log "$LOG_TIMESFM" "$LOG_MAX_KB"
+truncate_log "$LOG_LLM" "$LOG_MAX_KB"
 truncate_log "$LOG_MAIN" "$LOG_MAX_KB"
 truncate_log "$LOG_GATEWAY" "$LOG_MAX_KB"
 truncate_log "$LOG_ORCH" "$LOG_MAX_KB"
@@ -87,6 +91,7 @@ log "═════════════════════════
 # ── Cleanup stale processes from previous sessions ──────────
 pkill -f "python main.py" 2>/dev/null || true
 pkill -f "python server.py" 2>/dev/null || true
+pkill -f "python llm_server.py" 2>/dev/null || true
 pkill -f "python proxy.py" 2>/dev/null || true
 pkill -f "python -m regime_platform.sweep_orchestrator" 2>/dev/null || true
 sleep 2
@@ -150,6 +155,16 @@ PORT=8002 python server.py >> "$LOG_TIMESFM" 2>&1 &
 PID_TIMESFM=$!
 log "    PID: $PID_TIMESFM"
 
+# ── 1b. Local LLM (port 8004) — macro classify / pivots ───────────────────
+# Same pattern as TimesFM. Secrets: LOCAL_LLM_MODEL, optional LOCAL_LLM_API_KEY.
+# Clients: LOCAL_LLM_BASE_URL=http://127.0.0.1:8004
+log ""
+log "  [1b/5] Starting Local LLM (port 8004)..."
+log "    Log: $LOG_LLM"
+LOCAL_LLM_PORT=8004 python llm_server.py >> "$LOG_LLM" 2>&1 &
+PID_LLM=$!
+log "    PID: $PID_LLM"
+
 # ── 2. Main App (port 8001) ───────────────────────────────────────────────
 # CRITICAL: set PORT=8001 explicitly. The previous script ran `python main.py`
 # with no PORT env, so main.py defaulted to 8000 — which then conflicted
@@ -194,6 +209,7 @@ log "    PID: $PID_ORCH"
 log ""
 log "  Main app PID:  $PID_MAIN  → log: $LOG_MAIN"
 log "  TimesFM PID:   $PID_TIMESFM  → log: $LOG_TIMESFM"
+log "  Local LLM PID: $PID_LLM → log: $LOG_LLM"
 log "  Orch PID:      $PID_ORCH  → log: $LOG_ORCH"
 log "  Gateway PID:   $PID_GATEWAY  → log: $LOG_GATEWAY"
 log "  Public URL:    https://8000-$(hostname -s 2>/dev/null || echo '...').cloudspaces.litng.ai"
@@ -204,9 +220,11 @@ if command -v curl &>/dev/null; then
     log "  Health summary:"
     main_h=$(curl -sf http://127.0.0.1:8001/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "DOWN")
     tfm_h=$(curl -sf http://127.0.0.1:8002/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "DOWN")
+    llm_h=$(curl -sf http://127.0.0.1:8004/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "DOWN")
     gw_h=$(curl -sf http://127.0.0.1:8000/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "DOWN")
     log "    Main App    : $main_h"
     log "    TimesFM     : $tfm_h"
+    log "    Local LLM   : $llm_h"
     log "    Gateway     : $gw_h"
 fi
 
@@ -217,6 +235,7 @@ log "  ── How to view logs ────────────────�
 log "  All logs:     tail -f $LOG_DIR/*.log"
 log "  Orchestrator: tail -f $LOG_ORCH"
 log "  TimesFM:      tail -f $LOG_TIMESFM"
+log "  Local LLM:    tail -f $LOG_LLM"
 log "  Main app:     tail -f $LOG_MAIN"
 log "  Gateway:      tail -f $LOG_GATEWAY"
 log "  Startup:      tail -f $LOG_STARTUP"
@@ -224,7 +243,7 @@ log "═════════════════════════
 
 cleanup() {
     log "on_start.sh: Shutting down services..."
-    kill $PID_MAIN $PID_TIMESFM $PID_ORCH $PID_GATEWAY 2>/dev/null
+    kill $PID_MAIN $PID_TIMESFM $PID_LLM $PID_ORCH $PID_GATEWAY 2>/dev/null
     wait
 }
 trap cleanup EXIT INT TERM

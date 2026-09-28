@@ -58,6 +58,7 @@ cleanup() {
     kill "$ORCH_PID" 2>/dev/null || true
     kill "$MAIN_PID" 2>/dev/null || true
     kill "$TIMESFM_PID" 2>/dev/null || true
+    kill "$LLM_PID" 2>/dev/null || true
     kill "$GATEWAY_PID" 2>/dev/null || true
     wait 2>/dev/null || true
     echo "All services stopped."
@@ -131,6 +132,13 @@ PORT=8002 python server.py &
 TIMESFM_PID=$!
 echo "  PID: $TIMESFM_PID"
 echo "  (model load happens in background — will wait for it below)"
+
+# ── 1b. Local LLM (port 8004) ─────────────────────────────────────────────
+echo ""
+echo "[1b] Starting Local LLM on port 8004..."
+LOCAL_LLM_PORT=8004 python llm_server.py &
+LLM_PID=$!
+echo "  PID: $LLM_PID"
 
 # ── 2. Main App (port 8001) ───────────────────────────────────────────────
 echo ""

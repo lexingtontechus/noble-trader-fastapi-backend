@@ -21,6 +21,7 @@ echo "════════════════════════�
 for proc_name in \
     "python main.py" \
     "python server.py" \
+    "python llm_server.py" \
     "python proxy.py" \
     "python -m regime_platform.sweep_orchestrator"
 do
@@ -38,6 +39,7 @@ sleep 3
 for proc_name in \
     "python main.py" \
     "python server.py" \
+    "python llm_server.py" \
     "python proxy.py" \
     "python -m regime_platform.sweep_orchestrator"
 do

@@ -9,12 +9,12 @@ Run on Studio (mirror TimesFM :8002):
 
 Secrets / env:
   LOCAL_LLM_MODEL     HF id or local path (default LiquidAI/LFM2.5-1.2B-Instruct)
-  LOCAL_LLM_PORT      default 8003
+  LOCAL_LLM_PORT      default 8004 (8003 is sweep orchestrator)
   LOCAL_LLM_API_KEY   optional shared secret (X-API-Key)
   HF_HOME             forced to .cache/huggingface like server.py
 
 Clients set:
-  LOCAL_LLM_BASE_URL=http://127.0.0.1:8003
+  LOCAL_LLM_BASE_URL=http://127.0.0.1:8004
   LOCAL_LLM_MODEL=<same id or "local">
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 log = logging.getLogger("llm-server")
 
 MODEL_ID = os.getenv("LOCAL_LLM_MODEL", "LiquidAI/LFM2.5-1.2B-Instruct")
-PORT = int(os.getenv("LOCAL_LLM_PORT", "8003"))
+PORT = int(os.getenv("LOCAL_LLM_PORT", "8004"))
 DEVICE = os.getenv("LOCAL_LLM_DEVICE", "auto")
 
 state: dict = {"pipe": None, "tokenizer": None}

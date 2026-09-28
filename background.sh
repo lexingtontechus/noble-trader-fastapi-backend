@@ -20,6 +20,7 @@ cd "$SCRIPT_DIR"
 # ── Cleanup stale processes ───────────────────────────────────
 pkill -f "python main.py" 2>/dev/null || true
 pkill -f "python server.py" 2>/dev/null || true
+pkill -f "python llm_server.py" 2>/dev/null || true
 pkill -f "python -m regime_platform.sweep_orchestrator" 2>/dev/null || true
 sleep 2
 
@@ -27,6 +28,7 @@ sleep 2
 echo "Starting Noble Trader background stack..."
 echo "  Main app    → will bind to PORT or fall back to 8000"
 echo "  TimesFM     → port 8002"
+echo "  Local LLM   → port 8004"
 echo "  Sweep Orch  → port 8003"
 
 python main.py &
@@ -35,17 +37,21 @@ PID_MAIN=$!
 PORT=8002 python server.py &
 PID_TIMESFM=$!
 
+LOCAL_LLM_PORT=8004 python llm_server.py &
+PID_LLM=$!
+
 SWEEP_ORCHESTRATOR_PORT=8003 python -m regime_platform.sweep_orchestrator &
 PID_ORCH=$!
 
 echo "  PID main:    $PID_MAIN"
 echo "  PID timesfm: $PID_TIMESFM"
+echo "  PID llm:     $PID_LLM"
 echo "  PID orch:    $PID_ORCH"
 
 # Trap to kill all on exit
 cleanup() {
     echo "Shutting down..."
-    kill $PID_MAIN $PID_TIMESFM $PID_ORCH 2>/dev/null
+    kill $PID_MAIN $PID_TIMESFM $PID_LLM $PID_ORCH 2>/dev/null
     wait
 }
 trap cleanup EXIT INT TERM

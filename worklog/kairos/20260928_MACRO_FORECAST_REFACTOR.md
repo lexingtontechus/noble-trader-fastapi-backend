@@ -108,17 +108,17 @@ Only **2 unique labeled events** in `events[]` so far (both `no_change`) — the
 | **A. HTTP server** (llama.cpp / vLLM / TGI) | `LOCAL_LLM_BASE_URL=http://127.0.0.1:<port>` (full URL). `LOCAL_LLM_MODEL` = name **the server** was started with (e.g. `LiquidAI/LFM2.5-1.2B-Instruct` or `local`). | **No** in our process — the **server** owns the weights. |
 | **B. In-process transformers** | **Unset** `LOCAL_LLM_BASE_URL`. `LOCAL_LLM_MODEL=LiquidAI/LFM2.5-1.2B-Instruct` | **Yes** — `from_pretrained` pulls into `HF_HOME` / `hf_cache` on first run. |
 
-**Studio pattern (same as TimesFM `server.py` :8002):** run **`llm_server.py` :8003** as a long-lived process.
+**Studio pattern (same as TimesFM `server.py` :8002):** run **`llm_server.py` :8004** (orchestrator owns 8003).
 
 ```bash
-# Studio / start.sh style
+# on_start.sh / start.sh / background.sh now launch this
 PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe llm_server.py
 # default model: LiquidAI/LFM2.5-1.2B-Instruct  (override LOCAL_LLM_MODEL)
 ```
 
 | Secret | Value |
 |---|---|
-| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:8003` |
+| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:8004` |
 | `LOCAL_LLM_MODEL` | `LiquidAI/LFM2.5-1.2B-Instruct` (or `local`) |
 | `LOCAL_LLM_API_KEY` | optional shared secret (`X-API-Key`) |
 
