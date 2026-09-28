@@ -723,6 +723,38 @@ def halflife_null(
 # Derived from stored p_timesfm and optional quantiles. Research-only.
 
 
+def extract_q10_q50_q90(
+    quantile_row: list[float] | None,
+) -> tuple[float, float, float] | None:
+    """Map a TimesFM quantile vector at one horizon step → (q10, q50, q90).
+
+    Continuous-quantile-head responses are typically 9 or 10 floats covering
+    p10…p90 (or p0…p90). Prefer the conventional 10-vector indices (1, 5, 9)
+    = p10/p50/p90; fall back to 9-vector (0, 4, 8); else min/median/max so
+    a short vector still yields a usable band. Returns None if empty.
+    """
+    if not quantile_row:
+        return None
+    try:
+        vals = [float(x) for x in quantile_row if x is not None]
+    except (TypeError, ValueError):
+        return None
+    vals = [v for v in vals if math.isfinite(v)]
+    if not vals:
+        return None
+    n = len(vals)
+    if n >= 10:
+        return vals[1], vals[5], vals[9]
+    if n >= 9:
+        return vals[0], vals[4], vals[8]
+    if n >= 3:
+        mid = sorted(vals)
+        return mid[0], mid[n // 2], mid[-1]
+    if n == 1:
+        return vals[0], vals[0], vals[0]
+    return min(vals), (vals[0] + vals[-1]) / 2.0, max(vals)
+
+
 def timesfm_rank_features(
     p_timesfm: float | None,
     side: str | None,
@@ -745,25 +777,27 @@ def timesfm_rank_features(
         "q_spread": None,
         "q_pos": None,
     }
-    if p_timesfm is None:
-        return out
-    try:
-        p = float(p_timesfm)
-    except (TypeError, ValueError):
-        return out
-    if not math.isfinite(p):
-        return out
-    lean = p - 0.5
-    out["timesfm_dir"] = lean
-    out["timesfm_conf"] = abs(lean)
-    if side in ("buy", "sell"):
-        out["timesfm_side"] = lean if side == "buy" else -lean
-    if p_win is not None:
+    p: float | None = None
+    if p_timesfm is not None:
         try:
-            out["timesfm_gap"] = p - float(p_win)
+            p = float(p_timesfm)
         except (TypeError, ValueError):
-            out["timesfm_gap"] = None
-    qs = [q_lo, q_mid, q_hi]
+            p = None
+        if p is not None and not math.isfinite(p):
+            p = None
+    if p is not None:
+        lean = p - 0.5
+        out["timesfm_dir"] = lean
+        out["timesfm_conf"] = abs(lean)
+        if side in ("buy", "sell"):
+            out["timesfm_side"] = lean if side == "buy" else -lean
+        if p_win is not None:
+            try:
+                out["timesfm_gap"] = p - float(p_win)
+            except (TypeError, ValueError):
+                out["timesfm_gap"] = None
+    # Quantile band is independent of p_timesfm — still stamp when the
+    # forecast returned quantiles but the point map failed (P1.3).
     if all(x is not None for x in (q_lo, q_hi)) and last_price:
         try:
             lo, hi, last = float(q_lo), float(q_hi), float(last_price)

@@ -277,6 +277,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     "kairos_rank_score", "kairos_rank_gate_shadow",
     # Variable binary Kelly shadow (migration 174)
     "kelly_binary_f", "kelly_context_mult", "kelly_effective_shadow",
+    # P1.3 TimesFM quantile band (migration 186). Research stamps only.
+    "timesfm_q_lo", "timesfm_q_mid", "timesfm_q_hi",
+    "timesfm_q_spread", "timesfm_q_pos",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",

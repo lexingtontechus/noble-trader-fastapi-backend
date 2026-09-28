@@ -21,6 +21,7 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `20260927_P0_P4_PROGRAMME.md` | Beyond-p_win programme: **P0 done** (dir_flip h≈6h), P1 TimesFM dynamic covariates (2.5→3.0), P2 typed pivots, P3 R-Layer ranker, P4 macro/LLM extract |
 | `20260928_P2_PIVOTS_COMPLETE.md` | P2 done: pivots on **`nt_macro_forecast`** (migration 181), calendar stays raw TDVA cache; lead-lag = co-move 1.3×@0–6h, not multi-day lead |
 | `20260928_MACRO_FORECAST_REFACTOR.md` | **Refactor 182:** uniform multi-asset `nt_macro_forecast` (thesis/drivers/risks + structure_* + events); LLM deconstructs narrative; next = apply migrations, fill universe, P3 |
+| `20260928_TIMESFM_QUANTILE_CAPTURE.md` | **P1.3:** capture discarded TimesFM `quantile_forecast` (q10/q50/q90 + spread/pos) into `nt_signal_sim` (migration 186). Research stamps only — no gates/Kelly/EV |
 | `scopes/20260927_P0_HALFLIFE_T2_SCOPE.md` | P0 half-life scope + T2 result |
 | `scopes/20260928_RANK_BOARD_BROADCAST_DISCORD.md` | **Rank board** → nobletradingapp Realtime + Discord: RANK vs p_win vs EV for capital priority |
 | `reports/20260927_halflife_t2.md` | Live T2 event-time half-life report |

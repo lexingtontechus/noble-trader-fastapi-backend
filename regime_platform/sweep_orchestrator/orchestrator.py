@@ -286,7 +286,29 @@ TIMESFM_SIGMOID_K, TIMESFM_CLAMP_MIN, TIMESFM_CLAMP_MAX = _timesfm_mapping_defau
 # Mirrors supabase/functions/_shared/utils.ts:timesfmPost()
 # Using a simple in-memory cache (not Redis for this hot path)
 _TIMESFM_CACHE: dict[str, tuple[float, float]] = {}  # symbol -> (p, timestamp)
+# P1.3 (2026-09-28): quantile band from the same /forecast response that
+# the orchestrator previously discarded. Research stamps only — never gates.
+# symbol -> (q_lo, q_mid, q_hi, last_price, timestamp)
+_TIMESFM_Q_CACHE: dict[str, tuple[float | None, float | None, float | None, float | None, float]] = {}
 _TIMESFM_CACHE_TTL_S = 900  # 15 minutes
+
+
+def get_timesfm_quantiles(symbol: str) -> dict[str, float | None]:
+    """Return the cached TimesFM q10/q50/q90 + last_price for ``symbol``.
+
+    Empty/Nones when no fetch has landed in the TTL window. Research-only
+    helper for signal-sim capture (P1.3).
+    """
+    entry = _TIMESFM_Q_CACHE.get(symbol)
+    if not entry:
+        return {"q_lo": None, "q_mid": None, "q_hi": None, "last_price": None}
+    q_lo, q_mid, q_hi, last_price, _ts = entry
+    return {
+        "q_lo": q_lo,
+        "q_mid": q_mid,
+        "q_hi": q_hi,
+        "last_price": last_price,
+    }
 
 async def _fetch_timesfm_cached(
     symbol: str,
@@ -494,6 +516,35 @@ async def _fetch_timesfm_cached(
             )
             return None
 
+        # ── P1.3 quantile capture (2026-09-28) ──────────────────────────
+        # TimesFM already returns quantile_forecast [series][horizon][q].
+        # Previously discarded. Keep q10/q50/q90 at step 0 + last_price for
+        # research stamps (timesfm_rank_features → nt_signal_sim). Never
+        # feeds gates / Kelly / EV.
+        _q_lo = _q_mid = _q_hi = None
+        try:
+            from regime_platform.sweep_orchestrator.kairos_rank import (
+                extract_q10_q50_q90,
+            )
+            _qf = data.get("quantile_forecast") or []
+            _q_row = None
+            if _qf and _qf[0]:
+                _series0 = _qf[0]
+                # [horizon][q] or a bare [q] when horizon=1 collapses.
+                if _series0 and isinstance(_series0[0], (list, tuple)):
+                    _q_row = _series0[0]
+                else:
+                    _q_row = _series0
+            _triple = extract_q10_q50_q90(_q_row)
+            if _triple:
+                _q_lo, _q_mid, _q_hi = _triple
+                logger.debug(
+                    "[timesfm:q] %s q10=%.6f q50=%.6f q90=%.6f",
+                    symbol, _q_lo, _q_mid, _q_hi,
+                )
+        except Exception as _q_exc:
+            logger.debug("[timesfm:q] %s quantile parse skipped: %s", symbol, _q_exc)
+
         # Map forecasted price → probability of up-move.
         # sigmoid(k * relative_change) gives a smooth [0,1] mapping where
         # k controls aggressiveness. Defaults k=20 → ±5% ≈ 0.92 / 0.08.
@@ -571,11 +622,13 @@ async def _fetch_timesfm_cached(
             )
 
         _TIMESFM_CACHE[symbol] = (p_timesfm, now)
+        _TIMESFM_Q_CACHE[symbol] = (_q_lo, _q_mid, _q_hi, last_price, now)
         logger.info(
             f"[sweep:orch] {symbol}: TimesFM fetched "
             f"(forecast={forecast_value:.6f}, last={last_price:.6f}, "
             f"rel_change={rel_change*100:+.3f}%, "
-            f"p_timesfm={p_timesfm:.4f}, confidence={confidence:.4f})"
+            f"p_timesfm={p_timesfm:.4f}, confidence={confidence:.4f}, "
+            f"q=({_q_lo},{_q_mid},{_q_hi}))"
         )
         return p_timesfm, confidence
 
@@ -959,6 +1012,11 @@ def _build_signal_sim_payload(
     kelly_binary_f: float | None = None,
     kelly_context_mult: float | None = None,
     kelly_effective_shadow: float | None = None,
+    timesfm_q_lo: float | None = None,
+    timesfm_q_mid: float | None = None,
+    timesfm_q_hi: float | None = None,
+    timesfm_q_spread: float | None = None,
+    timesfm_q_pos: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1112,6 +1170,19 @@ def _build_signal_sim_payload(
         payload["kelly_context_mult"] = round(float(kelly_context_mult), 4)
     if kelly_effective_shadow is not None:
         payload["kelly_effective_shadow"] = round(float(kelly_effective_shadow), 6)
+    # P1.3 TimesFM quantile band (migration 186). Research stamps only —
+    # never read back into gates, Kelly, or EV. q_spread = (q90-q10)/last;
+    # q_pos = where last sits in [q10,q90].
+    if timesfm_q_lo is not None:
+        payload["timesfm_q_lo"] = round(float(timesfm_q_lo), 6)
+    if timesfm_q_mid is not None:
+        payload["timesfm_q_mid"] = round(float(timesfm_q_mid), 6)
+    if timesfm_q_hi is not None:
+        payload["timesfm_q_hi"] = round(float(timesfm_q_hi), 6)
+    if timesfm_q_spread is not None:
+        payload["timesfm_q_spread"] = round(float(timesfm_q_spread), 6)
+    if timesfm_q_pos is not None:
+        payload["timesfm_q_pos"] = round(float(timesfm_q_pos), 4)
     return payload
 
 
@@ -4317,6 +4388,28 @@ class SweepOrchestrator(HeavySweepMixin):
             self._kairos_rank_stamp(symbol, regime_label, source)
         )
 
+        # P1.3 TimesFM quantile stamps (research only). Pull the band cached
+        # by _fetch_timesfm_cached and derive q_spread/q_pos via
+        # timesfm_rank_features — never used for gates/Kelly/EV.
+        _tf_q = {"q_lo": None, "q_mid": None, "q_hi": None, "last_price": None}
+        _tf_qf = {"q_spread": None, "q_pos": None}
+        try:
+            _tf_q = get_timesfm_quantiles(symbol)
+            from regime_platform.sweep_orchestrator.kairos_rank import (
+                timesfm_rank_features as _tf_rank_features,
+            )
+            _tf_qf = _tf_rank_features(
+                p_timesfm,
+                trade_signal.get("signal"),
+                p_win=ev_result.p_win if ev_result is not None else None,
+                q_lo=_tf_q.get("q_lo"),
+                q_mid=_tf_q.get("q_mid"),
+                q_hi=_tf_q.get("q_hi"),
+                last_price=_tf_q.get("last_price"),
+            )
+        except Exception as _q_exc:
+            logger.debug("[timesfm:q] %s feature stamp skipped: %s", symbol, _q_exc)
+
         agent_payload = json.dumps({
             "type": "heartbeat",
             "symbol": symbol,
@@ -4801,6 +4894,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     kelly_binary_f=_vk[0],
                     kelly_context_mult=_vk[1],
                     kelly_effective_shadow=_vk[2],
+                    timesfm_q_lo=_tf_q.get("q_lo"),
+                    timesfm_q_mid=_tf_q.get("q_mid"),
+                    timesfm_q_hi=_tf_q.get("q_hi"),
+                    timesfm_q_spread=_tf_qf.get("q_spread"),
+                    timesfm_q_pos=_tf_qf.get("q_pos"),
                     gate_outcome=(
                         "qualified" if published
                         else "suppressed" if _gates_pass
