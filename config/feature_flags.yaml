@@ -177,7 +177,7 @@ calibration_bias_min_episodes: 2
 # nt_signal_stream_meta_shadow with the current coherent/noisy read --
 # visible and queryable from the first fit onward, not after weeks.
 # Still zero effect on qualification or Kelly sizing (shadow, not live).
-signal_stream_meta_model_mode: shadow
+signal_stream_meta_model_mode: off
 
 # MARKOV_SOURCE_MODE: which source feeds p_markov_hold_n's 3x3 {UP,DOWN,
 # FLAT} transition matrix. legacy_hmm (the separate, numerically-unstable
