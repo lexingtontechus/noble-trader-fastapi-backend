@@ -2318,29 +2318,34 @@ class SweepOrchestrator(HeavySweepMixin):
 
     def _kairos_rank_stamp(
         self, symbol: str, regime_label: str | None, source: str,
-    ) -> tuple[float | None, bool | None]:
-        """Shadow composite rank_score + would-publish (migration 172).
+    ) -> tuple[float | None, bool | None, str | None, str | None]:
+        """Shadow composite rank_score + would-publish + STATE/transition.
 
-        Fail-open: any problem → (None, None). Never gates the signal."""
+        Returns (score, gate, event_window, transition). Fail-open Nones.
+        Never gates the signal (RANK board / Discord display only)."""
         if source != "sweep-light":
-            return None, None
+            return None, None, None, None
         try:
             from regime_platform.core.feature_flags import get_kairos_mode
             if get_kairos_mode() == "off":
-                return None, None
+                return None, None, None, None
             tracker = getattr(self, "_kairos_rank", None)
             if tracker is None:
-                return None, None
+                return None, None, None, None
             from regime_platform.sweep_orchestrator.kairos import regime_cell
             from regime_platform.sweep_orchestrator.kairos_rank import shadow_entry_gate
             cell = regime_cell(regime_label)
-            score = tracker.score(symbol, cell, now_ts=time.time())
+            now_ts = time.time()
+            score = tracker.score(symbol, cell, now_ts=now_ts)
+            ctx = tracker.context(symbol, now_ts=now_ts) if hasattr(tracker, "context") else {}
+            ew = ctx.get("event_window")
+            tt = ctx.get("transition")
             if score is None:
-                return None, None
-            return round(float(score), 4), bool(shadow_entry_gate(score, 0.55))
+                return None, None, ew, tt
+            return round(float(score), 4), bool(shadow_entry_gate(score, 0.55)), ew, tt
         except Exception as exc:
             logger.debug("[kairos] rank stamp %s failed: %s", symbol, exc)
-            return None, None
+            return None, None, None, None
 
     def _variable_kelly_shadow(
         self,
@@ -4306,6 +4311,12 @@ class SweepOrchestrator(HeavySweepMixin):
         else:
             effective_kelly_final = 0.0
 
+        # RANK board fields (display only — never a gate). Computed before
+        # agent_payload so Discord + realtime share one stamp.
+        _rank_score, _rank_gate, _rank_state, _rank_transition = (
+            self._kairos_rank_stamp(symbol, regime_label, source)
+        )
+
         agent_payload = json.dumps({
             "type": "heartbeat",
             "symbol": symbol,
@@ -4348,6 +4359,10 @@ class SweepOrchestrator(HeavySweepMixin):
             "rr": round(ev_result.rr, 4),
             "ev_scale": round(ev_result.ev_scale, 4),
             "p_win": round(ev_result.p_win, 4),
+            # ── RANK board (20260928) — priority, not win% ────────────────
+            "kairos_rank_score": _rank_score,
+            "kairos_event_window": _rank_state,
+            "kairos_transition": _rank_transition,
             # ── P_win source breakdown (v5) ─────────────────────────────
             # Agent uses these to re-blend locally with pattern stats from
             # its own DuckDB (which the server doesn't have access to).
@@ -4720,7 +4735,11 @@ class SweepOrchestrator(HeavySweepMixin):
                 ):
                     _failed_gates = sorted(set(_failed_gates) | {"p_win_bracket_ok"})
 
-                _rank_score, _rank_gate = self._kairos_rank_stamp(symbol, regime_label, source)
+                # RANK stamp computed before agent_payload (RANK board / Discord)
+                if source == "sweep-light" and _rank_score is None:
+                    _rank_score, _rank_gate, _rank_state, _rank_transition = (
+                        self._kairos_rank_stamp(symbol, regime_label, source)
+                    )
                 # Variable binary Kelly — SHADOW only (never a gate).
                 # Context = Kairos event-time transition, not regime age.
                 _vk = self._variable_kelly_shadow(
@@ -4845,6 +4864,11 @@ class SweepOrchestrator(HeavySweepMixin):
                         take_profit=sim_payload["take_profit"],
                         kelly_f=sim_payload.get("kelly_f"),
                         effective_kelly=sim_payload.get("effective_kelly"),
+                        rank=_rank_score,
+                        state=_rank_state,
+                        transition=_rank_transition,
+                        p_win=sim_payload.get("p_win"),
+                        ev_r=sim_payload.get("ev"),
                     ), plan_ids=sym.get("plan_ids") or [])
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and

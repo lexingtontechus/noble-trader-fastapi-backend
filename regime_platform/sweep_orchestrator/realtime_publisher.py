@@ -132,6 +132,11 @@ def build_signal_payload(
     kelly_f: float | None = None,
     effective_kelly: float | None = None,
     ts: float | None = None,
+    rank: float | None = None,
+    state: str | None = None,
+    transition: str | None = None,
+    p_win: float | None = None,
+    ev_r: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``signal`` broadcast payload for one qualified signal.
 
@@ -141,8 +146,11 @@ def build_signal_payload(
 
     ``kelly`` prefers ``effective_kelly`` (kelly × EV scale) and falls back
     to ``kelly_f`` — same sizing input the paper book uses.
+
+    ``rank`` / ``state`` / ``transition`` are Kairos RANK-board fields
+    (20260928_RANK_BOARD_BROADCAST_DISCORD) — omitted when null (fail-open).
     """
-    return {
+    out: dict[str, Any] = {
         "symbol": symbol,
         "direction": direction,
         "kelly": round(float(effective_kelly), 6) if effective_kelly is not None
@@ -152,6 +160,17 @@ def build_signal_payload(
         "take_profit": round(float(take_profit), 6),
         "ts": float(ts) if ts is not None else time.time(),
     }
+    if rank is not None:
+        out["rank"] = round(float(rank), 4)
+    if state:
+        out["state"] = str(state)
+    if transition:
+        out["transition"] = str(transition)
+    if p_win is not None:
+        out["p_win"] = round(float(p_win), 4)
+    if ev_r is not None:
+        out["ev_r"] = round(float(ev_r), 4)
+    return out
 
 
 def _plan_signal_topics(plan_ids: list[str] | None) -> list[str]:

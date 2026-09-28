@@ -22,6 +22,7 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `20260928_P2_PIVOTS_COMPLETE.md` | P2 done: pivots on **`nt_macro_forecast`** (migration 181), calendar stays raw TDVA cache; lead-lag = co-move 1.3×@0–6h, not multi-day lead |
 | `20260928_MACRO_FORECAST_REFACTOR.md` | **Refactor 182:** uniform multi-asset `nt_macro_forecast` (thesis/drivers/risks + structure_* + events); LLM deconstructs narrative; next = apply migrations, fill universe, P3 |
 | `scopes/20260927_P0_HALFLIFE_T2_SCOPE.md` | P0 half-life scope + T2 result |
+| `scopes/20260928_RANK_BOARD_BROADCAST_DISCORD.md` | **Rank board** → nobletradingapp Realtime + Discord: RANK vs p_win vs EV for capital priority |
 | `reports/20260927_halflife_t2.md` | Live T2 event-time half-life report |
 | `reports/20260926_rank_transition.md` | Live R1 ranking IC + transition event study |
 | `reports/20260926_rank_score_eval.md` | Walk-forward composite `rank_score` + shadow ΔD gate (episode-deduped) |

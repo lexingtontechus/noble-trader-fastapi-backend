@@ -450,6 +450,20 @@ class RankScoreTracker:
         t0 = self._last_change_ts.get(symbol, now_ts)
         return self._last_ttype.get(symbol), (now_ts - t0) / 3600.0
 
+    def context(self, symbol: str, now_ts: float | None = None) -> dict[str, Any]:
+        """Read-only event-time context for UI/broadcast. No state mutation."""
+        now_ts = float(now_ts if now_ts is not None else __import__("time").time())
+        t0 = self._last_change_ts.get(symbol)
+        transition = self._last_ttype.get(symbol)
+        if t0 is None:
+            return {"event_window": None, "transition": transition, "tau_h": None}
+        tau_h = max(0.0, (now_ts - float(t0)) / 3600.0)
+        return {
+            "event_window": event_window(tau_h),
+            "transition": transition,
+            "tau_h": round(tau_h, 3),
+        }
+
     def observe_outcome(self, symbol: str, cell: str | None, tp_first: bool, ts: float) -> None:
         """Ingest a decided outcome (TP/SL). Expired outcomes are not passed in."""
         if not symbol:

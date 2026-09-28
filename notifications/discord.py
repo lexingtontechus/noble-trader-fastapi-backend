@@ -460,6 +460,9 @@ class DiscordNotifier:
         asset_class: Optional[str] = None,
         venue: Optional[str] = None,
         plan_ids: Optional[list[str]] = None,
+        rank: Optional[float] = None,
+        state: Optional[str] = None,
+        ev_r: Optional[float] = None,
     ) -> bool:
         """
         Send a trading signal alert to #trade-signals (or per-plan /
@@ -585,12 +588,37 @@ class DiscordNotifier:
         if regime_shift is not None:
             shift_emoji = {"bull_bear": "📉", "bear_bull": "📈"}.get(regime_shift, "🔄")
             regime_fields.append({"name": "Regime Shift", "value": f"{shift_emoji} {regime_shift.replace('_', ' → ')}", "inline": True})
-        
+
+        # RANK board (20260928) — opportunity priority, not win probability
+        rank_fields = []
+        if rank is not None:
+            rank_fields.append({
+                "name": "RANK",
+                "value": f"**{float(rank):.2f}**",
+                "inline": True,
+            })
+        if state:
+            state_up = str(state).upper()
+            state_emoji = {
+                "FRESH": "🟢", "WARM": "🟡", "STALE": "🟠", "DEEP": "⚪", "PRE": "🔵",
+            }.get(state_up, "•")
+            rank_fields.append({
+                "name": "STATE",
+                "value": f"{state_emoji} {state_up}",
+                "inline": True,
+            })
+        if ev_r is not None:
+            rank_fields.append({
+                "name": "EV",
+                "value": f"{float(ev_r):+.2f}R",
+                "inline": True,
+            })
+
         fields = [
             {"name": "Symbol", "value": symbol, "inline": True},
             {"name": "Direction", "value": f"{dir_emoji} {direction}", "inline": True},
             {"name": "Pattern", "value": pattern, "inline": True},
-        ] + price_fields + risk_fields + aggression_fields + perf_fields + regime_fields
+        ] + rank_fields + price_fields + risk_fields + aggression_fields + perf_fields + regime_fields
 
         # ── Venue + asset class info ──────────────────────────────────
         # Shows the exchange/venue and asset class separately for clarity.

@@ -80,6 +80,10 @@ async def maybe_send_discord_signal(
             asset_class=payload.get("asset_class"),
             venue=payload.get("venue"),
             plan_ids=payload.get("plan_ids") or [],
+            # RANK board (20260928) — display only, never a gate
+            rank=payload.get("kairos_rank_score"),
+            state=payload.get("kairos_event_window") or payload.get("state"),
+            ev_r=payload.get("ev"),
         )
         logger.info(
             "[discord:direct] %s %s signal alert sent (%s)",
