@@ -3,7 +3,7 @@
 > **Repo:** `noble-trader-fastapi-backend` · **Role:** Sweep orchestrator / signal producer · **Host:** LightningAI Studio (`noble-trader-unified`)
 
 ## Version
-**v8.0.0** (as of 2026-09-24). Version anchors across `pyproject.toml`, `main.py`, and **both** `openapi.yaml` copies must be updated together on any bump, along with `tests/test_version_consistency.py` (asserts exact version).
+**v8.1.0** (as of 2026-09-28). Version anchors across `pyproject.toml`, `main.py`, and **both** `openapi.yaml` copies must be updated together on any bump, along with `tests/test_version_consistency.py` (asserts exact version).
 
 ## Quick Start
 ```bash

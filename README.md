@@ -14,7 +14,22 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ## Version
 
-**v7.9.0** — Settlement contract (single outcome+PnL path) · Measurement honesty (mandatory raw `p_win`, no enforced Brier fallback, dual-report scorecard) · `p_win_bracket` shadow capture · Qualification cleanup (enforce-before-gates light+heavy, underconfidence no Kelly cut, Markov N = `tp_bricks`, TimesFM yaml k=10) · Ghost `p_historical` weight removed · Pipeline docs (`SIGNAL_PIPELINE.md`, `ACTIVE_MODES.md`)
+**v8.1.0** — **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** (p10/p50/q90 band + XReg dynamic covariates) · Renko live-grid hygiene · Settlement / calibration measurement honesty
+
+### Highlights
+
+#### Kairos (beyond `p_win`)
+- **`kairos_rank_score` R-Layer** — opportunity ranking *within* a regime cell (freshness, setup type, recent TP, shrunk cell hit-rate). Walk-forward AUC 0.67–0.78; top/bottom tercile TP-rate Δ +0.29. **Ranks capital priority; `p_win` stays an eligibility/level score** (level IC≈0, overconfident).
+- **Event-time transitions** — post-regime-flip freshness (`dir_flip` ~6h information clock; fresh−deep y_acc +0.12). STATE badges: FRESH / WARM / STALE / DEEP.
+- **Shadow gate** — trailing-P60 rank quantile (ΔD +0.23…+0.30, research only; not live-enforced).
+- **Product surface** — nobletradingapp signal ranking board + Discord RANK/STATE/TRANSITION fields.
+
+#### TimesFM — quantiles & covariates
+- **Quantile capture (P1.3)** — univariate `/forecast` already returns `quantile_forecast`; orchestrator now stamps **q10/q50/q90**, `q_spread=(q90−q10)/last`, `q_pos` onto `nt_signal_sim` (migration 186). Research stamps only.
+- **Dynamic covariates (P1.1–P1.2)** — TimesFM 2.5 `forecast_with_covariates` (XReg) accepts trend_z / momentum / vol / cluster returns. `timesfm_gap` (p_timesfm − p_win) is the only TimesFM-family feature with stable within-cell IC (+0.037 both halves).
+- **Decision-aligned mapping** — prefer quantile/interval hit under recorded TP–SL brackets over raw sigmoid(`k·Δp`) for a future `p_map` promote; level Brier still led by shrunk `cell_p`.
+
+> **v8.0.0 changelog (2026-09-24…26):** Twin-bar calibration + reachability methodology, settlement contract, dynamic ATR selector (shadow), evidence-pool / hourly resolve. See `docs/Setup/CHANGELOG.md`. Anchors: `pyproject.toml`, `main.py`, both `openapi.yaml`, `tests/test_version_consistency.py`.
 
 > **v7.9.0 changelog (2026-09-16):** Batches A–F of `worklog/20260916_STREAMLINE_AND_CALIBRATION_REACHABILITY_SCOPE.md` (quant audit follow-up; see `docs/QUANT_AUDIT_SIGNAL_CALIBRATION_REACHABILITY_PNL.md`). (1) **Settlement contract** — `settlement_contract.py` owns close-walk/OHLC resolution, same-bar policy (`tp_first` default), expired MTM, optional costs; `eod_resolver` delegates when `settlement_contract_mode=live`. (2) **Measurement honesty** — `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW` + `NOBLE_TRADER_CALIBRATION_RAW_REQUIRED` default true; Brier uses raw only (`error_source=raw_missing` otherwise); raw-bias excludes raw-absent episodes (no enforced stand-in). (3) **Dual-report scorecard** (migration 153) — `pnl_closed_only` / `pnl_all_resolved` / `win_pct_closed` / `expiry_pct`; reachability `n_stored`/`n_proxy`; proxy ATR quarantined from expectancy. (4) **`p_win_bracket`** (migration 154, shadow) — `p_resolve × Beta(2,2) P(win|resolve)` by `(symbol, vol_tier, distance/ATR)`; `bracket_gate_shadow` logged. (5) **Heavy-sweep gate order** — calibration enforce **before** qualification (parity with light). (6) **Underconfidence** no longer cuts Kelly. (7) **Markov N** = `tp_bricks` (fallback 10). (8) **TimesFM** mapping from `feature_flags.yaml` (`timesfm.sigmoid_k=10`, clamp `[0.05,0.95]`); ghost `p_historical` 0.30 weight removed (live blend renormalized 5:4:5).
 
@@ -264,6 +279,10 @@ The `/forecast` endpoint accepts batched inputs:
 ```
 
 Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elapsed_ms`. See `server.py` for full schema.
+
+**Quantiles (v8.1.0):** `quantile_forecast` is a continuous-quantile-head band (`[series][horizon][q]`, typically 9–10 levels covering p10…p90). The sweep orchestrator extracts **q10/q50/q90** at horizon step 0 and persists `timesfm_q_lo/mid/hi`, `timesfm_q_spread`, `timesfm_q_pos` on `nt_signal_sim` (migration 186) for research IC / Brier — never as live gates.
+
+**Covariates (research):** TimesFM 2.5 `forecast_with_covariates` (XReg residual path) accepts dynamic channels (trend z-score, momentum, volatility, cluster-mate returns). Probe: `scripts/timesfm_p1_covariates_probe.py`.
 
 ### Multi-Asset
 

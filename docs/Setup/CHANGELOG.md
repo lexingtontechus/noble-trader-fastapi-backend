@@ -1,3 +1,26 @@
+## [8.1.0] - 2026-09-28
+
+### Major — Kairos RANK surface + TimesFM quantile & covariate capture
+
+#### Kairos
+- **RANK board** — `kairos_rank_score` (freshness + type + recent TP + cell_p) stamped on `nt_signal_sim` (migration 172) and exposed on `v_talaria_latest_signals` (183). Walk-forward: Spearman 0.126 / AUC 0.67 (all eras), 0.785 post-debounce; shadow P60 ΔD +0.23…+0.30. **Measurement only** — not a live gate.
+- **Event-time STATE / transition** — FRESH/WARM/STALE/DEEP + `dir_flip` typing on realtime + Discord.
+- Worklogs: `worklog/kairos/20260926_DIRECTIONAL_EDGE_PWIN_RANKING_AND_TRANSITIONS.md`, `20260928_TIMESFM_QUANTILE_CAPTURE.md`, rank-board scope.
+
+#### TimesFM quantiles & covariates (P1.3)
+- Capture discarded `quantile_forecast` → `timesfm_q_lo/mid/hi`, `timesfm_q_spread`, `timesfm_q_pos` on `nt_signal_sim` (**migration 186**).
+- `extract_q10_q50_q90` + `timesfm_rank_features` quantile path (`kairos_rank.py`); stamps even when `p_timesfm` is missing.
+- XReg dynamic covariates validated on TimesFM 2.5 (P1.1); `timesfm_gap` is the only TimesFM-family feature with stable within-cell IC (+0.037).
+
+#### Ops / data hygiene
+- Renko orphan high-`brick_index` purge after brick upsert (same-grid).
+- Dashboard cache `renkoBricks` limited to each symbol's **live `brick_size` grid** (migration 184) + support indexes (185).
+
+#### Version anchors
+`pyproject.toml`, `main.py`, `docs/openapi.yaml`, `docs/Setup/openapi.yaml`, `tests/test_version_consistency.py` → **8.1.0**.
+
+---
+
 ## [8.0.0] - 2026-09-26 (no version bump)
 
 ### Changed — dynamic ATR selector (`dynamic_atr_mode`, still shadow)
