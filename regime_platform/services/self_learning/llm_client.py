@@ -106,7 +106,21 @@ def _local_model_id() -> str:
 
 
 def _local_base_url() -> str:
-    return os.getenv("LOCAL_LLM_BASE_URL", "").strip().rstrip("/")
+    """OpenAI-compatible server root, e.g. http://127.0.0.1:8080 — NOT a bare host."""
+    raw = os.getenv("LOCAL_LLM_BASE_URL", "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw in ("localhost", "127.0.0.1"):
+        logger.warning(
+            "LOCAL_LLM_BASE_URL=%r is a host only — use e.g. "
+            "http://127.0.0.1:8080 (llama.cpp/vLLM). Ignoring bare host.",
+            raw,
+        )
+        return ""
+    if not raw.startswith("http://") and not raw.startswith("https://"):
+        logger.warning("LOCAL_LLM_BASE_URL=%r missing http(s):// — ignoring.", raw)
+        return ""
+    return raw
 
 
 _local_pipe = None

@@ -77,7 +77,67 @@ Same columns for forex, metals, indices, equities, crypto. Only the **doc** (`Fo
 | **2** | ForecastSource for non-commodity actives | **Done** — `docs/LLM/existing_symbols_12m_forecast_model_2027.md` + registry |
 | **3** | P3 R-Layer ranker | **Done** — base `rank_score` wins within-cell; `timesfm_gap` optional |
 | **4** | Narrative lead-lag vs `dir_flip` | Open |
-| **5** | `fetch_macro_forecast` / context_alignment consumers | Open |
+| **5** | `fetch_macro_forecast` / context_alignment consumers | **Explained** — see §6; not wired into gates |
+
+### 6. Optional consumers (what “reading the table” means)
+
+These do **not** require new LLM datasets. They only **read** `nt_macro_forecast`.
+
+| Consumer | Reads | What it would do | Status |
+|---|---|---|---|
+| **`context_alignment`** (8th gate, shadow) | `current_macro_label` + `trend_label` | Already live as shadow using **price** `macro_label`/`trend_label`. Optional: also take **LLM** `current_macro_label` / `current_trend_label` as a third longitudinal source (only oppose when *all* available reads oppose). | Shadow only; EV untouched |
+| **Strategic vs structure split** | `current_macro_label` vs `structure_bias` | Disagreement = regime tension (e.g. long-term bull + short-term bear on XAUUSD). Feature / size multiplier, not a hard veto. | Research |
+| **`macro_edge` / `trend_edge`** | captured `macro_label` on `nt_signal_sim` | Already measures aligned vs opposed expectancy. Could add a join to `nt_macro_forecast.thesis`/`drivers` for explanations. | Read-only diagnostics |
+| **P3 R-Layer** | `pivot_label`, `timesfm_gap`, P0 τ | Optional rank features after P2.3 lead-lag clears. | Base `rank_score` shipped |
+| **Kelly context mult** | `structure_bias` + strength | Same pattern as existing macro Kelly mult — boost/cut when structure agrees with signal. | Not wired |
+
+**Rule:** optional consumers are **reads only**. They never fork LLM writes. Missing `structure_*` stays null (do not treat as neutral).
+
+### 7. P2.3 (2026-09-28) — machinery live, **underpowered**
+
+`scripts/kairos_p23_narrative_leadlag.py` → `reports/20260928_p23_narrative_leadlag.md`
+
+Only **2 unique labeled events** in `events[]` so far (both `no_change`) — the store is new and shallow. Rate tables will not be informative until `major_pivot` events accumulate (or a historical label backfill). **P2.3 stamps stay gated.** Re-run weekly as `events[]` grows.
+
+### 8. Local LLM — correct secret setup (2026-09-28)
+
+`llm_client` prefers **one** of two local modes (never both required):
+
+| Mode | Secrets | HF download to `hf_cache`? |
+|---|---|---|
+| **A. HTTP server** (llama.cpp / vLLM / TGI) | `LOCAL_LLM_BASE_URL=http://127.0.0.1:<port>` (full URL). `LOCAL_LLM_MODEL` = name **the server** was started with (e.g. `LiquidAI/LFM2.5-1.2B-Instruct` or `local`). | **No** in our process — the **server** owns the weights. |
+| **B. In-process transformers** | **Unset** `LOCAL_LLM_BASE_URL`. `LOCAL_LLM_MODEL=LiquidAI/LFM2.5-1.2B-Instruct` | **Yes** — `from_pretrained` pulls into `HF_HOME` / `hf_cache` on first run. |
+
+**Studio pattern (same as TimesFM `server.py` :8002):** run **`llm_server.py` :8003** as a long-lived process.
+
+```bash
+# Studio / start.sh style
+PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe llm_server.py
+# default model: LiquidAI/LFM2.5-1.2B-Instruct  (override LOCAL_LLM_MODEL)
+```
+
+| Secret | Value |
+|---|---|
+| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:8003` |
+| `LOCAL_LLM_MODEL` | `LiquidAI/LFM2.5-1.2B-Instruct` (or `local`) |
+| `LOCAL_LLM_API_KEY` | optional shared secret (`X-API-Key`) |
+
+Weights download once into `.cache/huggingface` (same as TimesFM HF_HOME).
+
+**Wrong (as of 2026-09-28):** `LOCAL_LLM_BASE_URL=localhost` (bare host — code now **ignores** it) and `LOCAL_LLM_MODEL=LFM-2-1.2B` (not an HF id). Correct ids: `LiquidAI/LFM2.5-1.2B-Instruct` (or GGUF + llama.cpp server).
+
+Smoke: `scripts/local_llm_smoke.py`. Fallback remains NIM if local fails.
+
+### 9. Schedules — who runs what
+
+| Job | Who | When | Command / id |
+|---|---|---|---|
+| **Macro classify (full universe)** | **APScheduler in orchestrator** (primary) | **Daily 02:45 UTC** | `_run_macro_forecast_agent` |
+| Macro classify (backup) | Studio **Deploy** schedule (optional) | Daily 02:45 UTC | `scripts/run_macro_forecast_job.py` |
+| P2.3 narrative lead-lag | **Not in APScheduler** | Manual or Studio Deploy **weekly** | `scripts/kairos_p23_narrative_leadlag.py` |
+| Light sweeps / EOD / kairos-daily | APScheduler | existing crons | unchanged |
+
+You do **not** need Studio Deploy if the orchestrator is running 24/7 — APScheduler already fires 02:45. Deploy is for when the Studio box is stopped (Lightning auto-starts to run the command).
 
 **Do not** add a third LLM table, side-car JSON, or per-asset-class schemas. Extend this one.
 
