@@ -27,11 +27,26 @@ class TestValidateClassification:
     def test_valid_classification_passes_through(self):
         result = mfa._validate_classification({
             "narrative": "n", "trend": "trending_up", "direction": "bull", "strength": 0.7,
+            "thesis": "rates ease",
+            "drivers": [{"name": "rates", "stance": "bull", "confidence": 0.8}],
+            "risks": [{"name": "Hormuz", "direction": "bear", "severity": 0.6}],
+            "horizon_days": 365,
         })
-        assert result == {
-            "narrative": "n", "current_trend_label": "trending_up",
-            "current_macro_label": "bull", "current_macro_strength": 0.7,
-        }
+        assert result["current_trend_label"] == "trending_up"
+        assert result["current_macro_label"] == "bull"
+        assert result["current_macro_strength"] == 0.7
+        assert result["thesis"] == "rates ease"
+        assert result["drivers"][0]["name"] == "rates"
+        assert result["risks"][0]["severity"] == 0.6
+        assert result["horizon_days"] == 365
+
+    def test_optional_structured_fields_default(self):
+        result = mfa._validate_classification({
+            "narrative": "n", "trend": "trending_up", "direction": "bull", "strength": 0.7,
+        })
+        assert result["drivers"] == []
+        assert result["risks"] == []
+        assert result["thesis"] is None
 
     def test_strength_is_clamped_to_0_1(self):
         result = mfa._validate_classification({
@@ -72,6 +87,15 @@ def test_build_prompt_includes_symbol_date_and_doc():
     assert "HO" in prompt
     assert "2026-09-15" in prompt
     assert "some forecast doc text" in prompt
+
+
+def test_structure_from_ta():
+    bias, strength, note = mfa._structure_from_ta({"ta_rsi": 70.0, "ta_macd": 1.2, "ta_adx": 25.0})
+    assert bias == "bull"
+    assert strength and strength > 0
+    bias2, _, _ = mfa._structure_from_ta({"ta_rsi": 30.0, "ta_macd": -0.5})
+    assert bias2 == "bear"
+    assert mfa._structure_from_ta({}) == (None, None, None)
 
 
 # ── classify_symbol ───────────────────────────────────────────────────

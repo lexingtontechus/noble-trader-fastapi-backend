@@ -1303,6 +1303,14 @@ async def fetch_macro_regime(symbol: str) -> dict[str, Any] | None:
 NT_MACRO_FORECAST_COLUMNS: frozenset[str] = frozenset({
     "symbol", "current_trend_label", "current_macro_label",
     "current_macro_strength", "narrative", "model_provider", "updated_at",
+    # P2 T-Layer (migration 181) — same table, same upsert path
+    "pivot_label", "pivot_axis", "pivot_intensity", "pivot_surprise",
+    "pivot_as_of", "pivot_event_title", "pivot_summary",
+    # Uniform multi-asset (migration 182)
+    "thesis", "drivers", "risks", "horizon_days",
+    "structure_bias", "structure_strength", "structure_note",
+    "structure_as_of", "structure_source",
+    "events", "source_doc", "asset_class",
 })
 
 
@@ -1316,11 +1324,24 @@ async def upsert_macro_forecast(rows: list[dict[str, Any]]) -> None:
     worklog 20260911_SELF_LEARNING_PHASE_3_4_FORECASTING_RESCOPE.md) —
     shadow-mode diagnostic output, nothing reads this table to make a
     live decision yet.
+
+    PostgREST bulk upsert (PGRST102) requires every object in the array
+    to share the same keys — pad optional 181/182 columns with None so
+    partial structure/pivot enrichment cannot fail the whole batch.
     """
     if not settings.SUPABASE_URL:
         return
 
-    clean_rows = [_filter_payload(r, NT_MACRO_FORECAST_COLUMNS) for r in rows]
+    # Canonical key set = every allowlisted column actually seen, plus required.
+    seen: set[str] = set()
+    filtered = []
+    for r in rows:
+        pr = _filter_payload(r, NT_MACRO_FORECAST_COLUMNS)
+        filtered.append(pr)
+        seen.update(pr.keys())
+    # Always include identity + core vocab so keys are stable across runs.
+    seen.update({"symbol", "updated_at"})
+    clean_rows = [{k: row.get(k) for k in sorted(seen)} for row in filtered]
     if not clean_rows:
         logger.debug("upsert_macro_forecast: no rows — skipping")
         return

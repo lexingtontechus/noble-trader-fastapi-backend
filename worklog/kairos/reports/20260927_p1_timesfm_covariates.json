@@ -1,0 +1,7 @@
+{
+  "model": "google/timesfm-2.5-200m-pytorch",
+  "load_s": 144.42905926704407,
+  "has_forecast_with_covariates": true,
+  "ctx": 128,
+  "horizon": 1
+}

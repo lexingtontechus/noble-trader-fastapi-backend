@@ -282,6 +282,29 @@ DEFAULT_RANK_W = {
     "cell_p": 0.15,
 }
 
+# P3 R-Layer (2026-09-28): timesfm_gap is the only TimesFM-family feature with
+# stable within-cell IC (P1.2). Optional weight; if omitted, score = old rank_score.
+P3_RANK_W = {
+    "freshness": 0.28,
+    "type": 0.20,
+    "recent_tp": 0.20,
+    "cell_p": 0.20,
+    "timesfm_gap": 0.12,
+}
+
+
+def timesfm_gap_score(gap: float | None) -> float:
+    """Map p_timesfm − p_win ∈ [−1,1] → 0–1. Center 0.5 (no disagreement)."""
+    if gap is None:
+        return 0.5
+    try:
+        g = float(gap)
+    except (TypeError, ValueError):
+        return 0.5
+    if not math.isfinite(g):
+        return 0.5
+    return 0.5 + 0.5 * max(-1.0, min(1.0, g))
+
 
 def freshness_score(window: str | None) -> float:
     """0–1 information freshness from the event-time window (R1)."""
@@ -315,14 +338,16 @@ def rank_score(
     transition: str | None,
     recent_tp_rate: float | None,
     cell_p: float | None,
+    timesfm_gap: float | None = None,
     weights: dict[str, float] | None = None,
 ) -> float:
     """Composite 0–1 ranking score (higher = more likely to beat no-skill).
 
     Inputs must be known at signal time. `cell_p` is a shrunk empirical
     P(TP|decided) for the cell (not the live p_win blend).
+    ``timesfm_gap`` is P1.2: p_timesfm − p_win (optional P3).
     """
-    w = dict(DEFAULT_RANK_W)
+    w = dict(P3_RANK_W if timesfm_gap is not None else DEFAULT_RANK_W)
     if weights:
         w.update({k: float(v) for k, v in weights.items() if k in w})
     total = sum(w.values()) or 1.0
@@ -332,7 +357,9 @@ def rank_score(
         "recent_tp": clip01(recent_tp_rate, 0.35),
         "cell_p": clip01(cell_p, 0.35),
     }
-    return sum(w[k] * parts[k] for k in w) / total
+    if "timesfm_gap" in w:
+        parts["timesfm_gap"] = timesfm_gap_score(timesfm_gap)
+    return sum(w[k] * parts[k] for k in w if k in parts) / total
 
 
 def shadow_entry_gate(score: float, threshold: float = 0.55) -> bool:
@@ -554,3 +581,181 @@ def ingest_decided_rows(tracker: RankScoreTracker, rows: Sequence[dict[str, Any]
         tracker.observe_outcome(sym, str(cell) if cell else None, outcome == "tp_hit", ts_f)
         n += 1
     return n
+
+
+# ── Event-time half-life (T2) ─────────────────────────────────────────────
+# Pre-registered: y(τ) ≈ a + b · 2^(−τ/h). Freshness lift is b > 0; h is the
+# event-time half-life of that lift. Scope: worklog/kairos/scopes/20260927_P0_HALFLIFE_T2_SCOPE.md
+
+HALFLIFE_H_GRID: tuple[float, ...] = (0.5, 1.0, 2.0, 3.0, 6.0, 12.0, 24.0, 48.0)
+
+
+def _ols_ab(x: Sequence[float], y: Sequence[float]) -> tuple[float, float] | None:
+    """y ≈ a + b x. None if degenerate."""
+    n = len(x)
+    if n < 3:
+        return None
+    sx = sum(x)
+    sy = sum(y)
+    sxx = sum(v * v for v in x)
+    sxy = sum(a * b for a, b in zip(x, y))
+    den = n * sxx - sx * sx
+    if den <= 0:
+        return None
+    b = (n * sxy - sx * sy) / den
+    a = (sy - b * sx) / n
+    return a, b
+
+
+def exp_decay_fit(
+    tau_h: Sequence[float],
+    y: Sequence[float],
+    h_grid: Sequence[float] = HALFLIFE_H_GRID,
+) -> dict[str, float] | None:
+    """Fit y ≈ a + b · 2^(−τ/h) by grid-search h + OLS. Min SSE wins.
+
+    Returns {h, a, b, sse, n} or None if n < 4 or no finite fit.
+    """
+    pairs = [
+        (float(t), float(v))
+        for t, v in zip(tau_h, y)
+        if t is not None and v is not None and math.isfinite(float(t)) and math.isfinite(float(v))
+    ]
+    if len(pairs) < 4:
+        return None
+    ts = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    best: dict[str, float] | None = None
+    for h in h_grid:
+        hh = float(h)
+        if hh <= 0:
+            continue
+        xs = [2.0 ** (-(max(t, 0.0) / hh)) for t in ts]
+        ab = _ols_ab(xs, ys)
+        if ab is None:
+            continue
+        a, b = ab
+        sse = sum((yi - (a + b * xi)) ** 2 for xi, yi in zip(xs, ys))
+        if not math.isfinite(sse):
+            continue
+        if best is None or sse < best["sse"]:
+            best = {"h": hh, "a": a, "b": b, "sse": sse, "n": float(len(pairs))}
+    return best
+
+
+def event_time_halflife(
+    tau_h: Sequence[float],
+    y: Sequence[float],
+    h_grid: Sequence[float] = HALFLIFE_H_GRID,
+) -> float | None:
+    """Event-time half-life h of the freshness lift. None if not identifiable."""
+    fit = exp_decay_fit(tau_h, y, h_grid)
+    return None if fit is None else fit["h"]
+
+
+def halflife_null(
+    tau_h: Sequence[float],
+    y: Sequence[float],
+    n_draws: int = 200,
+    seed: int = 20260927,
+    h_grid: Sequence[float] = HALFLIFE_H_GRID,
+) -> dict[str, float | None]:
+    """Circular-shift null: y rolled vs τ. P(b_null ≥ b_obs) is one-sided decay p.
+
+    Point estimate gets a full h grid search; null refits a,b only at that h
+    (keeps this O(n·draws) instead of O(n·draws·grid)).
+    Returns {b_obs, h_obs, p_b, p_h_gt, n, n_draws}.
+    """
+    pairs = [
+        (float(t), float(v))
+        for t, v in zip(tau_h, y)
+        if t is not None and v is not None and math.isfinite(float(t)) and math.isfinite(float(v))
+    ]
+    ts = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    fit = exp_decay_fit(ts, ys, h_grid)
+    if fit is None:
+        return {"b_obs": None, "h_obs": None, "p_b": None, "p_h_gt": None, "n": 0.0, "n_draws": float(n_draws)}
+    b_obs, h_obs = fit["b"], fit["h"]
+    xs = [2.0 ** (-(max(t, 0.0) / h_obs)) for t in ts]
+    import random as _random
+
+    rng = _random.Random(seed)
+    n = len(ys)
+    ge_b = 0
+    used = 0
+    for _ in range(max(n_draws, 1)):
+        k = rng.randrange(1, n)
+        y_s = ys[k:] + ys[:k]
+        ab = _ols_ab(xs, y_s)
+        if ab is None:
+            continue
+        used += 1
+        if ab[1] >= b_obs:
+            ge_b += 1
+    if used < 10:
+        return {"b_obs": b_obs, "h_obs": h_obs, "p_b": None, "p_h_gt": None, "n": float(n), "n_draws": float(used)}
+    return {
+        "b_obs": b_obs,
+        "h_obs": h_obs,
+        "p_b": ge_b / used,
+        "p_h_gt": None,
+        "n": float(n),
+        "n_draws": float(used),
+    }
+
+
+# ── TimesFM rank features (P1.2) ──────────────────────────────────────────
+# Derived from stored p_timesfm and optional quantiles. Research-only.
+
+
+def timesfm_rank_features(
+    p_timesfm: float | None,
+    side: str | None,
+    p_win: float | None = None,
+    q_lo: float | None = None,
+    q_mid: float | None = None,
+    q_hi: float | None = None,
+    last_price: float | None = None,
+) -> dict[str, float | None]:
+    """Rank features from a TimesFM snapshot. All optional → None if inputs missing.
+
+    side: 'buy' | 'sell' (signal direction). Forecast lean is (p_timesfm-0.5).
+    timesfm_side is lean signed to the trade: positive = forecast agrees with side.
+    """
+    out: dict[str, float | None] = {
+        "timesfm_dir": None,
+        "timesfm_conf": None,
+        "timesfm_side": None,
+        "timesfm_gap": None,
+        "q_spread": None,
+        "q_pos": None,
+    }
+    if p_timesfm is None:
+        return out
+    try:
+        p = float(p_timesfm)
+    except (TypeError, ValueError):
+        return out
+    if not math.isfinite(p):
+        return out
+    lean = p - 0.5
+    out["timesfm_dir"] = lean
+    out["timesfm_conf"] = abs(lean)
+    if side in ("buy", "sell"):
+        out["timesfm_side"] = lean if side == "buy" else -lean
+    if p_win is not None:
+        try:
+            out["timesfm_gap"] = p - float(p_win)
+        except (TypeError, ValueError):
+            out["timesfm_gap"] = None
+    qs = [q_lo, q_mid, q_hi]
+    if all(x is not None for x in (q_lo, q_hi)) and last_price:
+        try:
+            lo, hi, last = float(q_lo), float(q_hi), float(last_price)
+            if last > 0 and hi >= lo:
+                out["q_spread"] = (hi - lo) / last
+                out["q_pos"] = (last - lo) / (hi - lo) if hi > lo else 0.5
+        except (TypeError, ValueError):
+            pass
+    return out

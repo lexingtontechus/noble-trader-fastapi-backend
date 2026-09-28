@@ -109,6 +109,23 @@ class TestRankScore:
         assert dd == pytest.approx(0.2)
         assert R.delta_d([], [1.0]) is None
 
+    def test_p3_timesfm_gap_lifts_score(self):
+        base = R.rank_score(
+            event_window="fresh", transition="dir_flip",
+            recent_tp_rate=0.4, cell_p=0.4,
+        )
+        with_gap = R.rank_score(
+            event_window="fresh", transition="dir_flip",
+            recent_tp_rate=0.4, cell_p=0.4, timesfm_gap=0.2,
+        )
+        against = R.rank_score(
+            event_window="fresh", transition="dir_flip",
+            recent_tp_rate=0.4, cell_p=0.4, timesfm_gap=-0.2,
+        )
+        assert with_gap > against
+        assert R.timesfm_gap_score(0.0) == pytest.approx(0.5)
+        assert R.timesfm_gap_score(0.2) > 0.5
+
 
 class TestRankScoreTracker:
     def test_note_regime_event_time(self):

@@ -40,7 +40,7 @@ _NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 _OPENROUTER_MODEL_DEFAULT = "openrouter/auto"
 _NVIDIA_NIM_MODEL_DEFAULT = "meta/llama-3.2-11b-vision-instruct"
 
-_REQUEST_TIMEOUT = 30.0
+_REQUEST_TIMEOUT = 90.0
 
 _warned_no_provider = False
 
@@ -101,25 +101,117 @@ async def _call_chat_completions(
         return text.strip()
 
 
+def _local_model_id() -> str:
+    return os.getenv("LOCAL_LLM_MODEL", "").strip()
+
+
+def _local_base_url() -> str:
+    return os.getenv("LOCAL_LLM_BASE_URL", "").strip().rstrip("/")
+
+
+_local_pipe = None
+
+
+def _get_local_pipe():
+    """Lazy transformers pipeline for a small local instruct model."""
+    global _local_pipe
+    if _local_pipe is not None:
+        return _local_pipe
+    model_id = _local_model_id()
+    if not model_id:
+        return None
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+        tok = AutoTokenizer.from_pretrained(model_id)
+        mdl = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
+        _local_pipe = pipeline(
+            "text-generation",
+            model=mdl,
+            tokenizer=tok,
+            max_new_tokens=512,
+            do_sample=False,
+        )
+        logger.info("llm_client: local model ready %s", model_id)
+        return _local_pipe
+    except Exception as exc:
+        logger.warning("llm_client: local model load failed: %s: %r", type(exc).__name__, exc)
+        return None
+
+
+async def _call_local(system_prompt: str, user_prompt: str, max_tokens: int) -> Optional[str]:
+    """Local path: OpenAI-compatible LOCAL_LLM_BASE_URL, else transformers."""
+    import asyncio
+
+    base = _local_base_url()
+    if base:
+        try:
+            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{base}/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "model": _local_model_id() or "local",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.1,
+                    },
+                )
+                if not resp.is_success:
+                    raise RuntimeError(f"local {resp.status_code}: {resp.text[:200]}")
+                data = resp.json()
+                return ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        except Exception as exc:
+            logger.warning("llm_client: local HTTP failed: %s: %r", type(exc).__name__, exc)
+            return None
+
+    pipe = _get_local_pipe()
+    if pipe is None:
+        return None
+
+    def _gen() -> str:
+        out = pipe(
+            f"{system_prompt}\n\n{user_prompt}",
+            max_new_tokens=max_tokens,
+            return_full_text=False,
+        )
+        return (out[0]["generated_text"] if out else "").strip()
+
+    return await asyncio.to_thread(_gen)
+
+
 async def call_llm_with_provider(
     system_prompt: str, user_prompt: str, max_tokens: int = 512,
 ) -> Optional[tuple[dict[str, Any], str]]:
-    """OpenRouter primary, NVIDIA NIM fallback. Returns ``(parsed_json,
-    provider)`` from whichever provider succeeds first — ``provider``
-    is ``"openrouter"`` or ``"nvidia_nim"`` — or ``None`` if both fail,
-    both are unset, or neither response is valid JSON. Never raises —
-    best-effort, matches every other self-learning I/O function in
-    this codebase."""
+    """Local first (if configured), then OpenRouter, then NVIDIA NIM.
+
+    Returns ``(parsed_json, provider)`` — provider is ``"local"``,
+    ``"openrouter"``, or ``"nvidia_nim"``. Never raises.
+    """
     global _warned_no_provider
+
+    if _local_model_id() or _local_base_url():
+        try:
+            text = await _call_local(system_prompt, user_prompt, max_tokens)
+            parsed = extract_json(text or "")
+            if parsed is not None:
+                return parsed, "local"
+            logger.warning("llm_client: local response wasn't valid JSON")
+        except Exception as exc:
+            logger.warning("llm_client: local call failed: %s: %r", type(exc).__name__, exc)
+
     openrouter_key = _openrouter_api_key()
     nim_key = _nvidia_nim_api_key()
 
-    if not openrouter_key and not nim_key:
+    if not openrouter_key and not nim_key and not (_local_model_id() or _local_base_url()):
         if not _warned_no_provider:
             logger.warning(
-                "Neither OPENROUTER_API_KEY nor NVIDIA_NIM_API_KEY is set — "
-                "LLM-assisted self-learning features will no-op until one is "
-                "added as a Studio secret."
+                "No LLM provider configured (LOCAL_LLM_MODEL / LOCAL_LLM_BASE_URL, "
+                "OPENROUTER_API_KEY, or NVIDIA_NIM_API_KEY) — "
+                "LLM-assisted self-learning features will no-op."
             )
             _warned_no_provider = True
         return None

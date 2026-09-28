@@ -18,6 +18,11 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `20260926_LIVE_G22_DECISION_AND_PROMOTION.md` | Live read: G2.2 **NO PASS at power** (Δm₂₄ −0.32); overconfident p_win every era; pool/hourly **HOLD** (post-flip S2 n=0); 3h HL not promoted |
 | `reports/20260926_postflip_rescore.md` | Era-split scorecard + evidence-pool Brier proxy + G2.2 power (script `scripts/kairos_postflip_rescore.py`) |
 | `20260926_DIRECTIONAL_EDGE_PWIN_RANKING_AND_TRANSITIONS.md` | Event-time regime transitions (fresh vs deep **T1 supported** +0.117), type split (`dir_flip` best), p_win ranking **fails** (IC≈0); build `kairos_rank.py` |
+| `20260927_P0_P4_PROGRAMME.md` | Beyond-p_win programme: **P0 done** (dir_flip h≈6h), P1 TimesFM dynamic covariates (2.5→3.0), P2 typed pivots, P3 R-Layer ranker, P4 macro/LLM extract |
+| `20260928_P2_PIVOTS_COMPLETE.md` | P2 done: pivots on **`nt_macro_forecast`** (migration 181), calendar stays raw TDVA cache; lead-lag = co-move 1.3×@0–6h, not multi-day lead |
+| `20260928_MACRO_FORECAST_REFACTOR.md` | **Refactor 182:** uniform multi-asset `nt_macro_forecast` (thesis/drivers/risks + structure_* + events); LLM deconstructs narrative; next = apply migrations, fill universe, P3 |
+| `scopes/20260927_P0_HALFLIFE_T2_SCOPE.md` | P0 half-life scope + T2 result |
+| `reports/20260927_halflife_t2.md` | Live T2 event-time half-life report |
 | `reports/20260926_rank_transition.md` | Live R1 ranking IC + transition event study |
 | `reports/20260926_rank_score_eval.md` | Walk-forward composite `rank_score` + shadow ΔD gate (episode-deduped) |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
