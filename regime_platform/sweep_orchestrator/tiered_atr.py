@@ -308,6 +308,12 @@ def should_promote_atr_candidates(
     b_lag = exp.get(baseline_bucket) if baseline_bucket else None
     w_lag = exp.get(widened_bucket) if widened_bucket else None
     tighter = {"<0.5", "0.5-1", "1-2", "2-4"}
+    # 2026-09-29 control-symbol fix: when the pick "changed" but the bucket
+    # stays the same (often stuck on 4+ for gold/USDCAD), still admit ATR
+    # candidates so tighter SL bands can enter the pool — basket bucket alone
+    # does not capture SL-atr profitability (see 20260929_CONTROL_GEOMETRY).
+    if selection_changed and baseline_bucket is not None and baseline_bucket == widened_bucket:
+        return True
     if baseline_bucket == "4+" and widened_bucket in tighter:
         if w_lag is not None and float(w_lag) <= risk_cap:
             return True
