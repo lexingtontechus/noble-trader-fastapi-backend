@@ -1,7 +1,17 @@
-# Control-symbol profitability + per-symbol geometry (worklog)
+# Control-symbol profitability + **class** geometry (worklog)
 
 **Date:** 2026-09-29 · **Type:** analysis + build · **Parent:** `reports/20260929_atr_decision_read.md`  
-**Goal:** make **control** symbols (XAUUSD, XAUEUR, USDCAD, AAPL) profitable without waiting another cycle on the same basket geometry.
+**Architecture (binding):** `dynamic_atr_pick(asset_class)` is **already per-class**. There are **no per-symbol geometry configs**. One mechanism, class-band grids only.
+
+**Corrected framing (2026-09-29):** the 4-symbol “control” replay was a **probe**, not a product split. Production path:
+
+```text
+nt_symbol.asset_class → asset_class_key() → dynamic_atr_pick(class) → TP/SL ATR
+                                      ↑
+                         get_dynamic_atr_config(class)  # by_class overlays
+```
+
+Goal: class bands that make **every** symbol in a class go through the same math — including XAUUSD, XAUEUR, USDCAD, AAPL.
 
 ---
 
@@ -107,8 +117,22 @@ OOS already shows **SL 0.5–2** is the only band with positive expectancy.
 
 ## 5. Decision summary
 
-1. **Expiry is per-symbol / width-driven** — basket ATR is the bug.  
-2. **AAPL = replay (done) → force TP 9–17 / SL 2–4.** Backfill optional (promote hygiene).  
-3. **XAUUSD ≠ tight SL** — wide SL can be +EV; class bands must differ.  
-4. **USDCAD has no +EV cell** — do not wait; gate or re-measure.  
+1. **Expiry tracks bracket width** — one global grid is wrong; **class overlays** are the lever (not symbol overrides).  
+2. **AAPL** is in `equity` with US30/US500 — class pick **TP 12–24 / SL 4–8** (wr 0.46, +0.91). No AAPL-only path.  
+3. **XAUUSD** is `commodity` with gold/silver — class pick **TP 3–8 / SL 2–4** (wr 0.41, +0.65).  
+4. **Forex / crypto** — no sound +EV cell under filters (wr≥0.2, exp≤0.5); keep global fallback until more settles.  
 5. Hybrid promote stays; `dynamic_atr` full flip **2026-10-03**.
+
+---
+
+## 6. Build (this session)
+
+| Piece | What |
+|---|---|
+| `feature_flags.dynamic_atr.by_class` | `commodity` + `equity` overlays from class replay |
+| `get_dynamic_atr_config(asset_class)` | Merge overlay by `asset_class_key` |
+| `heavy_sweep` | Pass `sym.asset_class` into config |
+| `scripts/dynamic_atr_class_replay.py` | Class-level grid (all symbols) — source of truth for overlays |
+| Report | `reports/20260929_dynamic_atr_class_replay.md` |
+
+**Not done:** per-symbol tables. **Not done:** forex/crypto overlays (no sound cell).

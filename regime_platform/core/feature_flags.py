@@ -49,10 +49,10 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_risk_cap": 0.35,
     "dynamic_atr": {
         "lookback_days": 10,
-        # 2026-09-29 band rework (geometry_replay §14.5): best region is
-        # TP 9-17 / SL 0.5-2 ATR (positive both halves, +0.45..+0.56).
-        # Prior grid included tp=24 / sl floor 1.0; the 10d walk often
-        # picked the widest TP outside that region.
+        # Global fallback grid (all classes). Per-class overlays live in
+        # ``by_class`` and are merged by get_dynamic_atr_config(asset_class).
+        # 2026-09-29 class fit (dynamic_atr_class_replay): commodity and
+        # equity have sound +EV cells; forex/crypto keep this fallback.
         "tp_atr": [9.0, 12.0, 15.0, 17.0],
         "sl_atr": [0.5, 1.0, 1.5, 2.0],
         "tp_atr_min": 9.0,
@@ -62,6 +62,25 @@ _DEFAULTS: dict[str, Any] = {
         "max_expiry": 0.25,
         "cost_atr": 0.1,
         "min_signals": 60,
+        # Class overlays (same keys as above; merge over globals).
+        "by_class": {
+            "commodity": {
+                "tp_atr": [3.0, 5.0, 8.0],
+                "sl_atr": [2.0, 3.0, 4.0],
+                "tp_atr_min": 3.0,
+                "tp_atr_max": 8.0,
+                "sl_atr_min": 2.0,
+                "sl_atr_max": 4.0,
+            },
+            "equity": {
+                "tp_atr": [12.0, 16.0, 20.0, 24.0],
+                "sl_atr": [4.0, 5.0, 6.0, 8.0],
+                "tp_atr_min": 12.0,
+                "tp_atr_max": 24.0,
+                "sl_atr_min": 4.0,
+                "sl_atr_max": 8.0,
+            },
+        },
     },
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
@@ -389,12 +408,30 @@ def get_dynamic_atr_mode() -> str:
     )).lower()
 
 
-def get_dynamic_atr_config() -> dict[str, Any]:
-    """Dynamic ATR selector settings (``dynamic_atr`` block); missing keys fall back to defaults."""
+def get_dynamic_atr_config(asset_class: str | None = None) -> dict[str, Any]:
+    """Dynamic ATR selector settings (``dynamic_atr`` block).
+
+    Merges optional ``by_class.<asset_class_key>`` overlay on top of the
+    global grid so every symbol uses the same mechanism with class bands
+    (2026-09-29 — no per-symbol special cases).
+    """
     cfg = dict(_DEFAULTS["dynamic_atr"])
     raw = _load().get("dynamic_atr")
     if isinstance(raw, dict):
-        cfg.update({k: v for k, v in raw.items() if k in cfg and v is not None})
+        cfg.update({k: v for k, v in raw.items() if k in cfg and v is not None and k != "by_class"})
+    by_class = {}
+    if isinstance(raw, dict) and isinstance(raw.get("by_class"), dict):
+        by_class = raw["by_class"]
+    elif isinstance(cfg.get("by_class"), dict):
+        by_class = cfg["by_class"]
+    # strip nested by_class from returned cfg (not a grid key)
+    cfg.pop("by_class", None)
+    if asset_class:
+        from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
+
+        ov = by_class.get(asset_class_key(asset_class))
+        if isinstance(ov, dict):
+            cfg.update({k: v for k, v in ov.items() if v is not None})
     return cfg
 
 
