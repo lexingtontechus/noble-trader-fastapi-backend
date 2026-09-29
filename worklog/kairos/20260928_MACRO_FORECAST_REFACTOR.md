@@ -113,14 +113,18 @@ Only **2 unique labeled events** in `events[]` so far (both `no_change`) — the
 ```bash
 # on_start.sh / start.sh / background.sh now launch this
 PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe llm_server.py
-# default model: LiquidAI/LFM2.5-1.2B-Instruct  (override LOCAL_LLM_MODEL)
+# default model: XHToken/Spark-X2.5-1.7B-INT8  (override LOCAL_LLM_MODEL)
 ```
 
 | Secret | Value |
 |---|---|
 | `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:8004` |
-| `LOCAL_LLM_MODEL` | `LiquidAI/LFM2.5-1.2B-Instruct` (or `local`) |
+| `LOCAL_LLM_MODEL` | `XHToken/Spark-X2.5-1.7B-INT8` (8-bit JSON-safe; Q4 GGUF only if RAM tight) |
 | `LOCAL_LLM_API_KEY` | optional shared secret (`X-API-Key`) |
+| `HF_HOME` | Studio `…/hf_cache` — **honored**, same as TimesFM (do not force project `.cache/huggingface`) |
+
+Weights download once into Studio `hf_cache`. `trust_remote_code=1` for Spark.  
+**Keep** `models--sentence-transformers--all-MiniLM-L6-v2` — `knowledge_index.py` still uses it.
 
 Weights download once into `.cache/huggingface` (same as TimesFM HF_HOME).
 

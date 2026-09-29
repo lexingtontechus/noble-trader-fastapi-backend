@@ -137,8 +137,11 @@ def _get_local_pipe():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-        tok = AutoTokenizer.from_pretrained(model_id)
-        mdl = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
+        trust = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "1") == "1"
+        tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust)
+        mdl = AutoModelForCausalLM.from_pretrained(
+            model_id, device_map="auto", trust_remote_code=trust
+        )
         _local_pipe = pipeline(
             "text-generation",
             model=mdl,

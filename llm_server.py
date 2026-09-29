@@ -1,17 +1,19 @@
 """
 LLM Forecasting / classify API (Studio-local, same pattern as TimesFM server.py).
 
-Exposes a small instruct model (default LiquidAI/LFM2.5-1.2B-Instruct) as
+Exposes a small instruct model (default XHToken/Spark-X2.5-1.7B-INT8) as
 OpenAI-compatible chat completions for macro_forecast_agent / kairos_pivot.
 
 Run on Studio (mirror TimesFM :8002):
   PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe llm_server.py
 
 Secrets / env:
-  LOCAL_LLM_MODEL     HF id or local path (default LiquidAI/LFM2.5-1.2B-Instruct)
+  LOCAL_LLM_MODEL     HF id or local path
+                      (default XHToken/Spark-X2.5-1.7B-INT8)
   LOCAL_LLM_PORT      default 8004 (8003 is sweep orchestrator)
   LOCAL_LLM_API_KEY   optional shared secret (X-API-Key)
-  HF_HOME             forced to .cache/huggingface like server.py
+  HF_HOME             Honor Studio hf_cache (same as TimesFM). Only falls
+                      back to <repo>/.cache/huggingface when unset.
 
 Clients set:
   LOCAL_LLM_BASE_URL=http://127.0.0.1:8004
@@ -25,11 +27,20 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-# HF cache BEFORE transformers import (same as server.py)
-_CACHE_DIR = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "huggingface"))
-os.environ["HF_HOME"] = _CACHE_DIR
-os.environ["HF_HUB_CACHE"] = os.path.join(_CACHE_DIR, "hub")
-os.makedirs(os.environ["HF_HUB_CACHE"], exist_ok=True)
+# HF cache BEFORE transformers import. Studio sets
+# HF_HOME=/teamspace/studios/this_studio/hf_cache (TimesFM lives there).
+# Do not clobber that — only default when unset (local/dev).
+if not os.environ.get("HF_HOME"):
+    _CACHE_DIR = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "huggingface")
+    )
+    os.environ["HF_HOME"] = _CACHE_DIR
+    os.environ["HF_HUB_CACHE"] = os.path.join(_CACHE_DIR, "hub")
+    os.makedirs(os.environ["HF_HUB_CACHE"], exist_ok=True)
+else:
+    os.environ.setdefault(
+        "HF_HUB_CACHE", os.path.join(os.environ["HF_HOME"], "hub")
+    )
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Security  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
@@ -40,9 +51,12 @@ import uvicorn  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("llm-server")
 
-MODEL_ID = os.getenv("LOCAL_LLM_MODEL", "LiquidAI/LFM2.5-1.2B-Instruct")
+# Spark-X2.5 INT8: official 8-bit (JSON/schema-safe) — trust_remote_code for
+# custom Spark modeling. Set LOCAL_LLM_MODEL to override (e.g. LFM or Q4 GGUF).
+MODEL_ID = os.getenv("LOCAL_LLM_MODEL", "XHToken/Spark-X2.5-1.7B-INT8")
 PORT = int(os.getenv("LOCAL_LLM_PORT", "8004"))
 DEVICE = os.getenv("LOCAL_LLM_DEVICE", "auto")
+TRUST_REMOTE_CODE = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "1") == "1"
 
 state: dict = {"pipe": None, "tokenizer": None}
 
@@ -63,12 +77,14 @@ async def verify_api_key(api_key: str | None = Security(api_key_header)) -> None
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    log.info("Loading local LLM: %s", MODEL_ID)
+    log.info("Loading local LLM: %s (HF_HOME=%s)", MODEL_ID, os.environ.get("HF_HOME"))
     t0 = time.time()
     from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-    tok = AutoTokenizer.from_pretrained(MODEL_ID)
-    mdl = AutoModelForCausalLM.from_pretrained(MODEL_ID, device_map=DEVICE)
+    tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=TRUST_REMOTE_CODE)
+    mdl = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, device_map=DEVICE, trust_remote_code=TRUST_REMOTE_CODE
+    )
     state["tokenizer"] = tok
     state["pipe"] = pipeline(
         "text-generation",
