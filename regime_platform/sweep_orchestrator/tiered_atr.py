@@ -119,8 +119,18 @@ def select_tp_sl(
     max_expiry: float,
     cost_atr: float,
     min_signals: int,
+    tp_atr_min: float | None = None,
+    tp_atr_max: float | None = None,
+    sl_atr_min: float | None = None,
+    sl_atr_max: float | None = None,
 ) -> Optional[DynamicAtrPick]:
-    """Best TP/SL by expectancy; must be positive in both halves (rows are time-ordered)."""
+    """Best TP/SL by expectancy; must be positive in both halves (rows are time-ordered).
+
+    Optional band clamps (2026-09-29 geometry_rework): drop candidates outside
+    [tp_atr_min, tp_atr_max] x [sl_atr_min, sl_atr_max] even if the grid lists
+    them — the 10d walk otherwise prefers a wide TP outside the replay's
+    best region (TP 9-17 / SL 0.5-2).
+    """
     n = len(paths)
     if n < min_signals:
         return None
@@ -128,9 +138,18 @@ def select_tp_sl(
     best: Optional[DynamicAtrPick] = None
     for tp in tp_grid:
         for sl in sl_grid:
-            if sl <= 0 or tp / sl < min_rr:
+            tp_f, sl_f = float(tp), float(sl)
+            if sl_f <= 0 or tp_f / sl_f < min_rr:
                 continue
-            pnl, expired = walk(paths, float(tp), float(sl))
+            if tp_atr_min is not None and tp_f < tp_atr_min:
+                continue
+            if tp_atr_max is not None and tp_f > tp_atr_max:
+                continue
+            if sl_atr_min is not None and sl_f < sl_atr_min:
+                continue
+            if sl_atr_max is not None and sl_f > sl_atr_max:
+                continue
+            pnl, expired = walk(paths, tp_f, sl_f)
             if expired.mean() > max_expiry:
                 continue
             net = pnl - cost_atr
@@ -139,7 +158,7 @@ def select_tp_sl(
                 continue
             e = float(net.mean())
             if best is None or e > best.exp_atr:
-                best = DynamicAtrPick(float(tp), float(sl), e, e1, e2, float(expired.mean()), n)
+                best = DynamicAtrPick(tp_f, sl_f, e, e1, e2, float(expired.mean()), n)
     return best
 
 
@@ -255,6 +274,12 @@ async def dynamic_atr_pick(
         max_expiry=float(cfg["max_expiry"]),
         cost_atr=float(cfg["cost_atr"]),
         min_signals=int(cfg["min_signals"]),
+        # 2026-09-29 band rework — clamp to replay best region even if the
+        # grid is widened later (tp=24 used to win the 10d walk).
+        tp_atr_min=cfg.get("tp_atr_min"),
+        tp_atr_max=cfg.get("tp_atr_max"),
+        sl_atr_min=cfg.get("sl_atr_min"),
+        sl_atr_max=cfg.get("sl_atr_max"),
     )
     _PICK_CACHE[ac] = (time.time(), pick)
     return pick

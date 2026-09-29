@@ -112,4 +112,64 @@ class TestConfig:
         assert get_dynamic_atr_mode() in ("off", "shadow", "live")
         assert get_dynamic_atr_risk_cap() == pytest.approx(0.35)
         cfg = get_dynamic_atr_config()
-        assert cfg["lookback_days"] == 10 and 24.0 in cfg["tp_atr"] and cfg["min_signals"] == 60
+        assert cfg["lookback_days"] == 10 and cfg["min_signals"] == 60
+        # 2026-09-29 band rework: replay best region TP 9-17 / SL 0.5-2
+        assert 24.0 not in cfg["tp_atr"]
+        assert cfg["tp_atr_max"] == 17.0 and cfg["sl_atr_min"] == 0.5
+        assert 9.0 in cfg["tp_atr"] and 17.0 in cfg["tp_atr"]
+        assert 0.5 in cfg["sl_atr"] and 2.0 in cfg["sl_atr"]
+
+
+class TestBandClamp:
+    def test_clamp_excludes_wide_tp(self):
+        """tp=24 would win on exp but is outside the replay band — clamp drops it."""
+        # 48-step path that ends at +24 so tp=24 is reachable.
+        trend = list(np.arange(0.5, 24.01, 0.5))  # 48 values
+        rows = [_path(trend) if i % 10 < 3 else _path([-1.1]) for i in range(100)]
+        wide = select_tp_sl(
+            np.vstack(rows),
+            tp_grid=[12.0, 24.0], sl_grid=[1.0],
+            min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
+        )
+        assert wide is not None and wide.tp_atr == 24.0
+        clamped = select_tp_sl(
+            np.vstack(rows),
+            tp_grid=[12.0, 24.0], sl_grid=[1.0],
+            min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
+            tp_atr_min=9.0, tp_atr_max=17.0, sl_atr_min=0.5, sl_atr_max=2.0,
+        )
+        assert clamped is not None
+        assert clamped.tp_atr == 12.0
+        assert 9.0 <= clamped.tp_atr <= 17.0
+
+    def test_clamp_excludes_tight_sl_below_floor(self):
+        # Winners hit TP 12; losers run to -2 so both sl=0.25 and sl=1.0 resolve.
+        # Without the floor, 0.25 loses less and wins on exp; clamp keeps 1.0.
+        rows = [
+            _path([12.0]) if i % 2 == 0 else _path([-2.0])
+            for i in range(40)
+        ]
+        unclamped = select_tp_sl(
+            np.vstack(rows),
+            tp_grid=[12.0], sl_grid=[0.25, 1.0],
+            min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
+        )
+        assert unclamped is not None and unclamped.sl_atr == 0.25
+        pick = select_tp_sl(
+            np.vstack(rows),
+            tp_grid=[12.0], sl_grid=[0.25, 1.0],
+            min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
+            sl_atr_min=0.5, sl_atr_max=2.0,
+        )
+        assert pick is not None
+        assert pick.sl_atr >= 0.5
+
+    def test_no_clamp_keeps_legacy_behaviour(self):
+        trend = list(np.arange(0.5, 13.01, 0.5))
+        rows = [_path(trend) if i % 10 < 3 else _path([-1.1]) for i in range(100)]
+        pick = select_tp_sl(
+            np.vstack(rows),
+            tp_grid=[1.5, 3.0, 6.0, 12.0], sl_grid=[1.0, 2.0],
+            min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
+        )
+        assert pick is not None and pick.tp_atr == 12.0

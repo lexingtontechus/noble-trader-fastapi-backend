@@ -49,8 +49,16 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_risk_cap": 0.35,
     "dynamic_atr": {
         "lookback_days": 10,
-        "tp_atr": [1.5, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0, 17.0, 24.0],
-        "sl_atr": [1.0, 1.5, 2.0, 3.0],
+        # 2026-09-29 band rework (geometry_replay §14.5): best region is
+        # TP 9-17 / SL 0.5-2 ATR (positive both halves, +0.45..+0.56).
+        # Prior grid included tp=24 / sl floor 1.0; the 10d walk often
+        # picked the widest TP outside that region.
+        "tp_atr": [9.0, 12.0, 15.0, 17.0],
+        "sl_atr": [0.5, 1.0, 1.5, 2.0],
+        "tp_atr_min": 9.0,
+        "tp_atr_max": 17.0,
+        "sl_atr_min": 0.5,
+        "sl_atr_max": 2.0,
         "max_expiry": 0.25,
         "cost_atr": 0.1,
         "min_signals": 60,
