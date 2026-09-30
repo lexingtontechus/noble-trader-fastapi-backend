@@ -113,9 +113,9 @@ class TestConfig:
         assert get_dynamic_atr_risk_cap() == pytest.approx(0.35)
         cfg = get_dynamic_atr_config()
         assert cfg["lookback_days"] == 10 and cfg["min_signals"] == 60
-        # 2026-09-29 band rework: replay best region TP 9-17 / SL 0.5-2
-        assert 24.0 not in cfg["tp_atr"]
-        assert cfg["tp_atr_max"] == 17.0 and cfg["sl_atr_min"] == 0.5
+        # 2026-09-29 sim goal: wr>=0.5 exp<=0.2; equity TP 5-6.5 / SL 4-5.5
+        assert cfg["max_expiry"] == 0.20
+        assert cfg["tp_atr_max"] == 6.5 and cfg["sl_atr_min"] == 4.0
         assert 9.0 in cfg["tp_atr"] and 17.0 in cfg["tp_atr"]
         assert 0.5 in cfg["sl_atr"] and 2.0 in cfg["sl_atr"]
 
