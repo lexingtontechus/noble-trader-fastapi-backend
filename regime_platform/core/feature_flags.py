@@ -45,62 +45,56 @@ _DEFAULTS: dict[str, Any] = {
         "penalty_scale": 0.5,
     },
     "heavy_sweep_reachability_mode": "off",
-    # 2026-09-29: settings BY CLASS (not one global band). One live decision
-    # = flip dynamic_atr_mode once; each class has its own TP/SL ATR grid.
-    # Fit on settled light 09-20→27. Objective: max pnl_bricks subject to
-    # wr>=0.2, exp<=0.5 (reachability + P/L together).
-    #
-    #   commodity  TP 2-6  / SL 1-3   wr 0.45  exp 0%   pnl +0.94
-    #   equity     TP 8-14 / SL 6-12  wr 0.81  exp 2%   pnl +3.95
-    #   forex      TP 20-40 / SL 8-20  PROVISIONAL (no sound cell; least-bad volume)
-    #   crypto     TP 8-14 / SL 4-8   PROVISIONAL (near-breakeven wr 0.20)
-    #
-    # Global keys below are the fallback only; by_class wins per asset_class.
+    # 2026-09-29 GOAL: wr>=0.5, exp<=0.2. Settings BY CLASS; one live decision.
+    #   commodity  TP 1-4  / SL 2-4   wr 0.54  exp 0%   pnl +1.28  GOAL
+    #   equity     TP 8-14 / SL 6-12  wr 0.81  exp 2%   pnl +3.95  GOAL
+    #   forex      TP 1-4  / SL 2-4   wr 0.44  exp 0%   pnl +1.38  (wr short)
+    #   crypto     TP 3-8  / SL 1-3   wr 0.41  exp 11%  pnl +1.47  (wr short)
     "dynamic_atr_mode": "live",
     "dynamic_atr_risk_cap": 0.35,
     "dynamic_atr": {
         "lookback_days": 10,
-        "tp_atr": [8.0, 10.0, 12.0, 14.0],
-        "sl_atr": [4.0, 5.0, 6.0, 8.0],
-        "tp_atr_min": 8.0,
+        "tp_atr": [2.0, 4.0, 6.0, 8.0],
+        "sl_atr": [1.0, 2.0, 3.0, 4.0],
+        "tp_atr_min": 1.0,
         "tp_atr_max": 14.0,
-        "sl_atr_min": 4.0,
-        "sl_atr_max": 8.0,
-        "max_expiry": 0.25,
+        "sl_atr_min": 1.0,
+        "sl_atr_max": 12.0,
+        "max_expiry": 0.20,
         "cost_atr": 0.1,
         "min_signals": 60,
         "by_class": {
             "commodity": {
-                "tp_atr": [2.0, 4.0, 6.0],
-                "sl_atr": [1.0, 2.0, 3.0],
-                "tp_atr_min": 2.0,
-                "tp_atr_max": 6.0,
-                "sl_atr_min": 1.0,
-                "sl_atr_max": 3.0,
+                "tp_atr": [1.0, 2.0, 3.0, 4.0],
+                "sl_atr": [2.0, 3.0, 4.0],
+                "tp_atr_min": 1.0,
+                "tp_atr_max": 4.0,
+                "sl_atr_min": 2.0,
+                "sl_atr_max": 4.0,
             },
             "equity": {
                 "tp_atr": [8.0, 10.0, 12.0, 14.0],
-                "sl_atr": [4.0, 6.0, 8.0, 12.0],
+                "sl_atr": [6.0, 8.0, 10.0, 12.0],
                 "tp_atr_min": 8.0,
                 "tp_atr_max": 14.0,
-                "sl_atr_min": 4.0,
+                "sl_atr_min": 6.0,
                 "sl_atr_max": 12.0,
             },
             "forex": {
-                "tp_atr": [20.0, 25.0, 30.0, 40.0],
-                "sl_atr": [8.0, 10.0, 12.0, 20.0],
-                "tp_atr_min": 20.0,
-                "tp_atr_max": 40.0,
-                "sl_atr_min": 8.0,
-                "sl_atr_max": 20.0,
+                "tp_atr": [1.0, 2.0, 3.0, 4.0],
+                "sl_atr": [2.0, 3.0, 4.0],
+                "tp_atr_min": 1.0,
+                "tp_atr_max": 4.0,
+                "sl_atr_min": 2.0,
+                "sl_atr_max": 4.0,
             },
             "crypto": {
-                "tp_atr": [8.0, 10.0, 12.0, 14.0],
-                "sl_atr": [4.0, 5.0, 6.0, 8.0],
-                "tp_atr_min": 8.0,
-                "tp_atr_max": 14.0,
-                "sl_atr_min": 4.0,
-                "sl_atr_max": 8.0,
+                "tp_atr": [3.0, 5.0, 8.0],
+                "sl_atr": [1.0, 2.0, 3.0],
+                "tp_atr_min": 3.0,
+                "tp_atr_max": 8.0,
+                "sl_atr_min": 1.0,
+                "sl_atr_max": 3.0,
             },
         },
     },
