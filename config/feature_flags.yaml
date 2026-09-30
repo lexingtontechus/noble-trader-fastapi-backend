@@ -462,6 +462,15 @@ dynamic_atr:
       sl_atr_min: 0.30
       sl_atr_max: 0.45
 
+# atr_reopt_enabled (2026-09-30): monthly free-lattice ATR re-solve.
+# APScheduler `atr-reopt-monthly` (1st 03:30 UTC) — codebase-owned, not
+# Studio cron (one source of truth). PROPOSAL ONLY: writes
+# worklog/kairos/reports/YYYYMMDD_atr_reopt.md + nt_roadmap heartbeat.
+# Never mutates dynamic_atr.by_symbol — operator GO applies clamps.
+# Heavy sweep stays the daily local pick inside those clamps.
+# Worklog: worklog/kairos/20260930_MONTHLY_ATR_REOPT.md
+atr_reopt_enabled: true
+
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
 # long-lag than baseline, allow ATR candidates into deadline-aware pool

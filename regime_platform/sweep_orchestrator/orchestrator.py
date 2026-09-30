@@ -31,6 +31,7 @@ from regime_platform.core.settings import settings
 from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_knowledge_index_enabled,
+    get_atr_reopt_enabled,
     get_self_learning_detectors_enabled,
     get_self_learning_triage_enabled,
     get_macro_forecast_agent_enabled,
@@ -1551,6 +1552,22 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Monthly ATR free-lattice re-opt (2026-09-30, worklog
+        # 20260930_MONTHLY_ATR_REOPT.md): 1st of month 03:30 UTC — proposal
+        # only (report + nt_roadmap heartbeat). Never writes YAML. Heavy
+        # sweep keeps daily local clamps; this is the rediscovery clock
+        # (45d free lattice + drift vs by_symbol). Codebase-owned so Studio
+        # cron is not a second source of truth.
+        if get_atr_reopt_enabled():
+            self._scheduler.add_job(
+                self._run_atr_reopt,
+                trigger=CronTrigger.from_crontab("30 3 1 * *"),
+                id="atr-reopt-monthly",
+                name="Monthly ATR free-lattice re-opt (proposals)",
+                misfire_grace_time=7200,
+                coalesce=True,
+            )
+
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
         # after the 05:00 UTC weekend heavy-sweep window so that week's
@@ -2232,6 +2249,21 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[self-learning] macro forecast agent run: %s", summary)
         except Exception as exc:
             logger.error("[self-learning] macro forecast agent run failed: %s", exc)
+
+    async def _run_atr_reopt(self) -> None:
+        """Monthly ATR free-lattice re-opt (1st 03:30 UTC). Proposal-only.
+
+        See ``regime_platform/sweep_orchestrator/atr_reopt.py`` and worklog
+        20260930_MONTHLY_ATR_REOPT.md. Writes a research report and
+        heartbeats ``nt_roadmap(atr_monthly_reopt)``; never mutates YAML.
+        """
+        from regime_platform.sweep_orchestrator.atr_reopt import run_atr_reopt
+
+        try:
+            result = await run_atr_reopt()
+            logger.info("[atr:reopt] %s", result.get("summary"))
+        except Exception as exc:
+            logger.error("[atr:reopt] failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

@@ -106,6 +106,7 @@ _DEFAULTS: dict[str, Any] = {
         },
     },
     "atr_anchored_evidence_mode": "shadow",
+    "atr_reopt_enabled": True,
     "heavy_publish_geometry_gate": "live",
     "geometry_intraday_scale_mode": "live",
     "geometry_tuning_sweep_mode": "live",
@@ -1108,6 +1109,14 @@ def get_macro_forecast_agent_enabled() -> bool:
     value = _load().get(
         "macro_forecast_agent_enabled", _DEFAULTS["macro_forecast_agent_enabled"],
     )
+    return bool(value)
+
+
+def get_atr_reopt_enabled() -> bool:
+    """Monthly ATR free-lattice re-opt (proposal-only). See worklog
+    20260930_MONTHLY_ATR_REOPT.md. Same simple on/off as
+    macro_forecast_agent_enabled — never auto-writes YAML."""
+    value = _load().get("atr_reopt_enabled", _DEFAULTS.get("atr_reopt_enabled", True))
     return bool(value)
 
 
