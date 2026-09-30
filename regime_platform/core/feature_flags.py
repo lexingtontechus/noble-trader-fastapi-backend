@@ -63,6 +63,13 @@ _DEFAULTS: dict[str, Any] = {
         "max_expiry": 0.20,
         "cost_atr": 0.1,
         "min_signals": 60,
+        # vol_ratio = rv24/rv168 of 1h log returns at entry (VOLATILITY, not
+        # volume). Optional band: walk + live pick only inside [min, max].
+        # None = no gate. BTCUSD ships low-vol-only (see 20260930 worklog).
+        "vol_ratio_min": None,
+        "vol_ratio_max": None,
+        "vol_ratio_short": 24,
+        "vol_ratio_long": 168,
         "by_class": {
             "commodity": {
                 "tp_atr": [1.0, 2.0, 3.0, 4.0],

@@ -18,6 +18,20 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ### Highlights
 
+> **Geometry / `vol_ratio` — read before touching TP-SL (easy to miss).**
+> **`vol_ratio` is a VOLATILITY ratio, not volume:** `std(Δlog close 24h) /
+> std(Δlog close 168h)` at entry (`tiered_atr.compute_vol_ratio`).
+> **BTCUSD** has no balanced pooled +EV cell — live geometry is
+> **8.07 / 1.77 only when `vol_ratio ≤ 0.71`** (low-vol band). Outside the
+> band the dynamic pick is withheld (heavy bricks kept).
+> **XAUUSD** is **4.94 / 1.00** on 45d pooled (no gate); the old 0.91/0.71 is gone.
+> Crypto **"trend runner"** (far TP ~20/2.5, wr≈0.25) is a **separate product** —
+> do not fold it into the balanced engine bar (w∈[0.40,0.60]). Consider the same
+> split for **ETHUSD / other crypto** before live brackets.
+> Full write-up: `worklog/kairos/20260930_VOL_REGIME_ATR_BTC_XAU.md`.
+> **Heavy sweep is not this research:** it re-walks 10d on a fixed grid; the
+> 45d free lattice + vol terciles + OOS live in `scripts/vol_atr_solver.py`.
+
 #### Kairos (beyond `p_win`)
 - **`kairos_rank_score` R-Layer** — opportunity ranking *within* a regime cell (freshness, setup type, recent TP, shrunk cell hit-rate). Walk-forward AUC 0.67–0.78; top/bottom tercile TP-rate Δ +0.29. **Ranks capital priority; `p_win` stays an eligibility/level score** (level IC≈0, overconfident).
 - **Event-time transitions** — post-regime-flip freshness (`dir_flip` ~6h information clock; fresh−deep y_acc +0.12). STATE badges: FRESH / WARM / STALE / DEEP.

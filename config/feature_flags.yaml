@@ -354,8 +354,18 @@ heavy_sweep_reachability_mode: shadow
 #   XAGUSD   7.96/7.76  EV +1.03
 #   XAUAUD   6.31/4.91  EV +0.68
 #   XAUEUR   4.20/1.82  EV +0.22
-#   XAUUSD   0.91/0.71  EV -0.32  (no +EV cell in band)
-#   BTCUSD   0.95/0.15  EV +0.005
+#   XAUUSD   0.91/0.71  EV -0.32  (no +EV cell in band)  ← superseded 09-30
+#   BTCUSD   0.95/0.15  EV +0.005                        ← superseded 09-30
+# 2026-09-30 VOL-REGIME (worklog/kairos/20260930_VOL_REGIME_ATR_BTC_XAU.md):
+#   10d walk underpowered for BTC/XAU. 45d free-lattice + vol_ratio terciles:
+#     XAUUSD   4.94/1.00  EV +1.23  wr 0.405  (pooled 45d — no gate needed)
+#     BTCUSD   8.07/1.77  EV +1.93  wr 0.413  ONLY when vol_ratio ≤ 0.71
+#   vol_ratio = std(Δlog close 24h) / std(Δlog close 168h) at entry —
+#   VOLATILITY ratio, NOT volume. BTC has no balanced pooled cell; outside
+#   the low-vol band the pick is withheld (heavy bricks kept).
+#   Crypto note: aggressive post-moves pay only as a far-TP "trend runner"
+#   (wr≈0.25, e.g. 20/2.5) — separate product, NOT the balanced engine.
+#   Consider the same split for ETHUSD/other crypto before live brackets.
 #   AAPL     6.36/3.57  EV +0.66
 #   US30USD  12.80/2.41 EV +3.84
 #   US500    13.23/8.09 EV +0.55
@@ -372,6 +382,9 @@ dynamic_atr:
   max_expiry: 0.20
   cost_atr: 0.1
   min_signals: 60
+  # Optional entry-time vol_ratio band (see header). Default: no gate.
+  vol_ratio_short: 24
+  vol_ratio_long: 168
   by_symbol:
     FOREX:
       tp_atr: [1.65, 1.71, 1.75, 1.80]
@@ -402,19 +415,23 @@ dynamic_atr:
       sl_atr_min: 1.7
       sl_atr_max: 2.0
     XAUUSD:
-      tp_atr: [0.85, 0.91, 1.00]
-      sl_atr: [0.65, 0.71, 0.80]
-      tp_atr_min: 0.80
-      tp_atr_max: 1.10
-      sl_atr_min: 0.60
-      sl_atr_max: 0.90
+      # 2026-09-30 45d pooled: 4.94/1.00 EV +1.23 wr 0.405 (replaces 0.91/0.71)
+      tp_atr: [4.80, 4.94, 5.10]
+      sl_atr: [0.95, 1.00, 1.10]
+      tp_atr_min: 4.60
+      tp_atr_max: 5.30
+      sl_atr_min: 0.90
+      sl_atr_max: 1.20
     BTCUSD:
-      tp_atr: [0.90, 0.95, 1.05]
-      sl_atr: [0.12, 0.15, 0.20]
-      tp_atr_min: 0.85
-      tp_atr_max: 1.15
-      sl_atr_min: 0.12
-      sl_atr_max: 0.25
+      # 2026-09-30 low-vol cell only: 8.07/1.77 EV +1.93 wr 0.413.
+      # vol_ratio ≤ 0.71 (≈ bottom tercile on 45d). Outside band: no pick.
+      tp_atr: [7.80, 8.07, 8.40]
+      sl_atr: [1.65, 1.77, 1.95]
+      tp_atr_min: 7.50
+      tp_atr_max: 8.80
+      sl_atr_min: 1.55
+      sl_atr_max: 2.10
+      vol_ratio_max: 0.71
     AAPL:
       tp_atr: [6.20, 6.36, 6.55]
       sl_atr: [3.40, 3.57, 3.75]

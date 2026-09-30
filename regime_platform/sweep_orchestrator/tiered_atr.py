@@ -191,11 +191,43 @@ def select_tp_sl(
     return best
 
 
-def build_paths(signals: list[dict], bars: dict[str, list[dict]]) -> np.ndarray:
-    """(n, 48) ATR-scaled paths for signals with a full 48-bar window, time-ordered."""
+def compute_vol_ratio(
+    closes: np.ndarray, j: int, short: int = 24, long: int = 168
+) -> float:
+    """Entry-time short/long realized-vol ratio (NOT volume).
+
+    ``rv_short / rv_long`` of 1h log returns ending at bar ``j`` (inclusive).
+    Past bars only — safe as a live gate. NaN if either window is missing.
+    """
+    c = np.asarray(closes, dtype="float64")
+    if j < short or j < long or j + 1 > len(c):
+        return float("nan")
+    rs = np.diff(np.log(c[j - short:j + 1]))
+    rl = np.diff(np.log(c[j - long:j + 1]))
+    if rs.size < 2 or rl.size < 2:
+        return float("nan")
+    rv_s, rv_l = float(rs.std()), float(rl.std())
+    if not np.isfinite(rv_s) or not np.isfinite(rv_l) or rv_l <= 0:
+        return float("nan")
+    return rv_s / rv_l
+
+
+def build_paths(
+    signals: list[dict],
+    bars: dict[str, list[dict]],
+    *,
+    return_vol: bool = False,
+    vol_short: int = 24,
+    vol_long: int = 168,
+):
+    """(n, 48) ATR-scaled paths for signals with a full 48-bar window, time-ordered.
+
+    ``return_vol=True`` also returns a parallel list of entry-time
+    ``vol_ratio`` values (see ``compute_vol_ratio``).
+    """
     tcache = {s: np.array([float(b["t"]) for b in rows], dtype="float64") for s, rows in bars.items()}
     ccache = {s: np.array([float(b["c"]) for b in rows], dtype="float64") for s, rows in bars.items()}
-    out = []
+    out, vols = [], []
     for r in sorted(signals, key=lambda x: x["_ts"]):
         t = tcache.get(r["symbol"])
         if t is None or not len(t):
@@ -205,7 +237,11 @@ def build_paths(signals: list[dict], bars: dict[str, list[dict]]) -> np.ndarray:
             continue
         d = 1.0 if r["signal"] == "buy" else -1.0
         out.append((ccache[r["symbol"]][j:j + EXPIRY_BARS] - r["entry_price"]) * d / r["atr"])
-    return np.vstack(out) if out else np.empty((0, EXPIRY_BARS))
+        vols.append(compute_vol_ratio(ccache[r["symbol"]], j, vol_short, vol_long))
+    paths = np.vstack(out) if out else np.empty((0, EXPIRY_BARS))
+    if return_vol:
+        return paths, vols
+    return paths
 
 
 # ─── Production entry point ────────────────────────────────────────────────
@@ -281,6 +317,10 @@ async def dynamic_atr_pick(
         cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
         cfg.get("max_expiry"),
     )
+    vol_min = cfg.get("vol_ratio_min")
+    vol_max = cfg.get("vol_ratio_max")
+    vol_short = int(cfg.get("vol_ratio_short") or 24)
+    vol_long = int(cfg.get("vol_ratio_long") or 168)
     grid_fp = (
         scope,
         tuple(cfg.get("tp_atr") or ()),
@@ -290,6 +330,10 @@ async def dynamic_atr_pick(
         cfg.get("sl_atr_min"),
         cfg.get("sl_atr_max"),
         cfg.get("max_expiry"),
+        vol_min,
+        vol_max,
+        vol_short,
+        vol_long,
     )
     hit = _PICK_CACHE.get(grid_fp)
     if hit and time.time() - hit[0] < _PICK_TTL_S:
@@ -317,7 +361,57 @@ async def dynamic_atr_pick(
     )
     bars = {s: [b for b in rows if b.get("t") is not None and b.get("c") is not None]
             for s, rows in bars.items()}
-    paths = build_paths(signals, bars)
+
+    # Live vol_ratio gate (2026-09-30): pick only applies when the *current*
+    # entry-time ratio is inside the configured band. Outside → None (fail-closed
+    # to the heavy pick). BTCUSD's balanced cell is low-vol only.
+    if vol_min is not None or vol_max is not None:
+        closes_by = {
+            s: np.array([float(b["c"]) for b in rows], dtype="float64")
+            for s, rows in bars.items()
+        }
+        _vr_now = float("nan")
+        for s, c in closes_by.items():
+            if len(c) > vol_long:
+                _vr_now = compute_vol_ratio(c, len(c) - 1, vol_short, vol_long)
+                if np.isfinite(_vr_now):
+                    break
+        _in = (
+            np.isfinite(_vr_now)
+            and (vol_min is None or _vr_now >= float(vol_min))
+            and (vol_max is None or _vr_now <= float(vol_max))
+        )
+        if not _in:
+            logger.info(
+                "[dynamic:atr] scope=%s vol_ratio=%.4f outside [%s,%s] — no pick "
+                "(heavy kept)",
+                scope, _vr_now, vol_min, vol_max,
+            )
+            _PICK_CACHE[grid_fp] = (time.time(), None)
+            return None
+        logger.info(
+            "[dynamic:atr] scope=%s vol_ratio=%.4f in band [%s,%s]",
+            scope, _vr_now, vol_min, vol_max,
+        )
+
+    paths, vols = build_paths(
+        signals, bars, return_vol=True, vol_short=vol_short, vol_long=vol_long,
+    )
+    if vol_min is not None or vol_max is not None:
+        keep = []
+        for i, v in enumerate(vols):
+            if v is None or not np.isfinite(v):
+                continue
+            if vol_min is not None and v < float(vol_min):
+                continue
+            if vol_max is not None and v > float(vol_max):
+                continue
+            keep.append(i)
+        paths = paths[keep] if keep else np.empty((0, EXPIRY_BARS))
+        logger.info(
+            "[dynamic:atr] scope=%s vol-filtered paths %d → %d (band [%s,%s])",
+            scope, len(vols), len(paths), vol_min, vol_max,
+        )
     pick = select_tp_sl(
         paths,
         tp_grid=[float(x) for x in cfg["tp_atr"]],
