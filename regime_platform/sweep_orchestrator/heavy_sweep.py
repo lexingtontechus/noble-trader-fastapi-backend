@@ -1128,16 +1128,14 @@ class HeavySweepMixin:
                             )
                         else:
                             _b, _sl, _tp = _dyn.to_bricks(atr, best.sl_bricks)
-                            _tp_px, _sl_px = _dyn.to_price_levels(
-                                trade_signal["entry_price"], atr, trade_signal.get("signal", "buy"),
-                            )
+                            # trade_signal is built later — log ATR multiples
+                            # only here; PRICE brackets are logged at apply time.
                             logger.info(
                                 "[dynamic:atr] %s mode=%s %s %s → brick=%.6f sl=%d tp=%d | "
-                                "PRICE tp=%.6f sl=%.6f | heavy tp=%.2fATR sl=%.2fATR",
+                                "heavy tp=%.2fATR sl=%.2fATR",
                                 symbol, dyn_mode,
                                 "SET" if dyn_mode == "live" else "would set",
                                 _dyn.as_log(), _b, _sl, _tp,
-                                _tp_px, _sl_px,
                                 _heavy_tp_atr, _heavy_sl_atr,
                             )
                             if dyn_mode == "live":
