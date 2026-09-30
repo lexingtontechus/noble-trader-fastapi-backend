@@ -263,31 +263,26 @@ async def dynamic_atr_pick(
     *,
     cfg: dict[str, Any],
     min_rr: float,
+    symbol: str | None = None,
 ) -> Optional[DynamicAtrPick]:
-    """TP/SL for this asset class from its recent signals; None -> keep heavy pick.
-
-    Cached per class for 6h so a daily heavy group walks each class once.
+    """TP/SL from recent signals. ``symbol`` walks only that symbol (per-symbol
+    solve); otherwise the whole asset class. Cached 6h per (symbol|class, grid).
     """
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
     from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
 
     ac = asset_class_key(asset_class)
-    # Hard log of the grid actually used (stale-config detector, 2026-09-30).
+    scope = symbol or ac
     logger.info(
-        "[dynamic:atr] class=%s grid tp=%s sl=%s clamps tp=[%s,%s] sl=[%s,%s] max_exp=%s",
-        ac,
-        cfg.get("tp_atr"),
-        cfg.get("sl_atr"),
-        cfg.get("tp_atr_min"),
-        cfg.get("tp_atr_max"),
-        cfg.get("sl_atr_min"),
-        cfg.get("sl_atr_max"),
+        "[dynamic:atr] scope=%s class=%s grid tp=%s sl=%s clamps tp=[%s,%s] sl=[%s,%s] max_exp=%s",
+        scope, ac,
+        cfg.get("tp_atr"), cfg.get("sl_atr"),
+        cfg.get("tp_atr_min"), cfg.get("tp_atr_max"),
+        cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
         cfg.get("max_expiry"),
     )
-    # Cache key includes grid fingerprint — a config change must not reuse
-    # picks computed under the old TP/SL tiers (2026-09-30 bug).
     grid_fp = (
-        ac,
+        scope,
         tuple(cfg.get("tp_atr") or ()),
         tuple(cfg.get("sl_atr") or ()),
         cfg.get("tp_atr_min"),
@@ -301,7 +296,10 @@ async def dynamic_atr_pick(
         return hit[1]
 
     peers = await fetch_active_symbols()
-    members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
+    if symbol:
+        members = [p for p in peers if p.get("symbol") == symbol and p.get("tradingview_symbol")]
+    else:
+        members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
     if not members:
         _PICK_CACHE[grid_fp] = (time.time(), None)
         return None

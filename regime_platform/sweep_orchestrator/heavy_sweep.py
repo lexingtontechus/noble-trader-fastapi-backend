@@ -1114,8 +1114,9 @@ class HeavySweepMixin:
                     if dyn_mode != "off" and atr and atr > 0:
                         _dyn = await dynamic_atr_pick(
                             sym.get("asset_class"),
-                            cfg=get_dynamic_atr_config(sym.get("asset_class")),
+                            cfg=get_dynamic_atr_config(sym.get("asset_class"), symbol),
                             min_rr=MIN_RR,
+                            symbol=symbol,
                         )
                         _heavy_tp_atr = best.brick_size * best.tp_bricks / atr
                         _heavy_sl_atr = best.brick_size * best.sl_bricks / atr

@@ -348,20 +348,23 @@ heavy_sweep_reachability_mode: shadow
 # (worklog/kairos/reports/20260926_geometry_replay.md, scope §14.5).
 # dynamic_atr_risk_cap is the geometry-risk cap used by the publish gates
 # and geometry_tuning_sweep; it is not part of the selector.
-# 2026-09-30 FINE FRACTIONAL solver (0.05 lattice → 0.01 refine).
-# Not 0.5 steps. Not brick multiples. Exact price: entry ± tp_atr*ATR.
-#   EV = wr*TP - (1-wr)*SL - cost ;  w in [0.40, 0.60] ; exp <= 0.20
-#   forex     TP 1.71 / SL 0.35  RR 4.89  w 0.401  e 0%    EV +0.254
-#   commodity TP 1.86 / SL 0.53  RR 3.51  w 0.406  e 0%    EV +0.129
-#   equity    TP 13.00 / SL 7.00 RR 1.86  w 0.403  e 19%   EV +1.326
-#   crypto    TP 1.04 / SL 0.22  RR 4.73  w 0.402  e 0%    EV +0.003  (now +)
+# 2026-09-30 PER-SYMBOL solve (0.05→0.01 ATR). Forex majors share one grid;
+# every other symbol has its own walk. Exact price brackets (not bricks).
+#   forex    1.71/0.35  EV +0.25   (pooled majors)
+#   XAGUSD   7.96/7.76  EV +1.03
+#   XAUAUD   6.31/4.91  EV +0.68
+#   XAUEUR   4.20/1.82  EV +0.22
+#   XAUUSD   0.91/0.71  EV -0.32  (no +EV cell in band)
+#   BTCUSD   0.95/0.15  EV +0.005
+#   AAPL     6.36/3.57  EV +0.66
+#   US30USD  12.80/2.41 EV +3.84
+#   US500    13.23/8.09 EV +0.55
 dynamic_atr_mode: "live"
 dynamic_atr_risk_cap: 0.35
 dynamic_atr:
   lookback_days: 10
-  # fine grid around each class optimum (0.05 ATR)
-  tp_atr: [1.60, 1.65, 1.70, 1.75, 1.80, 1.85, 1.90]
-  sl_atr: [0.30, 0.35, 0.40, 0.45, 0.50, 0.55]
+  tp_atr: [1.71, 2.0, 3.0, 5.0, 8.0, 13.0]
+  sl_atr: [0.35, 1.0, 2.0, 3.5, 5.0, 8.0]
   tp_atr_min: 0.20
   tp_atr_max: 20.0
   sl_atr_min: 0.15
@@ -369,35 +372,78 @@ dynamic_atr:
   max_expiry: 0.20
   cost_atr: 0.1
   min_signals: 60
-  by_class:
-    commodity:
-      tp_atr: [1.75, 1.80, 1.86, 1.90, 1.95]
-      sl_atr: [0.48, 0.50, 0.53, 0.55, 0.58]
-      tp_atr_min: 1.70
-      tp_atr_max: 2.00
-      sl_atr_min: 0.45
-      sl_atr_max: 0.60
-    equity:
-      tp_atr: [12.50, 12.75, 13.00, 13.25, 13.50]
-      sl_atr: [6.75, 7.00, 7.25, 7.50]
-      tp_atr_min: 12.00
-      tp_atr_max: 14.00
-      sl_atr_min: 6.50
-      sl_atr_max: 7.50
-    forex:
-      tp_atr: [1.65, 1.70, 1.71, 1.75, 1.80]
-      sl_atr: [0.30, 0.35, 0.40, 0.45]
+  by_symbol:
+    FOREX:
+      tp_atr: [1.65, 1.71, 1.75, 1.80]
+      sl_atr: [0.30, 0.35, 0.40]
       tp_atr_min: 1.60
       tp_atr_max: 1.85
       sl_atr_min: 0.30
       sl_atr_max: 0.45
-    crypto:
-      tp_atr: [1.00, 1.04, 1.08, 1.12]
-      sl_atr: [0.18, 0.22, 0.26, 0.30]
-      tp_atr_min: 0.95
-      tp_atr_max: 1.20
-      sl_atr_min: 0.15
-      sl_atr_max: 0.35
+    XAGUSD:
+      tp_atr: [7.80, 7.96, 8.10]
+      sl_atr: [7.60, 7.76, 7.90]
+      tp_atr_min: 7.5
+      tp_atr_max: 8.3
+      sl_atr_min: 7.4
+      sl_atr_max: 8.1
+    XAUAUD:
+      tp_atr: [6.20, 6.31, 6.45]
+      sl_atr: [4.80, 4.91, 5.05]
+      tp_atr_min: 6.0
+      tp_atr_max: 6.6
+      sl_atr_min: 4.7
+      sl_atr_max: 5.2
+    XAUEUR:
+      tp_atr: [4.10, 4.20, 4.35]
+      sl_atr: [1.75, 1.82, 1.90]
+      tp_atr_min: 4.0
+      tp_atr_max: 4.5
+      sl_atr_min: 1.7
+      sl_atr_max: 2.0
+    XAUUSD:
+      tp_atr: [0.85, 0.91, 1.00]
+      sl_atr: [0.65, 0.71, 0.80]
+      tp_atr_min: 0.80
+      tp_atr_max: 1.10
+      sl_atr_min: 0.60
+      sl_atr_max: 0.90
+    BTCUSD:
+      tp_atr: [0.90, 0.95, 1.05]
+      sl_atr: [0.12, 0.15, 0.20]
+      tp_atr_min: 0.85
+      tp_atr_max: 1.15
+      sl_atr_min: 0.12
+      sl_atr_max: 0.25
+    AAPL:
+      tp_atr: [6.20, 6.36, 6.55]
+      sl_atr: [3.40, 3.57, 3.75]
+      tp_atr_min: 6.0
+      tp_atr_max: 6.8
+      sl_atr_min: 3.3
+      sl_atr_max: 3.9
+    US30USD:
+      tp_atr: [12.50, 12.80, 13.10]
+      sl_atr: [2.25, 2.41, 2.60]
+      tp_atr_min: 12.0
+      tp_atr_max: 13.5
+      sl_atr_min: 2.1
+      sl_atr_max: 2.8
+    US500:
+      tp_atr: [12.90, 13.23, 13.60]
+      sl_atr: [7.80, 8.09, 8.40]
+      tp_atr_min: 12.5
+      tp_atr_max: 14.0
+      sl_atr_min: 7.5
+      sl_atr_max: 8.8
+  by_class:
+    forex:
+      tp_atr: [1.65, 1.71, 1.80]
+      sl_atr: [0.30, 0.35, 0.40]
+      tp_atr_min: 1.60
+      tp_atr_max: 1.85
+      sl_atr_min: 0.30
+      sl_atr_max: 0.45
 
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better

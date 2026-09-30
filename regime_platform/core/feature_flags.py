@@ -424,24 +424,45 @@ def get_dynamic_atr_mode() -> str:
     )).lower()
 
 
-def get_dynamic_atr_config(asset_class: str | None = None) -> dict[str, Any]:
+def get_dynamic_atr_config(
+    asset_class: str | None = None, symbol: str | None = None
+) -> dict[str, Any]:
     """Dynamic ATR selector settings (``dynamic_atr`` block).
 
-    Merges optional ``by_class.<asset_class_key>`` overlay on top of the
-    global grid so every symbol uses the same mechanism with class bands
-    (2026-09-29 — no per-symbol special cases).
+    Precedence (2026-09-30): ``by_symbol.<SYMBOL>`` → ``by_class.<asset_class_key>``
+    → global. Per-symbol is the default unit (each symbol's own path stats);
+    forex majors share ``by_class.forex``.
     """
     cfg = dict(_DEFAULTS["dynamic_atr"])
     raw = _load().get("dynamic_atr")
     if isinstance(raw, dict):
-        cfg.update({k: v for k, v in raw.items() if k in cfg and v is not None and k != "by_class"})
-    by_class = {}
-    if isinstance(raw, dict) and isinstance(raw.get("by_class"), dict):
-        by_class = raw["by_class"]
+        cfg.update({
+            k: v for k, v in raw.items()
+            if k in cfg and v is not None and k not in ("by_class", "by_symbol")
+        })
+    by_class, by_symbol = {}, {}
+    if isinstance(raw, dict):
+        if isinstance(raw.get("by_class"), dict):
+            by_class = raw["by_class"]
+        if isinstance(raw.get("by_symbol"), dict):
+            by_symbol = raw["by_symbol"]
     elif isinstance(cfg.get("by_class"), dict):
         by_class = cfg["by_class"]
-    # strip nested by_class from returned cfg (not a grid key)
+    if isinstance(cfg.get("by_symbol"), dict):
+        by_symbol = {**cfg["by_symbol"], **by_symbol}
     cfg.pop("by_class", None)
+    cfg.pop("by_symbol", None)
+    if symbol:
+        sym_u = str(symbol).strip().upper()
+        ov = by_symbol.get(sym_u)
+        # Major FX share one grid (fractional-dollar book).
+        if ov is None and sym_u in (
+            "AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY",
+        ):
+            ov = by_symbol.get("FOREX")
+        if isinstance(ov, dict):
+            cfg.update({k: v for k, v in ov.items() if v is not None})
+            return cfg
     if asset_class:
         from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
 
