@@ -113,10 +113,9 @@ class TestConfig:
         assert get_dynamic_atr_risk_cap() == pytest.approx(0.35)
         cfg = get_dynamic_atr_config()
         assert cfg["lookback_days"] == 10 and cfg["min_signals"] == 60
-        # 2026-09-29 sim goal: wr>=0.5 exp<=0.2; equity TP 5-6.5 / SL 4-5.5
+        # 2026-09-29 balanced engine: w in [0.40,0.60], exp<=0.20, EV>0 via RR
         assert cfg["max_expiry"] == 0.20
-        assert cfg["tp_atr_max"] == 6.5 and cfg["sl_atr_min"] == 4.0
-        assert 5.5 in cfg["tp_atr"] and 4.5 in cfg["sl_atr"]
+        assert cfg["tp_atr_max"] == 13.0 and cfg["sl_atr_min"] == 0.5
 
 
 class TestBandClamp:
