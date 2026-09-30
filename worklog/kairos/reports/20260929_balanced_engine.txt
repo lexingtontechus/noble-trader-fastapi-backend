@@ -1,0 +1,7 @@
+BALANCED ENGINE: wr in [0.40,0.60], exp<=0.20, max EV  (EV = wr*TP - (1-wr)*SL - cost)
+cost=0.1 ATR
+
+commodity: {'tp': np.float64(1.5), 'sl': np.float64(0.5), 'wr': 0.42231348391512663, 'exp': 0.0, 'ev': 0.0957591520335812, 'n': 1461, 'rr': np.float64(3.0)}
+crypto: {'tp': np.float64(1.0), 'sl': np.float64(0.5), 'wr': 0.44072164948453607, 'exp': 0.0, 'ev': -0.07498709636436023, 'n': 388, 'rr': np.float64(2.0)}
+equity: {'tp': np.float64(13.0), 'sl': np.float64(7.0), 'wr': 0.40456989247311825, 'exp': 0.19654427645788336, 'ev': 1.3531044637570087, 'n': 926, 'rr': np.float64(1.8571428571428572)}
+forex: {'tp': np.float64(3.0), 'sl': np.float64(1.0), 'wr': 0.40153222172149616, 'exp': 0.0, 'ev': 0.2510052447441448, 'n': 2219, 'rr': np.float64(3.0)}
