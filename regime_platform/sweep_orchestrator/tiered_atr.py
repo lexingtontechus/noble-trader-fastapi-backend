@@ -159,6 +159,16 @@ def select_tp_sl(
             e = float(net.mean())
             if best is None or e > best.exp_atr:
                 best = DynamicAtrPick(tp_f, sl_f, e, e1, e2, float(expired.mean()), n)
+    # Belt-and-braces: never return a pick outside the published clamps.
+    if best is not None:
+        if tp_atr_min is not None and best.tp_atr < tp_atr_min:
+            best = None
+        elif tp_atr_max is not None and best.tp_atr > tp_atr_max:
+            best = None
+        elif sl_atr_min is not None and best.sl_atr < sl_atr_min:
+            best = None
+        elif sl_atr_max is not None and best.sl_atr > sl_atr_max:
+            best = None
     return best
 
 
@@ -181,7 +191,7 @@ def build_paths(signals: list[dict], bars: dict[str, list[dict]]) -> np.ndarray:
 
 # ─── Production entry point ────────────────────────────────────────────────
 
-_PICK_CACHE: dict[str, tuple[float, Optional[DynamicAtrPick]]] = {}
+_PICK_CACHE: dict[tuple, tuple[float, Optional[DynamicAtrPick]]] = {}
 _PICK_TTL_S = 6 * 3600
 
 
@@ -243,20 +253,45 @@ async def dynamic_atr_pick(
     from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
 
     ac = asset_class_key(asset_class)
-    hit = _PICK_CACHE.get(ac)
+    # Hard log of the grid actually used (stale-config detector, 2026-09-30).
+    logger.info(
+        "[dynamic:atr] class=%s grid tp=%s sl=%s clamps tp=[%s,%s] sl=[%s,%s] max_exp=%s",
+        ac,
+        cfg.get("tp_atr"),
+        cfg.get("sl_atr"),
+        cfg.get("tp_atr_min"),
+        cfg.get("tp_atr_max"),
+        cfg.get("sl_atr_min"),
+        cfg.get("sl_atr_max"),
+        cfg.get("max_expiry"),
+    )
+    # Cache key includes grid fingerprint — a config change must not reuse
+    # picks computed under the old TP/SL tiers (2026-09-30 bug).
+    grid_fp = (
+        ac,
+        tuple(cfg.get("tp_atr") or ()),
+        tuple(cfg.get("sl_atr") or ()),
+        cfg.get("tp_atr_min"),
+        cfg.get("tp_atr_max"),
+        cfg.get("sl_atr_min"),
+        cfg.get("sl_atr_max"),
+        cfg.get("max_expiry"),
+    )
+    hit = _PICK_CACHE.get(grid_fp)
     if hit and time.time() - hit[0] < _PICK_TTL_S:
         return hit[1]
 
     peers = await fetch_active_symbols()
     members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
     if not members:
+        _PICK_CACHE[grid_fp] = (time.time(), None)
         return None
     lookback = int(cfg["lookback_days"])
     until = datetime.now(timezone.utc) - timedelta(hours=EXPIRY_BARS + 2)
     since = until - timedelta(days=lookback)
     signals = await _load_class_signals([m["symbol"] for m in members], since, until)
     if len(signals) < int(cfg["min_signals"]):
-        _PICK_CACHE[ac] = (time.time(), None)
+        _PICK_CACHE[grid_fp] = (time.time(), None)
         return None
     bars: dict[str, list[dict]] = {}
     await fetch_tradingview_batch(
@@ -281,7 +316,7 @@ async def dynamic_atr_pick(
         sl_atr_min=cfg.get("sl_atr_min"),
         sl_atr_max=cfg.get("sl_atr_max"),
     )
-    _PICK_CACHE[ac] = (time.time(), pick)
+    _PICK_CACHE[grid_fp] = (time.time(), pick)
     return pick
 
 
