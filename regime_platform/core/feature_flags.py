@@ -45,42 +45,23 @@ _DEFAULTS: dict[str, Any] = {
         "penalty_scale": 0.5,
     },
     "heavy_sweep_reachability_mode": "off",
-    "dynamic_atr_mode": "shadow",
+    # 2026-09-29: ONE live decision for all symbols/classes. Pooled grid fit
+    # (n=9392 decided, wr>=0.2, exp<=0.5, pnl>0): TP 3-8 / SL 2-4 →
+    # wr 0.38, exp 14%, pnl +0.54. No per-class overlays (by_class empty).
+    "dynamic_atr_mode": "live",
     "dynamic_atr_risk_cap": 0.35,
     "dynamic_atr": {
         "lookback_days": 10,
-        # Global fallback grid (all classes). Per-class overlays live in
-        # ``by_class`` and are merged by get_dynamic_atr_config(asset_class).
-        # 2026-09-29 class fit (dynamic_atr_class_replay): commodity and
-        # equity have sound +EV cells; forex/crypto keep this fallback.
-        "tp_atr": [9.0, 12.0, 15.0, 17.0],
-        "sl_atr": [0.5, 1.0, 1.5, 2.0],
-        "tp_atr_min": 9.0,
-        "tp_atr_max": 17.0,
-        "sl_atr_min": 0.5,
-        "sl_atr_max": 2.0,
+        "tp_atr": [3.0, 5.0, 8.0],
+        "sl_atr": [2.0, 3.0, 4.0],
+        "tp_atr_min": 3.0,
+        "tp_atr_max": 8.0,
+        "sl_atr_min": 2.0,
+        "sl_atr_max": 4.0,
         "max_expiry": 0.25,
         "cost_atr": 0.1,
         "min_signals": 60,
-        # Class overlays (same keys as above; merge over globals).
-        "by_class": {
-            "commodity": {
-                "tp_atr": [3.0, 5.0, 8.0],
-                "sl_atr": [2.0, 3.0, 4.0],
-                "tp_atr_min": 3.0,
-                "tp_atr_max": 8.0,
-                "sl_atr_min": 2.0,
-                "sl_atr_max": 4.0,
-            },
-            "equity": {
-                "tp_atr": [12.0, 16.0, 20.0, 24.0],
-                "sl_atr": [4.0, 5.0, 6.0, 8.0],
-                "tp_atr_min": 12.0,
-                "tp_atr_max": 24.0,
-                "sl_atr_min": 4.0,
-                "sl_atr_max": 8.0,
-            },
-        },
+        "by_class": {},
     },
     "atr_anchored_evidence_mode": "shadow",
     "heavy_publish_geometry_gate": "live",
