@@ -115,7 +115,8 @@ class TestConfig:
         assert cfg["lookback_days"] == 10 and cfg["min_signals"] == 60
         # 2026-09-29 balanced engine: w in [0.40,0.60], exp<=0.20, EV>0 via RR
         assert cfg["max_expiry"] == 0.20
-        assert cfg["tp_atr_max"] == 13.0 and cfg["sl_atr_min"] == 0.5
+        # 2026-09-30 fine fractional solver — no 0.5 steps / brick snap
+        assert cfg["tp_atr_max"] == 20.0 and cfg["sl_atr_min"] == 0.15
 
 
 class TestBandClamp:
