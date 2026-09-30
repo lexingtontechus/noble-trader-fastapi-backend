@@ -348,56 +348,55 @@ heavy_sweep_reachability_mode: shadow
 # (worklog/kairos/reports/20260926_geometry_replay.md, scope §14.5).
 # dynamic_atr_risk_cap is the geometry-risk cap used by the publish gates
 # and geometry_tuning_sweep; it is not part of the selector.
-# 2026-09-29 SIM (scripts/sim_atr_goal.py, 14d first-passage walk):
-# GOAL wr>=0.5 AND exp<=0.2 is reachable with tight symmetric barriers.
-#   commodity  TP 1.5 / SL 1.5  wr 0.51  exp 0%   pnl -0.15  GOAL (pnl negative)
-#   equity     TP 5.5 / SL 4.5  wr 0.51  exp 2%   pnl +0.36  GOAL +EV  ← use this
-#   forex      TP 0.5 / SL 0.5  wr 0.51  exp 0%   pnl +0.07  GOAL (thin)
-#   crypto     TP 0.5 / SL 0.5  wr 0.50  exp 0%   pnl -0.11  GOAL (pnl negative)
-# Cost 0.1 ATR makes coin-flip tight barriers ~zero EV. Equity is the only
-# class with goal + solid +EV on this window.
+# 2026-09-29 BALANCED ENGINE (14d path walk):
+#   EV = w*TP - (1-w)*SL - cost ;  w in [0.40, 0.60] ; exp <= 0.20
+#   RR = TP/SL > (1-w)/w for EV>0 (w=0.40 → RR>1.5)
+#   forex     TP 3   / SL 1    RR 3.0  w 0.40  e 0%   EV +0.25
+#   commodity TP 1.5 / SL 0.5  RR 3.0  w 0.42  e 0%   EV +0.10
+#   equity    TP 13  / SL 7    RR 1.9  w 0.40  e 20%  EV +1.35
+#   crypto    TP 1   / SL 0.5  RR 2.0  w 0.44  e 0%   EV -0.07  (flag)
 dynamic_atr_mode: "live"
 dynamic_atr_risk_cap: 0.35
 dynamic_atr:
   lookback_days: 10
-  tp_atr: [5.0, 5.5, 6.0, 6.5]
-  sl_atr: [4.0, 4.5, 5.0, 5.5]
-  tp_atr_min: 5.0
-  tp_atr_max: 6.5
-  sl_atr_min: 4.0
-  sl_atr_max: 5.5
+  tp_atr: [2.5, 3.0, 3.5]
+  sl_atr: [0.8, 1.0, 1.2]
+  tp_atr_min: 1.5
+  tp_atr_max: 13.0
+  sl_atr_min: 0.5
+  sl_atr_max: 7.0
   max_expiry: 0.20
   cost_atr: 0.1
   min_signals: 60
   by_class:
     commodity:
       tp_atr: [1.0, 1.5, 2.0]
-      sl_atr: [1.0, 1.5, 2.0]
+      sl_atr: [0.5, 0.75, 1.0]
       tp_atr_min: 1.0
       tp_atr_max: 2.0
-      sl_atr_min: 1.0
-      sl_atr_max: 2.0
+      sl_atr_min: 0.5
+      sl_atr_max: 1.0
     equity:
-      tp_atr: [5.0, 5.5, 6.0, 6.5]
-      sl_atr: [4.0, 4.5, 5.0, 5.5]
-      tp_atr_min: 5.0
-      tp_atr_max: 6.5
-      sl_atr_min: 4.0
-      sl_atr_max: 5.5
+      tp_atr: [11.0, 13.0, 15.0]
+      sl_atr: [6.0, 7.0, 8.0]
+      tp_atr_min: 11.0
+      tp_atr_max: 15.0
+      sl_atr_min: 6.0
+      sl_atr_max: 8.0
     forex:
-      tp_atr: [0.5, 1.0, 1.5]
-      sl_atr: [0.5, 1.0, 1.5]
-      tp_atr_min: 0.5
-      tp_atr_max: 1.5
-      sl_atr_min: 0.5
-      sl_atr_max: 1.5
+      tp_atr: [2.5, 3.0, 3.5]
+      sl_atr: [0.8, 1.0, 1.2]
+      tp_atr_min: 2.5
+      tp_atr_max: 3.5
+      sl_atr_min: 0.8
+      sl_atr_max: 1.2
     crypto:
-      tp_atr: [0.5, 1.0, 1.5]
-      sl_atr: [0.5, 1.0, 1.5]
-      tp_atr_min: 0.5
-      tp_atr_max: 1.5
+      tp_atr: [1.0, 1.5, 2.0]
+      sl_atr: [0.5, 0.75, 1.0]
+      tp_atr_min: 1.0
+      tp_atr_max: 2.0
       sl_atr_min: 0.5
-      sl_atr_max: 1.5
+      sl_atr_max: 1.0
 
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
