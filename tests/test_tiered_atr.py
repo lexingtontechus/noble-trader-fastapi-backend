@@ -116,8 +116,7 @@ class TestConfig:
         # 2026-09-29 sim goal: wr>=0.5 exp<=0.2; equity TP 5-6.5 / SL 4-5.5
         assert cfg["max_expiry"] == 0.20
         assert cfg["tp_atr_max"] == 6.5 and cfg["sl_atr_min"] == 4.0
-        assert 9.0 in cfg["tp_atr"] and 17.0 in cfg["tp_atr"]
-        assert 0.5 in cfg["sl_atr"] and 2.0 in cfg["sl_atr"]
+        assert 5.5 in cfg["tp_atr"] and 4.5 in cfg["sl_atr"]
 
 
 class TestBandClamp:
