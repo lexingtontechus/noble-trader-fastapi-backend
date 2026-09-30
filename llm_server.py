@@ -58,6 +58,37 @@ PORT = int(os.getenv("LOCAL_LLM_PORT", "8004"))
 DEVICE = os.getenv("LOCAL_LLM_DEVICE", "auto")
 TRUST_REMOTE_CODE = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "1") == "1"
 
+
+def _resolve_model_path(model_id: str) -> str:
+    """Prefer a local snapshot when offline (2026-09-30 llm.log crash).
+
+    HF id + ``HF_HUB_OFFLINE=1`` fails even when the weights sit in
+    ``HF_HOME/hub/models--org--name/snapshots/<rev>`` — transformers still
+    wants hub metadata. If a snapshot exists, load from that path.
+    """
+    if os.path.isdir(model_id):
+        return model_id
+    hub = os.path.join(
+        os.environ.get("HF_HUB_CACHE")
+        or os.path.join(os.environ.get("HF_HOME", ""), "hub")
+    )
+    if not hub or not os.path.isdir(hub):
+        return model_id
+    slug = model_id.replace("/", "--")
+    root = os.path.join(hub, f"models--{slug}", "snapshots")
+    if not os.path.isdir(root):
+        return model_id
+    revs = sorted(os.listdir(root), reverse=True)
+    for rev in revs:
+        cand = os.path.join(root, rev)
+        if os.path.isfile(os.path.join(cand, "config.json")):
+            log.info("Resolved MODEL_ID %s → %s", model_id, cand)
+            return cand
+    return model_id
+
+
+MODEL_ID = _resolve_model_path(MODEL_ID)
+
 state: dict = {"pipe": None, "tokenizer": None}
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

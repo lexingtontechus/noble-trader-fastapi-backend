@@ -19,6 +19,7 @@ Flag: ``atr_reopt_enabled`` (simple on/off, proposal-only).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -306,20 +307,121 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
     return {"summary": summary, "proposals": proposals, "report": str(out_path)}
 
 
-# ─── Vol-urgency nudge (market-driven early re-opt) ───────────────────────
+# ─── Vol-urgency → auto re-opt (market-driven, unattended) ────────────────
+
+_LAST_REOPT_RUN: float = 0.0
+
+
+def _clamp_block(tp: float, sl: float, pad_tp: float = 0.25, pad_sl: float = 0.12) -> dict[str, Any]:
+    """Narrow by_symbol lattice around a free-lattice pick (same style as research)."""
+    tp, sl = float(tp), float(sl)
+    return {
+        "tp_atr": [round(max(0.15, tp - pad_tp), 2), round(tp, 2), round(tp + pad_tp, 2)],
+        "sl_atr": [round(max(0.15, sl - pad_sl), 2), round(sl, 2), round(sl + pad_sl, 2)],
+        "tp_atr_min": round(max(0.15, tp - 2 * pad_tp), 2),
+        "tp_atr_max": round(tp + 2 * pad_tp, 2),
+        "sl_atr_min": round(max(0.15, sl - 2 * pad_sl), 2),
+        "sl_atr_max": round(sl + 2 * pad_sl, 2),
+    }
+
+
+def apply_symbol_clamps(symbol: str, pick: dict[str, Any]) -> bool:
+    """Patch ``dynamic_atr.by_symbol.<SYMBOL>`` clamp lines in feature_flags.yaml.
+
+    Line-level edit so comments/structure survive (no yaml.dump). Only
+    touches tp/sl lattice + clamp keys under that symbol block. Creates the
+    symbol block after ``by_symbol:`` if missing.
+    """
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "config" / "feature_flags.yaml"
+    text = path.read_text(encoding="utf-8")
+    blk = _clamp_block(pick["tp"], pick["sl"])
+    # Rebuild the key lines for this symbol (4-space indent under by_symbol)
+    new_keys = {
+        "tp_atr": f"      tp_atr: [{', '.join(str(x) for x in blk['tp_atr'])}]",
+        "sl_atr": f"      sl_atr: [{', '.join(str(x) for x in blk['sl_atr'])}]",
+        "tp_atr_min": f"      tp_atr_min: {blk['tp_atr_min']}",
+        "tp_atr_max": f"      tp_atr_max: {blk['tp_atr_max']}",
+        "sl_atr_min": f"      sl_atr_min: {blk['sl_atr_min']}",
+        "sl_atr_max": f"      sl_atr_max: {blk['sl_atr_max']}",
+    }
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    in_by_symbol = False
+    in_sym = False
+    found = False
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.rstrip("\n")
+        if stripped.startswith("  by_symbol:"):
+            in_by_symbol = True
+            out.append(raw)
+            i += 1
+            continue
+        if in_by_symbol and stripped and not stripped.startswith(" ") and not stripped.startswith("\t"):
+            in_by_symbol = False
+            in_sym = False
+        if in_by_symbol and re.match(rf"^    {re.escape(symbol)}:\s*$", stripped):
+            in_sym = True
+            found = True
+            out.append(raw)
+            i += 1
+            # rewrite known keys until next symbol / dedent
+            while i < len(lines):
+                s2 = lines[i].rstrip("\n")
+                if re.match(r"^    \S", s2) or (s2 and not s2.startswith(" ")):
+                    in_sym = False
+                    break
+                m = re.match(r"^      (tp_atr|sl_atr|tp_atr_min|tp_atr_max|sl_atr_min|sl_atr_max):", s2)
+                if m and m.group(1) in new_keys:
+                    out.append(new_keys[m.group(1)] + "\n")
+                    del new_keys[m.group(1)]
+                else:
+                    out.append(lines[i])
+                i += 1
+            for k in ("tp_atr", "sl_atr", "tp_atr_min", "tp_atr_max", "sl_atr_min", "sl_atr_max"):
+                if k in new_keys:
+                    out.append(new_keys[k] + "\n")
+                    del new_keys[k]
+            continue
+        out.append(raw)
+        i += 1
+
+    if not found and in_by_symbol is not False:
+        # append block at end of by_symbol — locate insertion point
+        text2 = "".join(out)
+        m = re.search(r"(?m)^  by_symbol:\n", text2)
+        if not m:
+            return False
+        block = f"    {symbol}:\n" + "\n".join(new_keys.values()) + "\n"
+        # insert after last symbol under by_symbol (before next top-level key)
+        # safer: before the first non-indented line after by_symbol
+        rest = text2[m.end():]
+        cut = re.search(r"(?m)^(?!\s)", rest)
+        insert_at = m.end() + (cut.start() if cut else len(rest))
+        text2 = text2[:insert_at] + block + text2[insert_at:]
+        path.write_text(text2, encoding="utf-8")
+        return True
+
+    path.write_text("".join(out), encoding="utf-8")
+    return True
 
 
 async def check_atr_reopt_urgency() -> dict[str, Any]:
-    """Discord nudge when entry-time ``vol_ratio`` is elevated.
+    """Unattended vol-urgency: elevated ``vol_ratio`` → **auto-run** free lattice.
 
-    ``vol_ratio = rv24/rv168`` > ``elevated_ratio`` (e.g. 1.25 = short-term
-    vol 25% above the week baseline) means the 10d heavy walk / monthly
-    clamps may be stale *now* — do not wait for the 1st. Sends a
-    ``#system-status`` risk alert telling the operator to run
-    ``scripts/monthly_atr_reopt.py``. Cooldown-gated per symbol. Never
-    mutates YAML and never auto-runs the free lattice (proposal tool).
+    2026-09-30 redesign (operator cannot watch Discord 24/7):
 
-    Returns ``{enabled, checked, alerted}``. Never raises.
+    1. ``vol_ratio >= elevated_ratio`` on any symbol (4h job).
+    2. Free lattice runs immediately (``run_atr_reopt``), 48h run-cooldown.
+    3. If ``auto_apply_clamps`` and a proposal drifted, patch ``by_symbol``
+       clamps in ``feature_flags.yaml`` (hot-reload).
+    4. Discord ``#system-status`` is **FYI of the action taken** — never a
+       to-do for a human.
+
+    Returns ``{enabled, checked, alerted, reopt, applied}``. Never raises.
     """
     import time as _time
 
@@ -331,6 +433,7 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
 
     threshold = float(cfg["elevated_ratio"])
     cooldown_h = float(cfg["cooldown_hours"])
+    auto_apply = bool(cfg.get("auto_apply_clamps", True))
     vol_short = int(cfg.get("vol_ratio_short") or 24)
     vol_long = int(cfg.get("vol_ratio_long") or 168)
     min_bars = int(vol_long) + 2
@@ -358,7 +461,7 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         return {"enabled": True, "checked": 0, "alerted": []}
 
     checked = 0
-    alerted: list[str] = []
+    spiked: list[tuple[str, float]] = []
     now = _time.time()
     for p in peers:
         sym = p["symbol"]
@@ -375,40 +478,74 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         last = _LAST_URGENCY_ALERT.get(sym)
         if last is not None and (now - last) < cooldown_h * 3600.0:
             continue
+        spiked.append((sym, vr))
+
+    if not spiked:
+        return {"enabled": True, "checked": checked, "alerted": [], "reopt": None, "applied": []}
+
+    global _LAST_REOPT_RUN
+    reopt_result: dict[str, Any] | None = None
+    applied: list[str] = []
+    ran = False
+    if now - _LAST_REOPT_RUN >= cooldown_h * 3600.0:
+        try:
+            reopt_result = await run_atr_reopt()
+            _LAST_REOPT_RUN = now
+            ran = True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[atr:urg] auto re-opt failed: %s", exc)
+        if ran and auto_apply and reopt_result:
+            for prop in reopt_result.get("proposals") or []:
+                scope = prop.get("scope")
+                pick = prop.get("pick") or {}
+                if not scope or not pick.get("tp"):
+                    continue
+                try:
+                    if apply_symbol_clamps(scope, pick):
+                        applied.append(f"{scope} {pick['tp']:.2f}/{pick['sl']:.2f}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[atr:urg] apply %s failed: %s", scope, exc)
+
+    for sym, vr in spiked:
+        _LAST_URGENCY_ALERT[sym] = now
         try:
             from notifications.discord import discord_notifier
 
-            # send_risk_alert → AlertChannel.STATUS → DISCORD_WEBHOOK_STATUS
-            # (#system-status). Same plumbing as expiry_rate_alert — not
-            # the SIGNALS/plan/venue signal webhooks.
+            action = "free lattice + clamps applied" if applied else (
+                "free lattice ran (no drift / no apply)" if ran else "re-opt still cooling down"
+            )
             await discord_notifier.send_risk_alert(
                 symbol=sym,
                 risk_type="atr_reopt_urgency",
                 message=(
-                    f"{sym}: vol_ratio {vr:.2f} (rv{vol_short}h/rv{vol_long}h) is "
-                    f"{(vr - 1.0) * 100:.0f}% above the week baseline — exceeds "
-                    f"{threshold:.2f}. Clamps from the last free-lattice solve "
-                    f"may be stale. Run the re-opt now:\n"
-                    f"`PYTHONPATH=\"$PWD/src\" ./.venv/Scripts/python.exe "
-                    f"scripts/monthly_atr_reopt.py`\n"
-                    f"then review proposals (report + nt_roadmap). Monthly "
-                    f"clock stays on the 1st — this is an urgency nudge only."
+                    f"{sym}: vol_ratio {vr:.2f} ≥ {threshold:.2f} "
+                    f"(+{(vr - 1.0) * 100:.0f}% vs 1-week baseline). "
+                    f"AUTO: {action}. "
+                    + (f"Applied: {', '.join(applied)}. " if applied else "")
+                    + (f"Proposals={len((reopt_result or {}).get('proposals') or [])}. "
+                       if reopt_result else "")
+                    + f"Report: {(reopt_result or {}).get('summary', {}).get('report', '—')}. "
+                    "Discord is FYI only — no operator action required unless you "
+                    "want to override clamps."
                 ),
                 data={
                     "vol_ratio": f"{vr:.2f}",
                     "threshold": f"{threshold:.2f}",
-                    "windows": f"{vol_short}h/{vol_long}h",
-                    "action": "run monthly_atr_reopt.py",
+                    "auto_action": action,
+                    "applied": ", ".join(applied) if applied else "none",
                 },
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[atr:urg] %s Discord send failed: %s", sym, exc)
-            continue
-        _LAST_URGENCY_ALERT[sym] = now
-        alerted.append(sym)
-        logger.warning(
-            "[atr:urg] %s vol_ratio=%.2f >= %.2f — Discord nudge sent",
-            sym, vr, threshold,
-        )
 
-    return {"enabled": True, "checked": checked, "alerted": alerted}
+    logger.warning(
+        "[atr:urg] spiked=%s ran_reopt=%s applied=%s",
+        [s for s, _ in spiked], ran, applied,
+    )
+    return {
+        "enabled": True,
+        "checked": checked,
+        "alerted": [s for s, _ in spiked],
+        "reopt": (reopt_result or {}).get("summary") if reopt_result else None,
+        "applied": applied,
+    }

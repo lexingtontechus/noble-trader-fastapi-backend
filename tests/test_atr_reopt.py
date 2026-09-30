@@ -67,3 +67,15 @@ def test_urgency_config_defaults():
     assert cfg["enabled"] is True
     assert cfg["elevated_ratio"] == 1.25
     assert cfg["cooldown_hours"] == 48.0
+    assert cfg["auto_apply_clamps"] is True
+
+
+def test_clamp_block_narrow_lattice():
+    from regime_platform.sweep_orchestrator.atr_reopt import _clamp_block
+
+    blk = _clamp_block(8.07, 1.77)
+    assert blk["tp_atr"][1] == 8.07
+    assert blk["sl_atr"][1] == 1.77
+    assert blk["tp_atr_min"] < 8.07 < blk["tp_atr_max"]
+    assert blk["sl_atr_min"] < 1.77 < blk["sl_atr_max"]
+

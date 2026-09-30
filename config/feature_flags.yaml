@@ -471,18 +471,19 @@ dynamic_atr:
 # Worklog: worklog/kairos/20260930_MONTHLY_ATR_REOPT.md
 atr_reopt_enabled: true
 
-# atr_reopt_urgency (2026-09-30): market-driven early nudge. When
-# vol_ratio (rv24/rv168 at entry — VOLATILITY, not volume) exceeds
-# elevated_ratio, send a Discord #system-status risk alert to run
-# scripts/monthly_atr_reopt.py now instead of waiting for the 1st.
-# Checked every 4h (APScheduler atr-reopt-urgency). Cooldown per symbol.
-# Does NOT auto-run the free lattice and does NOT write YAML.
+# atr_reopt_urgency (2026-09-30, redesigned 2026-09-30 night):
+# UNATTENDED vol response. vol_ratio (rv24/rv168 — VOLATILITY, not volume)
+# >= elevated_ratio → AUTO free-lattice re-opt (run_atr_reopt), then if
+# auto_apply_clamps patch by_symbol clamps in this file (hot-reload).
+# Discord #system-status (DISCORD_WEBHOOK_STATUS) is FYI of the action
+# taken — never a human to-do. 4h check, 48h cooldown per symbol + run.
 atr_reopt_urgency:
   enabled: true
   elevated_ratio: 1.25   # +25% short-term vol vs 1-week baseline
   cooldown_hours: 48.0
   vol_ratio_short: 24
   vol_ratio_long: 168
+  auto_apply_clamps: true
 
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
