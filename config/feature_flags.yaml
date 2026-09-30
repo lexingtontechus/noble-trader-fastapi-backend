@@ -348,22 +348,55 @@ heavy_sweep_reachability_mode: shadow
 # (worklog/kairos/reports/20260926_geometry_replay.md, scope §14.5).
 # dynamic_atr_risk_cap is the geometry-risk cap used by the publish gates
 # and geometry_tuning_sweep; it is not part of the selector.
-dynamic_atr_mode: "shadow"
+# 2026-09-29: settings BY CLASS. One live decision = this flag. Pooled
+# objective: max pnl_bricks subject to wr>=0.2, exp<=0.5 (reachability + P/L).
+#   commodity  TP 2-6   / SL 1-3    wr 0.45  exp 0%   pnl +0.94
+#   equity     TP 8-14  / SL 6-12   wr 0.81  exp 2%   pnl +3.95
+#   forex      TP 20-40 / SL 8-20   PROVISIONAL (no sound cell yet)
+#   crypto     TP 8-14  / SL 4-8    PROVISIONAL (near-breakeven)
+dynamic_atr_mode: "live"
 dynamic_atr_risk_cap: 0.35
 dynamic_atr:
   lookback_days: 10
-  # 2026-09-29 band rework (geometry_replay best region TP 9-17 / SL 0.5-2).
-  # Dropped tp=24 and the sl=1.0 floor — the 10d walk preferred a wide TP
-  # outside the positive-both-halves region. Clamps below are hard bounds.
-  tp_atr: [9.0, 12.0, 15.0, 17.0]
-  sl_atr: [0.5, 1.0, 1.5, 2.0]
-  tp_atr_min: 9.0
-  tp_atr_max: 17.0
-  sl_atr_min: 0.5
-  sl_atr_max: 2.0
+  # fallback (unused when by_class matches)
+  tp_atr: [8.0, 10.0, 12.0, 14.0]
+  sl_atr: [4.0, 5.0, 6.0, 8.0]
+  tp_atr_min: 8.0
+  tp_atr_max: 14.0
+  sl_atr_min: 4.0
+  sl_atr_max: 8.0
   max_expiry: 0.25
   cost_atr: 0.1
   min_signals: 60
+  by_class:
+    commodity:
+      tp_atr: [2.0, 4.0, 6.0]
+      sl_atr: [1.0, 2.0, 3.0]
+      tp_atr_min: 2.0
+      tp_atr_max: 6.0
+      sl_atr_min: 1.0
+      sl_atr_max: 3.0
+    equity:
+      tp_atr: [8.0, 10.0, 12.0, 14.0]
+      sl_atr: [4.0, 6.0, 8.0, 12.0]
+      tp_atr_min: 8.0
+      tp_atr_max: 14.0
+      sl_atr_min: 4.0
+      sl_atr_max: 12.0
+    forex:
+      tp_atr: [20.0, 25.0, 30.0, 40.0]
+      sl_atr: [8.0, 10.0, 12.0, 20.0]
+      tp_atr_min: 20.0
+      tp_atr_max: 40.0
+      sl_atr_min: 8.0
+      sl_atr_max: 20.0
+    crypto:
+      tp_atr: [8.0, 10.0, 12.0, 14.0]
+      sl_atr: [4.0, 5.0, 6.0, 8.0]
+      tp_atr_min: 8.0
+      tp_atr_max: 14.0
+      sl_atr_min: 4.0
+      sl_atr_max: 8.0
 
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
