@@ -1108,6 +1108,7 @@ class HeavySweepMixin:
                     from regime_platform.sweep_orchestrator.tiered_atr import (
                         dynamic_atr_pick,
                     )
+                    _dyn_live = None
 
                     dyn_mode = get_dynamic_atr_mode()
                     if dyn_mode != "off" and atr and atr > 0:
@@ -1126,12 +1127,16 @@ class HeavySweepMixin:
                             )
                         else:
                             _b, _sl, _tp = _dyn.to_bricks(atr, best.sl_bricks)
+                            _tp_px, _sl_px = _dyn.to_price_levels(
+                                trade_signal["entry_price"], atr, trade_signal.get("signal", "buy"),
+                            )
                             logger.info(
                                 "[dynamic:atr] %s mode=%s %s %s → brick=%.6f sl=%d tp=%d | "
-                                "heavy tp=%.2fATR sl=%.2fATR",
+                                "PRICE tp=%.6f sl=%.6f | heavy tp=%.2fATR sl=%.2fATR",
                                 symbol, dyn_mode,
                                 "SET" if dyn_mode == "live" else "would set",
                                 _dyn.as_log(), _b, _sl, _tp,
+                                _tp_px, _sl_px,
                                 _heavy_tp_atr, _heavy_sl_atr,
                             )
                             if dyn_mode == "live":
@@ -1139,6 +1144,8 @@ class HeavySweepMixin:
                                     best, brick_size=_b, sl_bricks=_sl, tp_bricks=_tp,
                                 )
                                 result.best_combo = best
+                                # Exact ATR price brackets applied after trade_signal exists.
+                                _dyn_live = _dyn
                 except Exception as exc:
                     logger.warning(
                         "[dynamic:atr] %s failed (%s: %s) — heavy pick kept",
@@ -1355,6 +1362,19 @@ class HeavySweepMixin:
                 result.regime_label, current_price,
                 best.brick_size, best.sl_bricks, best.tp_bricks,
             )
+            # Exact ATR brackets in price (pips/points) — overrides brick quantisation.
+            if _dyn_live is not None:
+                _tp_px, _sl_px = _dyn_live.to_price_levels(
+                    trade_signal["entry_price"], atr, trade_signal.get("signal", "buy"),
+                )
+                trade_signal["take_profit"] = _tp_px
+                trade_signal["stop_loss"] = _sl_px
+                logger.info(
+                    "[dynamic:atr] %s PRICE brackets set tp=%.6f sl=%.6f "
+                    "(tp_atr=%.3f sl_atr=%.3f atr=%.6f)",
+                    symbol, _tp_px, _sl_px,
+                    _dyn_live.tp_atr, _dyn_live.sl_atr, atr,
+                )
             from regime_platform.core.feature_flags import (
                 get_p_win_bracket_mode,
                 get_p_win_in_ev_mode,

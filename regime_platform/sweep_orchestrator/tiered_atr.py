@@ -101,9 +101,28 @@ class DynamicAtrPick:
     n: int
 
     def to_bricks(self, atr: float, sl_bricks: int) -> tuple[float, int, int]:
+        """Renko display bricks (integer counts). Lossy vs exact ATR."""
         brick = self.sl_atr * float(atr) / sl_bricks
         tp_bricks = max(1, int(round(self.tp_atr / self.sl_atr * sl_bricks)))
         return brick, int(sl_bricks), tp_bricks
+
+    def to_price_levels(
+        self, entry: float, atr: float, signal: str
+    ) -> tuple[float, float]:
+        """Exact TP/SL **prices** from ATR multiples (pips/points), not bricks.
+
+        2026-09-30: brick snap (integer sl/tp counts) quantised ATR tiers —
+        e.g. wanted 14 ATR, delivered 13.33. Signal brackets are now pure
+        price distance: entry ± tp_atr * atr.
+        """
+        a = float(atr)
+        e = float(entry)
+        tp_d = self.tp_atr * a
+        sl_d = self.sl_atr * a
+        side = (signal or "").lower()
+        if side in ("sell", "bear") or "bear" in side:
+            return e - tp_d, e + sl_d
+        return e + tp_d, e - sl_d
 
     def as_log(self) -> str:
         return (f"tp={self.tp_atr:g}ATR sl={self.sl_atr:g}ATR exp={self.exp_atr:+.3f} "

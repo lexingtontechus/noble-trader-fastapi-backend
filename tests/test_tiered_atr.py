@@ -171,3 +171,22 @@ class TestBandClamp:
             min_rr=1.5, max_expiry=0.25, cost_atr=0.0, min_signals=10,
         )
         assert pick is not None and pick.tp_atr == 12.0
+
+
+class TestPriceLevels:
+    def test_exact_atr_not_brick_quantised(self):
+        """TP/SL are price distances (pips/points), not integer bricks."""
+        p = DynamicAtrPick(tp_atr=14.0, sl_atr=4.0, exp_atr=1.0, exp_h1=1.0,
+                           exp_h2=1.0, expiry=0.0, n=100)
+        # brick snap loses precision: 14/4*3 -> 10 bricks = 13.33 ATR
+        _b, _sl, _tp = p.to_bricks(atr=62.5, sl_bricks=3)
+        assert _tp == 10
+        tp_px, sl_px = p.to_price_levels(entry=100.0, atr=62.5, signal="buy")
+        assert (tp_px - 100.0) / 62.5 == pytest.approx(14.0)
+        assert (100.0 - sl_px) / 62.5 == pytest.approx(4.0)
+
+    def test_sell_side_mirrors(self):
+        p = DynamicAtrPick(tp_atr=3.0, sl_atr=1.0, exp_atr=0.5, exp_h1=0.5,
+                           exp_h2=0.5, expiry=0.0, n=50)
+        tp_px, sl_px = p.to_price_levels(entry=100.0, atr=10.0, signal="sell")
+        assert tp_px == pytest.approx(70.0) and sl_px == pytest.approx(110.0)
