@@ -1567,6 +1567,17 @@ class SweepOrchestrator(HeavySweepMixin):
                 misfire_grace_time=7200,
                 coalesce=True,
             )
+            # Vol-urgency nudge (2026-09-30): every 4h — if vol_ratio is
+            # elevated, Discord tells the operator to run the free lattice
+            # early. Monthly remains the durable clock; this is urgency.
+            self._scheduler.add_job(
+                self._run_atr_reopt_urgency,
+                trigger=CronTrigger.from_crontab("0 */4 * * *"),
+                id="atr-reopt-urgency",
+                name="ATR re-opt vol urgency nudge (4h)",
+                misfire_grace_time=1800,
+                coalesce=True,
+            )
 
         # Bracket reachability diagnostic (2026-08-25, Phase 1 of worklog/
         # 20260825_CALIBRATION_REFRAME_SCOPE.md): weekly, Sun 07:00 UTC —
@@ -2264,6 +2275,17 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.info("[atr:reopt] %s", result.get("summary"))
         except Exception as exc:
             logger.error("[atr:reopt] failed: %s", exc)
+
+    async def _run_atr_reopt_urgency(self) -> None:
+        """Vol-spike Discord nudge (every 4h). See atr_reopt.check_atr_reopt_urgency."""
+        from regime_platform.sweep_orchestrator.atr_reopt import check_atr_reopt_urgency
+
+        try:
+            summary = await check_atr_reopt_urgency()
+            if summary.get("alerted"):
+                logger.info("[atr:urg] %s", summary)
+        except Exception as exc:
+            logger.error("[atr:urg] failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

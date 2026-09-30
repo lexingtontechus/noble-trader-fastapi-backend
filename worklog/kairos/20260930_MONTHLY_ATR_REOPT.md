@@ -66,12 +66,45 @@ monthly re-opt report
 
 New symbols: shadow → own 45d walk → `by_symbol` → live (see VOL_REGIME worklog).
 
-## 5. Kill / rollback
+## 5. Urgency layer (market-driven, not calendar)
+
+Time-driven alone is wrong when vol breaks the clamp box mid-month.
+
+| Clock | Trigger | Action |
+|---|---|---|
+| **Monthly** | 1st 03:30 UTC | free lattice → report + roadmap |
+| **Vol urgency** | `vol_ratio ≥ 1.25` (rv24/rv168) checked **every 4h** | Discord risk alert on **`DISCORD_WEBHOOK_STATUS`** (`#system-status`) → run `scripts/monthly_atr_reopt.py` |
+| **Local heavy** | daily 20:00 | re-pick **inside** current clamps |
+
+`atr_reopt_urgency.elevated_ratio: 1.25` = short-term vol **+25%** vs the
+1-week baseline. Per-symbol cooldown 48h. Delivery is
+`notifications.discord.send_risk_alert` → `AlertChannel.STATUS` →
+**`DISCORD_WEBHOOK_STATUS`** (same `#system-status` path as
+`expiry_rate_alert`) — never the SIGNALS/plan/venue signal webhooks.
+**Nudge only** — does not auto-run the lattice and never writes YAML.
+
+**Existing market/trend urgency stack** (what already fires before monthly):
+
+| Process | Trigger | Cadence | Effect |
+|---|---|---|---|
+| `geometry_tuning_sweep` (live) | `geometry_risk_hat` streak ≥ 2 | light path + 6h cooldown | single-symbol geometry re-tune enqueue |
+| `geometry_intraday_scale` (live) | ATR contraction vs `atr_at_write` | light path | brick scale |
+| `drift_monitor` (live) | 48h rolling bias &gt; 0.15 (n≥20) | every light sweep | immediate `bayesian_penalty` |
+| `eod_correction` stagnation | bias unmoved N 4h cycles | 4h | tiered Kelly cut / kill |
+| `emergency_heavy_sweep` | newly flagged symbol | 12h cooldown | forced heavy |
+| `expiry_rate_alert` | 7d expired_pct &gt; 50% | daily EOD | Discord risk |
+
+These micro-tune **live geometry / Kelly / bias**. The vol-urgency nudge
+re-opens the **clamp box** (free-lattice rediscovery) — a slower, heavier
+act that must stay proposal-only.
+
+## 6. Kill / rollback
 
 - `atr_reopt_enabled: false` in `config/feature_flags.yaml` (hot-reload).
-- Or leave it on: it is read-only against live geometry.
+- `atr_reopt_urgency.enabled: false` kills only the Discord nudge.
+- Or leave it on: both paths are read-only against live geometry.
 
-## 6. Root `test*.py` triage (same change)
+## 7. Root `test*.py` triage (same change)
 
 July-2026 standalone smokes at repo root (hardcoded `/home/claude` paths,
 not collected by `pytest tests/`). **Moved to `scripts/legacy_tests/`** so

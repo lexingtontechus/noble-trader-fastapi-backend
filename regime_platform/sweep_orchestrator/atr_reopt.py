@@ -40,6 +40,11 @@ FOREX = ("AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY")
 # or sits >15% away from the published pick.
 DRIFT_REL = 0.15
 
+# Urgency nudge (2026-09-30): vol_ratio spike → Discord → run reopt now.
+# In-memory cooldown (process-lifetime is enough for a nudge; the monthly
+# job is still the durable clock).
+_LAST_URGENCY_ALERT: dict[str, float] = {}
+
 
 def eval_cell(paths: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
     from regime_platform.sweep_orchestrator.tiered_atr import walk
@@ -299,3 +304,111 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
 
     logger.info("[atr:reopt] done %s proposals=%d report=%s", summary["window"], len(proposals), out_path)
     return {"summary": summary, "proposals": proposals, "report": str(out_path)}
+
+
+# ─── Vol-urgency nudge (market-driven early re-opt) ───────────────────────
+
+
+async def check_atr_reopt_urgency() -> dict[str, Any]:
+    """Discord nudge when entry-time ``vol_ratio`` is elevated.
+
+    ``vol_ratio = rv24/rv168`` > ``elevated_ratio`` (e.g. 1.25 = short-term
+    vol 25% above the week baseline) means the 10d heavy walk / monthly
+    clamps may be stale *now* — do not wait for the 1st. Sends a
+    ``#system-status`` risk alert telling the operator to run
+    ``scripts/monthly_atr_reopt.py``. Cooldown-gated per symbol. Never
+    mutates YAML and never auto-runs the free lattice (proposal tool).
+
+    Returns ``{enabled, checked, alerted}``. Never raises.
+    """
+    import time as _time
+
+    from regime_platform.core.feature_flags import get_atr_reopt_urgency_config
+
+    cfg = get_atr_reopt_urgency_config()
+    if not cfg["enabled"]:
+        return {"enabled": False, "checked": 0, "alerted": []}
+
+    threshold = float(cfg["elevated_ratio"])
+    cooldown_h = float(cfg["cooldown_hours"])
+    vol_short = int(cfg.get("vol_ratio_short") or 24)
+    vol_long = int(cfg.get("vol_ratio_long") or 168)
+    min_bars = int(vol_long) + 2
+
+    from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
+    from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
+    from regime_platform.sweep_orchestrator.tiered_atr import compute_vol_ratio
+
+    try:
+        peers = [p for p in await fetch_active_symbols() if p.get("symbol") and p.get("tradingview_symbol")]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[atr:urg] peers fetch failed: %s", exc)
+        return {"enabled": True, "checked": 0, "alerted": []}
+
+    bars: dict[str, list[dict]] = {}
+    try:
+        await fetch_tradingview_batch(
+            [{"symbol": p["symbol"], "tradingview_symbol": p["tradingview_symbol"]} for p in peers],
+            hours=vol_long * 2 + 48,
+            interval="1h",
+            ohlcv_out=bars,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[atr:urg] bar fetch failed: %s", exc)
+        return {"enabled": True, "checked": 0, "alerted": []}
+
+    checked = 0
+    alerted: list[str] = []
+    now = _time.time()
+    for p in peers:
+        sym = p["symbol"]
+        rows = [b for b in (bars.get(sym) or []) if b.get("c") is not None]
+        if len(rows) < min_bars:
+            continue
+        closes = np.array([float(b["c"]) for b in rows], dtype="float64")
+        vr = compute_vol_ratio(closes, len(closes) - 1, vol_short, vol_long)
+        if not np.isfinite(vr):
+            continue
+        checked += 1
+        if vr < threshold:
+            continue
+        last = _LAST_URGENCY_ALERT.get(sym)
+        if last is not None and (now - last) < cooldown_h * 3600.0:
+            continue
+        try:
+            from notifications.discord import discord_notifier
+
+            # send_risk_alert → AlertChannel.STATUS → DISCORD_WEBHOOK_STATUS
+            # (#system-status). Same plumbing as expiry_rate_alert — not
+            # the SIGNALS/plan/venue signal webhooks.
+            await discord_notifier.send_risk_alert(
+                symbol=sym,
+                risk_type="atr_reopt_urgency",
+                message=(
+                    f"{sym}: vol_ratio {vr:.2f} (rv{vol_short}h/rv{vol_long}h) is "
+                    f"{(vr - 1.0) * 100:.0f}% above the week baseline — exceeds "
+                    f"{threshold:.2f}. Clamps from the last free-lattice solve "
+                    f"may be stale. Run the re-opt now:\n"
+                    f"`PYTHONPATH=\"$PWD/src\" ./.venv/Scripts/python.exe "
+                    f"scripts/monthly_atr_reopt.py`\n"
+                    f"then review proposals (report + nt_roadmap). Monthly "
+                    f"clock stays on the 1st — this is an urgency nudge only."
+                ),
+                data={
+                    "vol_ratio": f"{vr:.2f}",
+                    "threshold": f"{threshold:.2f}",
+                    "windows": f"{vol_short}h/{vol_long}h",
+                    "action": "run monthly_atr_reopt.py",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[atr:urg] %s Discord send failed: %s", sym, exc)
+            continue
+        _LAST_URGENCY_ALERT[sym] = now
+        alerted.append(sym)
+        logger.warning(
+            "[atr:urg] %s vol_ratio=%.2f >= %.2f — Discord nudge sent",
+            sym, vr, threshold,
+        )
+
+    return {"enabled": True, "checked": checked, "alerted": alerted}

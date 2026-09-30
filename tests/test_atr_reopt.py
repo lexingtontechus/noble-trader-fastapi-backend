@@ -58,3 +58,12 @@ def test_rel_drift_and_compare_flags_outside_clamp():
     )
     assert cmp["drift"] is True
     assert cmp["reasons"]
+
+
+def test_urgency_config_defaults():
+    from regime_platform.core.feature_flags import get_atr_reopt_urgency_config
+
+    cfg = get_atr_reopt_urgency_config()
+    assert cfg["enabled"] is True
+    assert cfg["elevated_ratio"] == 1.25
+    assert cfg["cooldown_hours"] == 48.0

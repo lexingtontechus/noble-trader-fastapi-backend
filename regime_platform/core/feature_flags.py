@@ -107,6 +107,13 @@ _DEFAULTS: dict[str, Any] = {
     },
     "atr_anchored_evidence_mode": "shadow",
     "atr_reopt_enabled": True,
+    "atr_reopt_urgency": {
+        "enabled": True,
+        "elevated_ratio": 1.25,
+        "cooldown_hours": 48.0,
+        "vol_ratio_short": 24,
+        "vol_ratio_long": 168,
+    },
     "heavy_publish_geometry_gate": "live",
     "geometry_intraday_scale_mode": "live",
     "geometry_tuning_sweep_mode": "live",
@@ -1118,6 +1125,21 @@ def get_atr_reopt_enabled() -> bool:
     macro_forecast_agent_enabled — never auto-writes YAML."""
     value = _load().get("atr_reopt_enabled", _DEFAULTS.get("atr_reopt_enabled", True))
     return bool(value)
+
+
+def get_atr_reopt_urgency_config() -> dict[str, Any]:
+    """Vol-spike Discord nudge to run monthly_atr_reopt early.
+
+    ``elevated_ratio`` is ``rv24/rv168`` at entry (1.25 = +25% short-term
+    vol). Cooldown-gated per symbol. See worklog 20260930_MONTHLY_ATR_REOPT.md.
+    """
+    defaults = dict(_DEFAULTS["atr_reopt_urgency"])
+    cfg = _load().get("atr_reopt_urgency", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
 
 
 def get_renko_brick_retention_days() -> int:
