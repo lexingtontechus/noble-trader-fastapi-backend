@@ -187,7 +187,45 @@ signal_stream_meta_model_mode: off
 # transition matrix feeds the blend instead, and the legacy model's
 # per-tick refit is skipped entirely). See orchestrator.py's docstring
 # near MARKOV_SOURCE_MODE usage for full detail.
-markov_source_mode: trend_hmm_shadow
+#
+# 2026-10-01 — SHADOW RETIRED, back to legacy_hmm. The trend_hmm_shadow
+# comparison ran 2026-08-25 -> 2026-10-01 and answered its question
+# negatively, so it is no longer computed by default:
+#   * accuracy (nt_hmm_shadow_accuracy): legacy won 13/14 symbols;
+#     weighted 0.5274 vs 0.3191. USDJPY (trend +0.0007) is a tie.
+#   * state disagreement (nt_markov_source_shadow): 65.9% over 63,919
+#     compares vs a 66.7% 3-class random baseline — the two classifiers
+#     were statistically indistinguishable from independent random
+#     agreement, with no convergence across 5 weeks.
+# The trend_hmm_shadow / trend_hmm_live code paths are deliberately LEFT
+# IN PLACE (dormant) so a future re-evaluation needs only a YAML edit.
+# Full evidence: worklog/kairos/reports/20261001_rm1_markov_source_eval.md.
+markov_source_mode: legacy_hmm
+
+# p_markov_hold_n_mode: off | live — whether p_markov_hold_n participates
+# in the EV P_win blend at all.
+#
+# 2026-10-01 — OFF. The RM-1 evaluation showed NEITHER candidate source
+# was informative (legacy 0.527 weighted accuracy is barely above a
+# 3-class coin flip; trend_hmm 0.319 is below it), so the source was not
+# earning its 0.20 weight. With this off, the sweep passes no
+# transition_matrix / current_state / p_markov_override to compute_ev()
+# and the engine's existing missing-source renormalisation drops it —
+# the blend becomes p_regime 0.5 / p_timesfm 0.5 (P_WIN_WEIGHTS_FULL's
+# 5:5 relative weights).
+#
+# IMPORTANT — this does NOT stop the legacy HmmModel from fitting every
+# tick. It still feeds the TA feature buffer and nt_sweep_result's legacy
+# markov_p_up / markov_p_dn columns, which are captured for the
+# "bolster legacy HMM" research programme (the substrate that programme
+# measures against). Flipping to "live" restores the source to the blend;
+# it must clear that programme's re-entry bar first.
+#
+# NOTE: quoted deliberately — unquoted `off` is parsed by YAML 1.1 as the
+# BOOLEAN False, not the string "off" (get_p_markov_hold_n_mode() would
+# still resolve it correctly via its fail-closed parse, but the file would
+# read as a boolean to every other consumer, including a reviewer).
+p_markov_hold_n_mode: "off"
 
 # Root-cause classifier (2026-08-28, worklog same as above) — powers
 # BOTH RegimeHMM.trend_transition_matrix_3state() (Tier 1, gates

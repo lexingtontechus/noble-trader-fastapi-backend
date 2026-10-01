@@ -31,7 +31,25 @@ logger = logging.getLogger("regime.core.feature_flags")
 _YAML_PATH = Path(__file__).resolve().parents[2] / "config" / "feature_flags.yaml"
 
 _DEFAULTS: dict[str, Any] = {
-    "markov_source_mode": "trend_hmm_shadow",
+    # 2026-10-01: trend_hmm_shadow -> legacy_hmm (retired). See
+    # p_markov_hold_n_mode below and worklog/kairos/reports/
+    # 20261001_rm1_markov_source_eval.md — the shadow comparison answered
+    # its question negatively (legacy beat trend_hmm 13/14 symbols;
+    # 65.9% state disagreement vs 66.7% random). The trend_hmm values
+    # remain selectable for a future re-evaluation; they are simply not
+    # computed by default any more.
+    "markov_source_mode": "legacy_hmm",
+    # off | live — whether p_markov_hold_n participates in the EV blend.
+    # "off" (2026-10-01): the sweep stops supplying transition_matrix/
+    # current_state/p_markov_override to compute_ev(), so the engine's own
+    # missing-source renormalisation drops the source and the blend becomes
+    # p_regime / p_timesfm at 50/50. The legacy HmmModel still fits each
+    # tick (it feeds the TA buffer + nt_sweep_result's legacy markov_p_up/
+    # markov_p_dn columns) — it is kept running deliberately as the
+    # substrate for the "bolster legacy HMM" research programme. "live"
+    # restores the source to the blend; it must clear the re-entry bar in
+    # that programme first (see the RM-1 evaluation's §6/§7).
+    "p_markov_hold_n_mode": "off",
     "markov_flat_gate_threshold_stds": 0.5,
     "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
@@ -242,8 +260,28 @@ def _load() -> dict[str, Any]:
 
 
 def get_markov_source_mode() -> str:
-    """``legacy_hmm`` | ``trend_hmm_shadow`` | ``trend_hmm_live``."""
+    """``legacy_hmm`` | ``trend_hmm_shadow`` | ``trend_hmm_live``.
+
+    Since 2026-10-01 the shipped value is ``legacy_hmm`` — the
+    ``trend_hmm_shadow`` comparison was retired after it answered its
+    question negatively (see ``get_p_markov_hold_n_mode``).
+    """
     return str(_load().get("markov_source_mode", _DEFAULTS["markov_source_mode"])).lower()
+
+
+def get_p_markov_hold_n_mode() -> str:
+    """``off`` | ``live`` — does p_markov_hold_n feed the EV blend?
+
+    ``off`` (shipped 2026-10-01) makes the sweep pass no Markov source to
+    ``compute_ev()``, so the engine renormalises it out and the blend is
+    p_regime / p_timesfm. Anything other than an explicit ``live`` is
+    treated as ``off`` — a typo must not silently re-enable a source that
+    was deliberately withdrawn.
+    """
+    raw = str(
+        _load().get("p_markov_hold_n_mode", _DEFAULTS["p_markov_hold_n_mode"])
+    ).lower()
+    return "live" if raw == "live" else "off"
 
 
 def get_markov_flat_gate_threshold_stds() -> float:

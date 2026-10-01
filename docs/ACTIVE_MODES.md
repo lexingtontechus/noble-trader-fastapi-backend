@@ -59,7 +59,8 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `dynamic_min_rr_mode` | Would-raise MIN_RR logged. **Superseded 2026-09-20:** no live flip; 1.5→2.0 step / matrix not pursued — base `min_rr` is already inert on light path |
 | `timesfm_k_adaptive_mode` | Adaptive k logged, not applied |
 | `signal_stream_meta_model_mode` | Coherent/noisy stream read |
-| `markov_source_mode` | **trend_hmm_shadow** — legacy still feeds blend |
+| `markov_source_mode` | **legacy_hmm** (2026-10-01) — trend_hmm_shadow retired; legacy feeds `nt_sweep_result.markov_p_up/p_dn` only |
+| `p_markov_hold_n_mode` | **"off"** (2026-10-01) — p_markov_hold_n withdrawn from the EV blend; renormalises to `p_regime` 0.5 / `p_timesfm` 0.5 |
 
 ## Off
 

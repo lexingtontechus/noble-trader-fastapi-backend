@@ -1222,9 +1222,18 @@ class HeavySweepMixin:
             # config/feature_flags.yaml (2026-08-26 config-centralization
             # correction) — no env var / Studio Secret involved, no
             # circular-import concern importing this directly.
-            from regime_platform.core.feature_flags import get_markov_source_mode
+            from regime_platform.core.feature_flags import (
+                get_markov_source_mode,
+                get_p_markov_hold_n_mode,
+            )
 
             markov_source_mode = get_markov_source_mode()
+            # p_markov_hold_n_mode (2026-10-01): mirror of the light sweep's
+            # branch — when "off", pass NO Markov source to compute_ev()
+            # below so the engine renormalises it out. The legacy HmmModel
+            # still emits (its TA buffer + legacy markov_p_up/markov_p_dn
+            # captures are unaffected).
+            _p_markov_hold_n_live = get_p_markov_hold_n_mode() == "live"
             markov_T: dict[str, dict[str, float]] | None = None
             markov_current: str | None = None
             # Tier 1/2 outcome-linked evidence (2026-08-31, worklog
@@ -1404,8 +1413,8 @@ class HeavySweepMixin:
                 ev_result = self._ev_engine.compute_ev(
                     trend_probs=_trend_probs,
                     direction=direction,
-                    transition_matrix=markov_T,
-                    current_state=markov_current,
+                    transition_matrix=markov_T if _p_markov_hold_n_live else None,
+                    current_state=markov_current if _p_markov_hold_n_live else "FLAT",
                     p_timesfm=p_timesfm,
                     brick_size=best.brick_size,
                     sl_bricks=best.sl_bricks,

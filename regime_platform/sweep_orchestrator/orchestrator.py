@@ -36,6 +36,7 @@ from regime_platform.core.feature_flags import (
     get_self_learning_triage_enabled,
     get_macro_forecast_agent_enabled,
     get_markov_source_mode,
+    get_p_markov_hold_n_mode,
     get_min_ev,
     get_min_kelly,
     get_min_p_win,
@@ -3777,6 +3778,16 @@ class SweepOrchestrator(HeavySweepMixin):
         # Fix #3 (R1, 2026-08-23): also EMA-smooth trend_probs itself
         # before it drives p_regime — supplementary to the RegimeHMM-level
         # variance-floor + label-continuity fixes in regime_engine.py.
+        # p_markov_hold_n_mode (2026-10-01): when "off", the sweep passes NO
+        # Markov source to compute_ev() below — no transition_matrix, no
+        # current_state, no p_markov_override — so the engine's existing
+        # missing-source renormalisation drops the source and the blend
+        # becomes p_regime / p_timesfm. The legacy HmmModel still fits each
+        # tick (it feeds the TA buffer + nt_sweep_result's legacy
+        # markov_p_up/markov_p_dn columns), so this is a blend-membership
+        # switch, not a model retirement. See feature_flags.yaml.
+        _p_markov_hold_n_live = get_p_markov_hold_n_mode() == "live"
+
         _smoothed_p_markov = self._smoothed_markov_hold_prob(
             symbol, _markov_T, _markov_current_state, direction, MARKOV_HOLD_STEPS,
         )
@@ -3835,14 +3846,14 @@ class SweepOrchestrator(HeavySweepMixin):
             ev_result = self._ev_engine.compute_ev(
                 trend_probs=_smoothed_trend_probs,
                 direction=direction,
-                transition_matrix=_markov_T,
-                current_state=_markov_current_state,
+                transition_matrix=_markov_T if _p_markov_hold_n_live else None,
+                current_state=_markov_current_state if _p_markov_hold_n_live else "FLAT",
                 p_timesfm=p_timesfm,
                 brick_size=brick_size,
                 sl_bricks=sl_bricks,
                 tp_bricks=tp_bricks,
                 n_steps=resolve_markov_n_steps(tp_bricks),
-                p_markov_override=_smoothed_p_markov,
+                p_markov_override=_smoothed_p_markov if _p_markov_hold_n_live else None,
             )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
@@ -3911,8 +3922,8 @@ class SweepOrchestrator(HeavySweepMixin):
                         adjusted_ev_result = self._ev_engine.compute_ev(
                             trend_probs=_smoothed_trend_probs,
                             direction=direction,
-                            transition_matrix=_markov_T,
-                            current_state=_markov_current_state,
+                            transition_matrix=_markov_T if _p_markov_hold_n_live else None,
+                            current_state=_markov_current_state if _p_markov_hold_n_live else "FLAT",
                             p_timesfm=p_timesfm,
                             brick_size=brick_size,
                             sl_bricks=sl_bricks,
@@ -3922,7 +3933,7 @@ class SweepOrchestrator(HeavySweepMixin):
                             # not fresh calls — so both compute_ev() calls in
                             # this tick agree on P_markov_hold_N (fix #3a) and
                             # P_regime (R1 fix #3).
-                            p_markov_override=_smoothed_p_markov,
+                            p_markov_override=_smoothed_p_markov if _p_markov_hold_n_live else None,
                         )
                     # In soft mode, the TimesFM gate always "passes" —
                     # the penalty is applied via the reduced weight, not
