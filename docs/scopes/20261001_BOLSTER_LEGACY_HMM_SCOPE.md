@@ -276,18 +276,26 @@ the programme. The same instrument is missing here.
 
 ---
 
-## 6. Open questions for the user
+## 6. Decisions taken (2026-10-01, user)
 
-| # | Question | Recommendation |
+| # | Question | **Answer** |
 |---|---|---|
-| Q1 | Build §5.1 (the skill diagnostic) now? | **Yes** — smallest possible step, and it is the instrument the RM-1 evaluation had to hand-roll |
-| Q2 | Which Phase-1 candidate — A, D, or both? | **Both** — each ~1 day, independent, and both are hygiene rather than speculation |
-| Q3 | Is E (first-passage replacing the HMM) the real target? | **Worth a decision now** — if yes, A/B/C/D are steps toward a component we intend to replace, and effort should go to E instead |
-| Q4 | Set a retirement deadline? | Suggest: if Phase 2 does not clear §3 by **2026-11-01**, take F (retire permanently) rather than carrying it indefinitely |
+| Q1 | Build §5.1 (the skill diagnostic) now? | **Yes** — plus a `p_first_passage` primitive, both offline-only |
+| Q2 | Which Phase-1 candidate — A, D, or both? | **Neither yet** — see Q3; A/D demoted to optional hygiene |
+| Q3 | Is E (first-passage replacing the HMM) the real target? | **YES — agreed.** §2.4 accepted. A/B/C/D are demoted; effort goes to E |
+| Q4 | Set a retirement deadline? | **Confirmed: 2026-11-01.** Fail to clear §3 → option F |
 
-**Q3 is the pivotal one.** §2.4 says the platform already answers the Markov
-question exactly, via validated machinery. If that is accepted, the honest
-programme is E-then-F, and A–D are only worth doing if the discrete-state
+**D5 — reinforce with regime transition.** E alone gives a static probability.
+The Kairos-proven freshness (+0.117 fresh−deep) and transition-type (`dir_flip`
+the only non-negative type) findings condition that probability by *when* the
+regime last changed. E and the transition programme compose rather than compete.
+
+**Build plan:** `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md`
+(4 phases, pre-registered bar, kill criteria).
+
+The pivotal answer is Q3. §2.4 says the platform already answers the Markov
+question exactly, via validated machinery — so the honest programme is
+**E → measure → F if it fails**, and A–D are only worth doing if a discrete-state
 representation is independently valuable (e.g. as a cheap, low-latency regime read
 for something other than the EV blend).
 
