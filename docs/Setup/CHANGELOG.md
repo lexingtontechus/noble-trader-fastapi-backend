@@ -124,22 +124,72 @@ D1/D2 retirement is unaffected — nothing here argues for turning the HMM back 
 the HMM permanently, ship the calibrated base rate), one time-boxed retry
 (drop the overlay; condition the level on the regime **cell**), or bank the finding.
 
-#### Retirement impact (what option F actually touches)
+#### Retirement impact (CORRECTED — the first assessment was wrong)
 
-| mechanism | coupling | risk if the HMM is deleted |
+> **Correction (2026-10-01, follow-up).** An earlier version of this entry
+> claimed the minimum correct retirement "deletes `model.py` only" and that
+> `ta_fetcher`/`ta_extract` were unaffected. **That is wrong.** `model.py` is
+> **load-bearing for the TA pipeline**, which is itself load-bearing for
+> calibration and reachability. Full dependency map:
+
+| consumer | imports from | can it lose the HMM? |
 |---|---|---|
-| `p_regime` (EV blend) | **none** — `RegimeHMM` (`regime_engine.py`), a different model | none |
-| regime labelling | **none** — 4-state `RegimeHMM` | none |
-| `trend_probs_gate_mode: live` | **none** | none |
-| `nt_sweep_result.markov_p_up` / `markov_p_dn` / `_current_state` / `_transition_matrix` | legacy HMM | **break** — columns go null; **no live consumer** (supabase `functions/` is deprecated, the agent ignores them), but they are the incumbent arm's capture |
-| `nt_signal_sim.legacy_markov_state` | legacy HMM | **break** — the `skill` diagnostic and the Phase-2 incumbent arm lose their input |
-| `nt_regime_log.ta_*` | **FeatureBuffer + `hmm_ta_fetcher`** | **must keep** — not part of the HMM |
-| `nt_signal_sim.spread_bps` (Kairos stamp) | **`hmm_quote_fetcher.spread_bps_by_symbol()`** | **must keep** — `quote_fetcher` also feeds FeatureBuffer indices 1–3, so it cannot simply go with the model |
+| `p_regime` (EV blend) | `RegimeHMM` (`core/regime_engine.py`) | **yes — no coupling at all** |
+| regime labelling | `RegimeHMM` | **yes — no coupling** |
+| `trend_probs_gate_mode: live` | `RegimeHMM` | **yes — no coupling** |
+| `ta_fetcher.py` | **`model._compute_ta_indicators_local`** | **NO — must keep** |
+| `trend_filter.py` | **`model._compute_rsi`** | **NO — must keep** |
+| `nt_regime_log.ta_*` | `FeatureBuffer` + `ta_fetcher` + `ta_extract` | **NO — must keep** |
+| `nt_signal_sim.spread_bps` (Kairos) | `quote_fetcher.spread_bps_by_symbol()` | **NO — must keep** |
+| `FeatureBuffer` indices 1–3 | `quote_fetcher` | **NO — must keep** |
+| `eod_correction` `degeneracy_breaker` | `markov_p_up`/`markov_p_dn` as **diagnostic context in the action payload** | degrades (loses forensic detail; the trigger is `p_win`, so the action still fires) |
+| `nt_sweep_result.markov_*` (4 cols) | `HmmModel.emit_markov` | only these are HMM-exclusive |
+| `nt_signal_sim.legacy_markov_state` | `HmmModel.emit_markov` | only these are HMM-exclusive |
 
-**Minimum correct F** deletes `model.py` only (the fit + `emit_markov`), and keeps
-`feature_buffer.py`, `quote_fetcher.py`, `ta_fetcher.py`, `ta_extract.py` — they
-serve `nt_regime_log.ta_*` and the Kairos `spread_bps` stamp independently of the
-model. That also preserves the capture the diagnostic reads.
+**What `model.py` actually contains** — only about half of it is the model:
+
+| symbol | kind | disposition |
+|---|---|---|
+| `HmmModel`, `_FittedModel`, `_aggregate_transition` | the 5-state HMM | **retire** |
+| `N_STATES`, `STATE_LABELS`, `STATES_3`, `MIN_FIT_BARS`, `MODEL_PATH`, `STATE_MAP_THRESHOLD_STDS` | HMM constants | **retire** |
+| `_compute_rsi`, `_compute_macd`, `_compute_ao`, `_compute_bb_power`, `_compute_adx_close_only` | **pure TA math** | **keep** |
+| `_compute_ta_indicators_local` | **TA bundle** (calls the 5 above) | **keep** |
+| `_compute_log_returns` | **pure math** | **keep** |
+
+**Minimum correct retirement is therefore a SPLIT, not a delete:**
+
+1. Extract the TA math into a new public module (e.g.
+   `regime_platform/services/indicators.py`) — it is no longer HMM-specific, and
+   `trend_filter.py` importing a *private* `_compute_rsi` from a model module is
+   itself the smell that hid this dependency.
+2. Delete only the `HmmModel` class, `_FittedModel`, `_aggregate_transition` and
+   the HMM constants.
+3. Repoint `ta_fetcher.py` and `trend_filter.py` at the new module.
+4. Leave `feature_buffer.py`, `quote_fetcher.py`, `ta_extract.py` untouched.
+5. `orchestrator.py` / `heavy_sweep.py`: stop the per-tick `fit()`; keep the
+   `quote_fetcher` / `ta_fetcher` calls and `latest_ta()` writes.
+
+Skipping step 1 silently breaks TA → `nt_regime_log.ta_*` → the calibration and
+reachability inputs.
+
+#### ⚠ Open risk introduced by the withdrawal (not yet measured)
+
+Removing `p_markov_hold_n` from the logit pool is **not leverage-neutral**. The
+HMM's `p_markov` values cluster low (the model was near-degenerate), so dropping
+the source **raises `p_win`**, which raises `ev_per_dollar`, which raises
+`ev_scale` (`min(1, ev_per_dollar/0.5)`), which multiplies Kelly. Worked example
+on the live weights (p_regime 5/14 · p_markov 4/14 · p_timesfm 5/14), RR 5:3:
+
+| p_regime | p_markov | p_timesfm | p_win before | p_win after | **ev_scale before → after** |
+|---:|---:|---:|---:|---:|---|
+| 0.60 | 0.10 | 0.60 | 0.4163 | 0.6000 | **0.220 → 1.000 (+0.78)** |
+| 0.50 | 0.10 | 0.50 | 0.3480 | 0.5000 | **0.000 → 0.667** |
+| 0.40 | 0.05 | 0.40 | 0.2440 | 0.4000 | **0.000 → 0.133** |
+| 0.55 | 0.50 | 0.55 | 0.5358 | 0.5500 | 0.858 → 0.933 (+0.08) |
+
+**The withdrawal can take a signal from zero size to full size.** That is a live
+sizing change with real risk implications, and it was made without measuring it.
+It must be validated before the retirement is treated as settled.
 
 #### Version anchors
 
