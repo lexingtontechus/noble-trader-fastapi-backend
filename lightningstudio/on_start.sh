@@ -156,12 +156,21 @@ PID_TIMESFM=$!
 log "    PID: $PID_TIMESFM"
 
 # ── 1b. Local LLM (port 8004) — macro classify / pivots ───────────────────
-# Same pattern as TimesFM. Secrets: LOCAL_LLM_MODEL, optional LOCAL_LLM_API_KEY.
+# Spark-X2.5 INT8 via materialised snapshot (NOT the HF hub id): hub id +
+# HF_HUB_OFFLINE fails trust_remote_code metadata lookups. Path is the
+# fully-copied tree under hf_cache (transformers 5.x + remote code).
 # Clients: LOCAL_LLM_BASE_URL=http://127.0.0.1:8004
 log ""
 log "  [1b/5] Starting Local LLM (port 8004)..."
 log "    Log: $LOG_LLM"
-LOCAL_LLM_PORT=8004 python llm_server.py >> "$LOG_LLM" 2>&1 &
+export HF_HOME="${HF_HOME:-/teamspace/studios/this_studio/hf_cache}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_HUB_OFFLINE=1
+export LOCAL_LLM_TRUST_REMOTE_CODE=1
+export LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL:-/teamspace/studios/this_studio/hf_cache/spark-int8-local}"
+export LOCAL_LLM_PORT=8004
+log "    MODEL: $LOCAL_LLM_MODEL"
+python llm_server.py >> "$LOG_LLM" 2>&1 &
 PID_LLM=$!
 log "    PID: $PID_LLM"
 
