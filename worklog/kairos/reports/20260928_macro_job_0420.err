@@ -1,0 +1,1 @@
+API_KEY is not set. All authenticated endpoints will reject every request (the gate fails closed by design).
