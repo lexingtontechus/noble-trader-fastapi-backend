@@ -929,6 +929,21 @@ eod_resolver_page_pause_s: 2.0
 # instead of a one-time migration DELETE.
 renko_brick_retention_days: 2
 
+# sweep_result_retention_days / regime_log_retention_days (2026-10-01,
+# worklog 20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md §7/§11): neither
+# nt_sweep_result nor nt_regime_log had ANY retention pass — a Supabase
+# size audit found them at 103.41 MB (17.09% of the database) and 79.47 MB
+# (13.13%) respectively, growing with every sweep tick (~174K/~178K
+# inserts per migration 177's 2026-09-27 note). A full-repo audit (§10,
+# checked every replay/research script + every live app query path)
+# confirmed no consumer reads more than ~7 days back. Nightly retention
+# (regime_platform/sweep_orchestrator/sweep_result_retention.py, Part VII
+# of orchestrator.py's eod-lookback cycle) deletes rows older than these
+# cutoffs from each table independently. 30 gives headroom above every
+# confirmed need.
+sweep_result_retention_days: 30
+regime_log_retention_days: 30
+
 # knowledge_index_enabled (2026-09-10, Phase 1 of worklog
 # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS3): gates the
 # nightly local knowledge-index rebuild (regime_platform/services/

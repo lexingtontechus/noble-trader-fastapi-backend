@@ -2068,7 +2068,35 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[eod:lookback] expiry-rate alert check failed: %s", exc)
 
-        # ── Part VI: renko brick retention (2026-09-09) ────────────────────
+        # ── Part VI: daily-close snapshot (2026-10-01) ──────────────────────
+        # Keep nt_daily_close current BEFORE renko brick retention runs —
+        # see daily_close_snapshot.py's module docstring for the full root
+        # cause (worklog 20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md
+        # §13.1/§13.6): nt_renko_bricks needs to be prunable to its ~2-day
+        # live-grid steady state (both for size AND the dashboard/plugin
+        # chart's "last 10 bricks" need), but correlation's 120-day window
+        # (nobletradingapp-backend's fetch_daily_closes) still reads
+        # directly from nt_renko_bricks via v_talaria_daily_close. This
+        # table/pass exists so that dependency can be repointed later
+        # (nobletradingapp repo, out of scope here) without correlation
+        # losing history once brick retention is fixed to actually bind.
+        # Runs BEFORE Part VII (brick retention) deliberately — must
+        # capture a session's close before that session could ever be
+        # pruned. Best-effort: failures are logged and counted, never
+        # raised (matching every other part of this method).
+        try:
+            from regime_platform.sweep_orchestrator.daily_close_snapshot import (
+                run_daily_close_snapshot,
+            )
+            daily_close_summary = await run_daily_close_snapshot()
+            logger.info(
+                "[eod:lookback] daily-close snapshot done: %s",
+                daily_close_summary,
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] daily-close snapshot failed: %s", exc)
+
+        # ── Part VII: renko brick retention (2026-09-09) ────────────────────
         # Keep nt_renko_bricks bounded — see renko_retention.py's module
         # docstring for the full root cause (worklog
         # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md §7
@@ -2089,6 +2117,25 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] renko brick retention failed: %s", exc)
+
+        # ── Part VIII: sweep_result / regime_log retention (2026-10-01) ────
+        # nt_sweep_result + nt_regime_log have no retention pass — 103.41MB /
+        # 79.47MB and growing with every sweep tick, no consumer needs more
+        # than ~30 days (worklog
+        # 20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md §7/§10/§11).
+        # Best-effort: failures are logged and counted, never raised
+        # (matching every other part of this method).
+        try:
+            from regime_platform.sweep_orchestrator.sweep_result_retention import (
+                run_sweep_result_retention,
+            )
+            sweep_retention_summary = await run_sweep_result_retention()
+            logger.info(
+                "[eod:lookback] sweep_result/regime_log retention done: %s",
+                sweep_retention_summary,
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] sweep_result/regime_log retention failed: %s", exc)
 
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
         """Run emergency/geometry-tuning heavy sweeps (best-effort).

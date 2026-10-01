@@ -179,6 +179,8 @@ _DEFAULTS: dict[str, Any] = {
     "calibration_bias_min_episodes": 2,
     "signal_stream_meta_model_mode": "off",
     "renko_brick_retention_days": 2,
+    "sweep_result_retention_days": 30,
+    "regime_log_retention_days": 30,
     "knowledge_index_enabled": True,
     "self_learning_detectors_enabled": True,
     "self_learning_triage_enabled": True,
@@ -1159,5 +1161,37 @@ def get_renko_brick_retention_days() -> int:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["renko_brick_retention_days"]
+
+
+def get_sweep_result_retention_days() -> int:
+    """Days of ``nt_sweep_result`` ``sweep_timestamp`` history to keep in
+    the nightly retention pass (``sweep_result_retention
+    .run_sweep_result_retention``, Part VII of orchestrator.py's
+    eod-lookback cycle). 2026-10-01, worklog
+    20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md §7/§11: nt_sweep_result
+    had NO retention pass and reached 103.41 MB / 17.09% of the database.
+    A full-repo audit (§10) confirmed no live consumer (app code or
+    research script) reads more than ~7 days back; default 30 gives
+    headroom above every confirmed need."""
+    try:
+        return int(_load().get(
+            "sweep_result_retention_days", _DEFAULTS["sweep_result_retention_days"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["sweep_result_retention_days"]
+
+
+def get_regime_log_retention_days() -> int:
+    """Days of ``nt_regime_log`` ``detected_at`` history to keep in the
+    nightly retention pass (same module/part as
+    ``get_sweep_result_retention_days`` — one pass prunes both tables).
+    Same worklog/audit as above; nt_regime_log was 79.47 MB / 13.13% of
+    the database with no retention pass."""
+    try:
+        return int(_load().get(
+            "regime_log_retention_days", _DEFAULTS["regime_log_retention_days"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["regime_log_retention_days"]
 
 

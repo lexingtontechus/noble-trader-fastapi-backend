@@ -22,7 +22,7 @@ Covers, with mocked HTTP (never touches real Supabase):
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import pytest
 
@@ -93,21 +93,32 @@ def test_parse_content_range_total():
 
 class TestDistinctSymbols:
     @pytest.mark.asyncio
-    async def test_returns_sorted_unique_symbols(self):
-        client = FakeClient()
-        client.get_responses.append(
-            FakeResponse(json_data=[
+    async def test_returns_sorted_unique_symbols_from_active_roster(self):
+        """Sourced from fetch_active_symbols() (nt_symbol WHERE active =
+        true) — NOT from scanning nt_renko_bricks itself. See this
+        module's docstring §13.0: scanning the brick table directly hits
+        this project's 1000-row PostgREST GET cap and silently truncates
+        the roster."""
+        with patch(
+            "regime_platform.sweep_orchestrator.renko_retention.fetch_active_symbols",
+            new_callable=AsyncMock,
+            return_value=[
                 {"symbol": "XAUUSD"}, {"symbol": "AAPL"}, {"symbol": "XAUUSD"},
-            ])
-        )
-        result = await _distinct_symbols(client)
+            ],
+        ):
+            result = await _distinct_symbols()
         assert result == ["AAPL", "XAUUSD"]
 
     @pytest.mark.asyncio
-    async def test_http_failure_returns_empty_list_not_raise(self):
-        client = FakeClient()
-        client.get_responses.append(FakeResponse(status_code=500, text="boom"))
-        result = await _distinct_symbols(client)
+    async def test_roster_fetch_failure_returns_empty_list_not_raise(self):
+        async def raising_fetch_active_symbols():
+            raise RuntimeError("connection reset")
+
+        with patch(
+            "regime_platform.sweep_orchestrator.renko_retention.fetch_active_symbols",
+            side_effect=raising_fetch_active_symbols,
+        ):
+            result = await _distinct_symbols()
         assert result == []
 
 
@@ -204,10 +215,6 @@ class TestRunRenkoBrickRetention:
     @pytest.mark.asyncio
     async def test_full_flow_counts_deletes_per_symbol_and_old_sessions(self):
         client = FakeClient()
-        # distinct symbols query
-        client.get_responses.append(
-            FakeResponse(json_data=[{"symbol": "AAPL"}, {"symbol": "XAUUSD"}])
-        )
         # one stale-brick_size DELETE per symbol (2 symbols), then the
         # old-session DELETE
         client.delete_responses.extend([
@@ -229,6 +236,11 @@ class TestRunRenkoBrickRetention:
                 return_value=client,
             ),
             patch(
+                "regime_platform.sweep_orchestrator.renko_retention.fetch_active_symbols",
+                new_callable=AsyncMock,
+                return_value=[{"symbol": "AAPL"}, {"symbol": "XAUUSD"}],
+            ),
+            patch(
                 "regime_platform.config.brick_params.load_brick_params",
                 side_effect=fake_load_brick_params,
             ),
@@ -247,7 +259,6 @@ class TestRunRenkoBrickRetention:
     @pytest.mark.asyncio
     async def test_per_symbol_error_is_counted_not_raised(self):
         client = FakeClient()
-        client.get_responses.append(FakeResponse(json_data=[{"symbol": "AAPL"}]))
         client.delete_responses.append(FakeResponse(headers={"content-range": "0-1/2"}))
 
         def raising_load_brick_params(symbol):
@@ -261,6 +272,11 @@ class TestRunRenkoBrickRetention:
             patch(
                 "regime_platform.sweep_orchestrator.renko_retention.httpx.AsyncClient",
                 return_value=client,
+            ),
+            patch(
+                "regime_platform.sweep_orchestrator.renko_retention.fetch_active_symbols",
+                new_callable=AsyncMock,
+                return_value=[{"symbol": "AAPL"}],
             ),
             patch(
                 "regime_platform.config.brick_params.load_brick_params",

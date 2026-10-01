@@ -14,9 +14,27 @@ table forever with nothing to ever clean them up. Confirmed live 2026-09-09:
 129,583 rows across 14 symbols, oldest ``session_date`` a full month back
 (e.g. AAPL alone carrying 8+ distinct historical ``brick_size`` values).
 
+**Second, previously-undiagnosed root cause, confirmed 2026-10-01 (worklog
+20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md §13.0/§4b):** the symbol
+roster this module used to drive the stale-brick_size pass was discovered
+by scanning ``nt_renko_bricks`` itself — ``select=symbol&limit=10000`` with
+no ``order``. This Supabase project caps every PostgREST GET response at
+1000 rows regardless of the requested ``limit``. Confirmed live: with
+924,375 rows spread unevenly across 14 symbols, those 1000 unordered rows
+covered only 2 of 14 active symbols (``AAPL``, ``AUDUSD``) — the other 12
+received **zero stale-brick_size pruning, every single night, since this
+module shipped**, which is the dominant driver of the table's row count
+(e.g. ``US30USD`` alone: 145 distinct historical ``brick_size`` grids,
+102,306 rows, confirmed live). Fixed by sourcing the roster from
+``fetch_active_symbols()`` (``supabase_client.py`` — reads ``nt_symbol
+WHERE active = true``, the same roster source every other orchestrator
+pass already uses) instead of scanning the very table being pruned.
+
 This module is the nightly hygiene pass (mirrors ``eod_retention.py``'s
-shape and design rules exactly), run as Part VI of the eod-lookback cycle
-(``orchestrator.py::_run_eod_lookback``):
+shape and design rules exactly), run as Part VII of the eod-lookback cycle
+(``orchestrator.py::_run_eod_lookback``, after the new Part VI daily-close
+snapshot — see ``daily_close_snapshot.py``'s module docstring for why that
+ordering matters):
 
   1. **Stale brick_size grids** — for each symbol currently present in the
      table, delete every row whose ``brick_size`` does NOT match the
@@ -55,7 +73,11 @@ import httpx
 
 from regime_platform.core.feature_flags import get_renko_brick_retention_days
 from regime_platform.core.settings import settings
-from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+from regime_platform.sweep_orchestrator.supabase_client import (
+    _headers,
+    _url,
+    fetch_active_symbols,
+)
 
 logger = logging.getLogger("regime.sweep.renko_retention")
 
@@ -78,24 +100,21 @@ def _parse_content_range_total(content_range: str | None) -> int:
         return 0
 
 
-async def _distinct_symbols(client: httpx.AsyncClient) -> list[str]:
-    """Symbols currently present in ``nt_renko_bricks`` (best-effort)."""
+async def _distinct_symbols() -> list[str]:
+    """Active symbol roster to drive the stale-brick_size pass (best-effort).
+
+    Sourced from ``fetch_active_symbols()`` (``nt_symbol WHERE active =
+    true``) — NOT from scanning ``nt_renko_bricks`` itself. See this
+    module's docstring for why: scanning the brick table directly hits
+    this project's 1000-row PostgREST GET cap and silently truncates the
+    roster to whichever symbols happen to sort first in an unordered scan,
+    leaving every symbol outside that window permanently unpruned.
+    """
     try:
-        resp = await client.get(
-            _url("nt_renko_bricks"),
-            headers=_headers(),
-            params={"select": "symbol", "limit": "10000"},
-        )
-        if not resp.is_success:
-            logger.warning(
-                "[renko:retention] distinct-symbol query HTTP %d — %s",
-                resp.status_code, resp.text[:200],
-            )
-            return []
-        rows = resp.json() or []
+        rows = await fetch_active_symbols()
         return sorted({r.get("symbol") for r in rows if r.get("symbol")})
     except Exception as exc:
-        logger.warning("[renko:retention] distinct-symbol query failed: %s", exc)
+        logger.warning("[renko:retention] active-symbol roster fetch failed: %s", exc)
         return []
 
 
@@ -185,7 +204,7 @@ async def run_renko_brick_retention() -> dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            symbols = await _distinct_symbols(client)
+            symbols = await _distinct_symbols()
             summary["symbols_checked"] = len(symbols)
             for symbol in symbols:
                 try:

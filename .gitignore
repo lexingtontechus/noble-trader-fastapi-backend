@@ -159,3 +159,9 @@ config/signal_stream_cache.sqlite
 config/knowledge_index.sqlite
 config/knowledge_index.sqlite-wal
 config/knowledge_index.sqlite-shm
+
+# Production data backups (2026-10-01, scripts/backup_retention_tables.py)
+# — point-in-time exports of nt_renko_bricks/nt_sweep_result/nt_regime_log
+# before retention cleanup. Data dumps, not code; kept on disk, not in git
+# history. See worklog/20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md.
+backups/
