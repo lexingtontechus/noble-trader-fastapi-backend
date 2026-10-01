@@ -2,7 +2,7 @@ openapi: "3.1.0"
 
 info:
   title: Noble Trader Agent - FastAPI Backend
-  version: "8.1.0"
+  version: "8.2.0"
   description: |
     A production-grade quantitative trading platform combining two major subsystems:
 
@@ -113,7 +113,7 @@ paths:
                     example: ok
                   version:
                     type: string
-                    example: "8.1.0"
+                    example: "8.2.0"
                   sessions:
                     type: integer
                     description: Number of active streaming sessions

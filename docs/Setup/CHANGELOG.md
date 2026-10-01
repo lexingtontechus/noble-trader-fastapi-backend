@@ -1,3 +1,26 @@
+## [8.2.0] - 2026-09-30
+
+### Major — per-symbol vol-regime geometry + unattended ATR re-opt
+
+#### Dynamic ATR (live, fractional price brackets)
+- **Per-symbol / forex-pooled** `by_symbol` grids (0.05→0.01 solve). Exact `entry ± tp_atr×ATR` — no brick snap.
+- **`vol_ratio` gate** (`rv24/rv168` at entry — **volatility, not volume**): BTCUSD **8.07/1.77 only if vol_ratio≤0.71**; XAUUSD **4.94/1.00** ungated (45d walk).
+- Fail-closed: no qualifying pick inside clamps → heavy bricks kept.
+- Fix: `UnboundLocalError trade_signal` in the pre-signature dynamic log path (aborted apply).
+
+#### ATR re-opt (rediscovery clock)
+- **`atr-reopt-monthly`** APScheduler 1st 03:30 UTC — free lattice 45d, wr band + both halves, drift vs `by_symbol`. Report + `nt_roadmap` heartbeat.
+- **`atr-reopt-urgency`** every 4h: `vol_ratio≥1.25` → **auto-run** free lattice + optional `auto_apply_clamps` (skips vol-gated symbols). Discord `DISCORD_WEBHOOK_STATUS` is FYI of the action, never a human to-do.
+- Worklogs: `20260930_VOL_REGIME_ATR_BTC_XAU.md`, `20260930_MONTHLY_ATR_REOPT.md`.
+
+#### LLM server
+- Offline HF-id → local snapshot resolve; load without `device_map` when `accelerate` missing.
+
+#### Version anchors
+`pyproject.toml`, `main.py`, `docs/openapi.yaml`, `docs/Setup/openapi.yaml`, `tests/test_version_consistency.py` → **8.2.0**.
+
+---
+
 ## [8.1.0] - 2026-09-28
 
 ### Major — Kairos RANK surface + TimesFM quantile & covariate capture

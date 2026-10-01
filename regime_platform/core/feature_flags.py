@@ -110,7 +110,10 @@ _DEFAULTS: dict[str, Any] = {
     "atr_reopt_urgency": {
         "enabled": True,
         "elevated_ratio": 1.25,
-        "cooldown_hours": 48.0,
+        # 4h cycle floor — durable in nt_roadmap (not in-memory).
+        # Was 48h in-memory: wiped on Studio restart → double-fire.
+        "min_reopt_hours": 4.0,
+        "cooldown_hours": 4.0,
         "vol_ratio_short": 24,
         "vol_ratio_long": 168,
         "auto_apply_clamps": True,

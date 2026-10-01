@@ -66,8 +66,19 @@ def test_urgency_config_defaults():
     cfg = get_atr_reopt_urgency_config()
     assert cfg["enabled"] is True
     assert cfg["elevated_ratio"] == 1.25
-    assert cfg["cooldown_hours"] == 48.0
+    # 4h cycle floor — durable, not a 48h in-memory gate
+    assert cfg["min_reopt_hours"] == 4.0
+    assert cfg["cooldown_hours"] == 4.0
     assert cfg["auto_apply_clamps"] is True
+
+
+def test_ts_or_none_parses_iso():
+    from regime_platform.sweep_orchestrator.atr_reopt import _iso, _ts_or_none
+
+    ts = 1727000000.0
+    assert abs(_ts_or_none(_iso(ts)) - ts) < 1
+    assert _ts_or_none(None) is None
+    assert _ts_or_none("not-a-date") is None
 
 
 def test_clamp_block_narrow_lattice():

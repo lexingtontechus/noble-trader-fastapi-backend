@@ -1,7 +1,7 @@
--- 184_dashboard_cache_renko_live_grid.sql  (2026-09-28)
+-- 184_dashboard_cache_renko_live_grid.sql  (2026-09-28; LIMIT 8→10 2026-09-30)
 --
--- The renkoBricks slice of refresh_talaria_dashboard_cache() took the top-8
--- bricks per symbol by (session_date DESC, brick_index DESC) with NO
+-- The renkoBricks slice of refresh_talaria_dashboard_cache() used to take
+-- top-N bricks per symbol by (session_date DESC, brick_index DESC) with NO
 -- brick_size filter. Stale grids / orphan high brick_index rows therefore
 -- won the window for almost every symbol (confirmed live: 12/14 symbols
 -- had 0/8 rows on the sweep's live brick_size; only EURUSD was 8/8).
@@ -14,6 +14,10 @@
 -- bricks in that grid (same 0.1% relative band as renko_retention /
 -- log_renko_bricks orphan purge). Symbols with no live-grid rows get []
 -- and fall back to generateBricks on the entry plane (correct plane).
+--
+-- Window size: 10 per symbol. The chart + brick-pattern reader are
+-- designed around a 10-brick window (users expect that shape); 8 made the
+-- pattern less stable and the UI showed "last 8" while docs said 10.
 
 CREATE OR REPLACE FUNCTION public.refresh_talaria_dashboard_cache()
 RETURNS void
@@ -85,7 +89,7 @@ BEGIN
             AND abs(br.brick_size - sig.live_brick_size)
                 <= greatest(abs(sig.live_brick_size) * 0.001, 1e-9)
           ORDER BY br.session_date DESC, br.brick_index DESC
-          LIMIT 8
+          LIMIT 10
         ) rb
       ) r
     ),

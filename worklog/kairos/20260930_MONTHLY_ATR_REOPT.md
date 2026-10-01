@@ -73,7 +73,7 @@ Time-driven alone is wrong when vol breaks the clamp box mid-month.
 | Clock | Trigger | Action |
 |---|---|---|
 | **Monthly** | 1st 03:30 UTC | free lattice → report + roadmap |
-| **Vol urgency** | `vol_ratio ≥ 1.25` (rv24/rv168) checked **every 4h** | Discord risk alert on **`DISCORD_WEBHOOK_STATUS`** (`#system-status`) → run `scripts/monthly_atr_reopt.py` |
+| **Vol urgency** | `vol_ratio ≥ 1.25` (rv24/rv168) **every 4h** | **Auto** free lattice + clamp patch (4h durable floor in `nt_roadmap`) · Discord **`DISCORD_WEBHOOK_STATUS`** FYI only |
 | **Local heavy** | daily 20:00 | re-pick **inside** current clamps |
 
 `atr_reopt_urgency.elevated_ratio: 1.25` = short-term vol **+25%** vs the

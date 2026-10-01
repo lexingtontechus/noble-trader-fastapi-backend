@@ -14,7 +14,7 @@ price-only Markov chain — with all 5 TA values persisted per sweep tick in Sup
 
 ## Version
 
-**v8.1.0** — **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** (p10/p50/q90 band + XReg dynamic covariates) · Renko live-grid hygiene · Settlement / calibration measurement honesty
+**v8.2.0** — **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** (p10/p50/q90 band + XReg dynamic covariates) · Renko live-grid hygiene · Settlement / calibration measurement honesty
 
 ### Highlights
 
@@ -294,7 +294,7 @@ The `/forecast` endpoint accepts batched inputs:
 
 Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elapsed_ms`. See `server.py` for full schema.
 
-**Quantiles (v8.1.0):** `quantile_forecast` is a continuous-quantile-head band (`[series][horizon][q]`, typically 9–10 levels covering p10…p90). The sweep orchestrator extracts **q10/q50/q90** at horizon step 0 and persists `timesfm_q_lo/mid/hi`, `timesfm_q_spread`, `timesfm_q_pos` on `nt_signal_sim` (migration 186) for research IC / Brier — never as live gates.
+**Quantiles (v8.2.0):** `quantile_forecast` is a continuous-quantile-head band (`[series][horizon][q]`, typically 9–10 levels covering p10…p90). The sweep orchestrator extracts **q10/q50/q90** at horizon step 0 and persists `timesfm_q_lo/mid/hi`, `timesfm_q_spread`, `timesfm_q_pos` on `nt_signal_sim` (migration 186) for research IC / Brier — never as live gates.
 
 **Covariates (research):** TimesFM 2.5 `forecast_with_covariates` (XReg residual path) accepts dynamic channels (trend z-score, momentum, volatility, cluster-mate returns). Probe: `scripts/timesfm_p1_covariates_probe.py`.
 

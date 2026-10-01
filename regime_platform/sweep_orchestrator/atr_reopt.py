@@ -41,10 +41,63 @@ FOREX = ("AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY")
 # or sits >15% away from the published pick.
 DRIFT_REL = 0.15
 
-# Urgency nudge (2026-09-30): vol_ratio spike → Discord → run reopt now.
-# In-memory cooldown (process-lifetime is enough for a nudge; the monthly
-# job is still the durable clock).
-_LAST_URGENCY_ALERT: dict[str, float] = {}
+# Vol-urgency (2026-09-30, revised 2026-10-01): the 4h job IS the clock.
+# Cooldown floors are durable (nt_roadmap) — never in-memory only — so a
+# Studio restart cannot double-fire or look "stale".
+_URGENCY_STATE_MECH = "atr_reopt_urgency"
+
+
+async def _load_urgency_state() -> dict[str, Any]:
+    """Durable last-run/last-apply stamps from nt_roadmap (survives restart)."""
+    try:
+        import httpx
+
+        from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_roadmap"),
+                headers=_headers(),
+                params={"select": "current_state,notes", "mechanism": f"eq.{_URGENCY_STATE_MECH}"},
+            )
+        rows = resp.json() or []
+        if not rows:
+            return {}
+        raw = rows[0].get("current_state") or ""
+        # current_state = "last_run <ts> · {json}"
+        if "·" in raw:
+            raw = raw.split("·", 1)[1].strip()
+        import json
+
+        return json.loads(raw) if raw.startswith("{") else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[atr:urg] state load failed: %s", exc)
+        return {}
+
+
+async def _save_urgency_state(state: dict[str, Any]) -> None:
+    try:
+        from regime_platform.sweep_orchestrator.kairos import write_job_heartbeat
+
+        await write_job_heartbeat(_URGENCY_STATE_MECH, state)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[atr:urg] state save failed: %s", exc)
+
+
+def _ts_or_none(raw: Any) -> float | None:
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 def eval_cell(paths: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
@@ -309,8 +362,6 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
 
 # ─── Vol-urgency → auto re-opt (market-driven, unattended) ────────────────
 
-_LAST_REOPT_RUN: float = 0.0
-
 
 def _clamp_block(tp: float, sl: float, pad_tp: float = 0.25, pad_sl: float = 0.12) -> dict[str, Any]:
     """Narrow by_symbol lattice around a free-lattice pick (same style as research)."""
@@ -417,17 +468,19 @@ def _symbol_has_vol_gate(symbol: str) -> bool:
 
 
 async def check_atr_reopt_urgency() -> dict[str, Any]:
-    """Unattended vol-urgency: elevated ``vol_ratio`` → **auto-run** free lattice.
+    """Unattended vol-urgency on a **4h cycle** (restart-safe floors).
 
-    2026-09-30 redesign (operator cannot watch Discord 24/7):
+    2026-10-01: drop the 48h in-memory cooldown (wiped on Studio restart →
+    double-fire / stale look). The 4h job is the clock:
 
-    1. ``vol_ratio >= elevated_ratio`` on any symbol (4h job).
-    2. Free lattice runs immediately (``run_atr_reopt``), 48h run-cooldown.
-    3. If ``auto_apply_clamps`` and a proposal drifted, patch ``by_symbol``
-       clamps in ``feature_flags.yaml`` (hot-reload).
-    4. Discord ``#system-status`` is **FYI of the action taken** — never a
-       to-do for a human.
+    1. Every 4h: measure ``vol_ratio`` per symbol.
+    2. If any ≥ ``elevated_ratio`` and durable ``last_reopt_at`` is older
+       than ``min_reopt_hours`` (default **4**), run the free lattice.
+    3. If ``auto_apply_clamps`` and drift, patch ``by_symbol`` — same 4h
+       floor on ``last_apply_at`` so a restart cannot re-write clamps.
+    4. Discord is FYI of the action taken.
 
+    State lives in ``nt_roadmap(atr_reopt_urgency)`` — survives restarts.
     Returns ``{enabled, checked, alerted, reopt, applied}``. Never raises.
     """
     import time as _time
@@ -439,11 +492,20 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         return {"enabled": False, "checked": 0, "alerted": []}
 
     threshold = float(cfg["elevated_ratio"])
-    cooldown_h = float(cfg["cooldown_hours"])
+    # 4h cycle floor (was 48h in-memory — ineffective across restarts).
+    min_reopt_h = float(cfg.get("min_reopt_hours") or cfg.get("cooldown_hours") or 4.0)
+    if min_reopt_h > 24:
+        min_reopt_h = 4.0
     auto_apply = bool(cfg.get("auto_apply_clamps", True))
     vol_short = int(cfg.get("vol_ratio_short") or 24)
     vol_long = int(cfg.get("vol_ratio_long") or 168)
     min_bars = int(vol_long) + 2
+
+    state = await _load_urgency_state()
+    last_reopt = _ts_or_none(state.get("last_reopt_at"))
+    last_apply = _ts_or_none(state.get("last_apply_at"))
+    alerted_at = state.get("last_alerted_at") or {}
+    now = _time.time()
 
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
     from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
@@ -469,7 +531,6 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
 
     checked = 0
     spiked: list[tuple[str, float]] = []
-    now = _time.time()
     for p in peers:
         sym = p["symbol"]
         rows = [b for b in (bars.get(sym) or []) if b.get("c") is not None]
@@ -482,26 +543,28 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         checked += 1
         if vr < threshold:
             continue
-        last = _LAST_URGENCY_ALERT.get(sym)
-        if last is not None and (now - last) < cooldown_h * 3600.0:
+        # per-symbol Discord floor — durable across restarts
+        last_alert = _ts_or_none(alerted_at.get(sym))
+        if last_alert is not None and (now - last_alert) < min_reopt_h * 3600.0:
             continue
         spiked.append((sym, vr))
 
     if not spiked:
         return {"enabled": True, "checked": checked, "alerted": [], "reopt": None, "applied": []}
 
-    global _LAST_REOPT_RUN
     reopt_result: dict[str, Any] | None = None
     applied: list[str] = []
     ran = False
-    if now - _LAST_REOPT_RUN >= cooldown_h * 3600.0:
+    can_run = last_reopt is None or (now - last_reopt) >= min_reopt_h * 3600.0
+    can_apply = last_apply is None or (now - last_apply) >= min_reopt_h * 3600.0
+    if can_run:
         try:
             reopt_result = await run_atr_reopt()
-            _LAST_REOPT_RUN = now
             ran = True
+            state["last_reopt_at"] = _iso(now)
         except Exception as exc:  # noqa: BLE001
             logger.error("[atr:urg] auto re-opt failed: %s", exc)
-        if ran and auto_apply and reopt_result:
+        if ran and auto_apply and reopt_result and can_apply:
             for prop in reopt_result.get("proposals") or []:
                 scope = prop.get("scope")
                 pick = prop.get("pick") or {}
@@ -521,14 +584,20 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
                         applied.append(f"{scope} {pick['tp']:.2f}/{pick['sl']:.2f}")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[atr:urg] apply %s failed: %s", scope, exc)
+            if applied:
+                state["last_apply_at"] = _iso(now)
+                state["last_applied"] = applied
 
     for sym, vr in spiked:
-        _LAST_URGENCY_ALERT[sym] = now
+        alerted_at[sym] = _iso(now)
         try:
             from notifications.discord import discord_notifier
 
             action = "free lattice + clamps applied" if applied else (
-                "free lattice ran (no drift / no apply)" if ran else "re-opt still cooling down"
+                "free lattice ran (no drift / no apply)" if ran else (
+                    "re-opt skipped (4h floor — last_run %s)" % state.get("last_reopt_at", "—")
+                    if not can_run else "re-opt floor"
+                )
             )
             await discord_notifier.send_risk_alert(
                 symbol=sym,
@@ -541,22 +610,24 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
                     + (f"Proposals={len((reopt_result or {}).get('proposals') or [])}. "
                        if reopt_result else "")
                     + f"Report: {(reopt_result or {}).get('summary', {}).get('report', '—')}. "
-                    "Discord is FYI only — no operator action required unless you "
-                    "want to override clamps."
+                    "Discord is FYI only — 4h cycle, durable floor in nt_roadmap."
                 ),
                 data={
                     "vol_ratio": f"{vr:.2f}",
                     "threshold": f"{threshold:.2f}",
                     "auto_action": action,
                     "applied": ", ".join(applied) if applied else "none",
+                    "cycle_hours": min_reopt_h,
                 },
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[atr:urg] %s Discord send failed: %s", sym, exc)
 
+    state["last_alerted_at"] = alerted_at
+    await _save_urgency_state(state)
     logger.warning(
-        "[atr:urg] spiked=%s ran_reopt=%s applied=%s",
-        [s for s, _ in spiked], ran, applied,
+        "[atr:urg] spiked=%s ran_reopt=%s applied=%s floor=%sh",
+        [s for s, _ in spiked], ran, applied, min_reopt_h,
     )
     return {
         "enabled": True,
@@ -564,4 +635,5 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         "alerted": [s for s, _ in spiked],
         "reopt": (reopt_result or {}).get("summary") if reopt_result else None,
         "applied": applied,
+        "cycle_hours": min_reopt_h,
     }
