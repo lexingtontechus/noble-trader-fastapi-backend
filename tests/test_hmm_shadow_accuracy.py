@@ -69,6 +69,104 @@ def test_tier1_accuracy_correct_and_incorrect_calls():
     assert by_metric["trend_hmm"]["accuracy"] == pytest_approx(0.0)
 
 
+# ─── base_rate / skill (2026-10-01, RM-1 follow-up) ───────────────────────
+# Accuracy alone is unreadable: the legacy HMM's 0.5251 looks marginally
+# useful and is in fact BELOW the naive majority-direction baseline. These
+# tests pin the metric that made that visible.
+
+
+def test_skill_is_accuracy_minus_base_rate():
+    # 4 decided rows: 3 realized DOWN / 1 UP -> base_rate = 0.75.
+    # legacy makes 4 calls, 2 right -> accuracy 0.5, skill = 0.5 - 0.75 = -0.25.
+    rows = [
+        _row(signal="buy", outcome="sl_hit", legacy="DOWN"),   # realized DOWN (right)
+        _row(signal="buy", outcome="sl_hit", legacy="UP"),     # realized DOWN (wrong)
+        _row(signal="buy", outcome="sl_hit", legacy="UP"),     # realized DOWN (wrong)
+        _row(signal="buy", outcome="tp_hit", legacy="UP"),     # realized UP   (right)
+    ]
+    result = compute_tier1_accuracy(rows)
+    row = next(r for r in result if r["metric"] == "legacy")
+    assert row["n"] == 4
+    assert row["base_rate"] == pytest_approx(0.75)
+    assert row["accuracy"] == pytest_approx(0.5)
+    assert row["skill"] == pytest_approx(-0.25)
+
+
+def test_negative_skill_when_below_naive_baseline():
+    """The exact failure the RM-1 evaluation found: a model that is worse than
+    'always predict the majority direction' must show NEGATIVE skill."""
+    # 10 decided rows, 8 DOWN / 2 UP -> base_rate 0.8.
+    rows = []
+    for _ in range(8):
+        rows.append(_row(signal="buy", outcome="sl_hit", legacy="DOWN"))  # realized DOWN
+    for _ in range(2):
+        rows.append(_row(signal="buy", outcome="tp_hit", legacy="UP"))    # realized UP
+    # flip the legacy call on 6 of the 8 DOWN rows to UP -> those 6 are wrong
+    for i in range(6):
+        rows[i]["legacy_markov_state"] = "UP"
+    result = compute_tier1_accuracy(rows)
+    row = next(r for r in result if r["metric"] == "legacy")
+    assert row["base_rate"] == pytest_approx(0.8)
+    # calls: 6 UP(wrong) + 2 DOWN(right) + 2 UP(right) = 10 calls, 4 right
+    assert row["accuracy"] == pytest_approx(0.4)
+    assert row["skill"] == pytest_approx(-0.4)
+    assert row["skill"] < 0
+
+
+def test_positive_skill_when_beating_baseline():
+    # 4 rows: 3 DOWN / 1 UP -> base 0.75. legacy calls DOWN on all 3 DOWN
+    # rows and UP on the UP row -> accuracy 1.0, skill +0.25.
+    rows = [
+        _row(signal="buy", outcome="sl_hit", legacy="DOWN"),
+        _row(signal="buy", outcome="sl_hit", legacy="DOWN"),
+        _row(signal="buy", outcome="sl_hit", legacy="DOWN"),
+        _row(signal="buy", outcome="tp_hit", legacy="UP"),
+    ]
+    result = compute_tier1_accuracy(rows)
+    row = next(r for r in result if r["metric"] == "legacy")
+    assert row["base_rate"] == pytest_approx(0.75)
+    assert row["accuracy"] == pytest_approx(1.0)
+    assert row["skill"] == pytest_approx(0.25)
+
+
+def test_base_rate_uses_all_rows_not_just_this_sources_calls():
+    """base_rate must reflect the symbol's whole decided population — a source
+    that only calls 10% of the time should still be compared against the full
+    base rate, not the base rate of its own (selected) subset."""
+    rows = [_row(signal="buy", outcome="sl_hit", legacy=None) for _ in range(9)]
+    rows.append(_row(signal="buy", outcome="tp_hit", legacy="UP"))
+    result = compute_tier1_accuracy(rows)
+    row = next(r for r in result if r["metric"] == "legacy")
+    assert row["base_rate"] == pytest_approx(0.9)   # 9 DOWN / 1 UP over ALL rows
+    assert row["coverage"] == pytest_approx(0.1)
+    assert row["accuracy"] == pytest_approx(1.0)    # its one call was right
+    assert row["skill"] == pytest_approx(0.1)       # 1.0 - 0.9
+
+
+def test_skill_and_base_rate_null_when_no_decided_rows():
+    """No realized direction -> no base rate -> no skill. Must be None, not 0.0
+    (0.0 would read as 'exactly at baseline')."""
+    rows = [_row(outcome="expired", legacy="UP")]
+    assert compute_tier1_accuracy(rows) == []
+
+
+def test_tier2_rows_carry_no_base_rate_or_skill():
+    """Tier 2 is a Brier comparison, not a hit rate — base_rate/skill must stay
+    absent so a reader cannot mistake a probability score for an accuracy one."""
+    rows = [_row2(raw=0.8, gated=0.7)]
+    result = compute_tier2_brier(rows)
+    for r in result:
+        assert "base_rate" not in r
+        assert "skill" not in r
+
+
+def test_skill_fields_present_on_every_tier1_row():
+    rows = [_row(legacy="UP", trend_hmm="UP")]
+    for r in compute_tier1_accuracy(rows):
+        assert "base_rate" in r
+        assert "skill" in r
+
+
 def test_tier1_accuracy_flat_calls_excluded_from_accuracy_not_coverage():
     # 2 rows: one where legacy calls FLAT (no opinion), one where it
     # calls correctly. FLAT must not count as a "miss" in the accuracy

@@ -97,9 +97,26 @@ def _realized_direction(signal: str, outcome: str) -> str | None:
 
 def compute_tier1_accuracy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Per (symbol, source) — source in {legacy, trend_hmm} — coverage +
-    accuracy against realized direction. Pure function, no I/O."""
+    accuracy against realized direction. Pure function, no I/O.
+
+    2026-10-01 (RM-1 follow-up): also returns ``base_rate`` and ``skill``.
+    Accuracy alone is unreadable — the RM-1 evaluation found the legacy HMM at
+    0.5251 accuracy, which *looks* marginally useful and is in fact **below**
+    the naive "always predict the majority direction" baseline (0.5655) and
+    well below a shrunk per-symbol base rate (0.5898). The number that matters
+    is ``skill = accuracy − base_rate``, and it took a bespoke query against
+    nt_signal_sim to discover it. Storing it here means the next reviewer sees
+    it on the table instead of re-deriving it (precedent: ``kairos_rank.py``
+    exists because p_win's IC was not being measured).
+
+    ``base_rate`` = the symbol's own majority-direction share over ALL decided
+    rows (not just this source's calls) — i.e. what a naive per-symbol
+    always-predict-the-majority model would score. ``skill`` is the source's
+    accuracy minus that. Negative skill means the source is worse than silence.
+    """
     by_symbol_source: dict[tuple[str, str], dict[str, int]] = {}
     total_rows: dict[str, int] = {}
+    symbol_direction: dict[str, dict[str, int]] = {}
 
     for row in rows:
         symbol = row.get("symbol")
@@ -107,6 +124,8 @@ def compute_tier1_accuracy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if symbol is None or realized is None:
             continue
         total_rows[symbol] = total_rows.get(symbol, 0) + 1
+        dirs = symbol_direction.setdefault(symbol, {"UP": 0, "DOWN": 0})
+        dirs[realized] = dirs.get(realized, 0) + 1
 
         for source_key, column in (("legacy", "legacy_markov_state"), ("trend_hmm", "trend_hmm_markov_state")):
             state = row.get(column)
@@ -123,12 +142,22 @@ def compute_tier1_accuracy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for (symbol, source_key), d in by_symbol_source.items():
         n_calls = d["n_calls"]
         n_total = total_rows.get(symbol, 0)
+        dirs = symbol_direction.get(symbol, {})
+        base_rate = (max(dirs.values()) / n_total) if n_total and dirs else None
+        accuracy = (d["n_correct"] / n_calls) if n_calls else None
+        skill = (
+            accuracy - base_rate
+            if accuracy is not None and base_rate is not None
+            else None
+        )
         output_rows.append({
             "symbol": symbol,
             "metric": source_key,
             "n": n_calls,
             "coverage": round(n_calls / n_total, 4) if n_total else None,
-            "accuracy": round(d["n_correct"] / n_calls, 4) if n_calls else None,
+            "accuracy": round(accuracy, 4) if accuracy is not None else None,
+            "base_rate": round(base_rate, 4) if base_rate is not None else None,
+            "skill": round(skill, 4) if skill is not None else None,
             "brier_score": None,
         })
     return output_rows
@@ -224,16 +253,21 @@ def _print_report(rows: list[dict[str, Any]]) -> None:
     if not rows:
         print("No hmm-shadow-accuracy rows computed.")
         return
-    print(f"{'Symbol':<10} {'Metric':<10} {'n':>6} {'Coverage':>9} {'Accuracy':>9} {'Brier':>8}")
-    print("-" * 60)
+    print(f"{'Symbol':<10} {'Metric':<10} {'n':>6} {'Coverage':>9} {'Accuracy':>9} "
+          f"{'BaseRate':>9} {'Skill':>9} {'Brier':>8}")
+    print("-" * 80)
     for row in sorted(rows, key=lambda r: (r["symbol"], r["metric"])):
-        cov = row["coverage"]
-        acc = row["accuracy"]
-        brier = row["brier_score"]
+        cov = row.get("coverage")
+        acc = row.get("accuracy")
+        base = row.get("base_rate")
+        skill = row.get("skill")
+        brier = row.get("brier_score")
         print(
             f"{row['symbol']:<10} {row['metric']:<10} {row['n']:>6} "
             f"{f'{cov * 100:.1f}%' if cov is not None else '-':>9} "
-            f"{f'{acc * 100:.1f}%' if acc is not None else '-':>9} "
+            f"{f'{acc:.4f}' if acc is not None else '-':>9} "
+            f"{f'{base:.4f}' if base is not None else '-':>9} "
+            f"{f'{skill:+.4f}' if skill is not None else '-':>9} "
             f"{f'{brier:.4f}' if brier is not None else '-':>8}"
         )
 

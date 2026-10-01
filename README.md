@@ -1,20 +1,111 @@
 # Dynamic Regime Risk Management Platform
 
-A production-grade FastAPI web service for quantitative trading risk management.
-Detects market regimes with 4-state Hidden Markov Models, gates position sizes
-via a unified Dynamic Masaniello + Kelly Criterion engine, computes real-time risk
-metrics (VaR/CVaR), streams live regime snapshots and alerts over WebSocket and SSE,
-and produces 24-feature observation vectors for downstream RL/ML policy layers. The
-`p_markov` source in the EV Engine v4 4-source log-odds blend is now produced by a
-**multivariate Gaussian HMM** (5 states, 9 features: log_return + 3 microstructure +
-5 TA indicators) trained live via Baum-Welch — replacing the legacy discrete 3-state
-price-only Markov chain — with all 5 TA values persisted per sweep tick in Supabase.
+A production-grade FastAPI web service that **produces qualified trading signals**.
+It detects market regimes with 4-state Hidden Markov Models, sizes positions through
+a unified Dynamic Masaniello + Kelly engine, and computes a calibrated
+probability-of-win and expected value per signal before a 7-gate qualification
+chain decides whether it publishes.
+
+> **This service is not a trade executor.** `ExecutorFactory.get_executor` fails
+> closed by design — order placement lives in the Hermes agent (Talaria). See
+> [Scope](#scope--what-this-service-is-and-is-not).
+
+---
+
+## Pivotal direction — first-passage, not state machines
+
+The platform's central question is:
+
+> **P(price reaches TP before SL | this signal, this bracket, right now)**
+
+Every mechanism below is judged by whether it answers that question better.
+
+**The thesis (2026-10-01).** The platform already answers it **exactly**, on the
+actual price path, via `tiered_atr.walk()` — first-touch, direction-signed,
+ATR-scaled, 48-bar expiry, TP-first on a tie. That same machinery selects the
+live TP/SL geometry (`dynamic_atr_pick`) and proposes new clamps monthly. It is
+validated and has no states, no EM, no covariance assumption and no refit
+instability.
+
+For most of its life the platform instead answered the question *indirectly*,
+through a 3-state discretisation: `p_markov_hold_n = T^N[current][target]`, a
+matrix power over a separate 5-state Gaussian HMM fit on 9 **unscaled** features.
+
+**That detour is being removed.** Measured on 31,328 decided signals:
+
+| model | accuracy | skill vs baseline |
+|---|---:|---:|
+| legacy 5-state HMM (its own directional calls) | 0.5251 | **−0.0404** |
+| trend_hmm (RegimeHMM-derived) | 0.3230 | −0.2426 |
+| naive "always predict the majority direction" | **0.5655** | — |
+| shrunk per-symbol base rate | **0.5898** | — |
+
+The HMM scores **below both trivial baselines** — negative skill, positive on only
+5 of 14 symbols (mean −0.0622). It was a noisy 3-state detour to a question the
+platform answers directly, so on 2026-10-01:
+
+- **`markov_source_mode: legacy_hmm`** — the `trend_hmm_shadow` comparison retired
+  (it had answered negatively: legacy won 13/14 symbols, and the two classifiers
+  disagreed 65.9% of the time against a 66.7% random baseline).
+- **`p_markov_hold_n_mode: "off"`** — the source withdrawn from the EV blend; it
+  renormalises to `p_regime` 0.5 / `p_timesfm` 0.5.
+
+### What replaces it
+
+Two mechanisms, composed — **level × timing**:
+
+| | gives | from |
+|---|---|---|
+| **First-passage** | the **level** — P(TP before SL) for the live bracket | `first_passage.py` on `walk()` paths |
+| **Regime transition** | the **timing weight** — how much to trust that level now | `kairos_rank.event_window` × `transition_type` |
+
+The transition half is already proven, not speculative:
+
+- **Freshness** — a regime label is most informative immediately after it flips.
+  `fresh − deep` accuracy excess = **+0.117** [+0.105, +0.129], n=24,768 / 5,188.
+- **Type** — `dir_flip` is the only non-negative transition type (+0.007);
+  `vol_expand` / `vol_contract` are worse than average. Do not pool types.
+- **Surprise** — **rejected** (Spearman 0.004). Rarity of the HMM transition does
+  not rank accuracy; deliberately unused.
+
+So: a signal entering `fresh ∧ dir_flip` carries its first-passage level nearly
+intact; one entering `deep ∧ vol_contract` is damped most of the way back toward
+no-information. Never zero — the level is still evidence.
+
+> **Honest scope of the claim.** `walk()` today answers *"which TP/SL is best?"*
+> (pooled, over a class window, for geometry). First-passage-as-source asks
+> *"what is the probability for this signal's live bracket?"* — a different unit
+> and a different question. It therefore needs its own evaluation and **cannot
+> inherit the geometry work's credibility.** The base-rate result is also a
+> *candidate*, not just a kill shot: any replacement must beat the 0.5898
+> shrunk-base-rate control. That is bar **B1**.
+
+**Status:** first-passage is **offline only** (Phase 1). Nothing in
+`first_passage.py` is imported by the sweep path. Promotion requires clearing the
+pre-registered bar B1–B7, where **B5** (beats `p_regime` + `p_timesfm` alone on
+ΔD) is the real gate — a source can be individually accurate and still add
+nothing to a correlated blend, which is exactly what happened here.
+
+Read: `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` ·
+`docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md` ·
+`worklog/kairos/reports/20261001_rm1_markov_source_eval.md`
+
+---
+
+## Scope — what this service is and is not
+
+| | |
+|---|---|
+| **Is** | a sweep orchestrator and **signal producer** — regime detection, EV/geometry, qualification, calibration feedback, Discord delivery |
+| **Is not** | a trade executor. `ExecutorFactory.get_executor` raises by design; live trade journaling and order placement live in the Hermes agent (Talaria) |
+| **Cadence** | light sweep every **15 min** × 14 symbols; heavy sweep **daily 17:06 UTC**; EOD recalibration nightly 00:30 + 4h correction passes |
+| **Data** | Supabase (Postgres) — signals, calibration records, sweep results, research tables |
 
 ---
 
 ## Version
 
-**v8.2.0** — **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** (p10/p50/q90 band + XReg dynamic covariates) · Renko live-grid hygiene · Settlement / calibration measurement honesty
+**v8.2.0** — **first-passage pivot** (HMM detour retired; `p_markov_hold_n` withdrawn) · **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** · Renko live-grid hygiene · Settlement / calibration measurement honesty
 
 ### Highlights
 
@@ -110,7 +201,7 @@ noble-trader-fastapi-backend/
 │   │   ├── portfolio_service.py      Multi-symbol regime + risk aggregation
 │   │   └── backtest_store.py      Supabase persistence for backtest results
 │   ├── services/statistics/
-│   │   ├── ev_engine.py              EV Engine v4 — 4-source P_win log-odds blend + public set_weights()/temp_weights()/restore_default_weights() API + calibration_bias shrink
+│   │   ├── ev_engine.py              EV Engine v6 — P_win logit-pool (p_regime + p_markov_hold_n + p_timesfm; p_markov_hold_n off since 2026-10-01) + set_weights()/temp_weights()/restore_default_weights() API
 │   │   └── bayesian_updater.py       [DEPRECATED P5] BayesianUpdater — use agent's BayesianAlpha for live persistence; backend's copy retained for backtest-replay only
 │   ├── renko/                        6-layer Renko HFT pipeline (22 endpoints)
 │   ├── notifications/               Discord notifier
@@ -132,6 +223,10 @@ noble-trader-fastapi-backend/
 ├── regime_platform/
 │   └── sweep_orchestrator/           Sweep Orchestrator — active signal generation (Python, APScheduler, Supabase)
 │       ├── orchestrator.py           Core signal gen with TimesFM, EV gates, qualification
+│       ├── first_passage.py          P(TP before SL) — the pivotal-direction read (Phase 1, offline only)
+│       ├── tiered_atr.py             dynamic_atr_pick + walk() first-passage geometry selector
+│       ├── kairos_rank.py            rank_score + event-time transitions (event_window, transition_type)
+│       ├── hmm_shadow_accuracy.py    Outcome-linked accuracy + skill-vs-baseline diagnostic
 │       ├── __main__.py               Entry point for orchestrator service
 │       ├── market_hours.py           Market hours validation
 │       ├── price_fetcher.py           Price data fetching
@@ -139,7 +234,7 @@ noble-trader-fastapi-backend/
 │
 ├── supabase/
 │   ├── functions/                    Edge functions [DEPRECATED] — retained for reference
-│   └── migrations/                   Database migrations (001–022)
+│   └── migrations/                   Database migrations (001–191)
 │
 ├── tests/
 │   ├── test_platform.py              Smoke test: HMM + Kelly + risk
@@ -686,10 +781,9 @@ intermediate broker, aggregate channel, or per-plan fan-out.
 | `take_profit` | float | `65441.00` | Trade signal | Take-profit price |
 | `ev` | float | `0.35` | EV Engine | Expected value |
 | `ev_per_dollar` | float | `0.12` | EV Engine | EV normalized per dollar risked |
-| `p_win` | float | `0.62` | EV Engine | Blended P_win (4-source) |
-| `p_regime` | float | `0.55` | EV Engine | HMM regime component |
-| `p_imbalance` | float | `0.48` | EV Engine | L2 imbalance component |
-| `p_markov` | float | `0.50` | EV Engine | Markov transition component |
+| `p_win` | float | `0.62` | EV Engine | Blended P_win (logit pool) |
+| `p_regime` | float | `0.55` | EV Engine | HMM regime component (gated `trend_probs`) |
+| `p_markov` | float | `0.50` | EV Engine | Markov hold component — **0.0 / not in blend** since 2026-10-01 (`p_markov_hold_n_mode: "off"`) |
 | `aggression` | string | `mid` | Aggression dispatcher | `passive`, `mid`, or `aggressive` |
 | `ev_scale` | float | `0.80` | EV Engine | EV-scaled Kelly multiplier |
 | `effective_kelly` | float | `0.12` | Kelly sizing | Final Kelly fraction |
@@ -697,7 +791,7 @@ intermediate broker, aggregate channel, or per-plan fan-out.
 | `tp_bricks` | int | `5` | Orchestrator (LightningAI) | Take-profit in bricks |
 | `sl_bricks` | int | `3` | Orchestrator (LightningAI) | Stop-loss in bricks |
 | `kelly_f` | float | `0.15` | Kelly sizing | Base Kelly fraction |
-| `markov_p_up` | float | `0.52` | Multivariate HMM | Probability of UP transition (5-state Gaussian HMM aggregated to 3 states) |
+| `markov_p_up` | float | `0.52` | Multivariate HMM | Probability of UP transition (5-state Gaussian HMM aggregated to 3 states). **Capture only since 2026-10-01** — no longer in the EV blend |
 | `markov_p_dn` | float | `0.48` | Multivariate HMM | Probability of DOWN transition |
 | `markov_current_state` | string | `FLAT` | Multivariate HMM | Current Markov state (`UP`/`DOWN`/`FLAT`) |
 | `p_markov_single_step` | float | `0.55` | Multivariate HMM | T[current][target] for one step (trending-regime detector for agent's synthesizer) |
@@ -723,14 +817,21 @@ intermediate broker, aggregate channel, or per-plan fan-out.
 
 **Example:** `p_timesfm=0.48` for BTC means TimesFM forecasts a slight price decline over the next 12 hours.
 
-**Live P_win blend (EV Engine v6, Batch F):** logit pool of
-`p_regime` + `p_markov_hold_n` + `p_timesfm` (weights renormalized over
-available sources). `p_historical` is **not** in the live weight table.
-`P_imbalance` was removed from EV years ago (microstructure deprecation).
+**Live P_win blend (EV Engine v6):** logit pool of
+`p_regime` + `p_timesfm` (weights renormalized over available sources).
+
+> **2026-10-01:** `p_markov_hold_n` is **withdrawn** (`p_markov_hold_n_mode: "off"`).
+> The sweep passes no Markov source to `compute_ev()`, so the engine's
+> missing-source renormalisation drops it and the blend is **`p_regime` 0.5 /
+> `p_timesfm` 0.5**. The legacy HmmModel still fits each tick (it feeds the TA
+> buffer and `nt_sweep_result`'s legacy `markov_p_up`/`markov_p_dn` columns) but
+> no longer reaches the blend. See [Pivotal direction](#pivotal-direction--first-passage-not-state-machines).
 
 ```
 p_win = inv_logit( Σ w_i · logit(p_i) )   # available sources only
-# nominal: p_regime 0.25 / p_markov_hold_n 0.20 / p_timesfm 0.25
+# P_WIN_WEIGHTS_FULL: p_regime 5/14 · p_markov_hold_n 4/14 · p_timesfm 5/14
+#   (renormalised over available; with p_markov_hold_n off -> 0.5 / 0.5)
+# p_historical retired 2026-09-09 — never fed by production
 ```
 
 Mapping: `p_timesfm = clamp(σ(k · Δp/p), clamp_min, clamp_max)` with
@@ -926,7 +1027,7 @@ As of v7.6.0, the FastAPI backend is a **sweep orchestrator only** — it does N
 | Concern | Backend (this repo) | Agent (Talaria) |
 |---|---|---|
 | Sweep signal generation | ✓ canonical | delivered to Discord (human-facing); agent execution is independent |
-| EV Engine (4-source blend) | ✓ canonical (orchestrator) | consumes synthesized P_win |
+| EV Engine (logit-pool blend) | ✓ canonical (orchestrator) | consumes synthesized P_win |
 | Trade execution | ✗ disabled (P5) | ✓ canonical (MT4/MT5 bridge, Alpaca, Hyperliquid) |
 | Live trade journal | ✗ gated behind `assert_execution_enabled()` | ✓ canonical (DuckDB `trade_journal`) |
 | Bayesian alpha persistence | ✗ deprecated module (`BayesianUpdater`) | ✓ canonical (`BayesianAlpha`, DuckDB-backed) |
@@ -946,7 +1047,7 @@ The `EVEngine` class (`regime_platform/services/statistics/ev_engine.py`) now ex
 
 | Method | Purpose |
 |---|---|
-| `set_weights(overrides: dict)` | Persistently overrides one or more of the 4 canonical weight keys (`p_pattern`, `p_regime`, `p_markov_hold_n`, `p_timesfm`). Validates key names and value ranges; raises `ValueError` on unknown keys, `TypeError` on non-dict input, `ValueError` on non-finite or out-of-range values. |
+| `set_weights(overrides: dict)` | Persistently overrides one or more of the canonical weight keys (`p_regime`, `p_markov_hold_n`, `p_timesfm`; `p_historical` accepted for API compat only). Validates key names and value ranges; raises `ValueError` on unknown keys, `TypeError` on non-dict input, `ValueError` on non-finite or out-of-range values. |
 | `temp_weights(overrides: dict)` | Context manager that applies overrides for the duration of a `with`-block, then restores the prior weights in a `finally` clause (survives exceptions, returns, breaks). Validation runs before the body so a bad override set never leaks a partial mutation. |
 | `restore_default_weights()` | Restores the default weight vector loaded from `config/default.yaml`. Useful in test teardown and after long-running override sessions. |
 | `get_weights()` | Returns a deep copy of the current weight dict. Mutation of the returned dict does not affect the engine. |

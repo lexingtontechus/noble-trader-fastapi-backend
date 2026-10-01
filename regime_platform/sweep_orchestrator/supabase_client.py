@@ -1603,7 +1603,8 @@ async def upsert_trend_edge_by_symbol(rows: list[dict[str, Any]]) -> None:
 
 
 NT_HMM_SHADOW_ACCURACY_COLUMNS: frozenset[str] = frozenset({
-    "symbol", "metric", "n", "coverage", "accuracy", "brier_score", "computed_at",
+    "symbol", "metric", "n", "coverage", "accuracy", "brier_score",
+    "base_rate", "skill", "computed_at",
 })
 
 
