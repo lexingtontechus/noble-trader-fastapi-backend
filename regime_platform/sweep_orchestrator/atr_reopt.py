@@ -409,6 +409,13 @@ def apply_symbol_clamps(symbol: str, pick: dict[str, Any]) -> bool:
     return True
 
 
+def _symbol_has_vol_gate(symbol: str) -> bool:
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    cfg = get_dynamic_atr_config(None, symbol)
+    return cfg.get("vol_ratio_max") is not None or cfg.get("vol_ratio_min") is not None
+
+
 async def check_atr_reopt_urgency() -> dict[str, Any]:
     """Unattended vol-urgency: elevated ``vol_ratio`` → **auto-run** free lattice.
 
@@ -499,6 +506,15 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
                 scope = prop.get("scope")
                 pick = prop.get("pick") or {}
                 if not scope or not pick.get("tp"):
+                    continue
+                # Do not clobber a vol-gated cell with a pooled free-lattice
+                # pick (BTC 8.07/1.77 @ vol_ratio≤0.71 vs pooled 6.32/3.17).
+                if scope not in ("forex",) and _symbol_has_vol_gate(scope):
+                    logger.info(
+                        "[atr:urg] skip apply %s — vol_ratio gate present "
+                        "(pooled lattice is not the gated cell)",
+                        scope,
+                    )
                     continue
                 try:
                     if apply_symbol_clamps(scope, pick):

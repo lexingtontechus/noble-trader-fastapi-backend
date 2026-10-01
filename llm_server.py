@@ -113,9 +113,17 @@ async def lifespan(_app: FastAPI):
     from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
     tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=TRUST_REMOTE_CODE)
-    mdl = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, device_map=DEVICE, trust_remote_code=TRUST_REMOTE_CODE
-    )
+    load_kwargs: dict = {"trust_remote_code": TRUST_REMOTE_CODE}
+    # device_map requires `accelerate` — fall back to default placement
+    # (2026-09-30 Studio: transformers raises ValueError without it).
+    try:
+        import accelerate  # noqa: F401
+
+        if DEVICE:
+            load_kwargs["device_map"] = DEVICE
+    except ImportError:
+        log.warning("accelerate not installed — loading without device_map")
+    mdl = AutoModelForCausalLM.from_pretrained(MODEL_ID, **load_kwargs)
     state["tokenizer"] = tok
     state["pipe"] = pipeline(
         "text-generation",
