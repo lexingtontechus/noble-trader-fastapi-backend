@@ -48,12 +48,15 @@ class TestFlag:
         with patch.object(ff, "_load", return_value=cfg):
             assert ff.get_calibration_resolve_hourly_mode() == expected
 
-    def test_yaml_ships_shadow(self):
+    def test_yaml_ships_live(self):
+        """Flipped shadow -> live 2026-09-27 (worklog/20260927_PULSE_ROADMAP_
+        DECISIONS_AND_QUALITY_FORK.md §3 item 1: 'calibration_resolve_hourly
+        -> Flip live'). Asserts the shipped value so a silent revert is caught."""
         from pathlib import Path
 
         import yaml
         cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "feature_flags.yaml").read_text(encoding="utf-8"))
-        assert cfg["calibration_resolve_hourly_mode"] == "shadow"
+        assert cfg["calibration_resolve_hourly_mode"] == "live"
 
 
 # ─── 2. nightly-time helpers ─────────────────────────────────────────────

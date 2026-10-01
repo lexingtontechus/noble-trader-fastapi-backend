@@ -24,6 +24,7 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `20260928_TIMESFM_QUANTILE_CAPTURE.md` | **P1.3:** capture discarded TimesFM `quantile_forecast` (q10/q50/q90 + spread/pos) into `nt_signal_sim` (migration 186). Research stamps only — no gates/Kelly/EV |
 | `20260930_VOL_REGIME_ATR_BTC_XAU.md` | **`vol_ratio` ≠ volume.** 45d vol-tercile ATR solve: XAUUSD **4.94/1.00** pooled; BTCUSD **8.07/1.77** only if `vol_ratio≤0.71`. Crypto trend-runner (far TP, wr≈0.25) is a separate product. Scripts `vol_atr_solver.py` / `vol_atr_diag.py` |
 | `20260930_MONTHLY_ATR_REOPT.md` | Rediscovery clock: APScheduler monthly free lattice (proposal-only). Not Studio cron; heavy sweep stays daily local clamps. Root `test*.py` → `scripts/legacy_tests/` |
+| `reports/20261001_rm1_markov_source_eval.md` | **RM-1 eval** (`markov_source_mode`, review due 10-05): legacy beats trend_hmm on accuracy **13/14** symbols (weighted 0.527 vs 0.319); state disagreement **65.9%** ≈ 3-class random (66.7%) over 63,919 compares — no convergence in 5 weeks. Tier 1/2 gate validated (Brier Δ on **14/14**). Verdict: **do not flip**; disposition of the shadow compare (retire / drop `p_markov_hold_n`) is the open call |
 | `scopes/20260927_P0_HALFLIFE_T2_SCOPE.md` | P0 half-life scope + T2 result |
 | `scopes/20260928_RANK_BOARD_BROADCAST_DISCORD.md` | **Rank board** → nobletradingapp Realtime + Discord: RANK vs p_win vs EV for capital priority |
 | `reports/20260927_halflife_t2.md` | Live T2 event-time half-life report |
