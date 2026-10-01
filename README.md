@@ -14,79 +14,50 @@ chain decides whether it publishes.
 
 ## Pivotal direction — first-passage, not state machines
 
-The platform's central question is:
-
-> **P(price reaches TP before SL | this signal, this bracket, right now)**
-
-Every mechanism below is judged by whether it answers that question better.
+The platform's central question is **P(price reaches TP before SL | this signal,
+this bracket, right now)**. Every mechanism is judged by whether it answers that
+question better.
 
 **The thesis (2026-10-01).** The platform already answers it **exactly**, on the
 actual price path, via `tiered_atr.walk()` — first-touch, direction-signed,
 ATR-scaled, 48-bar expiry, TP-first on a tie. That same machinery selects the
-live TP/SL geometry (`dynamic_atr_pick`) and proposes new clamps monthly. It is
-validated and has no states, no EM, no covariance assumption and no refit
-instability.
+live TP/SL geometry and proposes new clamps monthly, with no states, no EM, no
+covariance assumption and no refit instability.
 
-For most of its life the platform instead answered the question *indirectly*,
-through a 3-state discretisation: `p_markov_hold_n = T^N[current][target]`, a
-matrix power over a separate 5-state Gaussian HMM fit on 9 **unscaled** features.
+For most of its life the platform answered it *indirectly*, through a 3-state
+discretisation (`p_markov_hold_n = T^N[current][target]`) over a separate 5-state
+Gaussian HMM fit on 9 **unscaled** features. On 31,328 decided signals that HMM
+scored **below both trivial baselines** — accuracy 0.5251 vs 0.5655 for "always
+predict the majority direction" and 0.5898 for a shrunk per-symbol base rate
+(skill **−0.0404**; positive on only 5/14 symbols). It was a noisy detour to a
+question the platform answers directly.
 
-**That detour is being removed.** Measured on 31,328 decided signals:
+**Where it stands (2026-10-01).** The detour is withdrawn and the replacement has
+been tested — and **failed its own pre-registered bar**:
 
-| model | accuracy | skill vs baseline |
-|---|---:|---:|
-| legacy 5-state HMM (its own directional calls) | 0.5251 | **−0.0404** |
-| trend_hmm (RegimeHMM-derived) | 0.3230 | −0.2426 |
-| naive "always predict the majority direction" | **0.5655** | — |
-| shrunk per-symbol base rate | **0.5898** | — |
+| | |
+|---|---|
+| `markov_source_mode: legacy_hmm` | the `trend_hmm_shadow` comparison retired (it answered negatively: legacy won 13/14 symbols, 65.9% disagreement vs a 66.7% random baseline) |
+| `p_markov_hold_n_mode: "off"` | source withdrawn from the EV blend; renormalises to `p_regime` 0.5 / `p_timesfm` 0.5 |
+| **first-passage (Phase 2)** | **1/5 bar items pass.** skill **−0.0691** vs the 0.7041 base rate; the D5 regime-transition overlay **subtracts** (ΔD +0.024 vs +0.050); a bracket-blind trailing rate (+0.059) beats it, so the bracket conditioning bought nothing |
 
-The HMM scores **below both trivial baselines** — negative skill, positive on only
-5 of 14 symbols (mean −0.0622). It was a noisy 3-state detour to a question the
-platform answers directly, so on 2026-10-01:
+**The finding is the base rate.** A shrunk per-symbol P(TP\|decided) — 100%
+coverage, zero fitting — is the best-scoring candidate on the table (+0.076 ΔD)
+and now the leading replacement. It is not an exciting model; it is the honest one.
 
-- **`markov_source_mode: legacy_hmm`** — the `trend_hmm_shadow` comparison retired
-  (it had answered negatively: legacy won 13/14 symbols, and the two classifiers
-  disagreed 65.9% of the time against a 66.7% random baseline).
-- **`p_markov_hold_n_mode: "off"`** — the source withdrawn from the EV blend; it
-  renormalises to `p_regime` 0.5 / `p_timesfm` 0.5.
+**Geometry bands are a calibration key, not the candidate.** The (symbol × side ×
+vol_tier × distance/ATR) cell — the same quantisation `_bucket_for` and
+`calibration_enforcement` use for `nt_calibration_records` — is what makes a
+calibrated rate *legible*: it is how you can tell whether a given bracket's
+realised hit rate has drifted. First-passage was tested against it and did not
+beat it; that is a result about the candidate, not a reason to discard the bands.
 
-### What replaces it
+**Still live and validated:** `trend_probs_gate_mode: live` (the Tier 1/2
+magnitude classifier — Brier improved on **14/14** symbols). That is a different
+mechanism from the markov source and is unaffected by this work.
 
-Two mechanisms, composed — **level × timing**:
-
-| | gives | from |
-|---|---|---|
-| **First-passage** | the **level** — P(TP before SL) for the live bracket | `first_passage.py` on `walk()` paths |
-| **Regime transition** | the **timing weight** — how much to trust that level now | `kairos_rank.event_window` × `transition_type` |
-
-The transition half is already proven, not speculative:
-
-- **Freshness** — a regime label is most informative immediately after it flips.
-  `fresh − deep` accuracy excess = **+0.117** [+0.105, +0.129], n=24,768 / 5,188.
-- **Type** — `dir_flip` is the only non-negative transition type (+0.007);
-  `vol_expand` / `vol_contract` are worse than average. Do not pool types.
-- **Surprise** — **rejected** (Spearman 0.004). Rarity of the HMM transition does
-  not rank accuracy; deliberately unused.
-
-So: a signal entering `fresh ∧ dir_flip` carries its first-passage level nearly
-intact; one entering `deep ∧ vol_contract` is damped most of the way back toward
-no-information. Never zero — the level is still evidence.
-
-> **Honest scope of the claim.** `walk()` today answers *"which TP/SL is best?"*
-> (pooled, over a class window, for geometry). First-passage-as-source asks
-> *"what is the probability for this signal's live bracket?"* — a different unit
-> and a different question. It therefore needs its own evaluation and **cannot
-> inherit the geometry work's credibility.** The base-rate result is also a
-> *candidate*, not just a kill shot: any replacement must beat the 0.5898
-> shrunk-base-rate control. That is bar **B1**.
-
-**Status:** first-passage is **offline only** (Phase 1). Nothing in
-`first_passage.py` is imported by the sweep path. Promotion requires clearing the
-pre-registered bar B1–B7, where **B5** (beats `p_regime` + `p_timesfm` alone on
-ΔD) is the real gate — a source can be individually accurate and still add
-nothing to a correlated blend, which is exactly what happened here.
-
-Read: `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` ·
+Read: `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
+`worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` ·
 `docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md` ·
 `worklog/kairos/reports/20261001_rm1_markov_source_eval.md`
 
@@ -133,6 +104,10 @@ Read: `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` ·
 - **Quantile capture (P1.3)** — univariate `/forecast` already returns `quantile_forecast`; orchestrator now stamps **q10/q50/q90**, `q_spread=(q90−q10)/last`, `q_pos` onto `nt_signal_sim` (migration 186). Research stamps only.
 - **Dynamic covariates (P1.1–P1.2)** — TimesFM 2.5 `forecast_with_covariates` (XReg) accepts trend_z / momentum / vol / cluster returns. `timesfm_gap` (p_timesfm − p_win) is the only TimesFM-family feature with stable within-cell IC (+0.037 both halves).
 - **Decision-aligned mapping** — prefer quantile/interval hit under recorded TP–SL brackets over raw sigmoid(`k·Δp`) for a future `p_map` promote; level Brier still led by shrunk `cell_p`.
+
+> **Unreleased changelog (2026-10-01) — the first-passage pivot.** HMM detour
+> retired, replacement tested and failed its own bar. Full entry:
+> `docs/Setup/CHANGELOG.md`.
 
 > **v8.0.0 changelog (2026-09-24…26):** Twin-bar calibration + reachability methodology, settlement contract, dynamic ATR selector (shadow), evidence-pool / hourly resolve. See `docs/Setup/CHANGELOG.md`. Anchors: `pyproject.toml`, `main.py`, both `openapi.yaml`, `tests/test_version_consistency.py`.
 

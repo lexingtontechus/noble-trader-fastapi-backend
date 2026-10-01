@@ -1,3 +1,162 @@
+## [Unreleased] — 2026-10-01
+
+### Major — the first-passage pivot: HMM detour retired, replacement tested and failed
+
+#### The question, and the detour
+
+The platform's central question is **P(price reaches TP before SL | this signal,
+this bracket, right now)**. `tiered_atr.walk()` already answers it **exactly** on
+the actual price path (first-touch, direction-signed, ATR-scaled, 48-bar expiry,
+TP-first on a tie) — and the same machinery selects live geometry and proposes
+monthly clamps.
+
+For most of its life the platform answered it *indirectly*: `p_markov_hold_n =
+T^N[current][target]`, a matrix power over a separate 5-state Gaussian HMM fit on
+9 **unscaled** features. On **31,328 decided signals** that HMM scored **below
+both trivial baselines**:
+
+| model | accuracy | skill vs baseline |
+|---|---:|---:|
+| legacy 5-state HMM (its own directional calls) | 0.5251 | **−0.0404** |
+| trend_hmm (RegimeHMM-derived) | 0.3230 | −0.2426 |
+| naive "always predict the majority direction" | **0.5655** | — |
+| shrunk per-symbol base rate | **0.5898** | — |
+
+Positive skill on only 5/14 symbols (mean −0.0622); FLAT (65% of rows)
+indistinguishable from the base rate; calls mis-mixed (UP 17.6% / DOWN 17.4%
+against a 43.5/56.5 DOWN population). **It was a noisy detour to a question the
+platform answers directly.**
+
+#### RM-1 — the shadow comparison retired
+
+`markov_source_mode: trend_hmm_shadow` → **`legacy_hmm`**. The comparison ran
+2026-08-25 → 2026-10-01 and answered negatively: legacy won accuracy on **13/14**
+symbols (weighted 0.5274 vs 0.3191; USDJPY +0.0007 is a tie), and state
+disagreement was **65.9%** over 63,919 compares against a **66.7%** 3-class random
+baseline — two independent random classifiers, no convergence in 5 weeks. The
+`trend_hmm_shadow` / `trend_hmm_live` code paths are left in place (dormant); a
+re-evaluation needs only a YAML edit.
+
+#### `p_markov_hold_n` withdrawn from the EV blend
+
+New flag **`p_markov_hold_n_mode: "off"`**. The sweep passes no
+`transition_matrix` / `current_state` / `p_markov_override` to `compute_ev()`, so
+the engine's existing missing-source renormalisation drops the source — the blend
+becomes **`p_regime` 0.5 / `p_timesfm` 0.5**. `P_WIN_WEIGHTS_FULL` keeps its 5:4:5
+relative weights, so flipping back to `"live"` restores the prior blend exactly,
+with no migration.
+
+> **The legacy HmmModel is deliberately NOT deleted.** It still fits each tick and
+> feeds the TA buffer + `nt_sweep_result`'s legacy `markov_p_up` / `markov_p_dn`
+> columns, which the research programme measures against. See the retirement
+> impact section below.
+
+#### Phase 1 — the instruments
+
+- **Skill diagnostic.** `compute_tier1_accuracy` now returns `base_rate` (the
+  symbol's own majority-direction share over ALL decided rows) and
+  **`skill = accuracy − base_rate`** — the number that made the failure legible.
+  Persisted via **migration 191** (2 nullable columns on `nt_hmm_shadow_accuracy`).
+  Validated against live data: the shipped function reproduces mean legacy skill
+  **−0.0622**, positive on 5/14, matching the hand-rolled analysis exactly.
+- **`first_passage.py`** (new, pure, no I/O). P(TP before SL) over direction-signed
+  ATR-scaled paths, reusing `walk()`'s first-touch rule so a probability computed
+  here and a grid picked there can never disagree about what "hit" means. Expired
+  paths excluded from the denominator and reported separately. Plus the D5 overlay:
+  `carry = floor + (ceiling − floor) × √(freshness × type)`, reusing the
+  Kairos-proven primitives verbatim (surprise stays rejected, Spearman 0.004).
+  **Offline only** — nothing imported by the sweep path.
+
+#### Phase 2 — the result: 1/5 bar items pass
+
+`fp_eval.py` + `scripts/kairos_fp_eval.py`, on 6,904 decided light episodes (45d,
+one closed 48-bar path per signal, episode-deduped):
+
+| bar | requirement | result | detail |
+|---|---|---|---|
+| B1 | beat the base-rate control | **FAIL** | skill **−0.0691** vs base rate 0.7041 |
+| B2 | coverage ≥ 0.30 | **PASS** | 0.9968 |
+| B3 | positive skill ≥ 2/3 of symbols | **FAIL** | 3/14 |
+| B4 | holds in both era halves | **FAIL** | wrong-signed in the first half |
+| B5 | overlay adds skill | **FAIL** | **ΔD +0.0236 vs bare +0.0502 (Δ −0.0265)** |
+
+**The decisive reading:** a **bracket-blind** trailing per-symbol base rate scores
+ΔD **+0.059** — *above* first-passage's +0.050. The bracket conditioning bought
+nothing; the arm is a momentum read. And the trivial base-rate arm (+0.076 ΔD,
+100% coverage, zero fitting) is now the **best-scoring candidate on the table**.
+
+**The D5 overlay subtracts** (Δ −0.0265). A real finding, not a null: the
+freshness/type prior is genuinely supported on regime-*label* accuracy (+0.117),
+but does not transfer to a first-passage *level*.
+
+#### Three bugs caught in the build
+
+Each would have produced a confident wrong answer:
+
+1. **Look-ahead** — the first cut scored each signal on its own path. With one path
+   per signal that is a binary outcome, not a probability (~1.0 by construction).
+   Rebuilt as a walk-forward trailing rate (score first, append the label after).
+2. **A silent parser failure** — `split_cell` was hand-rolled against a `vol|dir`
+   format the raw label never uses (`med_high_vol_strong_bull`), so every `ewin`
+   was `None` and the overlay was a **no-op that still reported as measured**
+   (Δ exactly +0.0000). Now delegates to `kairos.regime_cell`, with a regression test.
+3. **A metric blind to the change** — B5 was first scored on sign-accuracy, but
+   shrinking toward 0.5 *preserves the sign*, so accuracy could never see the
+   overlay. Moved to ΔD, which sees ranking. That turned a fake `+0.0000` into the
+   real `−0.0265`.
+
+Plus the honest floor: `trailing_base_rate`, bracket-blind, so a geometry-aware arm
+cannot claim credit for momentum.
+
+#### What this does and does not change
+
+**Unchanged:** `trend_probs_gate_mode: live` (Tier 1/2 magnitude classifier, Brier
+improved on 14/14 symbols) — a different mechanism from the markov source.
+`p_regime`, Kelly, geometry, the 7 gates, calibration enforcement, and all
+`distance_atr_bucket` calibration bands.
+
+**Killed:** option E as specified, and the D5 overlay in its current form.
+
+**Survives:** the §2.4 thesis (the HMM still scores below the naive baseline; the
+D1/D2 retirement is unaffected — nothing here argues for turning the HMM back on).
+
+**Decision requested** (kill criteria met, 3 weeks early): take option F (retire
+the HMM permanently, ship the calibrated base rate), one time-boxed retry
+(drop the overlay; condition the level on the regime **cell**), or bank the finding.
+
+#### Retirement impact (what option F actually touches)
+
+| mechanism | coupling | risk if the HMM is deleted |
+|---|---|---|
+| `p_regime` (EV blend) | **none** — `RegimeHMM` (`regime_engine.py`), a different model | none |
+| regime labelling | **none** — 4-state `RegimeHMM` | none |
+| `trend_probs_gate_mode: live` | **none** | none |
+| `nt_sweep_result.markov_p_up` / `markov_p_dn` / `_current_state` / `_transition_matrix` | legacy HMM | **break** — columns go null; **no live consumer** (supabase `functions/` is deprecated, the agent ignores them), but they are the incumbent arm's capture |
+| `nt_signal_sim.legacy_markov_state` | legacy HMM | **break** — the `skill` diagnostic and the Phase-2 incumbent arm lose their input |
+| `nt_regime_log.ta_*` | **FeatureBuffer + `hmm_ta_fetcher`** | **must keep** — not part of the HMM |
+| `nt_signal_sim.spread_bps` (Kairos stamp) | **`hmm_quote_fetcher.spread_bps_by_symbol()`** | **must keep** — `quote_fetcher` also feeds FeatureBuffer indices 1–3, so it cannot simply go with the model |
+
+**Minimum correct F** deletes `model.py` only (the fit + `emit_markov`), and keeps
+`feature_buffer.py`, `quote_fetcher.py`, `ta_fetcher.py`, `ta_extract.py` — they
+serve `nt_regime_log.ta_*` and the Kairos `spread_bps` stamp independently of the
+model. That also preserves the capture the diagnostic reads.
+
+#### Version anchors
+
+`pyproject.toml`, `main.py`, `docs/openapi.yaml`, `docs/Setup/openapi.yaml`,
+`tests/test_version_consistency.py` — **no bump** (8.2.0 stands; flag + additive
+column + offline research only).
+
+#### Worklogs
+
+`worklog/kairos/reports/20261001_rm1_markov_source_eval.md` ·
+`docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md` ·
+`worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` ·
+`worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
+`worklog/kairos/reports/20261001_fp_eval.md`
+
+---
+
 ## [8.2.0] - 2026-09-30
 
 ### Major — per-symbol vol-regime geometry + unattended ATR re-opt
