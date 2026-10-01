@@ -56,6 +56,7 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `worklog/kairos/reports/20261001_rm1_markov_source_eval.md` | **RM-1 eval**: legacy HMM beats trend_hmm 13/14 symbols; 65.9% disagreement ≈ random; Tier 1/2 gate validated. Do not flip |
 || `docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md` | Legacy HMM skill measurement (**below** naive baseline: 0.525 vs 0.5655); options A–F; **E agreed** (first-passage replaces the HMM) |
 || `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` | HMM → first-passage + regime-transition reinforcement. **Phase 1 built** (`first_passage.py`, `skill` metric, migration 191). 4-phase plan, bar B1–B7, kill → option F by 2026-11-01 |
+|| `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` | **Phase 2 RESULT — 1/5 bar items pass.** First-passage skill **−0.0691** (below the 0.7041 base rate); the D5 overlay **subtracts** (ΔD +0.024 vs bare +0.050); a bracket-blind base rate (+0.059) beats it, so geometry bought nothing. Kill criteria met → decision requested |
 || `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |
