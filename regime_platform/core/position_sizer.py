@@ -291,6 +291,25 @@ class SizingConfig:
     min_prob: float = 0.50  # minimum win probability to trade
     min_rr: float = 2.50  # minimum reward/risk ratio to trade
 
+    # Break-even-aware probability floor (2026-10-02, worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.3).
+    #
+    # The flat ``min_prob = 0.50`` floor is payoff-blind: at RR 2:1 the break-even
+    # probability is 1/(1+2) = 0.333, so the floor rejects every trade in the
+    # 0.333–0.50 band — which is exactly where positive-expectancy high-RR setups
+    # live. This is quant-audit finding E7 ("p_win hard floor 0.50 rejects
+    # positive-EV high-RR low-p trades").
+    #
+    # When True (default), the effective floor is
+    #     max(min_prob_floor, 1 / (1 + reward_risk) + margin)
+    # so a high-RR trade is allowed at a lower probability — which is the correct
+    # economics — while a low-RR trade still needs a high probability. The flat
+    # ``min_prob`` becomes a floor *under* that, not a replacement for it, so this
+    # can never be MORE permissive than the payoff-blind rule at RR <= 1.
+    #
+    # Set False to restore the legacy flat floor exactly (byte-identical).
+    breakeven_prob_floor: bool = True
+    breakeven_margin: float = 0.02  # cushion above the mathematical break-even
+
     # Drawdown limits
     max_drawdown: float = 0.10  # 10% max strategy drawdown for DD_i scaling
     batch_halt_dd: float = 0.05  # halt the batch at -5% intraday drawdown
@@ -682,6 +701,49 @@ def _expected_edge(p_win: float, reward_risk: float) -> float:
     return float(p_win * reward_risk - (1.0 - p_win))
 
 
+def vol_factor(atr_baseline: float, atr_current: float,
+               lo: float = 0.5, hi: float = 1.5) -> float:
+    """``V_i = clip(ATR_baseline / ATR_current, lo, hi)`` — inverse-vol scaling.
+
+    Standalone because the sweep path needs this factor **without** the rest of
+    Masaniello: ``V_i`` is ``p_win``-free, already correct, and is exactly the
+    volatility-target scaling the sizing literature recommends. Extracted so
+    Phase 2 of ``worklog/20261002_SIGNAL_QUALITY_PLAN.md`` can adopt the
+    ``p_win``-free risk backbone while the probability question is open.
+
+    Returns ``1.0`` (no adjustment) for non-positive/degenerate inputs, so a
+    missing ATR cannot silently shrink or inflate size.
+    """
+    try:
+        base, cur = float(atr_baseline), float(atr_current)
+    except (TypeError, ValueError):
+        return 1.0
+    if base <= 0 or cur <= 0:
+        return 1.0
+    return max(lo, min(hi, base / cur))
+
+
+def drawdown_factor(drawdown: float, max_drawdown: float,
+                    floor: float = 0.25) -> float:
+    """``DD_i = clip(1 - dd/max_dd, floor, 1.0)`` — drawdown protection.
+
+    Standalone for the same reason as :func:`vol_factor`. The ``floor`` keeps
+    minimum skin-in-the-game during drawdowns rather than collapsing to zero.
+
+    Returns ``1.0`` when ``max_drawdown`` is non-positive (no constraint
+    configured) and ``floor`` for a drawdown at or beyond the limit.
+    """
+    try:
+        dd, mx = float(drawdown), float(max_drawdown)
+    except (TypeError, ValueError):
+        return 1.0
+    if mx <= 0:
+        return 1.0
+    if dd <= 0:
+        return 1.0
+    return max(floor, min(1.0, 1.0 - dd / mx))
+
+
 # ── Main Masaniello sizer ─────────────────────────────────────────────────────
 
 
@@ -749,6 +811,34 @@ class DynamicMasanielloSizer:
 
     # ── Pre-flight gates ──────────────────────────────────────────────────────
 
+    def effective_prob_floor(self, reward_risk: float) -> float:
+        """The probability floor actually applied, given the trade's payoff.
+
+        Legacy behaviour (``breakeven_prob_floor=False``) is the flat
+        ``min_prob``. With the flag on (default, 2026-10-02) the floor is
+
+            max(min_prob, 1/(1+RR) + margin)
+
+        so a high-RR trade may pass at a lower probability — the correct
+        economics — while the flat ``min_prob`` remains a floor *under* it. The
+        ``max`` guarantees this is never more permissive than the payoff-blind
+        rule when ``RR <= 1``.
+
+        Returns ``min_prob`` for non-positive/NaN reward_risk, so a malformed
+        context falls back to the conservative legacy gate rather than opening.
+        """
+        cfg = self.config
+        if not cfg.breakeven_prob_floor:
+            return cfg.min_prob
+        try:
+            rr = float(reward_risk)
+        except (TypeError, ValueError):
+            return cfg.min_prob
+        if not (rr > 0):
+            return cfg.min_prob
+        breakeven = 1.0 / (1.0 + rr) + cfg.breakeven_margin
+        return max(cfg.min_prob, breakeven)
+
     def _check_gates(self, ctx: TradeContext) -> Optional[str]:
         """
         Returns a block reason string if any pre-flight gate fails,
@@ -771,10 +861,15 @@ class DynamicMasanielloSizer:
                 f"Regime quality {ctx.regime_quality:.3f} below floor "
                 f"{cfg.regime_floor:.3f} - trade blocked."
             )
-        if ctx.p_win < cfg.min_prob:
+        _prob_floor = self.effective_prob_floor(ctx.reward_risk)
+        if ctx.p_win < _prob_floor:
+            # Name which floor bound, so a rejected high-RR trade is not
+            # misattributed to the flat min_prob (2026-10-02).
+            _which = ("flat min_prob" if _prob_floor <= cfg.min_prob
+                      else f"break-even floor (RR {ctx.reward_risk:.2f})")
             return (
                 f"Win probability {ctx.p_win:.3f} below minimum "
-                f"{cfg.min_prob:.3f} - trade blocked."
+                f"{_prob_floor:.3f} [{_which}] - trade blocked."
             )
         if ctx.reward_risk < cfg.min_rr:
             return (

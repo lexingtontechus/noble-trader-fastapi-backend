@@ -37,6 +37,7 @@ from regime_platform.core.feature_flags import (
     get_macro_forecast_agent_enabled,
     get_markov_source_mode,
     get_p_markov_hold_n_mode,
+    get_ev_scale_sizing_mode,
     get_min_ev,
     get_min_kelly,
     get_min_p_win,
@@ -3857,7 +3858,16 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
-        effective_kelly = kelly_f * ev_result.ev_scale
+        #
+        # ev_scale_sizing_mode (2026-10-02, worklog/20261002_SIGNAL_QUALITY_PLAN.md
+        # §3.2): "off" drops the ev_scale factor so size = kelly_f × 1.0.
+        # ev_scale is a function of p_win, which measures at bracket AUC 0.4869
+        # with REL 0.0616 vs RES 0.0008 — sizing on a below-chance quantity is
+        # worse than not sizing on it. Default "on" is byte-identical to the
+        # pre-flag behaviour. ev_scale is still COMPUTED and stamped either way
+        # (it is a published diagnostic); only its multiplication is gated.
+        _ev_scale_sizing = get_ev_scale_sizing_mode() != "off"
+        effective_kelly = kelly_f * (ev_result.ev_scale if _ev_scale_sizing else 1.0)
 
         # ── 5a. Qualification gates ──
         # Only a qualified signal is sent to Discord / persisted as actionable.
@@ -3968,7 +3978,7 @@ class SweepOrchestrator(HeavySweepMixin):
             ev_result = effective_ev_result
             # Recompute effective_kelly with the adjusted ev_scale.
             # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
-            effective_kelly = kelly_f * ev_result.ev_scale
+            effective_kelly = kelly_f * (ev_result.ev_scale if _ev_scale_sizing else 1.0)
 
         # ── 5b. EOD calibration enforcement (live consumer) ────────────
         # The EOD self-correction pass (daily 00:30) writes nt_eod_actions

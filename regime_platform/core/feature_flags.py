@@ -50,6 +50,20 @@ _DEFAULTS: dict[str, Any] = {
     # restores the source to the blend; it must clear the re-entry bar in
     # that programme first (see the RM-1 evaluation's §6/§7).
     "p_markov_hold_n_mode": "off",
+    # on | off — does ev_scale multiply position size in the sweep path?
+    # "on" (shipped default, byte-identical to pre-flag behaviour).
+    # "off" (2026-10-02, worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.2): drops
+    # the ev_scale factor from effective_kelly, so size becomes
+    # kelly_f x 1.0. ev_scale is min(1, ev_per_dollar/0.50), a function of
+    # p_win — and p_win measured at bracket AUC 0.4869 with REL 0.0616 vs
+    # RES 0.0008 (negative skill, overconfident). Sizing on a quantity with
+    # below-chance discrimination is worse than not sizing on it. The
+    # withdrawal is NOT neutral: removing the p_markov source alone moved
+    # mean ev_scale 0.5576 -> 0.8403 and took 23% of signals from unsized to
+    # sized (kairos/reports/20261002_leverage_eval.md). Restore to "on" only
+    # when a calibrated probability replaces p_win in ev_scale
+    # (20261002_SIGNAL_QUALITY_PLAN.md Phase 3).
+    "ev_scale_sizing_mode": "on",
     "markov_flat_gate_threshold_stds": 0.5,
     "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
@@ -282,6 +296,29 @@ def get_p_markov_hold_n_mode() -> str:
         _load().get("p_markov_hold_n_mode", _DEFAULTS["p_markov_hold_n_mode"])
     ).lower()
     return "live" if raw == "live" else "off"
+
+
+def get_ev_scale_sizing_mode() -> str:
+    """``on`` | ``off`` — does ``ev_scale`` multiply position size?
+
+    ``on`` (shipped default) keeps ``effective_kelly = kelly_f × ev_scale``.
+    ``off`` (2026-10-02) makes it ``kelly_f × 1.0``, decoupling size from
+    ``p_win`` — see ``_DEFAULTS["ev_scale_sizing_mode"]`` for the rationale
+    and ``worklog/20261002_SIGNAL_QUALITY_PLAN.md`` §3.2.
+
+    Anything other than an explicit ``off`` is treated as ``on``, so a typo
+    cannot silently change position sizing.
+
+    **YAML booleans are handled explicitly.** An unquoted ``off`` in YAML 1.1
+    parses as the boolean ``False``, whose ``str()`` is ``"false"`` — which
+    would resolve to ``"on"``, the opposite of what the author wrote. Mapping
+    the booleans directly avoids that footgun (the file still quotes the value,
+    but this makes an unquoted one harmless rather than misleading).
+    """
+    raw = _load().get("ev_scale_sizing_mode", _DEFAULTS["ev_scale_sizing_mode"])
+    if isinstance(raw, bool):
+        return "on" if raw else "off"
+    return "off" if str(raw).lower() == "off" else "on"
 
 
 def get_markov_flat_gate_threshold_stds() -> float:

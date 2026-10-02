@@ -227,6 +227,28 @@ markov_source_mode: legacy_hmm
 # read as a boolean to every other consumer, including a reviewer).
 p_markov_hold_n_mode: "off"
 
+# ev_scale_sizing_mode (2026-10-02; worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.2).
+# on | off — does ev_scale multiply position size in the sweep path?
+#
+# "on" (shipped default) keeps effective_kelly = kelly_f × ev_scale, unchanged.
+#
+# "off" drops the ev_scale factor, so size becomes kelly_f × 1.0. Rationale:
+# ev_scale = min(1, ev_per_dollar / 0.50) is a function of p_win, and p_win
+# measures at bracket AUC 0.4869 with REL 0.0616 vs RES 0.0008 — below-chance
+# discrimination, overconfident (worklog/kairos/reports/20261002_calibration_decomp.md).
+# Multiplying position size by a quantity with negative skill is worse than not
+# using it.
+#
+# The change is NOT sizing-neutral. Removing the p_markov source from the blend
+# alone moved mean ev_scale 0.5576 → 0.8403 and took 23.05% of signals from
+# unsized (ev_scale = 0) to sized (kairos/reports/20261002_leverage_eval.md).
+# Flipping this to "off" removes that whole lever in the other direction.
+#
+# Restore to "on" only when a calibrated probability replaces p_win inside
+# ev_scale (20261002_SIGNAL_QUALITY_PLAN.md Phase 3). Quoted deliberately —
+# unquoted `on`/`off` are parsed by YAML 1.1 as booleans, not strings.
+ev_scale_sizing_mode: "on"
+
 # Root-cause classifier (2026-08-28, worklog same as above) — powers
 # BOTH RegimeHMM.trend_transition_matrix_3state() (Tier 1, gates
 # markov_source_mode) and RegimeHMM.gated_trend_probs() (Tier 2, gates
