@@ -2152,6 +2152,7 @@ def _decay_weighted_episode_stats(
 
 
 TIERED_CALIBRATION_VIEW = "v_calibration_records_tiered"  # migration 171
+CUTOVER_CALIBRATION_VIEW = "v_calibration_records_current"  # migration 192
 _EVIDENCE_TIERS = frozenset({"qualified", "suppressed", "gate_fail", "unknown"})
 
 
@@ -2165,6 +2166,36 @@ def _apply_evidence_tiers(params: dict[str, str], tiers: tuple[str, ...] | None)
     if not clean:
         raise ValueError(f"evidence_tiers has no valid tier: {tiers!r}")
     params["evidence_tier"] = f"in.({','.join(clean)})"
+
+
+def _calibration_read_table(tiers: tuple[str, ...] | None = None) -> str:
+    """Which relation the bias readers should query.
+
+    Four cases, and the precedence matters:
+
+      tiers + cutover_mode on   -> ``v_calibration_records_tiered``
+      tiers + cutover_mode off  -> ``v_calibration_records_tiered`` (still the
+                                   tiered view; the flag only governs the cutover
+                                   predicate, which the view applies when a
+                                   cutover row exists)
+      no tiers + cutover_mode on -> ``v_calibration_records_current``
+      no tiers + cutover_mode off -> ``nt_calibration_records`` (base table)
+
+    Both views are inert while ``nt_calibration_cutover`` is empty, so flipping
+    the flag without setting a timestamp changes nothing — which is why the flag
+    can ship "on" alongside the basis flip without a coordination window.
+    """
+    if tiers:
+        return TIERED_CALIBRATION_VIEW
+    try:
+        from regime_platform.core.feature_flags import get_calibration_cutover_mode
+        if get_calibration_cutover_mode() == "off":
+            return "nt_calibration_records"
+    except Exception:
+        # Fail closed to the base table: an unreadable flag must not silently
+        # start filtering evidence.
+        return "nt_calibration_records"
+    return CUTOVER_CALIBRATION_VIEW
 
 
 async def fetch_calibration_bias(
@@ -2236,14 +2267,12 @@ async def fetch_calibration_bias(
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
     min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
-    url = _url("nt_calibration_records")
+    url = _url(_calibration_read_table(evidence_tiers))
     params = {
         "select": "predicted_p_win,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
     _apply_evidence_tiers(params, evidence_tiers)
-    if evidence_tiers:
-        url = _url(TIERED_CALIBRATION_VIEW)
     if venue:
         params["venue"] = f"eq.{venue}"
     if win_days and win_days > 0:
@@ -2354,14 +2383,12 @@ async def fetch_calibration_bias_raw(
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
     min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
-    url = _url("nt_calibration_records")
+    url = _url(_calibration_read_table(evidence_tiers))
     params = {
         "select": "predicted_p_win,predicted_p_win_raw,outcome,entered_at,closed_at",
         "symbol": f"eq.{symbol}",
     }
     _apply_evidence_tiers(params, evidence_tiers)
-    if evidence_tiers:
-        url = _url(TIERED_CALIBRATION_VIEW)
     if venue:
         params["venue"] = f"eq.{venue}"
     if win_days and win_days > 0:

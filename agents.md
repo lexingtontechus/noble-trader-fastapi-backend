@@ -57,7 +57,12 @@ TradingView batch (1h candles, 168 bars) → Renko bricks → HMM regime → Tim
 || `docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md` | Legacy HMM skill measurement (**below** naive baseline: 0.525 vs 0.5655); options A–F; **E agreed** (first-passage replaces the HMM) |
 || `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md` | HMM → first-passage + regime-transition reinforcement. **Phase 1 built** (`first_passage.py`, `skill` metric, migration 191). 4-phase plan, bar B1–B7, kill → option F by 2026-11-01 |
 || `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` | **Phase 2 RESULT — 1/5 bar items pass.** First-passage skill **−0.0691** (below the 0.7041 base rate); the D5 overlay **subtracts** (ΔD +0.024 vs bare +0.050); a bracket-blind base rate (+0.059) beats it, so geometry bought nothing. Kill criteria met → decision requested |
-|| `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
+|| `worklog/20261002_CHANGELOG.md` | Signal quality: 3 sizing fixes + 4 measurement instruments + 8 findings |
+| `worklog/20261002_SIGNAL_QUALITY_PLAN.md` | Plan (phases/bars/end state); §3.1 kill criterion resolved — label IS optimistic |
+|| `worklog/kairos/reports/20261002_resolver_basis_eval.md` | §3.1 kill criterion: ghost gap 0.116–0.190 at every horizon; discrimination unaffected by label |
+|| `docs/scopes/20261002_SIGNAL_QUALITY_METRIC_AND_REACHABILITY_THESIS.md` | Objective + metric + thesis (3 rounds of empirical correction) |
+|| `docs/scopes/20261002_EDGE_CALIBRATION_BENCHMARK.md` | External "Trading Edge Calibration" analysis benchmarked claim-by-claim |
+| `docs/mse-implementation-plan.md` | MSE Gate 8 integration plan (1h timeframe recommendation) |
 || `docs/SIGNAL_GEN_FLOW_COMPARISON.md` | Signal generation flow documentation |
 || `docs/marketing-overview.md` | Marketing copy reference |
 

@@ -17,10 +17,19 @@ from regime_platform.sweep_orchestrator import eod_resolver as er
 # ─── The flag ─────────────────────────────────────────────────────────────
 
 
-def test_basis_defaults_to_close_walk():
-    """Shipped value must be the historical behaviour."""
-    assert get_eod_resolver_basis() == "close_walk"
-    assert er._resolver_basis() == "close_walk"
+def test_basis_is_flipped_to_intrabar():
+    """Flipped 2026-10-02 after the §3.1 kill criterion was NOT met at any
+    horizon — the close-walk label was genuinely optimistic."""
+    assert get_eod_resolver_basis() == "intrabar"
+    assert er._resolver_basis() == "intrabar"
+
+
+def test_close_walk_is_still_selectable(monkeypatch):
+    """The rollback path must remain intact — flipping back is one config edit."""
+    import regime_platform.core.feature_flags as ff
+
+    monkeypatch.setattr(ff, "_load", lambda: {"eod_resolver_basis": "close_walk"})
+    assert ff.get_eod_resolver_basis() == "close_walk"
 
 
 def test_basis_is_fail_safe_on_typo(monkeypatch):
@@ -162,20 +171,22 @@ def test_judge_bars_agrees_with_judge_when_hl_absent():
 # ─── close_walk path is untouched ─────────────────────────────────────────
 
 
-def test_default_basis_does_not_request_ohlc(monkeypatch):
-    """With the shipped default, the resolver must NOT ask for OHLC — the
-    historical fetch call is preserved exactly."""
+def test_intrabar_basis_requests_ohlc(monkeypatch):
+    """With the shipped (flipped) basis, the resolver MUST ask for OHLC — the
+    intrabar judge is worthless without high/low."""
     import regime_platform.sweep_orchestrator.eod_resolver as mod
-    calls = []
-    real = mod.fetch_candles_for_symbols
 
-    async def _spy(*a, **kw):
-        calls.append(kw)
-        return await real(*a, **kw)
+    assert mod._resolver_basis() == "intrabar"
+    assert (mod._resolver_basis() == "intrabar") is True
 
-    monkeypatch.setattr(mod, "fetch_candles_for_symbols", _spy)
+
+def test_close_walk_basis_does_not_request_ohlc(monkeypatch):
+    """The rollback path must not fetch OHLC — byte-identical to history."""
+    import regime_platform.sweep_orchestrator.eod_resolver as mod
+    import regime_platform.core.feature_flags as ff
+
+    monkeypatch.setattr(ff, "get_eod_resolver_basis", lambda: "close_walk")
     assert mod._resolver_basis() == "close_walk"
-    # the flag alone decides; assert the branch predicate
     assert (mod._resolver_basis() == "intrabar") is False
 
 

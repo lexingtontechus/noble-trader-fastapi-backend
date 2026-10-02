@@ -919,6 +919,11 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
     summary: dict[str, Any] = {
         "resolved": 0, "by_outcome": {}, "windowed_out": 0, "errors": 0,
         "batches": 0, "insufficient_bars": 0,
+        # intrabar_fallback (2026-10-02): signals judged by the CLOSE-WALK while
+        # eod_resolver_basis=intrabar, because OHLC was unavailable for their
+        # symbol. Non-zero means those rows carry the OLD basis, so a systematic
+        # shortfall would silently mix labels — hence it is counted, not hidden.
+        "intrabar_fallback": 0,
     }
     if not settings.SUPABASE_URL:
         logger.warning("eod_resolver: Supabase not configured — nothing to resolve")
@@ -1016,15 +1021,22 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
 
         # Basis (2026-10-02, worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.1):
         # "intrabar" fetches OHLC as well and judges on high/low; "close_walk"
-        # (default) is byte-identical to the historical behaviour.
+        # is byte-identical to the historical behaviour.
         _basis_intrabar = _resolver_basis() == "intrabar"
         _ohlcv_out: dict[str, list[dict[str, Any]]] = {}
         try:
             if _basis_intrabar:
-                candles_by_symbol, _ohlcv_out = await fetch_candles_for_symbols(
+                _res = await fetch_candles_for_symbols(
                     symbol_specs, n_bars=LIGHT_BARS, interval=INTERVAL,
                     ohlcv_out=_ohlcv_out,
                 )
+                # Defensive: accept either the (closes, ohlcv) tuple or a bare
+                # closes dict. A caller/mock that ignores ohlcv_out must not
+                # crash the resolve pass — it degrades to closes-only below.
+                if isinstance(_res, tuple):
+                    candles_by_symbol, _ohlcv_out = _res
+                else:
+                    candles_by_symbol = _res
             else:
                 candles_by_symbol = await fetch_candles_for_symbols(
                     symbol_specs, n_bars=LIGHT_BARS, interval=INTERVAL,
@@ -1061,10 +1073,17 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
                         _bars = anchor_post_entry_bars(
                             _ohlcv_out.get(symbol) or [], sig.get("ts"), fetch_ts,
                         )
-                        if not _bars:
-                            summary["windowed_out"] += 1
-                            continue
-                        outcome = await _resolve_one_bars(sig, _bars)
+                        if _bars:
+                            outcome = await _resolve_one_bars(sig, _bars)
+                        else:
+                            # OHLC unavailable for this symbol (partial response,
+                            # or a caller that ignored ohlcv_out). Fall back to
+                            # the close-walk for this signal rather than
+                            # silently dropping it — and count it, so a
+                            # systematic shortfall is visible rather than
+                            # looking like a quiet data gap.
+                            summary["intrabar_fallback"] += 1
+                            outcome = await _resolve_one(sig, post)
                     else:
                         outcome = await _resolve_one(sig, post)
                     if outcome is None:
@@ -1219,9 +1238,15 @@ async def dry_run_pending_signals(
     try:
         if _resolver_basis() == "intrabar":
             _dry_ohlcv: dict[str, list[dict[str, Any]]] = {}
-            candles, _dry_ohlcv = await fetch_candles_for_symbols(
+            _dres = await fetch_candles_for_symbols(
                 specs, n_bars=LIGHT_BARS, interval=INTERVAL, ohlcv_out=_dry_ohlcv,
             ) if specs else ({}, {})
+            # Same defensive unpack as the writing resolver: accept either the
+            # (closes, ohlcv) tuple or a bare closes dict.
+            if isinstance(_dres, tuple):
+                candles, _dry_ohlcv = _dres
+            else:
+                candles = _dres
         else:
             candles = await fetch_candles_for_symbols(specs, n_bars=LIGHT_BARS, interval=INTERVAL) if specs else {}
             _dry_ohlcv = {}
@@ -1246,10 +1271,10 @@ async def dry_run_pending_signals(
                 _b = anchor_post_entry_bars(
                     _dry_ohlcv.get(symbol) or [], sig.get("ts"), now,
                 )
-                if not _b:
-                    out["windowed_out"] += 1
-                    continue
-                verdict, _ = _judge_bars(sig, _b)
+                # Same fallback as the writing resolver: no OHLC -> judge on
+                # closes rather than dropping the signal, so the dry run's counts
+                # stay comparable to what the writing pass would do.
+                verdict, _ = _judge_bars(sig, _b) if _b else _judge(sig, post)
             else:
                 verdict, _ = _judge(sig, post)
             if verdict is None:

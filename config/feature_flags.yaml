@@ -270,7 +270,37 @@ ev_scale_sizing_mode: "on"
 #
 # Same-bar both-touched resolves sl_first (conservative, matches live) and is
 # reported as "ambiguous" by the resolver. Quoted deliberately.
-eod_resolver_basis: "close_walk"
+#
+# FLIPPED TO "intrabar" 2026-10-02. The §3.1 kill criterion was run FIRST and NOT
+# met at any horizon (ghost gap 0.116-0.190 across 4h/24h/48h), so the close-walk
+# label was genuinely optimistic. Because the flip re-labels history, this must
+# ship WITH a cutover timestamp (see calibration_cutover_mode below) or the
+# calibration loop mixes two bases.
+eod_resolver_basis: "intrabar"
+
+# calibration_cutover_mode (2026-10-02; migration 192).
+# on | off — restrict calibration reads to post-cutover evidence.
+#
+# "on" (shipped with the basis flip): the bias readers query
+# v_calibration_records_current instead of nt_calibration_records, so records
+# labelled under the OLD close_walk basis are excluded from bias / Brier /
+# enforcement. Calibration restarts fresh and accrues clean evidence forward.
+#
+# BOTH views are INERT while nt_calibration_cutover is empty — they pass every
+# row. So this flag can ship "on" safely; it only starts filtering once an
+# operator sets the timestamp:
+#
+#   INSERT INTO nt_calibration_cutover (id, cutover_at, basis, note)
+#   VALUES (1, now(), 'intrabar', 'eod_resolver_basis flip')
+#   ON CONFLICT (id) DO UPDATE SET cutover_at = EXCLUDED.cutover_at;
+#
+# Pre-cutover rows are EXCLUDED, never deleted — they remain the historical
+# record of what the close-walk basis produced, which the before/after
+# comparison needs.
+#
+# Fail-safe: anything that is not an explicit "off" resolves to "on", because the
+# safe direction here is to exclude stale-basis evidence rather than include it.
+calibration_cutover_mode: "on"
 
 # Root-cause classifier (2026-08-28, worklog same as above) — powers
 # BOTH RegimeHMM.trend_transition_matrix_3state() (Tier 1, gates

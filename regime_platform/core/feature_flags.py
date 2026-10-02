@@ -77,9 +77,23 @@ _DEFAULTS: dict[str, Any] = {
     # Changing this CHANGES OUTCOME SEMANTICS: it re-labels tp_hit/sl_hit on
     # every future resolution, and the survivor base rate measured at 0.1186
     # against the close-walk (vs 0.2805 bracket) is expected to move again.
-    # Never flip without re-running the §3.1 kill criterion. Same-bar
-    # both-touched resolves sl_first (conservative, matches live).
-    "eod_resolver_basis": "close_walk",
+    # FLIPPED TO "intrabar" 2026-10-02. The §3.1 kill criterion was run FIRST
+    # and NOT met at any horizon (ghost gap 0.116-0.190 across 4h/24h/48h), so
+    # the close-walk label was genuinely optimistic, not a measurement artefact.
+    # Because the flip re-labels history, `calibration_cutover_mode` below must
+    # be on AND the cutover timestamp set (migration 192) — otherwise the
+    # calibration loop mixes two bases and every bias number is meaningless.
+    "eod_resolver_basis": "intrabar",
+    # on | off — restrict calibration reads to post-cutover evidence.
+    # "on" (shipped 2026-10-02 with the basis flip): fetch_calibration_bias /
+    # fetch_calibration_bias_raw read `v_calibration_records_current` (migration
+    # 192) instead of the base table, so records labelled under the OLD
+    # close_walk basis are excluded from bias / Brier / enforcement.
+    # The view returns ALL rows when nt_calibration_cutover is empty, so this is
+    # inert until an operator sets the cutover timestamp — flipping the flag and
+    # setting the timestamp are separate, and either alone is safe.
+    # "off" restores the pre-flip behaviour (read the base table).
+    "calibration_cutover_mode": "on",
     "markov_flat_gate_threshold_stds": 0.5,
     "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
@@ -334,6 +348,19 @@ def get_ev_scale_sizing_mode() -> str:
     raw = _load().get("ev_scale_sizing_mode", _DEFAULTS["ev_scale_sizing_mode"])
     if isinstance(raw, bool):
         return "on" if raw else "off"
+    return "off" if str(raw).lower() == "off" else "on"
+
+
+def get_calibration_cutover_mode() -> str:
+    """``on`` | ``off`` — restrict calibration reads to post-cutover evidence?
+
+    ``on`` (shipped) makes the bias readers use ``v_calibration_records_current``
+    (migration 192), excluding records labelled under the pre-flip basis. The view
+    is inert until ``nt_calibration_cutover`` has a row, so this flag alone
+    changes nothing. Anything that is not an explicit ``off`` resolves to ``on``
+    — the safe direction here is to *exclude* stale-basis evidence, not include it.
+    """
+    raw = _load().get("calibration_cutover_mode", _DEFAULTS["calibration_cutover_mode"])
     return "off" if str(raw).lower() == "off" else "on"
 
 

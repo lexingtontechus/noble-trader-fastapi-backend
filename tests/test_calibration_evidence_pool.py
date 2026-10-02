@@ -105,10 +105,24 @@ def _call(fn, **kw):
 
 class TestFetchers:
     @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
-    def test_default_reads_table_without_tier_filter(self, fn):
+    def test_default_reads_cutover_view_without_tier_filter(self, fn):
+        """Updated 2026-10-02 (migration 192): the default now reads the
+        post-cutover view, not the base table. The view passes every row while
+        nt_calibration_cutover is empty, so this is a no-op until the timestamp
+        is set — but the RELATION changed, and asserting the base table here
+        would have hidden that."""
+        _, c = _call(fn)
+        assert c.url.endswith("/v_calibration_records_current")
+        assert "evidence_tier" not in c.params
+
+    @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
+    def test_cutover_off_reads_base_table(self, fn, monkeypatch):
+        """The rollback path: cutover_mode=off restores the base-table read."""
+        import regime_platform.core.feature_flags as ff
+
+        monkeypatch.setattr(ff, "get_calibration_cutover_mode", lambda: "off")
         _, c = _call(fn)
         assert c.url.endswith("/nt_calibration_records")
-        assert "evidence_tier" not in c.params
 
     @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
     def test_tiers_read_view_with_filter(self, fn):
