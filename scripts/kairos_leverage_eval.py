@@ -62,7 +62,8 @@ def _ts(s) -> float | None:
 
 def fetch_sims(since: str) -> list[dict]:
     return _fetch("nt_signal_sim", {
-        "select": "signal_id,symbol,signal,ts,outcome,predicted_p_win_raw,"
+        "select": "signal_id,symbol,signal,ts,outcome,p_win,predicted_p_win_raw,"
+                  "p_win_bracket,p_resolve,p_win_resolve,p_win_dir,"
                   "tp_bricks,sl_bricks,brick_size,legacy_markov_state",
         "source": "eq.sweep-light",
         "signal": "in.(buy,sell)",
@@ -123,6 +124,7 @@ def join(sims: list[dict], sweeps: list[dict]) -> tuple[list[dict], dict]:
         out.append({
             "symbol": sym,
             "p_win_on": sim.get("predicted_p_win_raw"),
+            "p_win_raw": sim.get("predicted_p_win_raw"),
             "p_m": p_m,
             "realised": sim.get("outcome") == "tp_hit",
             "tp_bricks": sim.get("tp_bricks"),
@@ -130,6 +132,12 @@ def join(sims: list[dict], sweeps: list[dict]) -> tuple[list[dict], dict]:
             "brick_size": sim.get("brick_size"),
             "ts": sim.get("ts"),
             "legacy_state": sim.get("legacy_markov_state"),
+            # candidate columns for the side-by-side (own coverage varies)
+            "p_win": sim.get("p_win"),
+            "p_win_bracket": sim.get("p_win_bracket"),
+            "p_resolve": sim.get("p_resolve"),
+            "p_win_resolve": sim.get("p_win_resolve"),
+            "p_win_dir": sim.get("p_win_dir"),
         })
     return out, {
         "sims": len(sims), "sweeps": len(sweeps), "joined": len(out),
@@ -146,7 +154,7 @@ def _fmt(v, spec=".4f", plus=False) -> str:
         return str(v)
 
 
-def render(rows: list[le.LeverageRow], diag: dict, now: datetime) -> str:
+def render(rows: list[le.LeverageRow], raw: list[dict], diag: dict, now: datetime) -> str:
     s = le.summarize(rows)
     v = le.leverage_verdict(s)
     L: list[str] = []
@@ -286,6 +294,85 @@ def render(rows: list[le.LeverageRow], diag: dict, now: datetime) -> str:
     L.append("- `p_markov_hold_n_mode: \"off\"` is live as of 2026-10-01; this measures the change "
              "it made.")
     L.append("")
+
+    # ── Side-by-side candidate comparison ──
+    L.append("## 6. Side-by-side — which probability is best calibrated?")
+    L.append("")
+    L.append(f"Target event: **{le.TARGET_EVENT}** (`outcome = tp_hit`). Each candidate is "
+             f"scored on its **own** available rows, against a constant baseline computed on "
+             f"those same rows — the only apples-to-apples read when coverage differs.")
+    L.append("")
+    L.append("`edge = brier_constant − brier`. **Positive = beats saying nothing. "
+             "Negative = anti-predictive**, and the size is how much worse than a constant.")
+    L.append("")
+    comp = le.compare_candidates(raw)
+    L.append("| candidate | event | n | coverage | Brier | base rate | constant | **edge** |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|")
+    for c in comp:
+        mark = "" if c["event"] == le.TARGET_EVENT else " ⚠"
+        L.append(
+            f"| `{c['key']}`{mark} | {c['event']} | {c['n']} | "
+            f"{_fmt(c['coverage'], '.3f') if c['coverage'] is not None else '—'} | "
+            f"{_fmt(c['brier'])} | {_fmt(c['base_rate'])} | {_fmt(c['brier_constant'])} | "
+            f"**{_fmt(c['edge'], '.4f', plus=True)}** |"
+        )
+    L.append("")
+    L.append("⚠ = estimates a **different event** than the target. Shown for reference; it "
+             "cannot be ranked against the others on this target, and treating it as if it "
+             "could is the category error `p_win_bracket` was built to close.")
+    L.append("")
+
+    # Common subset — the confound-free ranking
+    keys = [c["key"] for c in le.CANDIDATES if c["event"] == le.TARGET_EVENT]
+    common = le.common_subset(raw, keys)
+    if common:
+        n_common = common[0]["n"]
+        L.append(f"### Common subset (n = {n_common}) — same rows for every candidate")
+        L.append("")
+        L.append("Removes the coverage confound: a ranking here is a ranking of the "
+                 "**predictions**, not of the rows each happened to cover.")
+        L.append("")
+        L.append("| candidate | Brier | base rate | constant | **edge** | rank |")
+        L.append("|---|---:|---:|---:|---:|---:|")
+        ranked = sorted([c for c in common if c["edge"] is not None],
+                        key=lambda c: c["edge"], reverse=True)
+        for i, c in enumerate(ranked, 1):
+            L.append(f"| `{c['key']}` | {_fmt(c['brier'])} | {_fmt(c['base_rate'])} | "
+                     f"{_fmt(c['brier_constant'])} | **{_fmt(c['edge'], '.4f', plus=True)}** | "
+                     f"{i} |")
+        L.append("")
+        if ranked:
+            best, worst = ranked[0], ranked[-1]
+            L.append(f"**Best on the common subset: `{best['key']}`** "
+                     f"(edge {_fmt(best['edge'], '.4f', plus=True)}). "
+                     f"Worst: `{worst['key']}` (edge {_fmt(worst['edge'], '.4f', plus=True)}).")
+            if best["edge"] is not None and best["edge"] <= 0:
+                L.append("")
+                L.append("> **No candidate beats a constant on the common subset.** Every "
+                         "probability in the table is anti-predictive for this event — which "
+                         "is a statement about the *event definition or the outcome data*, "
+                         "not about any one model. Investigate before choosing between them.")
+        L.append("")
+
+    # Per-candidate reliability for the target-event candidates
+    L.append("### Reliability (target-event candidates)")
+    L.append("")
+    for c in comp:
+        if c["event"] != le.TARGET_EVENT or not c["n"]:
+            continue
+        pairs = [(float(r[c["col"]]), bool(r["realised"])) for r in raw
+                 if r.get(c["col"]) is not None]
+        tab = le.reliability_table(pairs, n_bins=5)
+        L.append(f"**`{c['key']}`** (n={c['n']}, Brier {_fmt(c['brier'])})")
+        L.append("")
+        L.append("| bin | n | mean pred | realised | gap |")
+        L.append("|---|---:|---:|---:|---:|")
+        for t in tab:
+            gap = t["realised"] - t["mean_pred"]
+            L.append(f"| {t['bin']} | {t['n']} | {t['mean_pred']} | {t['realised']} | "
+                     f"{_fmt(gap, '.4f', plus=True)} |")
+        L.append("")
+
     return "\n".join(L) + "\n"
 
 
@@ -303,7 +390,7 @@ def main() -> None:
     print(f"  replayable: {len(rows)}")
 
     now = datetime.now(timezone.utc)
-    text = render(rows, diag, now)
+    text = render(rows, joined, diag, now)
     out = ROOT / "worklog" / "kairos" / "reports" / f"{now:%Y%m%d}_leverage_eval.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")

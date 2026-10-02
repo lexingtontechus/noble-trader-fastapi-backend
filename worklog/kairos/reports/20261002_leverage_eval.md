@@ -1,6 +1,6 @@
 # Track A — calibration + leverage effect of withdrawing `p_markov_hold_n`
 
-Generated 2026-10-02 00:12 UTC · lookback 45d · join tolerance ±10 min
+Generated 2026-10-02 00:36 UTC · lookback 45d · join tolerance ±10 min
 
 `docs/scopes/20261001_CALIBRATION_LEVERAGE_NEXT_STEPS.md` §3 Track A. Every decided signal is replayed with the withdrawn source present, via the exact identity `L_off = (L_on − w_m·logit(p_m)) / (1 − w_m)`.
 
@@ -89,4 +89,78 @@ A pure level shift moves every bin's `mean pred` the same way while `realised` s
 
 - Removing a source renormalises the surviving weights by `1/(1−w_m)`, so the withdrawal changes the blend **even where the source said nothing** (p_m = 0.5).
 - `p_markov_hold_n_mode: "off"` is live as of 2026-10-01; this measures the change it made.
+
+## 6. Side-by-side — which probability is best calibrated?
+
+Target event: **P(TP before SL within deadline)** (`outcome = tp_hit`). Each candidate is scored on its **own** available rows, against a constant baseline computed on those same rows — the only apples-to-apples read when coverage differs.
+
+`edge = brier_constant − brier`. **Positive = beats saying nothing. Negative = anti-predictive**, and the size is how much worse than a constant.
+
+| candidate | event | n | coverage | Brier | base rate | constant | **edge** |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `p_win` | P(TP before SL within deadline) | 30433 | 1.000 | 0.2613 | 0.2727 | 0.1983 | **-0.0630** |
+| `p_win_raw` | P(TP before SL within deadline) | 30433 | 1.000 | 0.2655 | 0.2727 | 0.1983 | **-0.0672** |
+| `p_win_bracket` | P(TP before SL within deadline) | 9276 | 0.305 | 0.2197 | 0.2803 | 0.2017 | **-0.0179** |
+| `p_win_dir` | P(TP before SL within deadline) | 9539 | 0.313 | 0.2894 | 0.2825 | 0.2027 | **-0.0867** |
+| `p_win_resolve` ⚠ | P(TP | resolved) | 9276 | 0.305 | 0.2172 | 0.2803 | 0.2017 | **-0.0155** |
+| `p_resolve` ⚠ | P(resolved before deadline) | 9276 | 0.305 | 0.5021 | 0.2803 | 0.2017 | **-0.3004** |
+
+⚠ = estimates a **different event** than the target. Shown for reference; it cannot be ranked against the others on this target, and treating it as if it could is the category error `p_win_bracket` was built to close.
+
+### Common subset (n = 9276) — same rows for every candidate
+
+Removes the coverage confound: a ranking here is a ranking of the **predictions**, not of the rows each happened to cover.
+
+| candidate | Brier | base rate | constant | **edge** | rank |
+|---|---:|---:|---:|---:|---:|
+| `p_win_bracket` | 0.2197 | 0.2803 | 0.2017 | **-0.0179** | 1 |
+| `p_win` | 0.2816 | 0.2803 | 0.2017 | **-0.0798** | 2 |
+| `p_win_raw` | 0.2890 | 0.2803 | 0.2017 | **-0.0873** | 3 |
+| `p_win_dir` | 0.2890 | 0.2803 | 0.2017 | **-0.0873** | 4 |
+
+**Best on the common subset: `p_win_bracket`** (edge -0.0179). Worst: `p_win_dir` (edge -0.0873).
+
+> **No candidate beats a constant on the common subset.** Every probability in the table is anti-predictive for this event — which is a statement about the *event definition or the outcome data*, not about any one model. Investigate before choosing between them.
+
+### Reliability (target-event candidates)
+
+**`p_win`** (n=30433, Brier 0.2613)
+
+| bin | n | mean pred | realised | gap |
+|---|---:|---:|---:|---:|
+| 0.0-0.2 | 2540 | 0.1596 | 0.2988 | +0.1392 |
+| 0.2-0.4 | 9751 | 0.3063 | 0.2618 | -0.0445 |
+| 0.4-0.6 | 12650 | 0.4906 | 0.2853 | -0.2053 |
+| 0.6-0.8 | 4487 | 0.6923 | 0.2518 | -0.4405 |
+| 0.8-1.0 | 1005 | 0.8443 | 0.2458 | -0.5985 |
+
+**`p_win_raw`** (n=30433, Brier 0.2655)
+
+| bin | n | mean pred | realised | gap |
+|---|---:|---:|---:|---:|
+| 0.0-0.2 | 3213 | 0.1583 | 0.2923 | +0.1340 |
+| 0.2-0.4 | 10280 | 0.3032 | 0.2673 | -0.0359 |
+| 0.4-0.6 | 10340 | 0.4881 | 0.2712 | -0.2169 |
+| 0.6-0.8 | 5280 | 0.6961 | 0.2799 | -0.4162 |
+| 0.8-1.0 | 1320 | 0.8457 | 0.2492 | -0.5965 |
+
+**`p_win_bracket`** (n=9276, Brier 0.2197)
+
+| bin | n | mean pred | realised | gap |
+|---|---:|---:|---:|---:|
+| 0.0-0.2 | 4596 | 0.103 | 0.2487 | +0.1457 |
+| 0.2-0.4 | 2533 | 0.2938 | 0.261 | -0.0328 |
+| 0.4-0.6 | 1585 | 0.4828 | 0.3596 | -0.1232 |
+| 0.6-0.8 | 425 | 0.681 | 0.3388 | -0.3422 |
+| 0.8-1.0 | 137 | 0.8892 | 0.5985 | -0.2907 |
+
+**`p_win_dir`** (n=9539, Brier 0.2894)
+
+| bin | n | mean pred | realised | gap |
+|---|---:|---:|---:|---:|
+| 0.0-0.2 | 1201 | 0.151 | 0.3356 | +0.1846 |
+| 0.2-0.4 | 2933 | 0.3006 | 0.3041 | +0.0035 |
+| 0.4-0.6 | 2803 | 0.4917 | 0.274 | -0.2177 |
+| 0.6-0.8 | 2078 | 0.7011 | 0.2632 | -0.4379 |
+| 0.8-1.0 | 524 | 0.8376 | 0.1622 | -0.6754 |
 

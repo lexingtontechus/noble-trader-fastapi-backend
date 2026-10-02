@@ -266,6 +266,105 @@ def constant_brier(realised: Sequence[bool]) -> float | None:
     return statistics.fmean([(p - v) ** 2 for v in vals])
 
 
+# ─── Side-by-side candidate comparison ─────────────────────────────────────
+#
+# Which probability is best calibrated for the SAME event? Each candidate is
+# scored on its OWN available rows, and against a constant baseline computed on
+# those SAME rows — that is the only apples-to-apples read, because a candidate
+# with lower coverage may be covering an easier or harder sub-population.
+#
+# `event` is not decoration: a column that estimates a DIFFERENT event cannot be
+# ranked against the others on this target, and saying so is the difference
+# between a comparison and a category error.
+
+# The settlement event this module scores against: did the trade reach TP.
+TARGET_EVENT = "P(TP before SL within deadline)"
+
+CANDIDATES: tuple[dict[str, str], ...] = (
+    {"key": "p_win", "col": "p_win", "event": TARGET_EVENT,
+     "note": "as published (post-enforcement)"},
+    {"key": "p_win_raw", "col": "p_win_raw", "event": TARGET_EVENT,
+     "note": "pre-enforcement blend output"},
+    {"key": "p_win_bracket", "col": "p_win_bracket", "event": TARGET_EVENT,
+     "note": "p_resolve × Beta-shrunk P(tp|resolve) — reachability-conditioned"},
+    {"key": "p_win_dir", "col": "p_win_dir", "event": TARGET_EVENT,
+     "note": "direction blend"},
+    {"key": "p_win_resolve", "col": "p_win_resolve", "event": "P(TP | resolved)",
+     "note": "conditional — different event, shown for reference"},
+    {"key": "p_resolve", "col": "p_resolve", "event": "P(resolved before deadline)",
+     "note": "different event, shown for reference"},
+)
+
+
+def compare_candidates(
+    rows: Sequence[dict[str, Any]],
+    candidates: Sequence[dict[str, str]] = CANDIDATES,
+) -> list[dict[str, Any]]:
+    """Brier + coverage + constant-edge for each candidate, on its own rows.
+
+    ``rows`` need ``realised`` (bool) plus the candidate columns. A candidate's
+    ``edge`` is ``brier_constant − brier``: **positive means it beats a constant
+    prediction on its own turf**. Negative means it is anti-predictive, and the
+    magnitude is how much worse than saying nothing.
+    """
+    out: list[dict[str, Any]] = []
+    for c in candidates:
+        col = c["col"]
+        pairs = [(r.get(col), bool(r["realised"])) for r in rows]
+        have = [(float(p), y) for p, y in pairs
+                if p is not None and _is_prob(p)]
+        if not have:
+            out.append({**c, "n": 0, "coverage": None, "brier": None,
+                        "base_rate": None, "brier_constant": None, "edge": None})
+            continue
+        realised = [y for _, y in have]
+        b = statistics.fmean([(p - (1.0 if y else 0.0)) ** 2 for p, y in have])
+        bc = constant_brier(realised)
+        out.append({
+            **c,
+            "n": len(have),
+            "coverage": round(len(have) / len(rows), 4) if rows else None,
+            "brier": round(b, 4),
+            "base_rate": round(statistics.fmean([1.0 if y else 0.0 for y in realised]), 4),
+            "brier_constant": round(bc, 4) if bc is not None else None,
+            "edge": round(bc - b, 4) if bc is not None else None,
+        })
+    return out
+
+
+def common_subset(
+    rows: Sequence[dict[str, Any]],
+    keys: Sequence[str],
+    candidates: Sequence[dict[str, str]] = CANDIDATES,
+) -> list[dict[str, Any]]:
+    """Re-score the named candidates on the rows where ALL of them are present.
+
+    Removes the coverage confound: every candidate sees the identical population,
+    so a ranking between them is a ranking of the predictions, not of the rows
+    each happened to cover.
+    """
+    cols = [c["col"] for c in candidates if c["key"] in keys]
+    if not cols:
+        return []
+    subset = [
+        r for r in rows
+        if all(r.get(c) is not None and _is_prob(r.get(c)) for c in cols)
+    ]
+    if not subset:
+        return []
+    return compare_candidates(
+        subset, [c for c in candidates if c["key"] in keys],
+    )
+
+
+def _is_prob(v: Any) -> bool:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= x <= 1.0
+
+
 def summarize(rows: Sequence[LeverageRow]) -> dict[str, Any]:
     """The Track-A numbers. Means/medians and the transition counts that matter."""
     if not rows:

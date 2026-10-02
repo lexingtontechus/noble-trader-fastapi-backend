@@ -330,3 +330,103 @@ def test_verdict_clean_and_inert():
 
 def test_verdict_no_data():
     assert le.leverage_verdict({})["read"] == "no data"
+
+
+# ─── Side-by-side candidate comparison ────────────────────────────────────
+
+
+def _cand_row(realised=True, p_win=None, p_win_bracket=None, p_win_dir=None,
+              p_resolve=None, p_win_resolve=None, **kw):
+    r = {"realised": realised, "p_win": p_win, "p_win_bracket": p_win_bracket,
+         "p_win_dir": p_win_dir, "p_resolve": p_resolve,
+         "p_win_resolve": p_win_resolve}
+    r.update(kw)
+    return r
+
+
+def test_compare_candidates_scores_each_on_its_own_rows():
+    rows = [
+        _cand_row(True, p_win=0.9, p_win_bracket=0.2),
+        _cand_row(True, p_win=0.8, p_win_bracket=None),   # bracket missing
+        _cand_row(False, p_win=0.7, p_win_bracket=0.1),
+    ]
+    comp = {c["key"]: c for c in le.compare_candidates(rows)}
+    assert comp["p_win"]["n"] == 3
+    assert comp["p_win_bracket"]["n"] == 2          # own coverage
+    assert comp["p_win_bracket"]["coverage"] == pytest.approx(2 / 3, abs=1e-4)
+
+
+def test_edge_is_constant_minus_brier():
+    rows = [_cand_row(True, p_win=0.9), _cand_row(False, p_win=0.9)]
+    c = next(x for x in le.compare_candidates(rows) if x["key"] == "p_win")
+    assert c["edge"] == pytest.approx(c["brier_constant"] - c["brier"], abs=1e-4)
+
+
+def test_constant_baseline_is_computed_per_candidate_subset():
+    """A candidate covering only the easy rows must be judged against a constant
+    on THOSE rows — otherwise lower coverage would look like skill."""
+    rows = [_cand_row(True, p_win_bracket=0.9) for _ in range(8)]
+    rows += [_cand_row(False, p_win=0.5) for _ in range(2)]
+    # give p_win full coverage so the two candidates genuinely differ in subset
+    for r in rows:
+        r["p_win"] = 0.5
+    comp = {c["key"]: c for c in le.compare_candidates(rows)}
+    # bracket covers the 8 all-TP rows only -> base rate there is 1.0
+    assert comp["p_win_bracket"]["base_rate"] == pytest.approx(1.0)
+    # p_win covers all 10 -> base rate 0.8
+    assert comp["p_win"]["base_rate"] == pytest.approx(0.8)
+    # ...and each is scored against its OWN constant, not a shared one
+    assert comp["p_win_bracket"]["brier_constant"] == pytest.approx(0.0)
+    assert comp["p_win"]["brier_constant"] == pytest.approx(0.16)
+
+
+def test_anti_predictive_candidate_has_negative_edge():
+    rows = [_cand_row(True, p_win=0.05), _cand_row(False, p_win=0.95)]
+    c = next(x for x in le.compare_candidates(rows) if x["key"] == "p_win")
+    assert c["edge"] < 0
+
+
+def test_candidate_with_no_rows_reports_nulls():
+    c = next(x for x in le.compare_candidates([_cand_row(True, p_win=0.5)])
+             if x["key"] == "p_win_bracket")
+    assert c["n"] == 0 and c["brier"] is None and c["edge"] is None
+
+
+def test_out_of_range_values_are_ignored():
+    rows = [_cand_row(True, p_win=1.5), _cand_row(True, p_win=0.5)]
+    c = next(x for x in le.compare_candidates(rows) if x["key"] == "p_win")
+    assert c["n"] == 1     # 1.5 is not a probability
+
+
+def test_common_subset_uses_only_fully_populated_rows():
+    rows = [
+        _cand_row(True, p_win=0.6, p_win_bracket=0.3, p_win_dir=0.6),
+        _cand_row(True, p_win=0.6, p_win_bracket=None, p_win_dir=0.6),  # excluded
+        _cand_row(False, p_win=0.4, p_win_bracket=0.2, p_win_dir=0.4),
+    ]
+    common = le.common_subset(rows, ["p_win", "p_win_bracket", "p_win_dir"])
+    assert all(c["n"] == 2 for c in common)
+    # every candidate now sees the identical population, so identical base rate
+    assert len({c["base_rate"] for c in common}) == 1
+
+
+def test_common_subset_empty_when_no_overlap():
+    rows = [_cand_row(True, p_win=0.6, p_win_bracket=None)]
+    assert le.common_subset(rows, ["p_win", "p_win_bracket"]) == []
+
+
+def test_candidate_events_are_declared():
+    """The event label must be explicit — a column estimating a different event
+    cannot be silently ranked against the others."""
+    target = [c for c in le.CANDIDATES if c["event"] == le.TARGET_EVENT]
+    other = [c for c in le.CANDIDATES if c["event"] != le.TARGET_EVENT]
+    assert {c["key"] for c in target} == {"p_win", "p_win_raw", "p_win_bracket", "p_win_dir"}
+    assert {c["key"] for c in other} == {"p_resolve", "p_win_resolve"}
+
+
+def test_p_win_bracket_is_a_target_event_candidate():
+    """p_win_bracket estimates P(TP before SL) — the settlement event — so it is
+    rankable against p_win. p_resolve / p_win_resolve are not."""
+    d = {c["key"]: c["event"] for c in le.CANDIDATES}
+    assert d["p_win_bracket"] == le.TARGET_EVENT
+    assert d["p_resolve"] != le.TARGET_EVENT
