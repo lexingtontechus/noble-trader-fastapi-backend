@@ -384,6 +384,7 @@ async def fetch_candles_for_symbols(
     n_bars: int = LIGHT_CANDLE_BARS,
     interval: str = "1h",
     include_timestamps: bool = False,
+    ohlcv_out: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, list[float]] | tuple[dict[str, list[float]], dict[str, list[float | None]]]:
     """Thin wrapper around fetch_tradingview_batch for callers that don't
     need to know about the TV-specific implementation.
@@ -391,12 +392,23 @@ async def fetch_candles_for_symbols(
     Used by:
       • Light sweep (_sweep_group): n_bars=200, interval="1h"
       • Heavy sweep (_heavy_sweep_group): n_bars=2160, interval="1h"
+      • EOD resolver (intrabar basis): passes ``ohlcv_out`` to get high/low
 
     ``include_timestamps`` (default False): forwarded as-is to
     ``fetch_tradingview_batch`` — see its docstring for the return-shape
     change when True. Unset by every pre-existing caller, so this wrapper's
     default return shape is unchanged.
+
+    ``ohlcv_out`` (2026-10-02): forwarded as-is. When a dict is passed, the
+    call returns ``(closes_by_symbol, ohlcv_out)`` — the tuple shape
+    ``fetch_tradingview_batch`` documents. This parameter was MISSING from the
+    wrapper when the intrabar resolver was first wired, which made every
+    resolve fail with "unexpected keyword argument 'ohlcv_out'" in production
+    (604 signals, 0 resolved, 06:38 UTC) — the tests passed only because they
+    mocked this function wholesale. See the regression test that now asserts
+    the wrapper's signature matches what the resolver calls.
     """
     return await fetch_tradingview_batch(
-        symbols, hours=n_bars, interval=interval, include_timestamps=include_timestamps,
+        symbols, hours=n_bars, interval=interval,
+        include_timestamps=include_timestamps, ohlcv_out=ohlcv_out,
     )
