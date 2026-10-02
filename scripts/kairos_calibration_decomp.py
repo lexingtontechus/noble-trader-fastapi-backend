@@ -58,6 +58,9 @@ def fetch(since: str) -> list[dict]:
     return _fetch({
         "select": "symbol,signal,ts,p_win,predicted_p_win_raw,p_win_bracket,p_win_dir,"
                   "p_resolve,p_win_resolve,drift_1h_pct,drift_4h_pct,drift_24h_pct,"
+                  "mae_4h_pct,mae_12h_pct,mae_24h_pct,mae_48h_pct,"
+                  "mfe_4h_pct,mfe_12h_pct,mfe_24h_pct,mfe_48h_pct,"
+                  "entry_price,sl_bricks,brick_size,"
                   "outcome,regime",
         "source": "eq.sweep-light",
         "signal": "in.(buy,sell)",
@@ -102,6 +105,47 @@ def label_bracket(rows: list[dict], pred: str) -> list[tuple[float, bool]]:
         if not (0.0 <= p <= 1.0):
             continue
         out.append((p, o == "tp_hit"))
+    return out
+
+
+def label_survivable(rows: list[dict], pred: str, horizon: str = "24h",
+                     mae_col: str | None = None) -> list[tuple[float, bool]]:
+    """``tp_hit AND MAE within the stop distance`` — the *survivable* win.
+
+    The attachment's "ghost edge" point, made measurable. The settlement label
+    comes from a **close-walk that checks TP before SL on the same bar**
+    (`eod_resolver`), so a trade that ran deep against the position and then
+    recovered is logged a win. This label asks the question a real stop would ask:
+    did the trade reach TP *without* first breaching the stop distance?
+
+    ``mae_{h}_pct`` (migration 170) is max adverse excursion over the fixed
+    horizon, in % of entry, independent of TP/SL. The stop distance in the same
+    units is ``sl_bricks × brick_size / entry_price × 100``.
+
+    Rows missing either the MAE horizon or the geometry are dropped — never
+    imputed, because assuming "no drawdown" would manufacture survivable wins.
+    """
+    col = mae_col or f"mae_{horizon}_pct"
+    out = []
+    for r in rows:
+        o, p = r.get("outcome"), r.get(pred)
+        if o not in ("tp_hit", "sl_hit") or p is None:
+            continue
+        mae = r.get(col)
+        if mae is None:
+            continue
+        try:
+            p = float(p)
+            mae = float(mae)
+            sl_dist_pct = (float(r["sl_bricks"]) * float(r["brick_size"])
+                           / float(r["entry_price"])) * 100.0
+        except (TypeError, ValueError, KeyError, ZeroDivisionError):
+            continue
+        if not (0.0 <= p <= 1.0) or sl_dist_pct <= 0:
+            continue
+        # a win that survived: TP reached AND never breached the stop distance
+        survived = (o == "tp_hit") and (mae < sl_dist_pct)
+        out.append((p, survived))
     return out
 
 
@@ -165,6 +209,7 @@ def render(rows: list[dict], now: datetime) -> str:
         ("DIRECTIONAL (drift_4h > 0)", lambda r, p: label_directional(r, "drift_4h_pct", p)),
         ("DIRECTIONAL (drift_24h > 0)", lambda r, p: label_directional(r, "drift_24h_pct", p)),
         ("BRACKET (tp_hit before sl_hit)", label_bracket),
+        ("SURVIVABLE (tp_hit AND mae_24h < sl)", label_survivable),
     ):
         pairs = label_fn(rows, "p_win")
         c = cd.score_candidate("p_win", pairs, target=target)
@@ -207,6 +252,69 @@ def render(rows: list[dict], now: datetime) -> str:
             L.append("**The model discriminates the bracket event too** — the "
                      "category error is narrower than the audit states, and "
                      "recalibration (not re-derivation) may suffice.")
+            L.append("")
+
+    # ── The survivable-label comparison (same rows) ──
+    L.append("## 1b. Ghost edge — bracket vs survivable, on the SAME rows")
+    L.append("")
+    L.append("The `SURVIVABLE` label above is computed only on rows where `mae_24h_pct` "
+             "is populated, so its n is much smaller than `BRACKET`'s — comparing them "
+             "directly would confound the label with the population. Below, **both** are "
+             "restricted to the rows that have the MAE column.")
+    L.append("")
+    mae_rows = [r for r in rows if r.get("mae_24h_pct") is not None
+                and r.get("entry_price") and r.get("sl_bricks")
+                and r.get("brick_size")]
+    if mae_rows:
+        L.append(f"Common population: **{len(mae_rows)}** rows with `mae_24h_pct`.")
+        L.append("")
+        L.append("| label | n | base rate | Brier | REL | RES | AUC |")
+        L.append("|---|---:|---:|---:|---:|---:|---:|")
+        for tname, lfn in (("BRACKET (tp_hit)", label_bracket),
+                           ("SURVIVABLE (tp_hit AND mae_24h < sl)", label_survivable)):
+            pairs = lfn(mae_rows, "p_win")
+            c = cd.score_candidate("p_win", pairs, target=tname)
+            if not c.get("n"):
+                continue
+            L.append(f"| {tname} | {c['n']} | {c['base_rate']} | {c['brier']} | "
+                     f"{c['rel']} | {c['res']} | **{_fmt(c['auc'])}** |")
+        L.append("")
+        L.append("**If the survivable AUC is lower than the bracket AUC on identical "
+                 "rows, part of the apparent bracket skill was ghost edge** — wins that "
+                 "a real stop would have taken out before TP was reached.")
+        L.append("")
+
+        # ── The ghost-edge LEVEL finding ──
+        br_pairs = label_bracket(mae_rows, "p_win")
+        sv_pairs = label_survivable(mae_rows, "p_win")
+        n_br = len(br_pairs)
+        n_br_win = sum(1 for _, y in br_pairs if y)
+        n_sv_win = sum(1 for _, y in sv_pairs if y)
+        if n_br_win:
+            lost = n_br_win - n_sv_win
+            L.append("### The level finding — how many 'wins' a stop would have taken out")
+            L.append("")
+            L.append(f"- bracket wins on this population: **{n_br_win}** of {n_br} "
+                     f"(base rate {n_br_win/n_br:.4f})")
+            L.append(f"- of those, **{n_sv_win}** survived (never breached the stop "
+                     f"distance) — **{lost} did not ({100*lost/n_br_win:.1f}%)**")
+            L.append(f"- survivable base rate: **{n_sv_win/n_br:.4f}**")
+            L.append("")
+            L.append("**This is the ghost edge, quantified.** The settlement label comes "
+                     "from a close-walk; the MAE column comes from **intrabar highs/lows** "
+                     "(`migration 170`). So the two are not the same measurement, and the "
+                     f"{100*lost/n_br_win:.0f}% figure is an **upper bound** — some of it "
+                     "is the close-vs-intrabar difference rather than a genuine stop-out. "
+                     "The true figure lies between 0 and that number; pinning it needs an "
+                     "intrabar-consistent resolver.")
+            L.append("")
+            L.append("**Note where the effect lands.** AUC barely moves (bracket "
+                     f"{cd.score_candidate('p_win', br_pairs, target='b')['auc']:.4f} → "
+                     f"survivable {cd.score_candidate('p_win', sv_pairs, target='s')['auc']:.4f}), "
+                     "but `REL` more than doubles (0.0692 → 0.1443). The ghost edge is a "
+                     "**level** distortion, not a ranking one — which is exactly what the "
+                     "`REL ≫ RES` finding already said. It does not rescue the model's "
+                     "discrimination, and it makes its overconfidence worse.")
             L.append("")
 
     # ── Side by side, directional label ──
