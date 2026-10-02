@@ -1,9 +1,49 @@
 # Calibration + leverage scaling — where we are, and the next step
 
-**Date:** 2026-10-01 · **Status:** SCOPE — proposed, nothing built
+**Date:** 2026-10-01 · **Status:** Track A COMPLETE (result below) · Tracks B/C pending
 **Supersedes the framing in:** `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` §6
 **Parents:** `docs/scopes/20261001_BOLSTER_LEGACY_HMM_SCOPE.md`,
 `worklog/20261001_HMM_FIRST_PASSAGE_AND_REGIME_TRANSITION.md`
+**Track A result:** `worklog/kairos/reports/20261002_leverage_eval.md`
+
+---
+
+## ⚠ TRACK A RESULT — RISK VERDICT (2026-10-02)
+
+30,433 decided signals replayed through the exact withdrawal identity.
+
+| | with source (actual) | without (counterfactual) | Δ |
+|---|---:|---:|---:|
+| **Brier** | 0.2655 | 0.4037 | **+0.1382 (worse)** |
+| mean `p_win` | 0.4424 | 0.6585 | +0.2161 |
+| mean `ev_scale` | 0.5576 | 0.8403 | **+0.2827** |
+| unsized → sized | — | — | **23.05% (7,014 signals)** |
+| partially → full size | — | — | **40.69%** |
+
+**The withdrawal made calibration materially worse and raised size.** Mean `p_win`
+0.4424 → 0.6585 against a base rate of **0.2727**; the blend was already
+over-forecasting and the withdrawal made it worse by +0.1382 Brier.
+
+### The reference line (the finding that outranks Track A)
+
+**Constant-prediction Brier (p = base rate) = 0.1983. Actual blend = 0.2655.**
+
+The blend is **worse than predicting the base rate for every signal.** It is
+adding *negative* information about the outcome. This is a property of the blend
+itself, independent of which sources are in it — re-weighting cannot fix it, and
+it means the Track-B/C question ("which source should be in the blend?") is
+downstream of a larger one: **why is the blend anti-predictive?**
+
+Also visible in the reliability table: bin 0.7–0.8 predicts 0.7501, realised
+0.2864. Bin 0.9–1.0 predicts 0.9161, realised 0.1986. The blend is confidently
+wrong at the top end — the same overconfidence the calibration loop already
+corrects post-hoc via `apply_calibration_adjustment`.
+
+**Consequence for the decision:** the withdrawal is not defensible as-is. Either
+revert `p_markov_hold_n_mode` to `"live"` pending a proper replacement, or move
+straight to fixing the blend's calibration (Track C). The HMM's low `p_markov`
+was accidentally *depressing* an over-optimistic blend toward the base rate — it
+was wrong for the right reason.
 
 ---
 
