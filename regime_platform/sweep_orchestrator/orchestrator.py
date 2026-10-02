@@ -4012,7 +4012,15 @@ class SweepOrchestrator(HeavySweepMixin):
                 engine=self._ev_engine,
             )
             if _bracket_applied_to_ev:
-                effective_kelly = kelly_f * ev_result.ev_scale
+                # Honour ev_scale_sizing_mode here too (2026-10-02). This R2 path
+                # recomputes from p_win_bracket's ev_scale, so without the gate a
+                # flip of p_win_in_ev_mode to "live" would bypass the flag and
+                # silently restore p_win-dependent sizing. (Shipped as "shadow",
+                # so this branch is currently inert — the gate makes it correct
+                # when it goes live.)
+                effective_kelly = kelly_f * (
+                    ev_result.ev_scale if _ev_scale_sizing else 1.0
+                )
                 logger.info(
                     "[sweep:orch] %s: R2 EV/Kelly on p_win_bracket=%.4f "
                     "(p_dir_raw=%.4f, p_resolve=%s, ev=%.4f, kelly=%.6f)",

@@ -259,6 +259,126 @@ def resolve_signal_outcome(
     return out
 
 
+def resolve_signal_outcome_ohlc(
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    bars: Sequence[dict[str, Any]],
+    direction: str = "buy",
+    expiry_bars: int = EXPIRY_BARS,
+) -> dict[str, Any]:
+    """**First-touch** TP/SL resolution over intrabar OHLC.
+
+    The dependency Phase 1 needs (worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.1,
+    quant-audit finding R1: *"close-only ≠ first-touch"*).
+
+    ``resolve_signal_outcome`` walks **closes**, which is optimistic: a bar whose
+    close sits between SL and TP is scored as "no touch" even when its wick
+    crossed a level. This walks the intrabar ``high``/``low`` instead, so a level
+    is touched if price traded through it at any point in the bar — which is the
+    same basis the ``mae_*_pct`` / ``mfe_*_pct`` columns already use, so a
+    survivable label computed from this resolver is internally consistent with
+    them (the caveat that made the 57.7% ghost-edge figure an upper bound).
+
+    ``bars`` are ``{"h": high, "l": low, "c": close}`` dicts in chronological
+    order (the shape ``price_fetcher.fetch_candles_for_symbols(ohlcv_out=...)``
+    emits). Bars missing ``h``/``l`` fall back to their ``c``, so a partial
+    series degrades to a close-walk rather than being dropped.
+
+    **Same-bar both-touched** is reported, not silently resolved: ``ambiguous``
+    is True and the outcome follows ``sl_first`` (the conservative choice — a
+    stop is assumed filled before the target when a single bar spans both). The
+    audit's live/backtest split is exactly this case (live assumes SL first,
+    the old close-walk assumed TP first), so the flag makes the disagreement
+    visible instead of picking silently.
+
+    Returns the same keys as ``_resolve_signal_outcome_legacy`` plus
+    ``ambiguous`` and ``touch_bar``.
+    """
+    is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
+    window = list(bars or [])[: max(int(expiry_bars or 0), 0)]
+
+    outcome = "expired"
+    exit_price: float | None = None
+    exit_idx: int | None = None
+    ambiguous = False
+
+    for i, bar in enumerate(window):
+        try:
+            hi = float(bar.get("h") if bar.get("h") is not None else bar.get("c"))
+            lo = float(bar.get("l") if bar.get("l") is not None else bar.get("c"))
+            cl = float(bar.get("c"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if is_buy:
+            tp_touch, sl_touch = hi >= take_profit, lo <= stop_loss
+        else:
+            tp_touch, sl_touch = lo <= take_profit, hi >= stop_loss
+
+        if tp_touch and sl_touch:
+            # One bar spans both levels — order is unknowable from OHLC.
+            ambiguous = True
+            outcome = "sl_hit"          # conservative: assume the stop filled
+            exit_price, exit_idx = stop_loss, i
+            break
+        if sl_touch:
+            outcome, exit_price, exit_idx = "sl_hit", stop_loss, i
+            break
+        if tp_touch:
+            outcome, exit_price, exit_idx = "tp_hit", take_profit, i
+            break
+        # neither touched; remember the close in case we expire
+        exit_price = cl
+
+    if outcome == "expired" and window:
+        try:
+            exit_price = float(window[-1].get("c"))
+        except (AttributeError, TypeError, ValueError):
+            exit_price = None
+
+    walked = window if exit_idx is None else window[: exit_idx + 1]
+    highs, lows = [], []
+    for b in walked:
+        try:
+            highs.append(float(b.get("h") if b.get("h") is not None else b.get("c")))
+            lows.append(float(b.get("l") if b.get("l") is not None else b.get("c")))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if is_buy:
+        mfe = max((h - entry_price for h in highs), default=0.0)
+        mae = max((entry_price - l for l in lows), default=0.0)
+    else:
+        mfe = max((entry_price - l for l in lows), default=0.0)
+        mae = max((h - entry_price for h in highs), default=0.0)
+    # Excursions are magnitudes — floor at 0 so a favourable-only path cannot
+    # report a negative MAE. (The legacy close-walk can: it takes the max over
+    # the walked path without a floor, so an all-up path yields mae < 0. That is
+    # a pre-existing quirk of the close-walk, not replicated here.)
+    mfe, mae = max(0.0, mfe), max(0.0, mae)
+
+    # Drift columns stay CLOSE-based by design (direction-relative price drift),
+    # so they are computed from the bars' closes — same basis as the legacy
+    # resolver, keeping the two comparable on those columns.
+    closes = []
+    for b in window:
+        try:
+            closes.append(float(b.get("c")))
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    return {
+        "outcome": outcome,
+        "exit_price": exit_price,
+        "exit_idx": exit_idx,
+        "hold_bars": (exit_idx + 1) if exit_idx is not None else len(window),
+        "mfe": round(mfe, 6),
+        "mae": round(mae, 6),
+        "ambiguous": ambiguous,
+        "touch_bar": exit_idx,
+        **_drift_fields(float(entry_price), closes, is_buy),
+    }
+
+
 def _resolve_signal_outcome_legacy(
     entry_price: float,
     stop_loss: float,
