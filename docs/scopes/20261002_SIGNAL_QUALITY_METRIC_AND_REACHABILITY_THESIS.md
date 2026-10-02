@@ -116,6 +116,57 @@ same question as "is there a cross-sectional edge, or only a time-series one".
 
 ---
 
+## ⚠ FOLLOW-UP 2 — the common-factor hypothesis is REJECTED (2026-10-02)
+
+`worklog/kairos/reports/20261002_common_factor.md`. Decomposing the cell-rate matrix
+`R[cell, window] = μ + a[cell] + b[window] + e[cell, window]` over 162 cells × 12
+three-day windows (425 observations):
+
+| component | variance | share |
+|---|---:|---:|
+| **cell** (cross-sectional) | 0.02861 | **43.0%** |
+| **time** (common factor) | 0.00683 | **10.3%** |
+| **residual** (cell×time + noise) | 0.03105 | **46.7%** |
+
+**The shared-market-factor explanation from Follow-up 1 is wrong.** Time explains only
+10.3% of the cell-rate variance — the cells do *not* move together. There is a real
+**cross-sectional** component (43%, cell-effect spread 0.96), and the largest term is
+the cell×time interaction (46.7%).
+
+**The predictive test agrees, and corrects the ranking:**
+
+| ranking | out-of-fold AUC |
+|---|---:|
+| raw cell rate | **0.5486** |
+| cell rate with the period factor removed | 0.5100 |
+
+Removing the (small) time factor *hurts* — de-factoring adds noise when the factor is
+weak. So the raw cell rate is the better predictor, and at **0.5486 it is the best
+cell-based number measured** — just under the 0.55 promotion bar.
+
+**The corrected synthesis of all four measurements:**
+
+| # | finding | implication |
+|---|---|---|
+| 1 | `p_win` is directional, not a P(win) (bracket AUC 0.486) | the blend cannot be P(win) |
+| 2 | cell has signal in-sample (0.7256) that does not transfer (0.4994) | the cell is not usable as-is |
+| 3 | no trailing window recovers transfer | recency is not the fix |
+| 4 | time explains only 10.3%; cell 43%, residual 47% | **not** a common-factor problem |
+
+**Answer to "cross-sectional or time-series": there IS a cross-sectional edge — a real,
+ranked cell effect worth ~0.55 AUC — but it is weak (at the bar, not over it) and
+unstable (47% cell×time interaction means a cell's *period-specific* rate is largely
+unpredictable from its average).**
+
+That reframes the remaining work: the problem is not that the cell lacks information,
+it is that **a cell's rate is only partly its own** — nearly half the variance is
+interaction. A model must therefore either (a) accept a weak-but-real cross-sectional
+ranking (~0.55) and size conservatively, or (b) find what drives the interaction —
+which, given time is only 10%, is *not* a market-wide factor but something
+cell-specific and time-varying (local volatility state, microstructure, session).
+
+---
+
 ## 0. The one-paragraph version
 
 We are not trying to predict price direction. We are trying to **select brackets whose
