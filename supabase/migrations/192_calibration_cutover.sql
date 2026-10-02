@@ -58,17 +58,33 @@ COMMENT ON COLUMN nt_calibration_cutover.basis IS
   'Which TP/SL basis the post-cutover rows were resolved under. Informational — lets a future reader know what the evidence after this instant means.';
 
 -- ─── 2. The filtered view ─────────────────────────────────────────────────
+--
+-- FILTERS ON RESOLUTION TIME, NOT `entered_at`.
+-- `nt_calibration_records.entered_at` is the SIGNAL's own timestamp
+-- (`shift_ts(sig["ts"], 0)`), not when the record was written. Filtering on it
+-- would wrongly EXCLUDE every signal generated before the cutover but resolved
+-- after it — and those carry the NEW intrabar basis, because the basis is
+-- decided at resolution time. That would throw away the first ~48h of valid
+-- new-basis evidence (the expiry window) for no reason.
+--
+-- `nt_signal_sim.resolved_at` IS the wall-clock resolution instant
+-- (`datetime.now(timezone.utc)` at patch time), so it is the correct key.
+-- COALESCE falls back to `entered_at` for records with no linked signal row
+-- (pre-signal_id, or retention-deleted) — those are old by construction, so the
+-- fallback excludes them, which is the safe direction.
 
 CREATE OR REPLACE VIEW v_calibration_records_current AS
 SELECT r.*
 FROM nt_calibration_records r
+LEFT JOIN nt_signal_sim s ON s.signal_id = r.signal_id
 WHERE NOT EXISTS (
   SELECT 1 FROM nt_calibration_cutover c
-  WHERE c.id = 1 AND r.entered_at < c.cutover_at
+  WHERE c.id = 1
+    AND COALESCE(s.resolved_at, r.entered_at) < c.cutover_at
 );
 
 COMMENT ON VIEW v_calibration_records_current IS
-  'nt_calibration_records restricted to post-cutover evidence (entered_at >= nt_calibration_cutover.cutover_at). Returns ALL rows when no cutover is configured, so it is a drop-in replacement for the base table and is inert before the flip. The bias readers (fetch_calibration_bias / fetch_calibration_bias_raw) read this; the resolver still WRITES to the base table.';
+  'nt_calibration_records restricted to records RESOLVED at or after nt_calibration_cutover.cutover_at (keyed on nt_signal_sim.resolved_at, falling back to entered_at for unlinked rows). Keyed on resolution time because the TP/SL basis is decided when the signal is resolved, not when it was generated. Returns ALL rows when no cutover is configured, so it is a drop-in replacement for the base table and is inert before the flip. The bias readers (fetch_calibration_bias / fetch_calibration_bias_raw) read this; the resolver still WRITES to the base table.';
 
 -- ─── 2b. Compose the cutover filter into the tiered view ──────────────────
 --
@@ -104,11 +120,12 @@ FROM nt_calibration_records c
 LEFT JOIN nt_signal_sim s ON s.signal_id = c.signal_id
 WHERE NOT EXISTS (
   SELECT 1 FROM nt_calibration_cutover k
-  WHERE k.id = 1 AND c.entered_at < k.cutover_at
+  WHERE k.id = 1
+    AND COALESCE(s.resolved_at, c.entered_at) < k.cutover_at
 );
 
 COMMENT ON VIEW v_calibration_records_tiered IS
-  'nt_calibration_records + evidence_tier (qualified|suppressed|gate_fail|unknown) of the producing signal, joined on signal_id. tier_src: stamp (gate_outcome) | recon (validated reconstruction) | missing. Read by fetch_calibration_bias(_raw)(evidence_tiers=...) for the calibration_evidence_pool_mode shadow/live bias (migration 171, Kairos V3 §14.3). Since migration 192 it also applies the post-cutover filter, so the evidence pool and the plain bias path exclude the same pre-cutover rows.';
+  'nt_calibration_records + evidence_tier (qualified|suppressed|gate_fail|unknown) of the producing signal, joined on signal_id. tier_src: stamp (gate_outcome) | recon (validated reconstruction) | missing. Read by fetch_calibration_bias(_raw)(evidence_tiers=...) for the calibration_evidence_pool_mode shadow/live bias (migration 171, Kairos V3 §14.3). Since migration 192 it also applies the post-cutover filter (keyed on the same resolved_at basis as v_calibration_records_current), so the evidence pool and the plain bias path exclude identical rows.';
 
 -- ─── 3. RLS — service role only, same shape as migration 100/113 ──────────
 
