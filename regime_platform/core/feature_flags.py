@@ -64,6 +64,22 @@ _DEFAULTS: dict[str, Any] = {
     # when a calibrated probability replaces p_win in ev_scale
     # (20261002_SIGNAL_QUALITY_PLAN.md Phase 3).
     "ev_scale_sizing_mode": "on",
+    # close_walk | intrabar — which basis the EOD resolver uses for TP/SL.
+    # "close_walk" (shipped default): unchanged. Walks post-entry CLOSES and
+    # takes the first close beyond a level. Optimistic — a bar whose close sits
+    # between SL and TP counts as "no touch" even when its wick crossed one.
+    # "intrabar": walks post-entry HIGH/LOW via resolve_signal_outcome_ohlc, so
+    # a level is touched if price traded through it at any point in the bar.
+    # Same basis as the mae_*_pct / mfe_*_pct columns, which makes a survivable
+    # label internally consistent (worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.1;
+    # quant-audit R1 "close-only ≠ first-touch").
+    #
+    # Changing this CHANGES OUTCOME SEMANTICS: it re-labels tp_hit/sl_hit on
+    # every future resolution, and the survivor base rate measured at 0.1186
+    # against the close-walk (vs 0.2805 bracket) is expected to move again.
+    # Never flip without re-running the §3.1 kill criterion. Same-bar
+    # both-touched resolves sl_first (conservative, matches live).
+    "eod_resolver_basis": "close_walk",
     "markov_flat_gate_threshold_stds": 0.5,
     "markov_min_occupancy": 0.10,
     "trend_probs_gate_mode": "shadow",
@@ -319,6 +335,18 @@ def get_ev_scale_sizing_mode() -> str:
     if isinstance(raw, bool):
         return "on" if raw else "off"
     return "off" if str(raw).lower() == "off" else "on"
+
+
+def get_eod_resolver_basis() -> str:
+    """``close_walk`` | ``intrabar`` — the EOD resolver's TP/SL basis.
+
+    ``close_walk`` (shipped default) is the historical behaviour. ``intrabar``
+    walks high/low instead, making the label consistent with the ``mae_*_pct``
+    columns. Anything that is not an explicit ``intrabar`` resolves to
+    ``close_walk``, so a typo cannot silently change outcome semantics.
+    """
+    raw = _load().get("eod_resolver_basis", _DEFAULTS["eod_resolver_basis"])
+    return "intrabar" if str(raw).lower() == "intrabar" else "close_walk"
 
 
 def get_markov_flat_gate_threshold_stds() -> float:

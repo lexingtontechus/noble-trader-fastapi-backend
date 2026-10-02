@@ -249,6 +249,29 @@ p_markov_hold_n_mode: "off"
 # unquoted `on`/`off` are parsed by YAML 1.1 as booleans, not strings.
 ev_scale_sizing_mode: "on"
 
+# eod_resolver_basis (2026-10-02; worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.1).
+# close_walk | intrabar — the EOD resolver's TP/SL basis.
+#
+# "close_walk" (shipped default) is unchanged: post-entry CLOSES, first close
+# beyond a level wins. Optimistic — a bar whose close sits between SL and TP
+# counts as "no touch" even when its wick crossed one.
+#
+# "intrabar" walks post-entry HIGH/LOW, so a level is touched if price traded
+# through it at any point in the bar. Same basis as the mae_*_pct / mfe_*_pct
+# columns (migration 170), which is what makes a survivable label internally
+# consistent — and what removes the "57.7% is an upper bound" caveat on the
+# ghost-edge measurement (quant-audit R1, "close-only ≠ first-touch").
+#
+# THIS CHANGES OUTCOME SEMANTICS. Flipping it re-labels tp_hit/sl_hit on every
+# future resolution, changes nt_calibration_records, and moves the survivor
+# base rate (0.1186 on the close-walk label vs 0.2805 bracket). Do NOT flip
+# without re-running the §3.1 kill criterion, and expect the old and new
+# labels to be non-comparable across the changeover.
+#
+# Same-bar both-touched resolves sl_first (conservative, matches live) and is
+# reported as "ambiguous" by the resolver. Quoted deliberately.
+eod_resolver_basis: "close_walk"
+
 # Root-cause classifier (2026-08-28, worklog same as above) — powers
 # BOTH RegimeHMM.trend_transition_matrix_3state() (Tier 1, gates
 # markov_source_mode) and RegimeHMM.gated_trend_probs() (Tier 2, gates

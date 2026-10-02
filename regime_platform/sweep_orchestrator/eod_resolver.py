@@ -667,6 +667,66 @@ async def _write_calibration_record(
         )
 
 
+def anchor_post_entry_bars(
+    bars: Sequence[dict[str, Any]],
+    signal_ts: Any,
+    fetch_ts: Any,
+    bar_hours: float = 1.0,
+) -> list[dict[str, Any]] | None:
+    """OHLC twin of :func:`anchor_post_entry_closes`.
+
+    Same windowing rule (the entry bar is ``len-1-offset``; ``None`` when the
+    entry predates the fetched window), applied to the ``{"t","o","h","l","c","v"}``
+    rows ``fetch_candles_for_symbols(ohlcv_out=...)`` emits. Kept as a separate
+    function rather than a generic over both shapes so the index arithmetic is
+    duplicated *visibly* — if one drifts, a test catches it rather than a silent
+    shared-helper change.
+    """
+    if not bars:
+        return None
+    sig_dt = _parse_utc_dt(signal_ts)
+    fetch_dt = _parse_utc_dt(fetch_ts)
+    if sig_dt is None or fetch_dt is None:
+        return None
+    offset_hours = (fetch_dt - sig_dt).total_seconds() / 3600.0
+    offset = int(round(offset_hours / max(bar_hours, 1e-9)))
+    if offset < 0:
+        offset = 0
+    if offset >= len(bars):
+        return None
+    entry_idx = max(len(bars) - 1 - offset, 0)
+    return [b for b in bars[entry_idx:] if isinstance(b, dict)]
+
+
+def _judge_bars(
+    sig: dict[str, Any], bars: list[dict[str, Any]],
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Intrabar twin of :func:`_judge` — same contract, OHLC basis.
+
+    Shared by the writing resolver and the read-only hourly dry run so both
+    judge identically under ``eod_resolver_basis: intrabar``. The minimum-age
+    gate is preserved verbatim: an "expired" verdict with fewer than
+    ``EXPIRY_BARS`` bars available means "not checked long enough yet", not
+    "timed out" — deferring is what keeps a young signal out of a permanent
+    wrong terminal state.
+    """
+    entry = _as_float(sig.get("entry_price"))
+    stop = _as_float(sig.get("stop_loss"))
+    tp = _as_float(sig.get("take_profit"))
+    if entry is None or stop is None or tp is None:
+        return None, None
+
+    resolved = resolve_signal_outcome_ohlc(
+        entry, stop, tp,
+        bars,
+        direction=sig.get("signal") or "buy",
+        expiry_bars=EXPIRY_BARS,
+    )
+    if resolved["outcome"] == "expired" and len(bars) < EXPIRY_BARS:
+        return "pending", resolved
+    return resolved["outcome"], resolved
+
+
 def _judge(
     sig: dict[str, Any], closes: list[float],
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -759,8 +819,71 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
     return resolved["outcome"]
 
 
-# ─── Orchestrator entry point ─────────────────────────────────────
+async def _resolve_one_bars(sig: dict[str, Any], bars: list[dict[str, Any]]) -> str | None:
+    """Intrabar twin of :func:`_resolve_one` — same persistence, OHLC verdict.
 
+    Identical patch payload; only the judge differs (high/low instead of
+    closes). Kept as a separate function so the close-walk path stays
+    byte-identical when the basis flag is untouched.
+    """
+    verdict, resolved = _judge_bars(sig, bars)
+    if verdict is None or resolved is None:
+        logger.warning(
+            "eod_resolver: signal %s missing entry/stop/tp — left pending",
+            sig.get("signal_id"),
+        )
+        return None
+    if verdict == "pending":
+        return "pending"
+    entry = _as_float(sig.get("entry_price"))
+    pnl = compute_pnl(
+        resolved["outcome"],
+        sig.get("tp_bricks"), sig.get("sl_bricks"), sig.get("brick_size"),
+        entry_price=entry,
+        exit_price=resolved["exit_price"],
+        direction=sig.get("signal") or "buy",
+    )
+
+    patch = _filter_payload({
+        "outcome": resolved["outcome"],
+        "exit_price": resolved["exit_price"],
+        "exit_ts": shift_ts(sig.get("ts"), resolved["hold_bars"]),
+        "hold_bars": resolved["hold_bars"],
+        "mfe": resolved["mfe"],
+        "mae": resolved["mae"],
+        "pnl_bricks": pnl["pnl_bricks"],
+        "pnl_dollars": pnl["pnl_dollars"],
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "drift_1h_pct": resolved.get("drift_1h_pct"),
+        "drift_4h_pct": resolved.get("drift_4h_pct"),
+        "drift_12h_pct": resolved.get("drift_12h_pct"),
+        "drift_24h_pct": resolved.get("drift_24h_pct"),
+        "drift_48h_pct": resolved.get("drift_48h_pct"),
+    }, NT_SIGNAL_SIM_COLUMNS)
+
+    if not await _patch_signal(sig.get("signal_id"), patch):
+        return None
+
+    if resolved["outcome"] in ("tp_hit", "sl_hit"):
+        await _write_calibration_record(sig, resolved, pnl)
+
+    return resolved["outcome"]
+
+
+def _resolver_basis() -> str:
+    """``close_walk`` | ``intrabar`` — the resolver's TP/SL basis.
+
+    Fails closed to ``close_walk`` (the shipped default) so a flag-read error
+    can never silently change outcome semantics.
+    """
+    try:
+        from regime_platform.core.feature_flags import get_eod_resolver_basis
+        return get_eod_resolver_basis()
+    except Exception:
+        return "close_walk"
+
+
+# ─── Orchestrator entry point ─────────────────────────────────────
 async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[str, Any]:
     """Forward-resolve pending nt_signal_sim rows in batches.
 
@@ -891,13 +1014,21 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
                 continue
             symbol_specs.append({"symbol": symbol, "tradingview_symbol": tv})
 
+        # Basis (2026-10-02, worklog/20261002_SIGNAL_QUALITY_PLAN.md §3.1):
+        # "intrabar" fetches OHLC as well and judges on high/low; "close_walk"
+        # (default) is byte-identical to the historical behaviour.
+        _basis_intrabar = _resolver_basis() == "intrabar"
+        _ohlcv_out: dict[str, list[dict[str, Any]]] = {}
         try:
-            candles_by_symbol = (
-                await fetch_candles_for_symbols(
+            if _basis_intrabar:
+                candles_by_symbol, _ohlcv_out = await fetch_candles_for_symbols(
+                    symbol_specs, n_bars=LIGHT_BARS, interval=INTERVAL,
+                    ohlcv_out=_ohlcv_out,
+                )
+            else:
+                candles_by_symbol = await fetch_candles_for_symbols(
                     symbol_specs, n_bars=LIGHT_BARS, interval=INTERVAL,
                 )
-                if symbol_specs else {}
-            )
         except Exception as exc:
             logger.error("eod_resolver: candle batch fetch failed: %s", exc)
             for spec in symbol_specs:
@@ -926,7 +1057,16 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
                     if post is None:
                         summary["windowed_out"] += 1
                         continue
-                    outcome = await _resolve_one(sig, post)
+                    if _basis_intrabar:
+                        _bars = anchor_post_entry_bars(
+                            _ohlcv_out.get(symbol) or [], sig.get("ts"), fetch_ts,
+                        )
+                        if not _bars:
+                            summary["windowed_out"] += 1
+                            continue
+                        outcome = await _resolve_one_bars(sig, _bars)
+                    else:
+                        outcome = await _resolve_one(sig, post)
                     if outcome is None:
                         summary["errors"] += 1
                     elif outcome == "pending":
@@ -1077,7 +1217,14 @@ async def dry_run_pending_signals(
     specs = [{"symbol": s, "tradingview_symbol": tv_map[s]} for s in by_symbol_rows if tv_map.get(s)]
     out["errors"] += sum(len(v) for s, v in by_symbol_rows.items() if not tv_map.get(s))
     try:
-        candles = await fetch_candles_for_symbols(specs, n_bars=LIGHT_BARS, interval=INTERVAL) if specs else {}
+        if _resolver_basis() == "intrabar":
+            _dry_ohlcv: dict[str, list[dict[str, Any]]] = {}
+            candles, _dry_ohlcv = await fetch_candles_for_symbols(
+                specs, n_bars=LIGHT_BARS, interval=INTERVAL, ohlcv_out=_dry_ohlcv,
+            ) if specs else ({}, {})
+        else:
+            candles = await fetch_candles_for_symbols(specs, n_bars=LIGHT_BARS, interval=INTERVAL) if specs else {}
+            _dry_ohlcv = {}
     except Exception as exc:
         logger.warning("eod_resolver: dry-run candle fetch failed: %s", exc)
         out["errors"] += sum(len(by_symbol_rows[s["symbol"]]) for s in specs)
@@ -1095,7 +1242,16 @@ async def dry_run_pending_signals(
             if post is None:
                 out["windowed_out"] += 1
                 continue
-            verdict, _ = _judge(sig, post)
+            if _resolver_basis() == "intrabar":
+                _b = anchor_post_entry_bars(
+                    _dry_ohlcv.get(symbol) or [], sig.get("ts"), now,
+                )
+                if not _b:
+                    out["windowed_out"] += 1
+                    continue
+                verdict, _ = _judge_bars(sig, _b)
+            else:
+                verdict, _ = _judge(sig, post)
             if verdict is None:
                 out["errors"] += 1
             elif verdict == "pending":

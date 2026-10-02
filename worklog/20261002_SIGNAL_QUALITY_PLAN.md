@@ -97,6 +97,36 @@ cannot be adopted as-is. Two steps:
 bracket base rate, the ghost edge was a close-vs-intrabar artefact and this fix is
 unnecessary. *Do this measurement before building anything on top of it.*
 
+### ✅ RESOLVED — kill criterion NOT met; the label is genuinely optimistic
+
+Both dependencies built and the measurement run.
+`worklog/kairos/reports/20261002_resolver_basis_eval.md`.
+
+- **`resolve_signal_outcome_ohlc`** — intrabar first-touch resolver (18 tests).
+- **`eod_resolver_basis`** flag — `close_walk` (default, byte-identical) | `intrabar`,
+  wired through both the writing resolver and the hourly dry run (38 tests).
+- **The measurement** — both labels on a consistent intrabar basis, at every horizon:
+
+| horizon | BRACKET_INTRA | SURVIVABLE | ghost gap | % of bracket | kill |
+|---|---:|---:|---:|---:|---|
+| 4h | 0.1681 | 0.0522 | **0.1158** | 68.9% | NOT MET |
+| 24h | 0.2463 | 0.0570 | **0.1893** | 76.9% | NOT MET |
+| 48h | 0.2588 | 0.0690 | **0.1897** | 73.3% | NOT MET |
+
+**The gap is positive at every horizon, so it is not a horizon artefact.** The ghost
+edge survives when both legs share the intrabar basis — the close-walk label is
+genuinely optimistic, not a measurement artefact.
+
+**Two effects were stacked in the earlier 0.2805 → 0.1186 drop, now separated:**
+
+- the **basis change** (close-walk → intrabar) accounts for **+0.0265**
+- the **survival requirement** accounts for the remaining **~0.19**
+
+**Discrimination is unaffected by the label choice.** AUC is at or below 0.5 under every
+label (close-walk 0.4861; intrabar bracket 0.4491–0.4605; survivable 0.4587–0.4880). So
+the label debate is **orthogonal to the model's ranking ability** — fixing the label
+does not and cannot restore discrimination. That remains a Phase 3 problem.
+
 ### 3.2 Freeze `p_win` as an entry signal; stop letting it size
 
 **What:** remove `ev_scale` from `effective_kelly`, or replace its `p_win` input with a
@@ -266,7 +296,7 @@ Phase 1 (label)  ──gates──▶  Phase 3 (probability)  ──feeds──�
 
 | observation | consequence |
 |---|---|
-| corrected survivor base rate ≈ bracket base rate (±0.02) | ghost edge was an artefact; drop Phase 1, re-order to 2 → 3 |
+| ~~corrected survivor base rate ≈ bracket base rate (±0.02)~~ | **MEASURED — NOT the case.** The gap is 0.116–0.190 across 4h/24h/48h, so Phase 1 stands and the intrabar resolver should be adopted |
 | a bucketing scheme clears AUC 0.55 | Phase 3 succeeds; Phase 4 not needed |
 | no scheme clears it after bucket fix + interaction work | move to Phase 4 (continuous forecast) |
 | `V_i`/`DD_i` show no replay effect | drop them from Phase 2; the backbone is thinner than assumed |
@@ -274,7 +304,28 @@ Phase 1 (label)  ──gates──▶  Phase 3 (probability)  ──feeds──�
 
 ---
 
-## 8. Related
+## 8. Status of the immediate fixes
+
+| item | state |
+|---|---|
+| §3.1 survivable label | **answer measured** — label IS optimistic; resolver built and wired behind `eod_resolver_basis`, **not flipped** (a supported decision now) |
+| §3.2 `ev_scale_sizing_mode` | built, default `"on"` (inert) |
+| §3.3 break-even floor | built, inert at the live RR band |
+| Phase 2 `V_i`/`DD_i` | extracted standalone; **not yet wired into the sweep path** |
+
+**Regression discipline:** every change ships with the default reproducing prior
+behaviour exactly — `ev_scale_sizing_mode: "on"`, `eod_resolver_basis: "close_walk"`,
+break-even floor inert at RR 1.67–2.0. A test asserts each default; a second asserts a
+typo fails closed. **1715 tests pass.**
+
+**The analysis loop is hourly, not 40-day.** The `_h*` / `mae_*` / `mfe_*` columns
+backfill hourly (`kairos.backfill_drift_horizons`), so a new signal is measurable within
+hours. The 40-day figure bounds *statistical power* (how much history exists), not
+iteration speed.
+
+---
+
+## 9. Related
 
 - `docs/scopes/20261002_SIGNAL_QUALITY_METRIC_AND_REACHABILITY_THESIS.md` — objective, metric, thesis
 - `docs/scopes/20261002_EDGE_CALIBRATION_BENCHMARK.md` — the attachment benchmarked claim-by-claim
