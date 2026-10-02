@@ -1,10 +1,58 @@
 # Signal quality — what we are trying to achieve, and the metric that measures it
 
-**Date:** 2026-10-02 · **Status:** THESIS — proposed, nothing built
+**Date:** 2026-10-02 · **Status:** THESIS — §3.3 TESTED, result below
 **Parents:** `docs/QUANT_AUDIT_SIGNAL_CALIBRATION_REACHABILITY_PNL.md` (the E1/R1/C4 findings this answers),
 `worklog/kairos/reports/20261002_calibration_decomp.md` (the measurement that forced this),
 `worklog/kairos/20260926_METHODOLOGY_TRIAGE_AND_QUANT_DECISIONS.md` (the binding quant cut-list)
 **Supersedes:** the implicit objective in `docs/scopes/20261001_CALIBRATION_LEVERAGE_NEXT_STEPS.md`
+
+---
+
+## ⚠ §3.3 TESTED — the thesis is INCOMPLETE (2026-10-02)
+
+The falsifiable test ran. `worklog/kairos/reports/20261002_cell_conditioning.md`.
+
+60d, 38,038 resolved light signals, 5-fold expanding walk-forward, every cell rate
+fit on training rows only:
+
+| model | AUC (out-of-fold) | AUC (in-sample ceiling) |
+|---|---:|---:|
+| `cell` (symbol × vol_tier × bucket) | **0.4994** | 0.7256 |
+| `cell+dir` | 0.5318 | 0.7915 |
+| `cell+trend` | 0.5301 | 0.8262 |
+| `cell+p_win` | 0.5115 | 0.7994 |
+
+**Three findings, all of which change the plan:**
+
+1. **The cell does NOT transfer across time.** In-sample 0.7256 (real
+   discrimination — the cell genuinely orders outcomes) → out-of-fold 0.4994
+   (chance). The historical reachability rate does not predict the future
+   reachability rate over a 60-day window. This is **non-stationarity**, and it is
+   a far more serious problem than the category error: even a perfectly specified
+   `P(win | cell)` is useless if the cell's rate moves under it.
+
+2. **No conditioning transfers either.** Every direction term improves in-sample
+   (0.79–0.83) and collapses out-of-fold (0.51–0.53), with gains *inside* the
+   ±0.0566 fold spread. `cell+p_win` — the live blend — adds **+0.0121**, below
+   the noise bar. Direction is not a conditioning term worth adding; it is not
+   even a reliable one.
+
+3. **The bucket space is degenerate.** **71.2% of all rows sit in the single `4+`
+   bucket** (27,101 of 38,038). A key of `(symbol, vol_tier, bucket)` is therefore
+   barely finer than `(symbol, vol_tier)` — the distance/ATR dimension is not doing
+   the work the thesis assumed. This is audit **G2 in data**: brackets are built in
+   %-price space, so almost everything lands in the widest ATR bucket.
+
+**What survives of the thesis:** geometry *does* carry the signal in-sample, so
+"the cell is the model" is not wrong — but it is not yet *usable*, because the cell
+is non-stationary and its bucketing is degenerate. The correction is that the
+reachability table must become **time-local** (rolling window, or an explicit decay
+on the cell rate) and the geometry must be **generated in ATR space** so the buckets
+have occupancy. Until both are true, `P(win | cell)` cannot be the primary model.
+
+**What does not survive:** the claim that conditioning on direction is a live
+question worth testing further. It failed the bar. The live `p_win` blend adds
++0.0121 out-of-fold — nothing.
 
 ---
 
