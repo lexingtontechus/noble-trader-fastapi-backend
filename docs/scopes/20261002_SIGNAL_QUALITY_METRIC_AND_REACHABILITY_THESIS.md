@@ -75,14 +75,30 @@ No window clears 0.55. **14d is nominally best at 0.5093 — but that gain is 0.
 which is noise, and 7d is *worse* (0.4905).** The pattern is non-monotone, which is
 what a noise signal looks like.
 
-**Test 2 — is the rate unstable? YES, strongly.**
+**Replication (a second run on the same ~40 days, slightly more rows).** The sweep was
+run twice as the database grew. The window *ranking* did not survive:
 
-| metric | value |
-|---|---:|
-| mean abs drift between consecutive eras | **0.1996** |
-| mean range across eras | 0.3461 |
-| sign-flip share (crossing 0.5) | 24.1% |
-| split-half correlation | **0.1636** |
+| lookback | run A | run B |
+|---|---:|---:|
+| 7d | 0.4905 | 0.4938 |
+| **14d** | **0.5093 (best)** | **0.4831 (worst)** |
+| 30d | 0.5003 | 0.4995 |
+| 60d | 0.5003 | 0.4994 |
+| all | 0.5003 | 0.4994 |
+
+**14d moved from best to worst**, and every window sits in 0.48–0.51 in both runs. The
+one candidate that could have read as a finding is refuted by re-measurement — which is
+the strongest available evidence that no window works and the apparent 14d gain was
+sampling noise.
+
+**Test 2 — is the rate unstable? YES, strongly, and it replicates.**
+
+| metric | run A | run B |
+|---|---:|---:|
+| mean abs drift between consecutive eras | 0.1996 | 0.1978 |
+| mean range across eras | 0.3461 | 0.3409 |
+| sign-flip share (crossing 0.5) | 24.1% | 23.4% |
+| split-half correlation | 0.1636 | 0.1640 |
 
 A cell's rate moves ~0.20 between eras, and first-half rates explain only 16% of the
 variance in second-half rates. The era table shows it plainly — `AAPL · low_vol · 4+`
