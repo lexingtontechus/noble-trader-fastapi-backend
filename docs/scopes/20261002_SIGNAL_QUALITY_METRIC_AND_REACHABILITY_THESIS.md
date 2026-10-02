@@ -56,6 +56,66 @@ question worth testing further. It failed the bar. The live `p_win` blend adds
 
 ---
 
+## ⚠ FOLLOW-UP — recency does NOT fix it, but the rate IS non-stationary (2026-10-02)
+
+`worklog/kairos/reports/20261002_reachability_decay.md`. The two tests disagree, and
+the disagreement is the finding.
+
+**Test 1 — does a trailing window recover transfer? NO.**
+
+| training lookback | out-of-fold AUC | mean train n |
+|---|---:|---:|
+| 7d | 0.4905 | 7,945 |
+| 14d | 0.5093 | 16,580 |
+| 30d | 0.5003 | 26,082 |
+| 60d | 0.5003 | 26,246 |
+| all history | 0.5003 | 26,246 |
+
+No window clears 0.55. **14d is nominally best at 0.5093 — but that gain is 0.009,
+which is noise, and 7d is *worse* (0.4905).** The pattern is non-monotone, which is
+what a noise signal looks like.
+
+**Test 2 — is the rate unstable? YES, strongly.**
+
+| metric | value |
+|---|---:|
+| mean abs drift between consecutive eras | **0.1996** |
+| mean range across eras | 0.3461 |
+| sign-flip share (crossing 0.5) | 24.1% |
+| split-half correlation | **0.1636** |
+
+A cell's rate moves ~0.20 between eras, and first-half rates explain only 16% of the
+variance in second-half rates. The era table shows it plainly — `AAPL · low_vol · 4+`
+walks `0.00 → 0.06 → 0.03 → 0.63 → 0.35 → 0.12`.
+
+**The two together mean something neither says alone.** The rate *does* move
+(non-stationarity is real), but a trailing window does not recover transfer. That
+combination is consistent with a third explanation the two-way framing missed:
+
+> **The cell rate moves because it is dominated by a shared market-wide factor, not
+> because each cell has its own drifting property.**
+
+If cell rates are all loading on one common driver, then (i) they move together, so
+cross-sectional correlation is high — but (ii) the *ranking* between cells barely
+changes, so a per-cell rate carries little ordering information, and (iii) re-fitting
+on a recent window just re-estimates the same shared factor noisily. That fits every
+observation: strong drift, high sign-flip, low split-half corr (because the shared
+factor moves the *level*, not the ordering), and no window helping.
+
+**Critical constraint on this test:** the available resolved history is only **36
+days** (2026-08-26 → 2026-10-02) — `nt_signal_sim` does not reach back further for
+resolved light rows. So 30d/60d/"all" are the *same fit*, and each era is only ~6
+days. **A longer history is required before the window sweep can be trusted**; the
+36-day bound is the first thing to fix.
+
+**Consequence for the thesis:** the §3.3 correction stands (time-local + ATR-space
+geometry are both still required), but the mechanism is now better described as a
+**common-factor problem**. The testable next question is whether the cell rates'
+residuals *after* removing a market-wide factor carry any ordering — which is the
+same question as "is there a cross-sectional edge, or only a time-series one".
+
+---
+
 ## 0. The one-paragraph version
 
 We are not trying to predict price direction. We are trying to **select brackets whose
