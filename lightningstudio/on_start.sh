@@ -159,6 +159,11 @@ log "    PID: $PID_TIMESFM"
 # Spark-X2.5 INT8 via materialised snapshot (NOT the HF hub id): hub id +
 # HF_HUB_OFFLINE fails trust_remote_code metadata lookups. Path is the
 # fully-copied tree under hf_cache (transformers 5.x + remote code).
+# Pin to the local path unconditionally — Studio env sets
+# LOCAL_LLM_MODEL=XHToken/Spark-X2.5-1.7B-INT8 which overrides the default
+# fallback and breaks offline loading (no hub cache snapshot). Same pinning
+# method as TimesFM: local persistent cache, no env override at load time.
+# Set LOCAL_LLM_PATH_OVERRIDE to a different directory if needed.
 # Clients: LOCAL_LLM_BASE_URL=http://127.0.0.1:8004
 log ""
 log "  [1b/5] Starting Local LLM (port 8004)..."
@@ -167,7 +172,7 @@ export HF_HOME="${HF_HOME:-/teamspace/studios/this_studio/hf_cache}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export HF_HUB_OFFLINE=1
 export LOCAL_LLM_TRUST_REMOTE_CODE=1
-export LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL:-/teamspace/studios/this_studio/hf_cache/spark-int8-local}"
+export LOCAL_LLM_MODEL="${LOCAL_LLM_PATH_OVERRIDE:-/teamspace/studios/this_studio/hf_cache/spark-int8-local}"
 export LOCAL_LLM_PORT=8004
 log "    MODEL: $LOCAL_LLM_MODEL"
 python llm_server.py >> "$LOG_LLM" 2>&1 &

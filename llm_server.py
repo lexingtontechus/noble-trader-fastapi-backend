@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -42,11 +41,11 @@ else:
         "HF_HUB_CACHE", os.path.join(os.environ["HF_HOME"], "hub")
     )
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Security  # noqa: E402
+import uvicorn  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, Security  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.security import APIKeyHeader  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
-import uvicorn  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("llm-server")
@@ -65,14 +64,25 @@ def _resolve_model_path(model_id: str) -> str:
     HF id + ``HF_HUB_OFFLINE=1`` fails even when the weights sit in
     ``HF_HOME/hub/models--org--name/snapshots/<rev>`` — transformers still
     wants hub metadata. If a snapshot exists, load from that path.
+
+    Also: if model_id looks like an HF hub id (contains ``/`` but isn't a
+    real path), fall back to the materialised local tree at
+    ``spark-int8-local`` — the Studio env var ``LOCAL_LLM_MODEL`` is set to
+    the hub id by default, which breaks offline loading.
     """
     if os.path.isdir(model_id):
         return model_id
+    # Fall back to local materialised tree if the HF hub id fails
     hub = os.path.join(
         os.environ.get("HF_HUB_CACHE")
         or os.path.join(os.environ.get("HF_HOME", ""), "hub")
     )
     if not hub or not os.path.isdir(hub):
+        # Try the canonical spark-int8-local path
+        local_path = "/teamspace/studios/this_studio/hf_cache/spark-int8-local"
+        if os.path.isdir(local_path):
+            log.info("Fell back to local spark-int8 tree for %s", model_id)
+            return local_path
         return model_id
     slug = model_id.replace("/", "--")
     root = os.path.join(hub, f"models--{slug}", "snapshots")
