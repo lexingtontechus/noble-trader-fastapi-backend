@@ -134,6 +134,10 @@ async def lifespan(_app: FastAPI):
     except ImportError:
         log.warning("accelerate not installed — loading without device_map")
     mdl = AutoModelForCausalLM.from_pretrained(MODEL_ID, **load_kwargs)
+    # Fix: Spark-X2.5 generation_config.json ships top_k=-1 which transformers
+    # rejects in TopKLogitsWarper. Override to 0 (no top-k filtering).
+    if hasattr(mdl, "generation_config"):
+        mdl.generation_config.top_k = 0
     state["tokenizer"] = tok
     state["pipe"] = pipeline(
         "text-generation",
@@ -186,6 +190,7 @@ async def chat(req: ChatRequest, _auth: None = Depends(verify_api_key)):
             max_new_tokens=req.max_tokens,
             do_sample=req.temperature > 0,
             temperature=req.temperature if req.temperature > 0 else None,
+            top_k=0,  # Fix: Spark-X2.5 config has top_k=-1, invalid for transformers
             return_full_text=False,
         )
         content = (out[0]["generated_text"] if out else "").strip()
