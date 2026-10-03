@@ -121,6 +121,33 @@ async def lifespan(_app: FastAPI):
     log.info("Loading local LLM: %s (HF_HOME=%s)", MODEL_ID, os.environ.get("HF_HOME"))
     t0 = time.time()
     from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+    # Compatibility shim: transformers 5.x renamed 'input_embeds' → 'inputs_embeds'
+    # and removed 'cache_position' from create_causal_mask(). The Spark-X2.5 model's
+    # custom modeling_spark.py (trust_remote_code) uses the old API. Must patch
+    # before model import so the model picks up the patched reference.
+    try:
+        import transformers.masking_utils as _masking
+
+        _orig_cc = _masking.create_causal_mask
+        _orig_sc = _masking.create_sliding_window_causal_mask
+
+        def _compat_cc(**kwargs):
+            if "input_embeds" in kwargs:
+                kwargs["inputs_embeds"] = kwargs.pop("input_embeds")
+            kwargs.pop("cache_position", None)
+            return _orig_cc(**kwargs)
+
+        def _compat_sc(**kwargs):
+            if "input_embeds" in kwargs:
+                kwargs["inputs_embeds"] = kwargs.pop("input_embeds")
+            kwargs.pop("cache_position", None)
+            return _orig_sc(**kwargs)
+
+        _masking.create_causal_mask = _compat_cc
+        _masking.create_sliding_window_causal_mask = _compat_sc
+        log.info("Applied transformers 5.x compat shim for Spark-X2.5 modeling")
+    except ImportError:
+        log.warning("Could not apply compat shim — masking_utils not found")
 
     tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=TRUST_REMOTE_CODE)
     load_kwargs: dict = {"trust_remote_code": TRUST_REMOTE_CODE}
