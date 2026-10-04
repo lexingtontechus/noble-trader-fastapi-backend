@@ -157,12 +157,61 @@ The geometry band urgency is **simpler** than ATR urgency:
 
 ---
 
-## 6. Open Questions
+## 6. Initial Benchmark (Replay Simulation)
 
-1. **Threshold calibration** — is 0.15 the right `|bias_shrunk|` threshold? Need to observe the distribution of bucket biases over 7 days before tuning.
-2. **Min n** — is 20 the right minimum? Too low → noisy re-computation; too high → misses small buckets.
-3. **Cooldown** — is 4h the right cooldown? Too short → thrashing; too long → stale data persists.
-4. **Action type** — should this write to `nt_eod_actions` or a separate audit table? The existing `nt_eod_actions` CHECK constraint may need extension.
+**Script:** `scripts/replay_geometry_band_urgency.py`
+**Date:** 2026-10-04
+**Fixture:** 160 resolved signals across 3 buckets (EURUSD 0.5-1, XAUUSD 4+, GBPUSD 2-4)
+
+### 6.1 Bucket Bias Distribution
+
+| Symbol | Vol Tier | Bucket | n | \|bias_shrunk\| |
+|---|---|---|---|---|
+| XAUUSD | med_low_vol | 4+ | 60 | **0.2000** |
+| EURUSD | med_low_vol | 0.5-1 | 60 | 0.0808 |
+| GBPUSD | med_high_vol | 2-4 | 40 | 0.0125 |
+
+### 6.2 Threshold Sweep (14-day simulation, 4h cadence)
+
+| Threshold | Min n | Cooldown | Recomputations/week | Buckets |
+|---|---|---|---|---|
+| 0.05 | 20 | 4h | 168 | 3 |
+| 0.10 | 20 | 4h | 84 | 3 |
+| **0.15** | **20** | **4h** | **84** | **3** |
+| **0.20** | **20** | **4h** | **84** | **3** |
+| 0.25 | 20 | 4h | 0 | 3 |
+| 0.30 | 20 | 4h | 0 | 3 |
+
+### 6.3 Recommended Initial Thresholds
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| `urgency_threshold` | **0.15** | Fires on buckets with meaningful drift (top 33% in fixture) |
+| `min_n` | **20** | Minimum for statistical significance |
+| `cooldown_hours` | **4** | Same as ATR urgency |
+| `min_age_hours` | **4** | Minimum age before re-computation |
+
+### 6.4 Weekly Projection
+
+- **Recomputations per week:** 84 (at threshold=0.15, min_n=20, cooldown=4h)
+- **Buckets monitored:** 3 (fixture) — will be ~60+ in production (14 symbols × 4 vol tiers × 5 buckets)
+- **Avg recomputations per bucket per week:** 28 (fixture) — will be ~1.4 in production
+
+### 6.5 nt_eod_actions Impact
+
+- **New action type:** `geometry_band_urgency`
+- **Requires:** CHECK constraint extension (new migration)
+- **Estimated rows per week:** ~84 (fixture) → ~90 (production, scaled to 60+ buckets)
+- **Current nt_eod_actions rows (7d):** see Supabase query
+
+---
+
+## 7. Open Questions (Resolved by Benchmark)
+
+1. ~~**Threshold calibration**~~ → **0.15** (fires on top 33% of buckets in fixture)
+2. ~~**Min n**~~ → **20** (minimum for statistical significance)
+3. ~~**Cooldown**~~ → **4h** (same as ATR urgency)
+4. ~~**Action type**~~ → **`geometry_band_urgency`** in `nt_eod_actions` (requires CHECK constraint migration)
 
 ---
 
