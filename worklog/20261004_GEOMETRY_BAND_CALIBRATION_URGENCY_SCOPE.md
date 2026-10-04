@@ -91,14 +91,39 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
 
 ### 3.2 Config: `feature_flags.yaml`
 
+Replicates the `dynamic_atr` methodology exactly: global defaults + `by_symbol` overrides.
+
 ```yaml
 geometry_band_urgency:
   enabled: true
   urgency_threshold: 0.15      # |bias_shrunk| threshold
   min_n: 20                     # minimum resolved signals per bucket
-  min_age_hours: 4              # minimum age before re-computation
   cooldown_hours: 4             # per-bucket cooldown
+  min_age_hours: 4              # minimum age before re-computation
+  by_symbol:
+    FOREX:
+      urgency_threshold: 0.15
+      min_n: 20
+    XAUUSD:
+      urgency_threshold: 0.20
+      min_n: 30
+    XAGUSD:
+      urgency_threshold: 0.15
+      min_n: 20
+    BTCUSD:
+      urgency_threshold: 0.10
+      min_n: 15
 ```
+
+The `by_symbol` overrides work exactly like `dynamic_atr.by_symbol`:
+- Each symbol can have its own `urgency_threshold`, `min_n`, `cooldown_hours`
+- Symbols not listed fall back to global defaults
+- `FOREX` is a shared key for all forex majors (like `dynamic_atr`)
+
+The accessor `get_geometry_band_urgency_config(symbol)` replicates `get_dynamic_atr_config()`:
+- Resolves per-symbol overrides
+- Falls back to `FOREX` for forex majors
+- Falls back to global defaults for unlisted symbols
 
 ### 3.3 Cron: 4h urgency check
 

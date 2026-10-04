@@ -834,6 +834,41 @@ min_p_win_bracket_by_asset_class:
   index: 0.40
   etf: 0.40
 
+# Geometry band calibration urgency (2026-10-04, worklog
+# 20261004_GEOMETRY_BAND_CALIBRATION_URGENCY_SCOPE.md).
+# Replicates the dynamic_atr methodology: global defaults + by_symbol overrides.
+# The urgency process monitors per-bucket calibration bias and triggers
+# targeted re-computation when drift exceeds threshold.
+#
+# Trigger: |bias_shrunk| > urgency_threshold (per symbol, per bucket)
+# Action: targeted bucket re-computation (not full rebuild)
+# Frequency: 4h check, 4h per-bucket cooldown
+# Output: updated nt_bracket_reachability row + nt_eod_actions audit log
+#
+# by_symbol overrides work exactly like dynamic_atr.by_symbol:
+#   - Each symbol can have its own urgency_threshold, min_n, cooldown_hours
+#   - Symbols not listed fall back to global defaults
+#   - FOREX is a shared key for all forex majors (like dynamic_atr)
+geometry_band_urgency:
+  enabled: true
+  urgency_threshold: 0.15
+  min_n: 20
+  cooldown_hours: 4
+  min_age_hours: 4
+  by_symbol:
+    FOREX:
+      urgency_threshold: 0.15
+      min_n: 20
+    XAUUSD:
+      urgency_threshold: 0.20
+      min_n: 30
+    XAGUSD:
+      urgency_threshold: 0.15
+      min_n: 20
+    BTCUSD:
+      urgency_threshold: 0.10
+      min_n: 15
+
 # Rank score calibration feedback (2026-10-04, worklog
 # 20261004_RANK_SCORE_ANALYSIS_AND_CALIBRATION_SCOPE.md).
 # off: standard Bayesian shrink (status quo).

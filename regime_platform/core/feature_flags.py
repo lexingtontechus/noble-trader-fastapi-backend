@@ -209,6 +209,19 @@ _DEFAULTS: dict[str, Any] = {
     },
     "rank_score_calibration_mode": "shadow",
     "rank_score_calibration_slope": 0.5,
+    "geometry_band_urgency": {
+        "enabled": True,
+        "urgency_threshold": 0.15,
+        "min_n": 20,
+        "cooldown_hours": 4,
+        "min_age_hours": 4,
+        "by_symbol": {
+            "FOREX": {"urgency_threshold": 0.15, "min_n": 20},
+            "XAUUSD": {"urgency_threshold": 0.20, "min_n": 30},
+            "XAGUSD": {"urgency_threshold": 0.15, "min_n": 20},
+            "BTCUSD": {"urgency_threshold": 0.10, "min_n": 15},
+        },
+    },
     "p_win_bracket_unscored_policy": "fail_closed",
     "geometry_incubation_mode": "shadow",
     "geometry_incubation_min_days": 7,
@@ -863,6 +876,42 @@ def get_rank_score_calibration_slope() -> float:
         ))
     except (TypeError, ValueError):
         return _DEFAULTS["rank_score_calibration_slope"]
+
+
+def get_geometry_band_urgency_config(symbol: str | None = None) -> dict[str, Any]:
+    """Geometry band urgency settings (``geometry_band_urgency`` block).
+
+    Replicates the ``get_dynamic_atr_config()`` pattern: global defaults
+    + ``by_symbol`` overrides. Per-symbol is the default unit (each
+    symbol's own bucket bias); forex majors share ``by_symbol.FOREX``.
+
+    Returns a dict with: enabled, urgency_threshold, min_n,
+    cooldown_hours, min_age_hours.
+    """
+    cfg = dict(_DEFAULTS["geometry_band_urgency"])
+    raw = _load().get("geometry_band_urgency", {})
+    if isinstance(raw, dict):
+        cfg.update({
+            k: v for k, v in raw.items()
+            if k in cfg and v is not None and k != "by_symbol"
+        })
+    by_symbol = {}
+    if isinstance(raw, dict) and isinstance(raw.get("by_symbol"), dict):
+        by_symbol = raw["by_symbol"]
+    elif isinstance(cfg.get("by_symbol"), dict):
+        by_symbol = cfg["by_symbol"]
+    cfg.pop("by_symbol", None)
+    if symbol:
+        sym_u = str(symbol).strip().upper()
+        ov = by_symbol.get(sym_u)
+        # Major FX share one config (fractional-dollar book).
+        if ov is None and sym_u in (
+            "AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY",
+        ):
+            ov = by_symbol.get("FOREX")
+        if isinstance(ov, dict):
+            cfg.update({k: v for k, v in ov.items() if v is not None})
+    return cfg
 
 
 def get_geometry_incubation_mode() -> str:
