@@ -1,14 +1,42 @@
-# Dynamic Regime Risk Management Platform
+# Kairos — Dynamic Regime Risk Management Platform
 
-A production-grade FastAPI web service that **produces qualified trading signals**.
-It detects market regimes with 4-state Hidden Markov Models, sizes positions through
-a unified Dynamic Masaniello + Kelly engine, and computes a calibrated
-probability-of-win and expected value per signal before a 7-gate qualification
-chain decides whether it publishes.
+**Codename: Kairos** (καιρός — the opportune moment). A production-grade FastAPI
+web service that **produces qualified trading signals**. It detects market
+regimes with 4-state Hidden Markov Models, sizes positions through a unified
+Dynamic Masaniello + Kelly engine, and computes a calibrated probability-of-win
+and expected value per signal before a 7-gate qualification chain decides
+whether it publishes.
 
 > **This service is not a trade executor.** `ExecutorFactory.get_executor` fails
 > closed by design — order placement lives in the Hermes agent (Talaria). See
 > [Scope](#scope--what-this-service-is-and-is-not).
+
+---
+
+## AI / LLM Integration — What Makes Kairos Different
+
+Kairos is not a traditional quant system. It uses **multi-modal AI** at three
+critical decision layers:
+
+| Layer | AI Technology | Role |
+|---|---|---|
+| **Classification** | 4-state Gaussian HMM + TimesFM 2.5 foundation model | Regime detection and directional forecasting |
+| **Decision Making** | EV Engine v6 — logit-pooled multi-source blend | Probability-of-win and expected value computation |
+| **Weight Optimization** | Dynamic weight renormalization + calibration enforcement | Adaptive source weighting with Bayesian shrinkage |
+
+### What this means relative to quant hedge funds
+
+Traditional quant hedge funds rely on:
+- **Static factor models** — fixed weights, periodic rebalancing
+- **Single-source signals** — either technical OR fundamental, rarely both
+- **Human discretion** — portfolio managers override models manually
+
+Kairos uses AI to:
+- **Blend multiple probability sources dynamically** — the EV Engine's logit-pool adjusts weights based on which sources are available and their recent calibration
+- **Self-correct through calibration loops** — EOD recalibration and intraday drift monitoring automatically adjust for model drift
+- **Scale across 14 symbols** — the same AI infrastructure handles FX, metals, equities, and crypto without symbol-specific tuning
+
+The result is a system that **learns from its own predictions** — every signal is scored against its predicted probability, and the calibration loop adjusts future predictions based on realized outcomes. This is closer to how a machine learning team at a quant fund operates, but automated end-to-end.
 
 ---
 

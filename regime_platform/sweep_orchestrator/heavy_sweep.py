@@ -1787,7 +1787,7 @@ class HeavySweepMixin:
                         gated_p_regime=sim_gated_p_regime,
                         # P1.3 + P1.2 — raw + geometry on heavy sim rows
                         predicted_p_win_raw=p_win_raw_heavy,
-                        p_win_dir=p_win_raw_heavy,
+                        p_win_dir=_p_win_bracket,
                         p_win_bracket=_p_win_bracket,
                         p_resolve=_p_resolve,
                         p_win_resolve=_p_win_resolve,
@@ -2131,12 +2131,22 @@ class HeavySweepMixin:
             MIN_REGIME_CONF,
             MIN_P_WIN,
         )
+        from regime_platform.core.feature_flags import (
+            get_min_p_win_bracket,
+            get_p_win_in_ev_mode,
+        )
         if trade_signal["signal"] in ("neutral", "unknown"):
             return False
         if not ev_result.allowed:
             return False
-        if ev_result.p_win < MIN_P_WIN:
-            return False
+        # When p_win_in_ev_mode=live, ev_result.p_win is the bracket probability
+        # (renamed p_win_dir). Score it against min_p_win_bracket, not MIN_P_WIN.
+        if get_p_win_in_ev_mode() == "live":
+            if ev_result.p_win < get_min_p_win_bracket():
+                return False
+        else:
+            if ev_result.p_win < MIN_P_WIN:
+                return False
         if regime_conf < MIN_REGIME_CONF:
             return False
         if kelly_f < MIN_KELLY:

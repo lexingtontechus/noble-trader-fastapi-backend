@@ -172,11 +172,11 @@ class TestPayloadWiring:
             brick_size=5.0, sl_bricks=6, tp_bricks=12,
             p_win=0.62, ev=0.01, regime="med_low_vol_bull", regime_conf=0.8,
             source="light", qualified=True,
-            p_win_dir=0.62, p_win_bracket=0.41, p_resolve=0.7,
+            p_win_dir=0.41, p_win_bracket=0.41, p_resolve=0.7,
             p_win_resolve=0.59, bracket_bucket="2-4",
             bracket_vol_tier="med_low_vol", bracket_gate_shadow=True,
         )
-        assert p["p_win_dir"] == 0.62
+        assert p["p_win_dir"] == 0.41
         assert p["p_win_bracket"] == 0.41
         assert p["bracket_gate_shadow"] is True
         assert p["bracket_bucket"] == "2-4"

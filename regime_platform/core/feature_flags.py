@@ -797,9 +797,10 @@ def get_p_win_in_ev_mode() -> str:
 
     off: EV/Kelly keep directional p_win (status quo).
     shadow: compute bracket EV comparison and log; live EV unchanged.
-    live: EV + Kelly use p_win_bracket (3-outcome with p_expire). Directional
-    ``p_win_ok`` gate still scores p_win_dir — different scale from
-    ``min_p_win_bracket``. Unscored bracket fails open to directional EV.
+    live: EV + Kelly use p_win_dir (bracket probability, renamed from
+    p_win_bracket). ``p_win_ok`` gate scores p_win_dir against
+    ``min_p_win_bracket`` when live. Unscored bracket fails open to
+    directional EV.
     """
     return str(_load().get(
         "p_win_in_ev_mode", _DEFAULTS["p_win_in_ev_mode"],

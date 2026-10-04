@@ -4270,17 +4270,28 @@ class SweepOrchestrator(HeavySweepMixin):
         # silently rejecting them. The agent gets more data to work with
         # and can apply its own Bayesian alpha + calibration bias on top.
         P_WIN_HARD_FLOOR = 0.50
-        # When R2 put p_win_bracket on EV, p_win_ok must still score the
-        # directional p_win_raw (different scale from min_p_win_bracket).
-        _p_win_for_gate = p_win_raw if _bracket_applied_to_ev else ev_result.p_win
-        if _p_win_for_gate < P_WIN_HARD_FLOOR:
+        # p_win_dir is now the bracket probability (renamed from p_win_bracket).
+        # When p_win_in_ev_mode=live, score p_win_dir against min_p_win_bracket.
+        # The 0.50 hard floor applies to directional p_win, not bracket probability.
+        if p_win_in_ev_mode == "live" and _p_win_bracket is not None:
+            _p_win_for_gate = _p_win_bracket
+            _p_win_gate_min = get_min_p_win_bracket()
+            _p_win_gate_hard_floor = 0.0
+        else:
+            _p_win_for_gate = p_win_raw if _bracket_applied_to_ev else ev_result.p_win
+            _p_win_gate_min = MIN_P_WIN
+            _p_win_gate_hard_floor = P_WIN_HARD_FLOOR
+        if _p_win_for_gate < _p_win_gate_hard_floor:
             p_win_ok = False
             p_win_kelly_shrink = 0.0
-        elif _p_win_for_gate < MIN_P_WIN:
+        elif _p_win_for_gate < _p_win_gate_min:
             # Soft band — publish but with reduced kelly
             p_win_ok = True  # passes the gate (publish)
-            if MIN_P_WIN > P_WIN_HARD_FLOOR:
-                p_win_kelly_shrink = (_p_win_for_gate - P_WIN_HARD_FLOOR) / (MIN_P_WIN - P_WIN_HARD_FLOOR)
+            if _p_win_gate_min > _p_win_gate_hard_floor:
+                p_win_kelly_shrink = (
+                    (_p_win_for_gate - _p_win_gate_hard_floor)
+                    / (_p_win_gate_min - _p_win_gate_hard_floor)
+                )
             else:
                 p_win_kelly_shrink = 1.0
         else:
@@ -4292,7 +4303,7 @@ class SweepOrchestrator(HeavySweepMixin):
         # can separate "full edge" from "soft band" without changing publish.
         p_win_soft_band = bool(
             p_win_ok
-            and P_WIN_HARD_FLOOR <= _p_win_for_gate < MIN_P_WIN
+            and _p_win_gate_hard_floor <= _p_win_for_gate < _p_win_gate_min
         )
 
         gate_results = {
@@ -4831,7 +4842,7 @@ class SweepOrchestrator(HeavySweepMixin):
             try:
                 # Bracket gate already applied (10a, before Discord) so
                 # `qualified` / suppress_reason are final for this capture.
-                _p_win_dir = p_win_raw
+                _p_win_dir = _p_win_bracket
 
                 # ── Tiered ATR geometry / long-lag risk (Phase C2) ──────
                 from regime_platform.sweep_orchestrator.geometry_risk import (

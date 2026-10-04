@@ -809,12 +809,15 @@ p_win_bracket_unscored_policy: "fail_closed"
 # p_win_in_ev_mode (R2, worklog 20260922_L1_CONFIDENT_CALIBRATION_RECOMMENDATIONS.md):
 # off | shadow | live. Which probability prices EV and Kelly.
 #   off: directional p_win (blend) in EV/Kelly — historical.
-#   shadow: log would-be EV from p_win_bracket; live EV unchanged.
-#   live: EV = p_win_bracket*profit − p_sl*stake (expire not charged as loss);
-#         Kelly ev_scale follows. Directional p_win_ok (MIN_P_WIN) still gates
-#         p_win_dir — different scale from min_p_win_bracket. Unscored bracket
-#         fails open (keeps directional EV). Requires p_win_bracket_mode!=off.
-p_win_in_ev_mode: "shadow"
+#   shadow: log would-be EV from p_win_dir; live EV unchanged.
+#   live: EV = p_win_dir*profit − p_sl*stake (expire not charged as loss);
+#         Kelly ev_scale follows. p_win_ok gate scores p_win_dir against
+#         min_p_win_bracket when live. Unscored bracket fails open (keeps
+#         directional EV). Requires p_win_bracket_mode!=off.
+#   2026-10-03: p_win_bracket renamed to p_win_dir. p_win_dir now holds
+#         the bracket probability (p_resolve * p_win|resolve). The old
+#         p_win_dir (directional logit blend = p_win_raw) is deprecated.
+p_win_in_ev_mode: "live"
 
 # geometry_incubation_mode (2026-09-23, worklog
 # 20260923_GEOMETRY_FORWARD_TEST_SCOPE.md): off | shadow | live.

@@ -334,15 +334,146 @@ def get_embedder():
 
 def embed_texts(texts: list[str]) -> np.ndarray:
     """Embed a batch of texts. Returns an (n, EMBEDDING_DIM) float32
-    array, L2-normalized so cosine similarity reduces to a dot product."""
+    array, L2-normalized so cosine similarity reduces to a dot product.
+
+    Tries Cloudflare Workers AI first (when `CF_EMBEDDINGS_URL` is set, via
+    the `cloudflare-ai-proxy` Cloudflare Worker), falls back to local
+    MiniLM-L6-v2 on any failure. This allows a zero-downtime migration: deploy
+    the worker, set the Studio secret, verify results, then unset the
+    local-model dependency at leisure.
+    """
     if not texts:
         return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+
+    # Option B: Cloudflare Workers AI proxy (shadow-first — enabled via env)
+    if _cf_enabled():
+        cf_vectors = _embed_texts_cf_sync(texts)
+        if cf_vectors is not None and cf_vectors.shape[1] == EMBEDDING_DIM:
+            logger.debug("knowledge_index: embedding via Cloudflare Workers AI (BGE-small)")
+            return cf_vectors.astype(np.float32)
+
+    # Fallback: local MiniLM-L6-v2 (CPU)
     model = get_embedder()
     vectors = model.encode(
         texts, batch_size=16, show_progress_bar=False,
         normalize_embeddings=True, convert_to_numpy=True,
     )
     return vectors.astype(np.float32)
+
+
+# ── Cloudflare Workers AI embedding proxy ────────────────────────────
+#
+# Remote embedding via a Cloudflare Worker (free tier, env.AI binding — no
+# token needed). The worker wraps @cf/baai/bge-small-en-v1.5 (384-dim,
+# exact dimension match to MiniLM-L6-v2 → no index rebuild needed).
+#
+# Enabled when CF_EMBEDDINGS_URL is set (Studio Secret). The worker URL
+# is the deployed Worker endpoint, e.g.
+#   https://embeddings-worker.<subaccount>.workers.dev
+#
+# If CF_WORKER_SECRET is set on the worker, pass it via CF_WORKER_SECRET
+# (same Studio Secret name → x-worker-secret header). If unset on the
+# worker side, the header is optional.
+#
+# Env vars (Studio Secrets, NOT in feature_flags.yaml):
+#   CF_EMBEDDINGS_URL  — Worker endpoint URL (e.g. https://embeddings-worker.acme.workers.dev)
+#   CF_WORKER_SECRET   — optional shared secret for x-worker-secret header
+#
+_CF_WARNED_NO_CONFIG = False
+
+
+def _cf_worker_url() -> str:
+    """Cloudflare Worker endpoint URL, e.g. https://embeddings-worker.acme.workers.dev"""
+    return os.getenv("CF_EMBEDDINGS_URL", "").strip().rstrip("/")
+
+
+def _cf_worker_secret() -> str:
+    return os.getenv("CF_WORKER_SECRET", "").strip()
+
+
+def _cf_enabled() -> bool:
+    return bool(_cf_worker_url())
+
+
+def _embed_texts_cf_sync(texts: list[str]) -> Optional[np.ndarray]:
+    """Synchronous wrapper for _embed_texts_cf. Called from the synchronous
+    _build_index_sync path (which already runs in a worker thread via
+    asyncio.to_thread, so asyncio.run() is safe here).
+    """
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_embed_texts_cf(texts))
+        finally:
+            loop.close()
+    except RuntimeError:
+        # Already in an event loop — use async wrapper instead
+        return None
+
+
+async def _embed_texts_cf(texts: list[str]) -> Optional[np.ndarray]:
+    """Embed texts via Cloudflare Workers AI BGE-small through the
+    Cloudflare Worker. Returns None on any failure (caller falls back
+    to local MiniLM). Response vectors are already L2-normalized by the
+    worker.
+    """
+    global _CF_WARNED_NO_CONFIG
+    if not _cf_enabled():
+        return None
+
+    base_url = _cf_worker_url()
+    secret = _cf_worker_secret()
+    if not base_url:
+        if not _CF_WARNED_NO_CONFIG:
+            logger.warning(
+                "knowledge_index: CF_EMBEDDINGS_URL not set — falling back to local MiniLM."
+            )
+            _CF_WARNED_NO_CONFIG = True
+        return None
+
+    try:
+        import httpx
+        headers: dict = {"Content-Type": "application/json"}
+        if secret:
+            headers["x-worker-secret"] = secret
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base_url}/embeddings",
+                headers=headers,
+                json={
+                    "input": texts,
+                    "model": "@cf/baai/bge-small-en-v1.5",
+                },
+            )
+        if not resp.is_success:
+            logger.warning(
+                "knowledge_index: Cloudflare embedding worker returned HTTP %d — fallback",
+                resp.status_code,
+            )
+            return None
+        data = resp.json()
+        # Response: { data: [{ embedding: [...] }, ...] } for batch input
+        # or { data: { index: 0, embedding: [...] } } for single input
+        raw = data.get("data")
+        if isinstance(raw, dict):
+            vectors = [raw["embedding"]]
+        elif isinstance(raw, list):
+            vectors = [d["embedding"] for d in raw]
+        else:
+            return None
+
+        arr = np.array(vectors, dtype=np.float32)
+        # The worker already L2-normalizes; re-normalize for safety
+        norms = np.sqrt((arr * arr).sum(axis=1, keepdims=True))
+        arr = arr / np.maximum(norms, 1e-12)
+        return arr
+    except Exception as exc:
+        logger.warning(
+            "knowledge_index: Cloudflare embedding proxy failed (%s: %s) — fallback",
+            type(exc).__name__, exc,
+        )
+        return None
 
 
 # ── Storage ─────────────────────────────────────────────────────────────

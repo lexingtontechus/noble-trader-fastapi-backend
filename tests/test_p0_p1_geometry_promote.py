@@ -88,12 +88,12 @@ class TestHeavyPayloadRaw:
             p_win=0.55, ev=1.0, regime="med_high_vol_bull", regime_conf=0.8,
             source="sweep-heavy", qualified=True,
             predicted_p_win_raw=0.72,
-            p_win_dir=0.72,
+            p_win_dir=0.41,
             tp_distance_atr=3.2,
             geometry_risk_hat=0.2,
             long_lag_risk=False,
         )
         assert p["predicted_p_win_raw"] == 0.72
-        assert p["p_win_dir"] == 0.72
+        assert p["p_win_dir"] == 0.41
         assert p["tp_distance_atr"] == 3.2
         assert p["source"] == "sweep-heavy"
