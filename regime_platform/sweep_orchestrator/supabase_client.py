@@ -280,6 +280,10 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # P1.3 TimesFM quantile band (migration 186). Research stamps only.
     "timesfm_q_lo", "timesfm_q_mid", "timesfm_q_hi",
     "timesfm_q_spread", "timesfm_q_pos",
+    # Clef-Flash shadow stamp (migration 194, 2026-10-04). Research only —
+    # never an EV source, never a gate. See docs/scopes/
+    # 20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md.
+    "p_clef_dir", "p_clef_wait", "p_clef_symbol",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -612,6 +616,7 @@ _KAIROS_CAPTURE_KEYS: tuple[str, ...] = (
     "gate_outcome", "suppress_reason", "failed_gates",
     "kairos_rank_score", "kairos_rank_gate_shadow",
     "kelly_binary_f", "kelly_context_mult", "kelly_effective_shadow",
+    "p_clef_dir", "p_clef_wait", "p_clef_symbol",
 )
 
 

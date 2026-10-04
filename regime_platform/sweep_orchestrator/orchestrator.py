@@ -1021,6 +1021,9 @@ def _build_signal_sim_payload(
     timesfm_q_hi: float | None = None,
     timesfm_q_spread: float | None = None,
     timesfm_q_pos: float | None = None,
+    p_clef_dir: float | None = None,
+    p_clef_wait: float | None = None,
+    p_clef_symbol: str | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1187,6 +1190,14 @@ def _build_signal_sim_payload(
         payload["timesfm_q_spread"] = round(float(timesfm_q_spread), 6)
     if timesfm_q_pos is not None:
         payload["timesfm_q_pos"] = round(float(timesfm_q_pos), 4)
+    # Clef-Flash shadow stamp (2026-10-04, migration 194). Research only —
+    # never an EV source, never a gate. Only non-None values are written.
+    if p_clef_dir is not None:
+        payload["p_clef_dir"] = round(float(p_clef_dir), 4)
+    if p_clef_wait is not None:
+        payload["p_clef_wait"] = round(float(p_clef_wait), 4)
+    if p_clef_symbol is not None:
+        payload["p_clef_symbol"] = p_clef_symbol
     return payload
 
 
@@ -2586,6 +2597,60 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.debug("[kairos] stamp %s failed: %s", symbol, exc)
             return None
+
+    async def _clef_flash_stamp(
+        self,
+        *,
+        symbol: str,
+        signal: str,
+        regime_label: str | None,
+        regime_conf: float | None,
+        source: str,
+        trade_signal: dict[str, Any] | None = None,
+        tp_distance_atr: float | None = None,
+        sl_distance_atr: float | None = None,
+        macro_label: str | None = None,
+        trend_label: str | None = None,
+        p_win_dir: float | None = None,
+    ) -> tuple[float | None, float | None, str | None]:
+        """Clef-Flash shadow stamp for one nt_signal_sim row.
+
+        Returns ``(p_clef_dir, p_clef_wait, model)`` — all None on any failure
+        (fail-open, same contract as every other shadow stamp here). Light
+        sweep only; None when clef_flash_mode is ``off``.
+
+        RESEARCH ONLY: the values are stamped for offline discrimination
+        measurement against ``p_win_dir``. They never enter the EV blend and
+        never gate the signal (docs/scopes/20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md).
+        """
+        if source != "sweep-light":
+            return None, None, None
+        try:
+            from regime_platform.core.feature_flags import get_clef_flash_mode
+            if get_clef_flash_mode() == "off":
+                return None, None, None
+            from regime_platform.services.decision.clef_flash import decide_direction
+            ts = trade_signal or {}
+            decision = await decide_direction(
+                symbol=symbol,
+                signal=signal,
+                regime=regime_label,
+                regime_conf=regime_conf,
+                entry_price=ts.get("entry_price"),
+                stop_loss=ts.get("stop_loss"),
+                take_profit=ts.get("take_profit"),
+                tp_distance_atr=tp_distance_atr,
+                sl_distance_atr=sl_distance_atr,
+                macro_label=macro_label,
+                trend_label=trend_label,
+                p_win_dir=p_win_dir,
+            )
+            if decision is None:
+                return None, None, None
+            return decision.p_clef_dir, decision.p_clef_wait, decision.model
+        except Exception as exc:
+            logger.debug("[clef-flash] stamp %s failed: %s", symbol, exc)
+            return None, None, None
 
     async def _run_kairos_daily(self) -> None:
         """Kairos v3 P0.3 + P0.6 (hourly at :20 since 2026-09-25): drift
@@ -5021,6 +5086,22 @@ class SweepOrchestrator(HeavySweepMixin):
                     regime_label=regime_label,
                     vol_tier=_gm.vol_tier if _gm else None,
                 )
+                # Clef-Flash shadow stamp (2026-10-04, migration 194). RESEARCH
+                # ONLY — structured-decision model output, never an EV source,
+                # never a gate. Fail-open: all-None on any failure or off.
+                _clef_dir, _clef_wait, _clef_model = await self._clef_flash_stamp(
+                    symbol=symbol,
+                    signal=trade_signal["signal"],
+                    regime_label=regime_label,
+                    regime_conf=regime_conf,
+                    source=source,
+                    trade_signal=trade_signal,
+                    tp_distance_atr=_gm.tp_distance_atr if _gm else None,
+                    sl_distance_atr=_gm.sl_distance_atr if _gm else None,
+                    macro_label=macro_label,
+                    trend_label=trend_label,
+                    p_win_dir=_p_win_dir,
+                )
 
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
@@ -5078,6 +5159,9 @@ class SweepOrchestrator(HeavySweepMixin):
                     timesfm_q_hi=_tf_q.get("q_hi"),
                     timesfm_q_spread=_tf_qf.get("q_spread"),
                     timesfm_q_pos=_tf_qf.get("q_pos"),
+                    p_clef_dir=_clef_dir,
+                    p_clef_wait=_clef_wait,
+                    p_clef_symbol=_clef_model,
                     gate_outcome=(
                         "qualified" if published
                         else "suppressed" if _gates_pass

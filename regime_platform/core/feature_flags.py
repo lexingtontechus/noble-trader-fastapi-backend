@@ -229,6 +229,16 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_incubation_max_expiry_regression": 0.10,
     "signal_sim_retention_resolved_days": 120,
     "kairos_mode": "shadow",
+    # clef_flash_mode (2026-10-04, docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md
+    # + 20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md): off | shadow | live.
+    # shadow (default): call the Cloudflare Clef-Flash /decision endpoint for
+    # qualifiable light-sweep signals and stamp p_clef_dir/p_clef_wait/
+    # p_clef_symbol on nt_signal_sim (migration 194). RESEARCH ONLY — never in
+    # P_WIN_WEIGHTS_FULL, never passed to compute_ev(), never touches
+    # qualified/kelly/SL/TP. live: reserved for the classifier cutover at
+    # kairos_pivot/macro_forecast (does not change the shadow stamp). off: no
+    # HTTP call, no stamp.
+    "clef_flash_mode": "shadow",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -255,7 +265,7 @@ _DEFAULTS: dict[str, Any] = {
         "clamp_max": 0.95,
     },
     "sweep_after_hours": False,
-    "price_staleness_max_hours": 4.0,
+    "price_staleness_max_hours": 1.0,
     "signal_cooldown_minutes": 15.0,
     "expiry_rate_alert": {
         "enabled": True,
@@ -970,6 +980,20 @@ def get_kairos_mode() -> str:
     live: reserved (P3 knobs); behaves as shadow until a live scope exists.
     Unknown values fall back to shadow."""
     v = str(_load().get("kairos_mode", _DEFAULTS["kairos_mode"])).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_clef_flash_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-10-04, docs/scopes/
+    20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md +
+    20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md). shadow (default):
+    call the Cloudflare Clef-Flash ``/decision`` endpoint for qualifiable
+    light-sweep signals and stamp p_clef_dir/p_clef_wait/p_clef_symbol on
+    nt_signal_sim. RESEARCH ONLY — never an EV source, never a gate.
+    live: reserved for the classifier cutover at kairos_pivot.py /
+    macro_forecast_agent.py (does not change the shadow stamp). off: no
+    HTTP call, no stamp. Unknown values fall back to shadow."""
+    v = str(_load().get("clef_flash_mode", _DEFAULTS["clef_flash_mode"])).lower()
     return v if v in ("off", "shadow", "live") else "shadow"
 
 

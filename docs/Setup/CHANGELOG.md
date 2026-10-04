@@ -1,3 +1,57 @@
+## [Unreleased] — 2026-10-04
+
+### Major — LLM value audit: Clef-Flash repurposed, p_clef shadow stamp shipped
+
+#### The audit
+
+Four LLM-adjacent surfaces were measured against live data. Three produced output that
+**nothing read**; one (Clef-Flash) had no output at all:
+
+| Surface | Live data | Reader | Disposition |
+|---|---|---|---|
+| Clef-Flash | 0 episodes | none | **repurpose** → text classifier |
+| BGE-small embeddings | unverified | `knowledge_index` (shadow) | verify, then decide |
+| Macro forecast agent | 33 symbols daily | none | wire into `macro_filter` (shadow) |
+| Self-learning triage | 54 findings / 54 reports | none | surface in nobletradingapp + fix detector |
+
+See `docs/scopes/20261004_LLM_VALUE_AUDIT_AND_UTILIZATION_SCOPE.md`.
+
+#### Clef-Flash is not a direction classifier
+
+The platform has already paid for this lesson twice: two independent fitted models over
+the same price series measured **below a constant** — legacy 5-state HMM skill **−0.0404**,
+first-passage skill **−0.0691** (base rate 0.7041). An LLM re-reading the same series
+inherits the same sub-chance ceiling. **Do not add `p_clef` as a 4th EV source.**
+
+Its one structural edge over the chat LLMs already in the codebase is **structured logits
+instead of free text** — no `extract_json()`, no markdown-wrap failures, no
+provider-retirement churn. That edge is real only where the input is **text**.
+
+#### `p_clef` shadow stamp (migration 194)
+
+Three nullable research columns on `nt_signal_sim`:
+
+| Column | Meaning |
+|---|---|
+| `p_clef_dir` | P(model agrees with the signal direction) — discrimination column |
+| `p_clef_wait` | P(model says "wait") — abstention column |
+| `p_clef_symbol` | model slug used (provenance) |
+
+- New caller `regime_platform/services/decision/clef_flash.py` — three-way
+  `choice(buy, sell, wait)`; `p_clef_dir` is direction-relative so buy/sell rows compare.
+- New flag **`clef_flash_mode: shadow`** (`off | shadow | live`). `off` = no HTTP call.
+- Fail-open: any failure → all-None; 10s timeout; light sweep only.
+- **RESEARCH ONLY** — never in `P_WIN_WEIGHTS_FULL`, never passed to `compute_ev()`, never
+  touches `qualified` / Kelly / SL / TP. Written and never read back.
+
+`nt_roadmap` id=89 repurposed: the old gate (`correlation(p_clef, p_win_bracket)` after
+≥200 episodes) was unmeetable — `p_clef` never existed. New gate: parse-failure rate +
+latency vs the chat path, and `AUC(p_clef_dir) > AUC(p_win_dir)` on ≥200 decided rows.
+
+#### Verification
+
+`tests/test_clef_flash.py` — 23 passed. Full suite: **1762 passed, 21 skipped**.
+
 ## [Unreleased] — 2026-10-01
 
 ### Major — the first-passage pivot: HMM detour retired, replacement tested and failed

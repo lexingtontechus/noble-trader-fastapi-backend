@@ -78,10 +78,12 @@ timesfm_map_mode: "zmap_live"
 sweep_after_hours: False
 
 # Price staleness detection (2026-10-04) — replaces legacy market-hours gating.
-# If the latest price hasn't changed in max_staleness_hours, skip the sweep.
-# This prevents weekend signals from being generated on stale Friday close data.
-# Set to 0 to disable (always sweep).
-price_staleness_max_hours: 4
+# If the latest price bar is older than max_staleness_hours, skip the symbol.
+# This prevents signals from being generated on a frozen feed (weekend/holiday
+# close, or a TDVA outage returning the last known bar).
+# Light-sweep candles are 1h, so the newest bar is naturally 0-60 min old on a
+# live feed; 1.0h is the bar interval + slack. Set to 0 to disable.
+price_staleness_max_hours: 1.0
 
 # signal_cooldown_minutes: suppress (not fail) repeat publishes for the same
 # (symbol, direction) within this many minutes of the last publish. Pure
@@ -1175,6 +1177,24 @@ self_learning_triage_enabled: true
 # OPENROUTER_API_KEY or NVIDIA_NIM_API_KEY. Simple on/off, same
 # reasoning as self_learning_detectors_enabled above.
 macro_forecast_agent_enabled: true
+
+# clef_flash_mode (2026-10-04, docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md
+# + 20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md): off | shadow | live.
+# Clef-Flash (@cf/cloudflare/clef-flash, Cloudflare Workers AI) is a
+# structured-decision model -- one logit per option per question, softmax
+# normalised, no free text, no extract_json() fragility. REPURPOSED from a
+# retired EV-blend source to a shadow research stamp.
+#   shadow (default): call the Worker /decision route for qualifiable
+#           light-sweep signals, stamp p_clef_dir/p_clef_wait/p_clef_symbol
+#           on nt_signal_sim (migration 194). RESEARCH ONLY -- never in
+#           P_WIN_WEIGHTS_FULL, never passed to compute_ev(), never touches
+#           qualified/kelly/SL/TP.
+#   live:   reserved for the classifier cutover (kairos_pivot.py /
+#           macro_forecast_agent.py call sites). Does NOT change the shadow
+#           stamp -- the stamp is always shadow.
+#   off:    no HTTP call, no stamp.
+# Requires CF_EMBEDDINGS_URL (the Worker base URL). No-ops without it.
+clef_flash_mode: shadow
 
 # heavy_sweep_force_refresh_hours -- REMOVED 2026-09-09 (worklog
 # 20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md SS13). This was
