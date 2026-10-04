@@ -242,6 +242,7 @@ async def apply_calibration_adjustment(
     side: Optional[str] = None,
     vol_tier: Optional[str] = None,
     distance_atr_bucket: Optional[str] = None,
+    rank_score: Optional[float] = None,
 ) -> dict[str, Any]:
     """Compute the calibration correction for one symbol (R3 cell hierarchy).
 
@@ -256,6 +257,13 @@ async def apply_calibration_adjustment(
 
     Underconfidence (Batch D 4.6): Bayesian shrink p_win only — no Kelly cut.
     Overconfidence: shrink + Kelly × kelly_reduction.
+
+    Rank score calibration feedback (2026-10-04, worklog
+    20261004_RANK_SCORE_ANALYSIS_AND_CALIBRATION_SCOPE.md): when
+    ``rank_score_calibration_mode=live``, the Bayesian shrink is modulated
+    by the signal's ``rank_score``. High-rank signals shrink less (trust
+    the model more); low-rank signals shrink more (distrust the model more).
+    The rank score is NOT a gate — it modulates calibration confidence.
 
     Returns:
         {
@@ -342,7 +350,10 @@ async def apply_calibration_adjustment(
                 "source": "cell",
             }
         if status == "UNDERCONFIDENT":
-            adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+            adjusted_p_win = _rank_conditioned_shrink(
+                p_win, n_records, rank_score,
+                slope=_rank_calibration_slope(),
+            )
             log.info(
                 "[calibration:enforce] %s: CELL UNDERCONFIDENT bias=%s n=%s "
                 "→ p_win %.4f→%.4f, kelly unchanged",
@@ -359,7 +370,10 @@ async def apply_calibration_adjustment(
             }
         if status == "OVERCONFIDENT":
             kelly_reduction = _settings_number("KELLY_REDUCTION", KELLY_REDUCTION)
-            adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+            adjusted_p_win = _rank_conditioned_shrink(
+                p_win, n_records, rank_score,
+                slope=_rank_calibration_slope(),
+            )
             adjusted_kelly = float(kelly_f) * kelly_reduction
             log.info(
                 "[calibration:enforce] %s: CELL OVERCONFIDENT bias=%s n=%s "
@@ -422,7 +436,10 @@ async def apply_calibration_adjustment(
     # pulls toward 0.5, which is directionally correct when the model is
     # too low) but leave sizing untouched.
     if str(status).upper() == "UNDERCONFIDENT":
-        adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+        adjusted_p_win = _rank_conditioned_shrink(
+            p_win, n_records, rank_score,
+            slope=_rank_calibration_slope(),
+        )
         adjusted_kelly = float(kelly_f)
         log.info(
             "[calibration:enforce] %s: UNDERCONFIDENT bias=%s n=%s → p_win %.4f→%.4f, "
@@ -439,7 +456,10 @@ async def apply_calibration_adjustment(
             "source": "symbol",
         }
 
-    adjusted_p_win = bayesian_adjusted_p_win(p_win, n_records)
+    adjusted_p_win = _rank_conditioned_shrink(
+        p_win, n_records, rank_score,
+        slope=_rank_calibration_slope(),
+    )
     adjusted_kelly = float(kelly_f) * kelly_reduction
     # status: read directly from the state row (2026-09-09) — it was
     # already classified via eod_correction._classify_bias/drift_monitor
@@ -473,6 +493,54 @@ def _num(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _rank_calibration_slope() -> float:
+    """Read the rank_score_calibration_slope feature flag (0.0–1.0)."""
+    try:
+        from regime_platform.core.feature_flags import get_rank_score_calibration_slope
+        return get_rank_score_calibration_slope()
+    except Exception:
+        return 0.5
+
+
+def _rank_conditioned_shrink(
+    p_win: float,
+    n_records: int,
+    rank_score: Optional[float],
+    *,
+    slope: float = 0.5,
+) -> float:
+    """Bayesian shrink modulated by ``rank_score`` (2026-10-04).
+
+    Standard shrink: ``p' = (p·n + 0.5·10) / (n + 10)``.
+
+    Rank-conditioned: the effective prior count is adjusted by the rank
+    score. High-rank signals (score → 1) get a smaller prior (shrink less,
+    trust the model more). Low-rank signals (score → 0) get a larger prior
+    (shrink more, distrust the model more).
+
+    The modulation is linear in ``rank_score`` and bounded by ``slope``:
+    - ``slope=0.0`` → standard shrink (no modulation)
+    - ``slope=1.0`` → high-rank gets 50% less shrink, low-rank gets 50% more
+
+    When ``rank_score`` is None, returns the standard shrink (fail-open).
+    """
+    if rank_score is None:
+        return bayesian_adjusted_p_win(p_win, n_records)
+    try:
+        rs = float(rank_score)
+    except (TypeError, ValueError):
+        return bayesian_adjusted_p_win(p_win, n_records)
+    if not (0.0 <= rs <= 1.0):
+        return bayesian_adjusted_p_win(p_win, n_records)
+    # Effective prior count: n_eff = n * (1 + slope * (0.5 - rs) * 2)
+    # At rs=1.0 (high rank): n_eff = n * (1 - slope)  → less shrink
+    # At rs=0.0 (low rank):  n_eff = n * (1 + slope)  → more shrink
+    # At rs=0.5 (mid):       n_eff = n               → standard shrink
+    n_eff = n_records * (1.0 + slope * (0.5 - rs) * 2.0)
+    n_eff = max(0.0, n_eff)
+    return bayesian_adjusted_p_win(p_win, n_eff)
 
 
 def normalize_side(side: Optional[str]) -> Optional[str]:

@@ -819,6 +819,35 @@ p_win_bracket_unscored_policy: "fail_closed"
 #         p_win_dir (directional logit blend = p_win_raw) is deprecated.
 p_win_in_ev_mode: "live"
 
+# Per-asset-class min_p_win_bracket thresholds (2026-10-04, worklog
+# 20261004_GEOMETRY_GATE_SHADOW_ANALYSIS.md). The geometry gate's false
+# positive rate varies by asset class: metals 2.6% (ready), forex 11.8%
+# (moderate), equities 16.7% (too aggressive), crypto 25.0% (not useful).
+# Each class gets its own threshold, similar to dynamic_atr's per-symbol ATR.
+# Classes not listed here fall back to the global min_p_win_bracket.
+min_p_win_bracket_by_asset_class:
+  metal: 0.20
+  forex: 0.30
+  equity: 0.40
+  crypto: 0.50
+  commodity: 0.30
+  index: 0.40
+  etf: 0.40
+
+# Rank score calibration feedback (2026-10-04, worklog
+# 20261004_RANK_SCORE_ANALYSIS_AND_CALIBRATION_SCOPE.md).
+# off: standard Bayesian shrink (status quo).
+# shadow: compute rank-conditioned adjustment and log; live unchanged.
+# live: apply rank-conditioned adjustment after standard Bayesian shrink.
+#   High-rank signals (top tercile) shrink less — trust the model more.
+#   Low-rank signals (bottom tercile) shrink more — distrust the model more.
+#   The rank score is NOT a gate — it modulates calibration confidence.
+rank_score_calibration_mode: "shadow"
+# How strongly the rank score modulates the Bayesian shrink.
+# 0.0 = no modulation (standard shrink). 1.0 = full modulation.
+# At 1.0: high-rank signals get 50% less shrink, low-rank get 50% more.
+rank_score_calibration_slope: 0.5
+
 # geometry_incubation_mode (2026-09-23, worklog
 # 20260923_GEOMETRY_FORWARD_TEST_SCOPE.md): off | shadow | live.
 # Forward-test / incubation gate on heavy-sweep brick geometry picks —

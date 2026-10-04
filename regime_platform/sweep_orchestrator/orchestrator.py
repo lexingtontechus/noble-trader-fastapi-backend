@@ -41,6 +41,7 @@ from regime_platform.core.feature_flags import (
     get_min_ev,
     get_min_kelly,
     get_min_p_win,
+    get_min_p_win_bracket_for_asset_class,
     get_min_regime_conf,
     get_min_rr,
     get_min_timesfm_confidence,
@@ -4041,6 +4042,14 @@ class SweepOrchestrator(HeavySweepMixin):
                 symbol, _p_win_bracket or 0.0, _shadow["ev"],
                 ev_result.ev, ev_result.p_win,
             )
+        # RANK board fields (display only — never a gate). Computed before
+        # calibration so rank_score can modulate the Bayesian shrink
+        # (2026-10-04, worklog
+        # 20261004_RANK_SCORE_ANALYSIS_AND_CALIBRATION_SCOPE.md).
+        _rank_score, _rank_gate, _rank_state, _rank_transition = (
+            self._kairos_rank_stamp(symbol, regime_label, source)
+        )
+
         calib_adj = None
         if signal_is_qualifiable and settings.EOD_CALIBRATION_ENFORCE:
             from regime_platform.sweep_orchestrator.calibration_enforcement import (
@@ -4053,6 +4062,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 side="buy" if direction == "long" else "sell",
                 vol_tier=_bracket_vol_tier,
                 distance_atr_bucket=_bracket_bucket,
+                rank_score=_rank_score,
             )
             if calib_adj and calib_adj.get("applied"):
                 # The agent must see the CORRECTED p_win so its synthesizer
@@ -4271,11 +4281,15 @@ class SweepOrchestrator(HeavySweepMixin):
         # and can apply its own Bayesian alpha + calibration bias on top.
         P_WIN_HARD_FLOOR = 0.50
         # p_win_dir is now the bracket probability (renamed from p_win_bracket).
-        # When p_win_in_ev_mode=live, score p_win_dir against min_p_win_bracket.
+        # When p_win_in_ev_mode=live, score p_win_dir against per-asset-class
+        # min_p_win_bracket (2026-10-04, worklog
+        # 20261004_GEOMETRY_GATE_SHADOW_ANALYSIS.md).
         # The 0.50 hard floor applies to directional p_win, not bracket probability.
         if p_win_in_ev_mode == "live" and _p_win_bracket is not None:
             _p_win_for_gate = _p_win_bracket
-            _p_win_gate_min = get_min_p_win_bracket()
+            _p_win_gate_min = get_min_p_win_bracket_for_asset_class(
+                sym.get("asset_class") if isinstance(sym, dict) else None
+            )
             _p_win_gate_hard_floor = 0.0
         else:
             _p_win_for_gate = p_win_raw if _bracket_applied_to_ev else ev_result.p_win
@@ -4523,13 +4537,7 @@ class SweepOrchestrator(HeavySweepMixin):
         else:
             effective_kelly_final = 0.0
 
-        # RANK board fields (display only — never a gate). Computed before
-        # agent_payload so Discord + realtime share one stamp.
-        _rank_score, _rank_gate, _rank_state, _rank_transition = (
-            self._kairos_rank_stamp(symbol, regime_label, source)
-        )
-
-        # P1.3 TimesFM quantile stamps (research only). Pull the band cached
+        # P1.3 TimesFM quantile stamps (research only).
         # by _fetch_timesfm_cached and derive q_spread/q_pos via
         # timesfm_rank_features — never used for gates/Kelly/EV.
         _tf_q = {"q_lo": None, "q_mid": None, "q_hi": None, "last_price": None}

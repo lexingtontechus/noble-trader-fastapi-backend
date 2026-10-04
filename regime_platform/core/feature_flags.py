@@ -197,7 +197,18 @@ _DEFAULTS: dict[str, Any] = {
     "settlement_same_bar_policy": "tp_first",
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
-    "p_win_in_ev_mode": "shadow",
+    "p_win_in_ev_mode": "live",
+    "min_p_win_bracket_by_asset_class": {
+        "metal": 0.20,
+        "forex": 0.30,
+        "equity": 0.40,
+        "crypto": 0.50,
+        "commodity": 0.30,
+        "index": 0.40,
+        "etf": 0.40,
+    },
+    "rank_score_calibration_mode": "shadow",
+    "rank_score_calibration_slope": 0.5,
     "p_win_bracket_unscored_policy": "fail_closed",
     "geometry_incubation_mode": "shadow",
     "geometry_incubation_min_days": 7,
@@ -805,6 +816,53 @@ def get_p_win_in_ev_mode() -> str:
     return str(_load().get(
         "p_win_in_ev_mode", _DEFAULTS["p_win_in_ev_mode"],
     )).lower()
+
+
+def get_min_p_win_bracket_for_asset_class(asset_class: str | None) -> float:
+    """Per-asset-class ``min_p_win_bracket`` threshold (2026-10-04).
+
+    Falls back to the global ``min_p_win_bracket`` when the class is not
+    found in the per-class map. Used by the ``p_win_ok`` gate when
+    ``p_win_in_ev_mode=live``.
+    """
+    try:
+        from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
+        key = asset_class_key(asset_class)
+    except Exception:
+        key = "default"
+    overrides = _load().get("min_p_win_bracket_by_asset_class", {})
+    if isinstance(overrides, dict) and key in overrides:
+        try:
+            return float(overrides[key])
+        except (TypeError, ValueError):
+            pass
+    return get_min_p_win_bracket()
+
+
+def get_rank_score_calibration_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-10-04).
+
+    off: standard Bayesian shrink (status quo).
+    shadow: compute rank-conditioned adjustment and log; live unchanged.
+    live: apply rank-conditioned adjustment after standard Bayesian shrink.
+    """
+    return str(_load().get(
+        "rank_score_calibration_mode", _DEFAULTS["rank_score_calibration_mode"],
+    )).lower()
+
+
+def get_rank_score_calibration_slope() -> float:
+    """How strongly the rank score modulates the Bayesian shrink (0.0–1.0).
+
+    0.0 = no modulation (standard shrink). 1.0 = full modulation.
+    At 1.0: high-rank signals get 50% less shrink, low-rank get 50% more.
+    """
+    try:
+        return float(_load().get(
+            "rank_score_calibration_slope", _DEFAULTS["rank_score_calibration_slope"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["rank_score_calibration_slope"]
 
 
 def get_geometry_incubation_mode() -> str:
