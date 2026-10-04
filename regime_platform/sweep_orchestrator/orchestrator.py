@@ -3071,9 +3071,10 @@ class SweepOrchestrator(HeavySweepMixin):
             stale_symbols = []
             for sym_name in list(valid_prices.keys()):
                 timestamps = valid_timestamps.get(sym_name, [])
-                if not timestamps:
+                ts_valid = [t for t in timestamps if t is not None]
+                if not ts_valid:
                     continue
-                latest_ts = max(t for t in timestamps if t is not None)
+                latest_ts = max(ts_valid)
                 age_h = (now_ts - latest_ts) / 3600.0
                 if age_h > max_staleness_h:
                     stale_symbols.append((sym_name, age_h))
