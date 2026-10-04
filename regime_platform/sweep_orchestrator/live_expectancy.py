@@ -95,14 +95,17 @@ def _bump(d: dict[str, Any], row: dict[str, Any], outcome: str) -> None:
         d["n_sl"] += 1
     else:
         d["n_expired"] += 1
+    # p_win_dir is now the bracket probability (renamed from p_win_bracket).
+    # Fallback: p_win_dir → p_win_bracket (deprecated alias) → p_win.
     p_dir = row.get("p_win_dir")
     if p_dir is None:
-        p_dir = row.get("predicted_p_win_raw")
+        p_dir = row.get("p_win_bracket")
     if p_dir is None:
         p_dir = row.get("p_win")
     if p_dir is not None:
         d["p_dir_sum"] += float(p_dir)
         d["p_dir_n"] += 1
+    # p_win_bracket is deprecated; keep for backward compat with old rows.
     p_br = row.get("p_win_bracket")
     if p_br is not None:
         d["p_br_sum"] += float(p_br)
@@ -134,6 +137,9 @@ def _finalize(d: dict[str, Any]) -> dict[str, Any]:
         "pct_expired": round(d["n_expired"] / n, 4) if n else None,
         "expectancy_r": expectancy_r,
         "avg_p_dir": round(avg_p_dir, 4) if avg_p_dir is not None else None,
+        "avg_p_win_dir": (
+            round(d["p_dir_sum"] / d["p_dir_n"], 4) if d["p_dir_n"] else None
+        ),
         "avg_p_win_bracket": (
             round(d["p_br_sum"] / d["p_br_n"], 4) if d["p_br_n"] else None
         ),
@@ -175,7 +181,10 @@ async def build_live_expectancy_daily(
         if outcome not in ("tp_hit", "sl_hit", "expired"):
             continue
         _bump(buckets[(day, COHORT_ALL)], row, outcome)
-        p_br = row.get("p_win_bracket")
+        # p_win_dir is now the bracket probability (renamed from p_win_bracket).
+        p_br = row.get("p_win_dir")
+        if p_br is None:
+            p_br = row.get("p_win_bracket")
         if p_br is not None:
             cohort = COHORT_ACCEPT if float(p_br) >= float(min_p_win_bracket) else COHORT_REJECT
             _bump(buckets[(day, cohort)], row, outcome)
