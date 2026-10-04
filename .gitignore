@@ -165,3 +165,4 @@ config/knowledge_index.sqlite-shm
 # before retention cleanup. Data dumps, not code; kept on disk, not in git
 # history. See worklog/20261001_NT_RENKO_BRICKS_TIMEOUT_AND_GROWTH.md.
 backups/
+.wrangler/

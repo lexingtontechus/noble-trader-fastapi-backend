@@ -1,0 +1,35 @@
+# =============================================================================
+# wrangler.toml — Cloudflare Worker for embeddings + Clef-Flash decisions
+# =============================================================================
+# Deploy with: npx wrangler deploy worker.js
+#
+# Free tier (Cloudflare Workers):
+#   - 100,000 requests/day
+#   - 1 million neutrons/day
+#   - 10,000 GPU Neurons/day (for Workers AI)
+#   - BGE-small embeddings: token-based ($0.02/M tokens), not Neurons
+#
+# The 100K-request free tier covers ~6,944 batches of 14 embeddings at 5-min
+# cadence (14 × 288 = 4,032/day). Well within free limits.
+# =============================================================================
+
+name = "nobletradingapp"
+account_id = "e787a0b54e75a41d1c25d8a9bc9f8809"
+main = "worker.js"
+compatibility_date = "2026-10-03"
+no_bundle = true
+
+# Workers AI binding — no API token needed, runs on the edge
+# Configures the AI binding for use via env.AI.run() in the worker
+# Requires Account.Workers AI permission on the API token
+# In Wrangler 4.x, the [ai] section may not auto-apply — use the API
+# PATCH endpoint as a fallback:
+#   curl -X PATCH "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/workers/scripts/nobletradingapp/settings" \
+#     -H "Authorization: Bearer $TOKEN" \
+#     -F 'settings={"bindings":[{"name":"AI","type":"ai"}]}'
+[[ai]]
+binding = "AI"
+
+# Variables (set via: npx wrangler secret put CF_WORKER_SECRET)
+# CF_WORKER_SECRET — optional shared secret for auth
+# (if set, the Studio must pass x-worker-secret header)
