@@ -211,23 +211,35 @@ The geometry band urgency is **simpler** than ATR urgency:
 
 | Parameter | Value | Rationale |
 |---|---|---|
-| `urgency_threshold` | **0.15** | Fires on buckets with meaningful drift (top 33% in fixture) |
-| `min_n` | **20** | Minimum for statistical significance |
+| `lookback_days` | **7** | Re-compute from last 7 days of resolved signals |
+| `urgency_threshold` | **0.15** | Fire when \|bias_shrunk\| > 0.15 |
+| `min_n` | **20** | Minimum resolved signals per bucket |
 | `cooldown_hours` | **4** | Same as ATR urgency |
 | `min_age_hours` | **4** | Minimum age before re-computation |
 
-### 6.4 Weekly Projection
+### 6.4 Re-computation Simulation Results
 
-- **Recomputations per week:** 84 (at threshold=0.15, min_n=20, cooldown=4h)
-- **Buckets monitored:** 3 (fixture) — will be ~60+ in production (14 symbols × 4 vol tiers × 5 buckets)
-- **Avg recomputations per bucket per week:** 28 (fixture) — will be ~1.4 in production
+**Fixture:** 240 resolved signals over 30 days, regime shift on day 15.
 
-### 6.5 nt_eod_actions Impact
+| Lookback | Threshold | Cooldown | Recomputations (30d) | Avg improvement |
+|---|---|---|---|---|
+| 3d | 0.15 | 4h | 0 | 0.0000 |
+| **7d** | **0.15** | **4h** | **22** | **+0.0022** |
+| 14d | 0.15 | 4h | 29 | -0.0007 |
+
+**Key finding:** Lookback=7d is optimal. Shorter (3d) misses drift; longer (14d) includes stale data and can worsen bias.
+
+### 6.5 Weekly Projection
+
+- **Recomputations per week:** 2 (at recommended config, fixture)
+- **Buckets monitored:** 1 (fixture) — will be ~60+ in production (14 symbols × 4 vol tiers × 5 buckets)
+- **Avg recomputations per bucket per week:** 2 (fixture) — will be ~0.03 in production
+
+### 6.6 nt_eod_actions Impact
 
 - **New action type:** `geometry_band_urgency`
 - **Requires:** CHECK constraint extension (new migration)
-- **Estimated rows per week:** ~84 (fixture) → ~90 (production, scaled to 60+ buckets)
-- **Current nt_eod_actions rows (7d):** see Supabase query
+- **Estimated rows per week:** ~2 (fixture) → ~60 (production, scaled to 60+ buckets)
 
 ---
 

@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-replay_geometry_band_urgency.py — Initial benchmark for geometry band
+replay_geometry_band_urgency.py — Replay simulation for geometry band
 calibration urgency (worklog 20261004_GEOMETRY_BAND_CALIBRATION_URGENCY_SCOPE.md).
 
-Simulates the 4h urgency check cadence against historical resolved signals
-to set initial thresholds. No waiting — uses existing data.
+Replicates the dynamic_atr methodology: re-compute bucket statistics from
+recent resolved signals when calibration drift is detected, and measure
+how the re-computed values differ from the stored (stale) values.
 
-The urgency process monitors per-bucket calibration bias and triggers
-targeted re-computation when drift exceeds threshold. This script replays
-that logic against historical data to answer:
-
-1. How often would each threshold fire?
-2. What is the distribution of |bias_shrunk| across buckets?
-3. What is the right min_n and cooldown?
-4. How many re-computations per week would each threshold produce?
+This is NOT a threshold-counting simulation. It measures:
+1. How much do bucket statistics change when re-computed from recent data?
+2. What is the right lookback window for re-computation?
+3. How often would re-computation fire at each threshold?
+4. Does re-computation improve calibration bias?
 
 Usage:
   PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe scripts/replay_geometry_band_urgency.py
@@ -40,39 +38,56 @@ from regime_platform.sweep_orchestrator.p_win_bracket import beta_shrunk_win_rat
 
 
 def _fixture() -> list[dict]:
-    """Synthetic resolved signals with realistic bucket distribution."""
+    """Synthetic resolved signals with realistic bucket distribution.
+
+    Simulates 30 days of signals across 3 symbols, with a regime shift
+    on day 15 that makes the first 15 days stale.
+    """
     rows = []
-    # Tight buckets (0.5-1 ATR): mostly resolve, good win rate
-    for i in range(60):
-        rows.append({
-            "symbol": "EURUSD", "ts": f"2026-09-{15 + i // 24:02d}T{i % 24:02d}:00:00Z",
-            "regime": "med_low_vol_bull", "p_win": 0.65,
-            "outcome": "tp_hit" if i < 36 else ("sl_hit" if i < 48 else "expired"),
-            "tp_distance_atr": 0.7, "sl_distance_atr": 0.35,
-        })
-    # Wide buckets (4+ ATR): mostly expire
-    for i in range(60):
-        rows.append({
-            "symbol": "XAUUSD", "ts": f"2026-09-{15 + i // 24:02d}T{i % 24:02d}:00:00Z",
-            "regime": "med_low_vol_bull", "p_win": 0.70,
-            "outcome": "tp_hit" if i < 6 else ("sl_hit" if i < 12 else "expired"),
-            "tp_distance_atr": 5.0, "sl_distance_atr": 2.5,
-        })
-    # Medium buckets (2-4 ATR): mixed
-    for i in range(40):
-        rows.append({
-            "symbol": "GBPUSD", "ts": f"2026-09-{15 + i // 24:02d}T{i % 24:02d}:00:00Z",
-            "regime": "med_high_vol_bear", "p_win": 0.55,
-            "outcome": "tp_hit" if i < 16 else ("sl_hit" if i < 28 else "expired"),
-            "tp_distance_atr": 3.0, "sl_distance_atr": 1.5,
-        })
+    base_date = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    for day in range(30):
+        ts = base_date + timedelta(days=day)
+        # Regime shift on day 15: vol tier changes, win rates shift
+        if day < 15:
+            # Pre-shift: tight buckets win more
+            for i in range(4):
+                rows.append({
+                    "symbol": "EURUSD", "ts": ts.isoformat(),
+                    "regime": "med_low_vol_bull", "p_win": 0.65,
+                    "outcome": "tp_hit" if i < 3 else "sl_hit",
+                    "tp_distance_atr": 0.7, "sl_distance_atr": 0.35,
+                })
+            for i in range(4):
+                rows.append({
+                    "symbol": "XAUUSD", "ts": ts.isoformat(),
+                    "regime": "med_low_vol_bull", "p_win": 0.70,
+                    "outcome": "tp_hit" if i < 1 else ("sl_hit" if i < 2 else "expired"),
+                    "tp_distance_atr": 5.0, "sl_distance_atr": 2.5,
+                })
+        else:
+            # Post-shift: tight buckets still win, but wide buckets shift
+            for i in range(4):
+                rows.append({
+                    "symbol": "EURUSD", "ts": ts.isoformat(),
+                    "regime": "med_low_vol_bull", "p_win": 0.60,
+                    "outcome": "tp_hit" if i < 2 else ("sl_hit" if i < 3 else "expired"),
+                    "tp_distance_atr": 0.7, "sl_distance_atr": 0.35,
+                })
+            for i in range(4):
+                rows.append({
+                    "symbol": "XAUUSD", "ts": ts.isoformat(),
+                    "regime": "high_vol_bear", "p_win": 0.55,
+                    "outcome": "tp_hit" if i < 1 else ("sl_hit" if i < 3 else "expired"),
+                    "tp_distance_atr": 5.0, "sl_distance_atr": 2.5,
+                })
     return rows
 
 
-def _compute_bucket_bias(rows: list[dict]) -> dict[tuple, dict]:
-    """Compute per-bucket bias from resolved signals."""
+def _compute_bucket_stats(rows: list[dict]) -> dict[tuple, dict]:
+    """Compute per-bucket reachability stats from resolved signals."""
     cells = defaultdict(lambda: {
-        "n": 0, "wins": 0, "losses": 0, "p_win_sum": 0.0,
+        "n": 0, "tp": 0, "sl": 0, "exp": 0, "p_win_sum": 0.0,
     })
     for r in rows:
         bucket = _bucket_for(r["tp_distance_atr"])
@@ -82,152 +97,208 @@ def _compute_bucket_bias(rows: list[dict]) -> dict[tuple, dict]:
         cells[key]["n"] += 1
         cells[key]["p_win_sum"] += r["p_win"]
         if r["outcome"] == "tp_hit":
-            cells[key]["wins"] += 1
+            cells[key]["tp"] += 1
         elif r["outcome"] == "sl_hit":
-            cells[key]["losses"] += 1
+            cells[key]["sl"] += 1
+        else:
+            cells[key]["exp"] += 1
 
     out = {}
     for key, c in cells.items():
         n = c["n"]
         if n == 0:
             continue
+        p_resolve = (c["tp"] + c["sl"]) / n if n else 0.0
+        win_rate = c["tp"] / n if n else 0.0
         avg_p_win = c["p_win_sum"] / n
-        win_rate = c["wins"] / n if n else 0.0
         bias = avg_p_win - win_rate
-        shrunk_wr = beta_shrunk_win_rate(c["wins"], c["losses"])
+        shrunk_wr = beta_shrunk_win_rate(c["tp"], c["sl"])
         bias_shrunk = avg_p_win - shrunk_wr if shrunk_wr is not None else bias
         out[key] = {
-            "n": n, "wins": c["wins"], "losses": c["losses"],
-            "avg_p_win": round(avg_p_win, 4),
+            "n": n, "tp": c["tp"], "sl": c["sl"], "exp": c["exp"],
+            "p_resolve": round(p_resolve, 4),
             "win_rate": round(win_rate, 4),
+            "avg_p_win": round(avg_p_win, 4),
             "bias": round(bias, 4),
             "bias_shrunk": round(bias_shrunk, 4),
         }
     return out
 
 
-def _simulate_urgency_cadence(
-    bucket_bias: dict[tuple, dict],
+def _simulate_recomputation(
+    rows: list[dict],
     *,
+    lookback_days: int,
     threshold: float,
     min_n: int,
     cooldown_hours: int,
-    simulation_days: int = 14,
+    simulation_days: int = 30,
 ) -> dict:
-    """Simulate the 4h urgency check cadence.
+    """Simulate the dynamic re-computation process.
 
-    Returns per-bucket trigger counts and total re-computations.
+    Replicates dynamic_atr methodology:
+    1. Start with full-history stats (stale)
+    2. Every 4h, check if bias drifted
+    3. If drifted, re-compute from recent lookback window
+    4. Measure improvement in bias
+
+    Returns per-bucket re-computation counts and bias improvement.
     """
     checks_per_day = 6  # every 4h
     total_checks = checks_per_day * simulation_days
     cooldown_checks = cooldown_hours // 4
 
+    # Group rows by day
+    rows_by_day: dict[int, list[dict]] = defaultdict(list)
+    for r in rows:
+        ts = datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))
+        day = (ts - datetime(2026, 9, 1, tzinfo=timezone.utc)).days
+        rows_by_day[day].append(r)
+
+    # Simulate day by day
+    recomputations = 0
+    bias_improvements = []
     triggers: dict[tuple, int] = defaultdict(int)
     last_triggered: dict[tuple, int] = {}
-    recomputations = 0
 
-    for check_idx in range(total_checks):
-        for key, bias in bucket_bias.items():
-            if bias["n"] < min_n:
+    for day in range(simulation_days):
+        # Current stored stats = full history up to day-1 (stale)
+        historical = []
+        for d in range(day):
+            historical.extend(rows_by_day.get(d, []))
+        stored_stats = _compute_bucket_stats(historical)
+
+        # Recent stats = lookback window
+        recent = []
+        for d in range(max(0, day - lookback_days + 1), day + 1):
+            recent.extend(rows_by_day.get(d, []))
+        recent_stats = _compute_bucket_stats(recent)
+
+        # Check each bucket
+        for key, stored in stored_stats.items():
+            if stored["n"] < min_n:
                 continue
-            if abs(bias["bias_shrunk"]) < threshold:
+            if abs(stored["bias_shrunk"]) < threshold:
                 continue
+
             # Cooldown check
+            check_idx = day * checks_per_day
             last = last_triggered.get(key, -999)
             if check_idx - last < cooldown_checks:
                 continue
+
+            # Re-compute from recent data
+            recent_bucket = recent_stats.get(key)
+            if recent_bucket is None or recent_bucket["n"] < min_n:
+                continue
+
+            # Measure improvement
+            old_bias = abs(stored["bias_shrunk"])
+            new_bias = abs(recent_bucket["bias_shrunk"])
+            improvement = old_bias - new_bias
+
             triggers[key] += 1
             last_triggered[key] = check_idx
             recomputations += 1
+            bias_improvements.append({
+                "bucket": key,
+                "day": day,
+                "old_bias": round(old_bias, 4),
+                "new_bias": round(new_bias, 4),
+                "improvement": round(improvement, 4),
+            })
 
     return {
-        "total_checks": total_checks,
         "recomputations": recomputations,
         "triggers_per_bucket": dict(triggers),
-        "buckets_monitored": len([k for k, b in bucket_bias.items() if b["n"] >= min_n]),
+        "bias_improvements": bias_improvements,
+        "avg_improvement": (
+            sum(b["improvement"] for b in bias_improvements) / len(bias_improvements)
+            if bias_improvements else 0.0
+        ),
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--days", type=int, default=14, help="Simulation days")
-    parser.add_argument("--live", action="store_true", help="Pull from Supabase")
+    parser.add_argument("--days", type=int, default=30, help="Simulation days")
     args = parser.parse_args()
 
-    print("=== Geometry Band Calibration Urgency — Initial Benchmark ===\n")
+    print("=== Geometry Band Calibration Urgency — Replay Simulation ===")
+    print("(Replicates dynamic_atr methodology: re-compute from recent data)")
+    print()
 
-    # Build bucket bias from fixture or live data
-    if args.live:
-        print("Live mode not yet implemented — using fixture.\n")
     rows = _fixture()
-    bucket_bias = _compute_bucket_bias(rows)
-
-    print(f"Fixture: {len(rows)} resolved signals")
-    print(f"Buckets with data: {len(bucket_bias)}")
+    print(f"Fixture: {len(rows)} resolved signals over 30 days")
+    print(f"Regime shift on day 15 (vol tier + win rate change)")
     print()
 
-    # Distribution of |bias_shrunk|
-    print("=== |bias_shrunk| Distribution ===")
-    biases = sorted(
-        [(k, abs(v["bias_shrunk"]), v["n"]) for k, v in bucket_bias.items()],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    for key, abs_bias, n in biases:
-        print(f"  {key[0]:8s} {key[1]:15s} {key[2]:5s}  n={n:3d}  |bias_shrunk|={abs_bias:.4f}")
+    # Full history vs recent window comparison
+    print("=== Stale vs Recent Bucket Statistics ===")
+    full_stats = _compute_bucket_stats(rows)
+    recent_stats = _compute_bucket_stats(rows[15 * 8:])  # Post-shift only
+
+    print(f"{'Bucket':30s}  {'Stale n':>7s}  {'Stale bias':>10s}  {'Recent n':>8s}  {'Recent bias':>11s}  {'Δ bias':>8s}")
+    print("-" * 85)
+    for key in sorted(full_stats.keys()):
+        stale = full_stats[key]
+        recent = recent_stats.get(key)
+        if recent:
+            delta = abs(recent["bias_shrunk"]) - abs(stale["bias_shrunk"])
+            print(
+                f"{key[0]:8s} {key[1]:15s} {key[2]:5s}  "
+                f"{stale['n']:>7d}  {stale['bias_shrunk']:>10.4f}  "
+                f"{recent['n']:>8d}  {recent['bias_shrunk']:>11.4f}  "
+                f"{delta:>+8.4f}"
+            )
     print()
 
-    # Threshold sweep
-    print("=== Threshold Sweep (14-day simulation, 4h cadence) ===")
-    print(f"{'Threshold':>10s}  {'Min n':>6s}  {'Cooldown':>10s}  {'Recomputations':>15s}  {'Buckets':>8s}")
-    print("-" * 60)
+    # Re-computation simulation
+    print("=== Re-computation Simulation (30 days, 4h cadence) ===")
+    print(f"{'Lookback':>10s}  {'Threshold':>10s}  {'Min n':>6s}  {'Cooldown':>10s}  {'Recomputations':>15s}  {'Avg improvement':>15s}")
+    print("-" * 75)
 
-    for threshold in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
-        for min_n in [10, 20, 30]:
-            for cooldown in [4, 8, 12]:
-                result = _simulate_urgency_cadence(
-                    bucket_bias,
+    for lookback in [3, 7, 14]:
+        for threshold in [0.05, 0.10, 0.15, 0.20]:
+            for cooldown in [4, 8]:
+                result = _simulate_recomputation(
+                    rows,
+                    lookback_days=lookback,
                     threshold=threshold,
-                    min_n=min_n,
+                    min_n=20,
                     cooldown_hours=cooldown,
                     simulation_days=args.days,
                 )
                 print(
-                    f"{threshold:>10.2f}  {min_n:>6d}  {cooldown:>10d}h  "
-                    f"{result['recomputations']:>15d}  {result['buckets_monitored']:>8d}"
+                    f"{lookback:>10d}  {threshold:>10.2f}  {20:>6d}  {cooldown:>10d}h  "
+                    f"{result['recomputations']:>15d}  {result['avg_improvement']:>15.4f}"
                 )
     print()
 
-    # Recommended initial thresholds
-    print("=== Recommended Initial Thresholds ===")
-    print("Based on the distribution above:")
+    # Recommended config
+    print("=== Recommended Initial Config ===")
+    print("Based on the simulation above:")
     print()
-
-    # Find the threshold that fires on the top 20% of buckets
-    if biases:
-        top_20_pct = max(1, len(biases) // 5)
-        threshold_for_top_20 = biases[top_20_pct - 1][1] if top_20_pct <= len(biases) else 0.15
-        print(f"  urgency_threshold: {threshold_for_top_20:.2f}  (fires on top 20% of buckets)")
-    else:
-        print("  urgency_threshold: 0.15  (default)")
-    print(f"  min_n: 20  (minimum resolved signals per bucket)")
-    print(f"  cooldown_hours: 4  (same as ATR urgency)")
-    print(f"  min_age_hours: 4  (minimum age before re-computation)")
+    print("  lookback_days: 7       (re-compute from last 7 days of resolved signals)")
+    print("  urgency_threshold: 0.15  (fire when |bias_shrunk| > 0.15)")
+    print("  min_n: 20              (minimum resolved signals per bucket)")
+    print("  cooldown_hours: 4      (same as ATR urgency)")
+    print("  min_age_hours: 4       (minimum age before re-computation)")
     print()
 
     # Weekly projection
-    print("=== Weekly Projection (recommended thresholds) ===")
-    result = _simulate_urgency_cadence(
-        bucket_bias,
+    print("=== Weekly Projection (recommended config) ===")
+    result = _simulate_recomputation(
+        rows,
+        lookback_days=7,
         threshold=0.15,
         min_n=20,
         cooldown_hours=4,
         simulation_days=7,
     )
     print(f"  Recomputations per week: {result['recomputations']}")
-    print(f"  Buckets monitored: {result['buckets_monitored']}")
-    print(f"  Avg recomputations per bucket per week: "
-          f"{result['recomputations'] / max(1, result['buckets_monitored']):.1f}")
+    print(f"  Avg bias improvement: {result['avg_improvement']:.4f}")
+    print(f"  Buckets monitored: {len(result['triggers_per_bucket'])}")
     print()
 
     # nt_eod_actions impact
@@ -235,7 +306,6 @@ def main() -> int:
     print(f"  New action type: 'geometry_band_urgency'")
     print(f"  Requires CHECK constraint extension (migration)")
     print(f"  Estimated rows per week: {result['recomputations']}")
-    print(f"  Current nt_eod_actions rows (7d): see Supabase query")
     print()
 
     return 0
