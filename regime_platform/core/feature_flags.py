@@ -255,6 +255,7 @@ _DEFAULTS: dict[str, Any] = {
         "clamp_max": 0.95,
     },
     "sweep_after_hours": False,
+    "price_staleness_max_hours": 4.0,
     "signal_cooldown_minutes": 15.0,
     "expiry_rate_alert": {
         "enabled": True,
@@ -1206,6 +1207,21 @@ def get_sweep_after_hours() -> bool:
     if isinstance(val, str):
         return val.strip().lower() in ("1", "true", "yes", "on")
     return bool(val)
+
+
+def get_price_staleness_max_hours() -> float:
+    """Maximum hours since last price change before a sweep is skipped.
+
+    0 disables the check (always sweep). Default 4h — if the latest
+    price hasn't changed in 4 hours, the market is likely closed
+    (weekend/holiday) and sweeping would generate signals on stale data.
+    """
+    try:
+        return float(_load().get(
+            "price_staleness_max_hours", _DEFAULTS["price_staleness_max_hours"],
+        ))
+    except (TypeError, ValueError):
+        return _DEFAULTS["price_staleness_max_hours"]
 
 
 def get_signal_cooldown_minutes() -> float:

@@ -75,7 +75,13 @@ timesfm_map_mode: "zmap_live"
 # a real, surprising divergence between the code comment's stated
 # expectation and the value actually configured; worth confirming this is
 # intentional rather than assuming either way.
-sweep_after_hours: true
+sweep_after_hours: False
+
+# Price staleness detection (2026-10-04) — replaces legacy market-hours gating.
+# If the latest price hasn't changed in max_staleness_hours, skip the sweep.
+# This prevents weekend signals from being generated on stale Friday close data.
+# Set to 0 to disable (always sweep).
+price_staleness_max_hours: 4
 
 # signal_cooldown_minutes: suppress (not fail) repeat publishes for the same
 # (symbol, direction) within this many minutes of the last publish. Pure

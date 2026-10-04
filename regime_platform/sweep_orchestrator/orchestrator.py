@@ -3060,6 +3060,35 @@ class SweepOrchestrator(HeavySweepMixin):
         if not valid_prices:
             return
 
+        # ── Price staleness check (2026-10-04) ─────────────────────────
+        # Skip symbols whose latest price hasn't changed in
+        # price_staleness_max_hours. This prevents weekend signals from
+        # being generated on stale Friday close data.
+        from regime_platform.core.feature_flags import get_price_staleness_max_hours
+        max_staleness_h = get_price_staleness_max_hours()
+        if max_staleness_h > 0:
+            now_ts = time.time()
+            stale_symbols = []
+            for sym_name in list(valid_prices.keys()):
+                timestamps = valid_timestamps.get(sym_name, [])
+                if not timestamps:
+                    continue
+                latest_ts = max(t for t in timestamps if t is not None)
+                age_h = (now_ts - latest_ts) / 3600.0
+                if age_h > max_staleness_h:
+                    stale_symbols.append((sym_name, age_h))
+                    del valid_prices[sym_name]
+                    if sym_name in valid_timestamps:
+                        del valid_timestamps[sym_name]
+            if stale_symbols:
+                logger.info(
+                    "Skipping %d symbols (price stale > %.1fh): %s",
+                    len(stale_symbols), max_staleness_h,
+                    [(s, f"{age:.1f}h") for s, age in stale_symbols],
+                )
+            if not valid_prices:
+                return
+
         # ── HMM: bootstrap + batch fetch + fit ─────────────────────────
         # On first sweep for a symbol, bootstrap the feature buffer from
         # the price history (log_return + 5 TA indicators computed locally).
