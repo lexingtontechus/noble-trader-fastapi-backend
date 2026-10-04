@@ -855,6 +855,7 @@ geometry_band_urgency:
   min_n: 20
   cooldown_hours: 4
   min_age_hours: 4
+  lookback_days: 7
   by_symbol:
     FOREX:
       urgency_threshold: 0.15
@@ -877,7 +878,7 @@ geometry_band_urgency:
 #   High-rank signals (top tercile) shrink less — trust the model more.
 #   Low-rank signals (bottom tercile) shrink more — distrust the model more.
 #   The rank score is NOT a gate — it modulates calibration confidence.
-rank_score_calibration_mode: "shadow"
+rank_score_calibration_mode: "live"
 # How strongly the rank score modulates the Bayesian shrink.
 # 0.0 = no modulation (standard shrink). 1.0 = full modulation.
 # At 1.0: high-rank signals get 50% less shrink, low-rank get 50% more.
