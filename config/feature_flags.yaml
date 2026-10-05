@@ -606,6 +606,35 @@ atr_reopt_urgency:
   vol_ratio_long: 168
   auto_apply_clamps: true
 
+# dynamic_deadline (20261005_REACHABILITY_REDESIGN): per-(symbol, vol_tier)
+# resolution deadlines replace the uniform 48h clock. Shadow mode: derive
+# tiers from nt_bracket_reachability percentiles, stamp on nt_signal_sim,
+# surface in Discord/realtime. No gate changes.
+# Worklog: worklog/20261005_REACHABILITY_REDESIGN.md
+dynamic_deadline_mode: "shadow"
+
+dynamic_deadline:
+  derive_from_reachability: true
+  soft_deadline_percentile: 0.75
+  hard_deadline_percentile: 0.90
+  min_soft_deadline_hours: 12.0
+  max_hard_deadline_hours: 120.0
+  min_n_for_high_confidence: 50
+  min_n_for_medium_confidence: 20
+  by_symbol:
+    XAUUSD: {soft_deadline_hours: 18.0, hard_deadline_hours: 36.0}
+    XAUEUR: {soft_deadline_hours: 18.0, hard_deadline_hours: 36.0}
+    XAUAUD: {soft_deadline_hours: 18.0, hard_deadline_hours: 36.0}
+    XAGUSD: {soft_deadline_hours: 18.0, hard_deadline_hours: 36.0}
+    USDCAD: {soft_deadline_hours: 36.0, hard_deadline_hours: 72.0}
+    USDJPY: {soft_deadline_hours: 24.0, hard_deadline_hours: 48.0}
+
+dynamic_deadline_reopt:
+  enabled: true
+  cycle_hours: 4.0
+  drift_threshold: 0.15
+  min_n_for_update: 20
+
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
 # long-lag than baseline, allow ATR candidates into deadline-aware pool
