@@ -53,6 +53,7 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
     ATR_BUCKETS,
     _bucket_for,
     _current_atr_by_symbol,
+    _dedupe_episodes,
     _hours_between,
     _vol_tier,
 )
@@ -108,7 +109,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     try:
         rows = await _fetch_all(
             "nt_signal_sim",
-            "symbol,ts,entry_price,take_profit,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks,regime,signal",
+            "symbol,ts,entry_price,take_profit,stop_loss,atr,p_win,outcome,resolved_at,tp_bricks,sl_bricks,regime,signal",
             filters,
         )
     except Exception as exc:
@@ -117,6 +118,10 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     if not rows:
         logger.info("calibration_bias_bucket: no win/loss-resolved nt_signal_sim rows found")
         return []
+    # Collapse per-tick re-captures of the same signal to one episode each
+    # (2026-10-04) — the same over-counting that inflated nt_signal_sim
+    # (10.5x on Sat 2026-10-03) poisoned this table's bias/expectancy cells.
+    rows = _dedupe_episodes(rows)
 
     missing_atr_symbols = sorted({
         r["symbol"] for r in rows if not r.get("atr") and r.get("symbol")
@@ -293,7 +298,7 @@ async def build_entry_drift(symbols: list[str] | None = None) -> list[dict[str, 
     try:
         rows = await _fetch_all(
             "nt_signal_sim",
-            "symbol,drift_1h_pct,drift_4h_pct,drift_24h_pct",
+            "symbol,ts,entry_price,take_profit,stop_loss,drift_1h_pct,drift_4h_pct,drift_24h_pct",
             filters,
         )
     except Exception as exc:
@@ -302,6 +307,9 @@ async def build_entry_drift(symbols: list[str] | None = None) -> list[dict[str, 
     if not rows:
         logger.info("entry_drift: no resolved nt_signal_sim rows found")
         return []
+    # One observation per economic episode (2026-10-04) — re-captures of the
+    # same signal are the same underlying price move, not independent samples.
+    rows = _dedupe_episodes(rows)
 
     by_symbol: dict[str, dict[str, list[float]]] = defaultdict(
         lambda: {"1h": [], "4h": [], "24h": []}

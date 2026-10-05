@@ -116,19 +116,61 @@ def _vol_tier(regime_label: str | None) -> str:
     return regime_label.split("_vol_")[0] + "_vol"
 
 
+def _dedupe_episodes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate captures of the SAME economic signal to one row.
+
+    2026-10-04 (weekend investigation): the light sweep runs every 15 min
+    and re-captures a still-valid signal on EVERY tick, so one economic
+    signal lands as N identical ``nt_signal_sim`` rows (same symbol +
+    entry + take_profit + stop_loss), all resolving the same way. On
+    Sat 2026-10-03 XAUAUD wrote 75 identical rows (10.5x duplication
+    across the day) — counting them as 75 independent trials poisoned
+    this table's hit-rate buckets and the calibration bias built on them.
+
+    Episode key is ``(symbol, signal, regime, entry_price, take_profit,
+    stop_loss)`` — the same "same signal" content the orchestrator's own
+    content-hash dedup uses (orchestrator.py D5 hashes symbol + direction +
+    regime + brick params + price band). ``regime`` belongs in the key: a
+    capture that spans a regime shift is a genuinely different signal, not a
+    re-capture. ``stop_loss`` may be NULL on older rows (pre-migration);
+    those collapse by the remaining key rather than being dropped.
+
+    Keeps the EARLIEST row per episode (lowest ``ts``) so the episode is
+    anchored at its origin, and is stable across repeated builds.
+    """
+    seen: dict[tuple, dict[str, Any]] = {}
+    for r in rows:
+        key = (
+            r.get("symbol"),
+            r.get("signal"),
+            r.get("regime"),
+            r.get("entry_price"),
+            r.get("take_profit"),
+            r.get("stop_loss"),
+        )
+        prev = seen.get(key)
+        if prev is None or str(r.get("ts") or "") < str(prev.get("ts") or ""):
+            seen[key] = r
+    return list(seen.values())
+
+
 async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[str, Any]]:
     """Paginate resolved ``nt_signal_sim`` rows (any outcome).
 
     Mirrors ``eod_resolver._fetch_pending`` / ``noble_calibration.py``'s
     offset-loop pagination, but the mirror-image filter: ``outcome`` NOT
     null (resolved), instead of IS null (pending).
+
+    Rows are collapsed to one per economic episode by ``_dedupe_episodes``
+    (2026-10-04) before being returned, so every bucket ``n``/hit-rate is
+    an independent-signal count, not a per-tick re-capture count.
     """
     if not settings.SUPABASE_URL:
         return []
     rows: list[dict[str, Any]] = []
     offset = 0
     params: dict[str, str] = {
-        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at,regime,signal",
+        "select": "symbol,ts,entry_price,take_profit,stop_loss,atr,outcome,resolved_at,regime,signal",
         "outcome": "not.is.null",
         "order": "ts.asc",
         "limit": str(_PAGE_SIZE),
@@ -150,7 +192,11 @@ async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[st
             if len(batch) < _PAGE_SIZE:
                 break
             offset += _PAGE_SIZE
-    return rows
+    # Collapse per-tick re-captures of the same signal to one episode each
+    # (2026-10-04) — see _dedupe_episodes. Applied here so every caller
+    # (build_reachability_table, the CLI report, verification) gets the
+    # same independent-signal population.
+    return _dedupe_episodes(rows)
 
 
 async def _current_atr_by_symbol(symbols: list[str]) -> dict[str, float]:

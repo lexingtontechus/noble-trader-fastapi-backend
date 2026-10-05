@@ -1,37 +1,54 @@
 """
-geometry_band_urgency.py — Dynamic re-computation of geometry band
-calibration statistics when drift is detected.
+geometry_band_urgency.py — Dynamic re-computation of geometry-band
+(reachability) statistics when calibration drift is detected.
 
-Replicates the dynamic_atr methodology:
-1. Monitor per-bucket calibration bias (already computed by 4h EOD pass)
-2. When bias drifts beyond threshold, re-compute from recent resolved signals
-3. Update nt_bracket_reachability with fresh statistics
-4. Log to nt_eod_actions (geometry_band_urgency)
+Replicates the dynamic_atr methodology on the geometry side:
+  1. Monitor per-cell calibration bias (nt_calibration_bias_by_cell, already
+     refreshed by the 4h EOD pass).
+  2. When |bias_shrunk| drifts past threshold, RE-COMPUTE that bucket's
+     reachability stats from recent resolved signals — not a static
+     threshold lookup.
+  3. Upsert the fresh stats into nt_bracket_reachability.
+  4. Log a ``geometry_band_urgency`` row to nt_eod_actions.
+  5. Persist per-cell last-fired stamps in nt_roadmap (survives restarts).
 
-This is NOT a static threshold lookup. It dynamically re-computes bucket
-statistics from recent data when drift is detected — the same way
-dynamic_atr re-optimizes TP/SL from recent signals when vol spikes.
+Cadence: called at the END of every light sweep (orchestrator._sweep_group
+-> _run_geometry_band_urgency) so bands stay current BETWEEN qualified-signal
+generations. A per-cell cooldown (geometry_band_urgency.cooldown_hours,
+default 4h) stops it firing every 15 min.
 
-Cadence: 4h check, 4h per-bucket cooldown (same as ATR urgency).
-State: nt_roadmap(geometry_band_urgency) — survives restarts.
+Correctness notes (2026-10-04):
+  * Resolved rows are episode-deduped (``_dedupe_episodes``) before any
+    statistic is computed — one economic signal captured on N consecutive
+    sweeps is ONE trial, not N. The episode key includes ``regime``, so a
+    capture that spans a regime shift stays a distinct signal.
+  * The upsert payload matches nt_bracket_reachability's REAL columns
+    (pct_hit_tp / pct_hit_sl / pct_expired / median_hours_to_resolve /
+    p75_hours / p90_hours / atr_source), keyed on
+    (symbol, vol_tier, distance_atr_bucket, signal).
 
-Usage:
+Usage (standalone):
   PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m regime_platform.sweep_orchestrator.geometry_band_urgency
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
+import numpy as np
+
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.bracket_reachability import (
-    ATR_BUCKETS,
     _bucket_for,
+    _dedupe_episodes,
+    _hours_between,
+    _signal_side,
     _vol_tier,
 )
 from regime_platform.sweep_orchestrator.p_win_bracket import beta_shrunk_win_rate
@@ -48,23 +65,29 @@ _URGENCY_STATE_MECH = "geometry_band_urgency"
 _PAGE_SIZE = 1000
 
 
+# ─── Durable state (nt_roadmap) ──────────────────────────────────────────────
+
 async def _load_urgency_state() -> dict[str, Any]:
-    """Durable last-run stamps from nt_roadmap (survives restart)."""
+    """Durable last-fired stamps from nt_roadmap (survives restart)."""
+    if not settings.SUPABASE_URL:
+        return {}
     try:
-        import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 _url("nt_roadmap"),
                 headers=_headers(),
-                params={"select": "current_state,notes", "mechanism": f"eq.{_URGENCY_STATE_MECH}"},
+                params={
+                    "select": "current_state",
+                    "mechanism": f"eq.{_URGENCY_STATE_MECH}",
+                },
             )
         rows = resp.json() or []
-        if not rows:
+        if not isinstance(rows, list) or not rows:
             return {}
         raw = rows[0].get("current_state") or ""
+        # heartbeat_state() prefixes a human line; the JSON payload follows "·"
         if "·" in raw:
             raw = raw.split("·", 1)[1].strip()
-        import json
         return json.loads(raw) if raw.startswith("{") else {}
     except Exception as exc:
         logger.warning("[geo:urg] state load failed: %s", exc)
@@ -79,6 +102,10 @@ async def _save_urgency_state(state: dict[str, Any]) -> None:
         logger.warning("[geo:urg] state save failed: %s", exc)
 
 
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
 def _ts_or_none(raw: Any) -> float | None:
     if not raw:
         return None
@@ -91,26 +118,25 @@ def _ts_or_none(raw: Any) -> float | None:
         return None
 
 
-def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+# ─── Data fetch ──────────────────────────────────────────────────────────────
 
-
-async def _fetch_resolved_rows(
-    symbol: str,
-    since: datetime,
-) -> list[dict[str, Any]]:
-    """Fetch resolved nt_signal_sim rows for a symbol since a date."""
+async def _fetch_resolved_rows(symbol: str, since: datetime) -> list[dict[str, Any]]:
+    """Fetch + episode-dedupe resolved nt_signal_sim rows for one symbol."""
+    if not settings.SUPABASE_URL:
+        return []
     rows: list[dict[str, Any]] = []
     offset = 0
     params: dict[str, str] = {
-        "select": "symbol,ts,entry_price,take_profit,atr,outcome,resolved_at,regime,signal",
+        "select": (
+            "symbol,ts,signal,entry_price,take_profit,stop_loss,atr,"
+            "outcome,resolved_at,regime,p_win"
+        ),
         "symbol": f"eq.{symbol}",
         "outcome": "not.is.null",
-        "and": f"(ts.gte.{since.isoformat()})",
+        "ts": f"gte.{since.isoformat()}",
         "order": "ts.asc",
         "limit": str(_PAGE_SIZE),
     }
-    import httpx
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
             resp = await client.get(
@@ -119,130 +145,186 @@ async def _fetch_resolved_rows(
                 params={**params, "offset": str(offset)},
             )
             resp.raise_for_status()
-            batch = resp.json() or []
+            batch = resp.json()
             if not isinstance(batch, list) or not batch:
                 break
             rows.extend(batch)
             if len(batch) < _PAGE_SIZE:
                 break
             offset += _PAGE_SIZE
-    return rows
+    return _dedupe_episodes(rows)
 
 
-def _compute_bucket_stats(rows: list[dict[str, Any]]) -> dict[tuple, dict]:
-    """Compute per-bucket reachability stats from resolved signals."""
-    cells = defaultdict(lambda: {
-        "n": 0, "tp": 0, "sl": 0, "exp": 0, "p_win_sum": 0.0,
-    })
-    for r in rows:
-        entry = r.get("entry_price")
-        tp = r.get("take_profit")
-        atr = r.get("atr")
-        if not entry or not tp or not atr:
-            continue
-        ratio = abs(float(tp) - float(entry)) / float(atr)
-        bucket = _bucket_for(ratio)
-        if bucket is None:
-            continue
-        key = (r["symbol"], _vol_tier(r.get("regime")), bucket)
-        cells[key]["n"] += 1
-        cells[key]["p_win_sum"] += float(r.get("p_win") or 0.0)
-        outcome = r.get("outcome")
-        if outcome == "tp_hit":
-            cells[key]["tp"] += 1
-        elif outcome == "sl_hit":
-            cells[key]["sl"] += 1
-        else:
-            cells[key]["exp"] += 1
+async def _fetch_cell_bias(symbol: str, min_n: int) -> dict[tuple, dict]:
+    """Current per-cell calibration bias for one symbol (the drift signal).
 
-    out = {}
-    for key, c in cells.items():
-        n = c["n"]
-        if n == 0:
-            continue
-        p_resolve = (c["tp"] + c["sl"]) / n if n else 0.0
-        win_rate = c["tp"] / n if n else 0.0
-        avg_p_win = c["p_win_sum"] / n
-        bias = avg_p_win - win_rate
-        shrunk_wr = beta_shrunk_win_rate(c["tp"], c["sl"])
-        bias_shrunk = avg_p_win - shrunk_wr if shrunk_wr is not None else bias
-        out[key] = {
-            "n": n, "tp": c["tp"], "sl": c["sl"], "exp": c["exp"],
-            "p_resolve": round(p_resolve, 4),
-            "win_rate": round(win_rate, 4),
-            "avg_p_win": round(avg_p_win, 4),
-            "bias": round(bias, 4),
-            "bias_shrunk": round(bias_shrunk, 4),
-        }
-    return out
-
-
-async def _fetch_bucket_bias(symbol: str) -> dict[tuple, dict]:
-    """Fetch current per-bucket bias from nt_calibration_bias_by_cell."""
+    Key: (side, vol_tier, distance_atr_bucket) -> {n, bias, bias_shrunk}.
+    """
+    if not settings.SUPABASE_URL:
+        return {}
     try:
-        import httpx
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 _url("nt_calibration_bias_by_cell"),
                 headers=_headers(),
                 params={
-                    "select": "symbol,side,vol_tier,distance_atr_bucket,n,bias,bias_shrunk,expectancy_r",
+                    "select": "side,vol_tier,distance_atr_bucket,n,bias,bias_shrunk",
                     "symbol": f"eq.{symbol}",
-                    "n": "gte.10",
+                    "n": f"gte.{min_n}",
                 },
             )
         rows = resp.json() or []
     except Exception as exc:
-        logger.warning("[geo:urg] bias fetch failed for %s: %s", symbol, exc)
+        logger.warning("[geo:urg] cell bias fetch failed for %s: %s", symbol, exc)
         return {}
 
-    out = {}
+    out: dict[tuple, dict] = {}
     for r in rows:
-        key = (r["symbol"], r["vol_tier"], r["distance_atr_bucket"])
+        key = (r.get("side"), r.get("vol_tier"), r.get("distance_atr_bucket"))
         out[key] = {
             "n": int(r.get("n") or 0),
             "bias": float(r.get("bias") or 0.0),
             "bias_shrunk": float(r.get("bias_shrunk") or 0.0),
-            "expectancy_r": float(r.get("expectancy_r") or 0.0),
         }
     return out
 
 
+# ─── Re-computation ──────────────────────────────────────────────────────────
+
+def _recompute_cell(
+    rows: list[dict[str, Any]],
+    *,
+    side: str,
+    vol_tier: str,
+    bucket: str,
+) -> dict[str, Any] | None:
+    """Re-compute one cell's stats from recent (deduped) resolved rows.
+
+    Returns None when the cell has no rows in the window. Mirrors
+    ``bracket_reachability.build_reachability_table``'s per-row bucketing so
+    the fresh values are directly comparable to the stored ones.
+    """
+    n = tp = sl = exp = n_stored = n_proxy = 0
+    p_win_sum = 0.0
+    hours: list[float] = []
+
+    for row in rows:
+        entry = row.get("entry_price")
+        tp_price = row.get("take_profit")
+        outcome = row.get("outcome")
+        if entry is None or tp_price is None:
+            continue
+        if outcome not in ("tp_hit", "sl_hit", "expired"):
+            continue
+
+        atr = row.get("atr")
+        if not atr:
+            # No per-symbol ATR proxy here: a row missing its stored ATR is
+            # skipped rather than mixing a look-ahead proxy into an urgency
+            # refresh (the weekly full build does use the proxy).
+            continue
+
+        ratio = abs(float(tp_price) - float(entry)) / float(atr)
+        if _bucket_for(ratio) != bucket:
+            continue
+        if _vol_tier(row.get("regime")) != vol_tier:
+            continue
+        if side != "all" and _signal_side(row.get("signal")) != side:
+            continue
+
+        n += 1
+        n_stored += 1
+        p_win_sum += float(row.get("p_win") or 0.0)
+        if outcome == "tp_hit":
+            tp += 1
+        elif outcome == "sl_hit":
+            sl += 1
+        else:
+            exp += 1
+        if outcome in ("tp_hit", "sl_hit"):
+            h = _hours_between(row.get("ts"), row.get("resolved_at"))
+            if h is not None:
+                hours.append(h)
+
+    if n == 0:
+        return None
+
+    win_rate = tp / n
+    avg_p_win = p_win_sum / n
+    shrunk = beta_shrunk_win_rate(tp, sl)
+    bias = avg_p_win - win_rate
+    bias_shrunk = avg_p_win - shrunk if shrunk is not None else bias
+
+    return {
+        "n": n,
+        "n_stored": n_stored,
+        "n_proxy": n_proxy,
+        "pct_hit_tp": round(tp / n, 4),
+        "pct_hit_sl": round(sl / n, 4),
+        "pct_expired": round(exp / n, 4),
+        "median_hours_to_resolve": (
+            round(float(np.percentile(hours, 50)), 2) if hours else None
+        ),
+        "p75_hours": round(float(np.percentile(hours, 75)), 2) if hours else None,
+        "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
+        "atr_source": "stored",
+        "win_rate": round(win_rate, 4),
+        "avg_p_win": round(avg_p_win, 4),
+        "bias": round(bias, 4),
+        "bias_shrunk": round(bias_shrunk, 4),
+    }
+
+
+async def _log_eod_action(symbol: str, detail: dict[str, Any], bias: float) -> None:
+    """Append a geometry_band_urgency row to nt_eod_actions (best-effort)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            await client.post(
+                _url("nt_eod_actions"),
+                headers={**_headers(), "Prefer": "return=minimal"},
+                json={
+                    "symbol": symbol,
+                    "action": "geometry_band_urgency",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "bias": bias,
+                    "detail": detail,
+                },
+            )
+    except Exception as exc:
+        logger.warning("[geo:urg] eod_actions log failed for %s: %s", symbol, exc)
+
+
+# ─── Entry point ─────────────────────────────────────────────────────────────
+
 async def check_geometry_band_urgency() -> dict[str, Any]:
-    """4h urgency check for geometry band calibration drift.
+    """Sweep-triggered geometry-band drift check + re-computation.
 
-    Replicates dynamic_atr methodology:
-    1. For each symbol, fetch current per-bucket bias
-    2. If |bias_shrunk| > threshold and n >= min_n, re-compute from recent signals
-    3. Upsert fresh stats into nt_bracket_reachability
-    4. Log to nt_eod_actions (geometry_band_urgency)
-
-    Returns: {enabled, checked, triggered, recomputed, errors}
+    Returns {enabled, checked, triggered, recomputed, errors}. Best-effort:
+    never raises into the sweep tick.
     """
     from regime_platform.core.feature_flags import get_geometry_band_urgency_config
 
     cfg = get_geometry_band_urgency_config()
     if not cfg.get("enabled", True):
-        return {"enabled": False, "checked": 0, "triggered": 0, "recomputed": 0, "errors": []}
+        return {"enabled": False, "checked": 0, "triggered": 0,
+                "recomputed": 0, "errors": []}
 
     threshold = float(cfg.get("urgency_threshold", 0.15))
     min_n = int(cfg.get("min_n", 20))
     cooldown_h = float(cfg.get("cooldown_hours", 4))
-    min_age_h = float(cfg.get("min_age_hours", 4))
     lookback_days = int(cfg.get("lookback_days", 7))
 
     state = await _load_urgency_state()
-    last_recomputed = state.get("last_recomputed_at") or {}
+    last_recomputed: dict[str, str] = state.get("last_recomputed_at") or {}
     errors: list[str] = []
-    checked = 0
-    triggered = 0
-    recomputed = 0
+    checked = triggered = recomputed = 0
 
     try:
         peers = [p for p in await fetch_active_symbols() if p.get("symbol")]
     except Exception as exc:
         logger.warning("[geo:urg] peers fetch failed: %s", exc)
-        return {"enabled": True, "checked": 0, "triggered": 0, "recomputed": 0, "errors": [str(exc)]}
+        return {"enabled": True, "checked": 0, "triggered": 0,
+                "recomputed": 0, "errors": [str(exc)]}
 
     now = time.time()
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -254,91 +336,86 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
         sym_min_n = int(sym_cfg.get("min_n", min_n))
         sym_cooldown = float(sym_cfg.get("cooldown_hours", cooldown_h))
 
-        # Fetch current bias
-        try:
-            bias_data = await _fetch_bucket_bias(symbol)
-        except Exception as exc:
-            errors.append(f"{symbol}: bias fetch failed: {exc}")
-            continue
-
-        if not bias_data:
+        cells = await _fetch_cell_bias(symbol, sym_min_n)
+        if not cells:
             continue
         checked += 1
 
-        # Check each bucket
-        for key, bias in bias_data.items():
-            if bias["n"] < sym_min_n:
-                continue
-            if abs(bias["bias_shrunk"]) < sym_threshold:
-                continue
+        drifted = [
+            (key, c) for key, c in cells.items()
+            if c["n"] >= sym_min_n and abs(c["bias_shrunk"]) >= sym_threshold
+        ]
+        if not drifted:
+            continue
 
-            # Cooldown check
-            last_ts = _ts_or_none(last_recomputed.get(f"{key[0]}:{key[1]}:{key[2]}"))
+        try:
+            rows = await _fetch_resolved_rows(symbol, since)
+        except Exception as exc:
+            errors.append(f"{symbol}: fetch failed: {exc}")
+            continue
+        if not rows:
+            continue
+
+        for (side, vol_tier, bucket), cur in drifted:
+            state_key = f"{symbol}:{side}:{vol_tier}:{bucket}"
+            last_ts = _ts_or_none(last_recomputed.get(state_key))
             if last_ts is not None and (now - last_ts) < sym_cooldown * 3600.0:
                 continue
 
-            # Re-compute from recent signals
-            try:
-                rows = await _fetch_resolved_rows(symbol, since)
-            except Exception as exc:
-                errors.append(f"{symbol}: fetch failed: {exc}")
+            fresh = _recompute_cell(
+                rows, side=side, vol_tier=vol_tier, bucket=bucket,
+            )
+            if fresh is None or fresh["n"] < sym_min_n:
                 continue
 
-            if not rows:
-                continue
+            triggered += 1
 
-            recent_stats = _compute_bucket_stats(rows)
-            recent_bucket = recent_stats.get(key)
-            if recent_bucket is None or recent_bucket["n"] < sym_min_n:
-                continue
-
-            # Upsert fresh stats
+            # Upsert fresh reachability stats (real nt_bracket_reachability
+            # column names; keyed on symbol, vol_tier, bucket, signal).
             try:
                 await upsert_bracket_reachability([{
-                    "symbol": key[0],
-                    "vol_tier": key[1],
-                    "distance_atr_bucket": key[2],
-                    "n_stored": recent_bucket["n"],
-                    "n_proxy": 0,
-                    "p_resolve": recent_bucket["p_resolve"],
-                    "p_win_resolve": recent_bucket["win_rate"],
-                    "expectancy_r": recent_bucket.get("expectancy_r", 0.0),
+                    "symbol": symbol,
+                    "vol_tier": vol_tier,
+                    "distance_atr_bucket": bucket,
+                    "signal": side,
+                    "n": fresh["n"],
+                    "n_stored": fresh["n_stored"],
+                    "n_proxy": fresh["n_proxy"],
+                    "pct_hit_tp": fresh["pct_hit_tp"],
+                    "pct_hit_sl": fresh["pct_hit_sl"],
+                    "pct_expired": fresh["pct_expired"],
+                    "median_hours_to_resolve": fresh["median_hours_to_resolve"],
+                    "p75_hours": fresh["p75_hours"],
+                    "p90_hours": fresh["p90_hours"],
+                    "atr_source": fresh["atr_source"],
                 }])
             except Exception as exc:
                 errors.append(f"{symbol}: upsert failed: {exc}")
                 continue
 
-            # Log to nt_eod_actions
-            try:
-                from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
-                import httpx
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    await client.post(
-                        _url("nt_eod_actions"),
-                        headers=_headers(),
-                        json={
-                            "symbol": symbol,
-                            "action": "geometry_band_urgency",
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "detail": {
-                                "vol_tier": key[1],
-                                "bucket": key[2],
-                                "old_bias": bias["bias_shrunk"],
-                                "new_bias": recent_bucket["bias_shrunk"],
-                                "n": recent_bucket["n"],
-                            },
-                        },
-                    )
-            except Exception as exc:
-                errors.append(f"{symbol}: eod_actions log failed: {exc}")
+            await _log_eod_action(
+                symbol,
+                {
+                    "side": side,
+                    "vol_tier": vol_tier,
+                    "distance_atr_bucket": bucket,
+                    "old_bias_shrunk": cur["bias_shrunk"],
+                    "new_bias_shrunk": fresh["bias_shrunk"],
+                    "old_n": cur["n"],
+                    "new_n": fresh["n"],
+                    "lookback_days": lookback_days,
+                    "source": "sweep",
+                },
+                bias=fresh["bias_shrunk"],
+            )
 
-            last_recomputed[f"{key[0]}:{key[1]}:{key[2]}"] = _iso(now)
-            triggered += 1
+            last_recomputed[state_key] = _iso(now)
             recomputed += 1
 
-    # Save state
     state["last_recomputed_at"] = last_recomputed
     state["last_run_at"] = _iso(now)
+    state["checked"] = checked
+    state["recomputed"] = recomputed
     await _save_urgency_state(state)
 
     logger.info(

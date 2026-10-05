@@ -97,13 +97,15 @@ def test_same_symbol_same_bucket_different_vol_tier_stay_separate():
     vs. loses in med_low_vol_bear, same distance/ATR bucket. Must produce
     two separate output rows, not one blended one."""
     rows = [
-        # med_high_vol_bear: wins
+        # med_high_vol_bear: wins. Distinct take_profit per row so each is a
+        # separate signal (post-2026-10-04 episode dedup collapses rows that
+        # share symbol/signal/regime/entry/tp/sl — these must NOT collapse).
         _row("XAUUSD", "med_high_vol_bear", 100.0, 140.0, 10.0, "tp_hit"),
-        _row("XAUUSD", "med_high_vol_bear", 100.0, 140.0, 10.0, "tp_hit"),
-        _row("XAUUSD", "med_high_vol_bear", 100.0, 140.0, 10.0, "sl_hit"),
-        # med_low_vol_bear: same bucket (distance=40, atr=10 -> ratio=4 -> "4+"), all losses
+        _row("XAUUSD", "med_high_vol_bear", 100.0, 141.0, 10.0, "tp_hit"),
+        _row("XAUUSD", "med_high_vol_bear", 100.0, 142.0, 10.0, "sl_hit"),
+        # med_low_vol_bear: same bucket (distance≈40, atr=10 -> ratio 4 -> "4+"), all losses
         _row("XAUUSD", "med_low_vol_bear", 100.0, 140.0, 10.0, "sl_hit"),
-        _row("XAUUSD", "med_low_vol_bear", 100.0, 140.0, 10.0, "sl_hit"),
+        _row("XAUUSD", "med_low_vol_bear", 100.0, 141.0, 10.0, "sl_hit"),
     ]
     out = _run(rows)
     by_key = {(r["symbol"], r["vol_tier"], r["distance_atr_bucket"]): r for r in out}

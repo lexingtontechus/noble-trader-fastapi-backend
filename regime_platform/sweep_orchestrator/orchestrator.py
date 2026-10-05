@@ -2348,6 +2348,38 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[atr:urg] failed: %s", exc)
 
+    async def _run_geometry_band_urgency(self) -> None:
+        """Geometry band urgency — runs at the END of every light sweep.
+
+        Re-computes a bucket's reachability stats from recent resolved
+        signals when its calibration bias has drifted (same re-optimization
+        methodology as the ATR 4h urgency), and logs a
+        ``geometry_band_urgency`` row to nt_eod_actions.
+
+        Wired to the sweep rather than a cron (2026-10-04) because the point
+        is to keep geometry bands current *between* qualified-signal
+        generations: the light sweep is what produces new signals, so drift
+        is corrected on the same cadence. Per-bucket cooldown
+        (geometry_band_urgency.cooldown_hours, default 4h) keeps it from
+        firing every 15 min. Best-effort: never raises into the sweep tick.
+        """
+        try:
+            from regime_platform.core.feature_flags import get_geometry_band_urgency_config
+            if not get_geometry_band_urgency_config().get("enabled", True):
+                return
+            from regime_platform.sweep_orchestrator.geometry_band_urgency import (
+                check_geometry_band_urgency,
+            )
+            summary = await check_geometry_band_urgency()
+            if summary.get("recomputed"):
+                logger.info(
+                    "[geo:urg] sweep-triggered: checked=%s triggered=%s recomputed=%s",
+                    summary.get("checked"), summary.get("triggered"),
+                    summary.get("recomputed"),
+                )
+        except Exception as exc:
+            logger.error("[geo:urg] failed: %s", exc)
+
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then
         the Phase 2 calibration-bias-by-bucket + entry-drift diagnostics.
@@ -3359,6 +3391,15 @@ class SweepOrchestrator(HeavySweepMixin):
 
             if i < len(symbols_to_process) - 1:
                 await asyncio.sleep(STAGGER_SECONDS)
+
+        # ── Geometry band urgency (2026-10-04) ─────────────────────────
+        # After the group is processed, check whether any bucket's
+        # calibration bias has drifted and re-compute its reachability stats
+        # from recent resolved signals — the same dynamic re-optimization
+        # the ATR urgency applies, but on the geometry-band side and on the
+        # sweep cadence (per-bucket 4h cooldown still applies). Best-effort;
+        # never raises into the sweep.
+        await self._run_geometry_band_urgency()
 
     def _persist_regime_state(self) -> None:
         """Snapshot debouncers / run tracker / label-continuity means /
