@@ -125,6 +125,64 @@ The hypothesis: **low-coherence rows underperform their `p_win`** — i.e. coher
 discriminates the outcomes `p_win_dir` fails to. If true, it is a calibration input the
 fixed-weight pool cannot compute. If false, it is retired.
 
+## 5a. Where `nt_macro_forecast` fits — the narrative half of the state
+
+**Live data (2026-10-05), all 14 active symbols have both tables:**
+
+| Symbol | `nt_macro_forecast` (LLM, 12m) | `nt_macro_regime` (price, 200d) | agree |
+|---|---|---|---|
+| XAUUSD | bull | bear | ✗ |
+| XAGUSD | bull | bear | ✗ |
+| XAUAUD | bull | bear | ✗ |
+| AAPL | neutral | bull | ✗ |
+| US30USD | bull | neutral | ✗ |
+| US500 | neutral | bull | ✗ |
+| BTCUSD | bull | bull | ✓ |
+| EURUSD/GBPUSD/USDCAD/USDCHF/USDJPY | neutral | neutral | ✓ |
+
+**6 of 14 disagree, persistently** — and nothing consumes the disagreement today.
+
+The EV chain is **numbers**; `nt_macro_forecast` is **text** (`thesis`, `drivers`,
+`risks`). A fixed-weight logit pool cannot read prose. **A decision model can** — it is
+the only component in the platform that can consume the narrative. Three roles:
+
+1. **State content.** The forecast's `thesis`/`drivers`/`risks`/`current_macro_label`
+   join the state next to the numeric chain. Clef then judges a **cross-domain** question
+   the pool cannot: *does the strategic story match the tape?* ("Gold closes above 2800 on
+   real-rate cuts" vs `p_regime` = `med_high_vol_strong_bear`).
+2. **A third longitudinal read.** `context_alignment.py` already hand-codes a crude
+   version — it rejects only when **both** `macro_label` **and** `trend_label` oppose
+   (binary, hardcoded). The decision layer generalizes it: the forecast adds an
+   independent strategic read that can conflict with the price-macro and the trend.
+3. **The reader `nt_macro_forecast` never had.** `20261004_MACRO_FORECAST_CONSUMER_SCOPE.md`
+   proposed wiring it into `macro_filter.py` (numeric→numeric) — the wrong socket. The
+   decision layer is the natural consumer: it is the only thing that can read the
+   narrative. This resolves the "no consumer" problem without a numeric integration.
+
+**State block added:**
+```json
+"macro_narrative": {
+  "forecast_label": "bull", "forecast_strength": 0.80, "forecast_trend": "trending_up",
+  "thesis": "XAUUSD will close above 2,800 by end of Q4 2026",
+  "drivers": [{"name": "real-rate cuts", "stance": "bull", "confidence": 0.8}],
+  "risks": [{"name": "real-yield spike", "severity": 0.4, "direction": "bear"}],
+  "pivot_label": "no_change", "updated_at": "2026-10-04T02:45Z",
+  "price_macro_label": "bear"
+}
+```
+
+**Question added — Q5 (`noul`):** *"Does the strategic narrative agree with the realized
+price regime and the current trade direction?"* → P(agree). The text-vs-tape read a
+numeric engine fundamentally cannot produce.
+
+**Risks, stated:**
+- **Slow-moving** — daily forecast vs per-tick signal. Strategic context, not a timing read.
+- **Partial circularity** — both forecast and Clef are language models. The value is *not*
+  "two LMs agree"; it is **text vs numbers** (does the story match `p_regime`/`trend`/
+  `p_timesfm`). That comparison is real and cross-domain.
+- **`pivot_label` is `no_change` on all 33** today — the pivot axis is uninformative; the
+  `current_macro_label` disagreement is the live signal.
+
 ## 6. The endpoint (binary, same discipline as the cutover strategy)
 
 | Stage | What | Gate |
