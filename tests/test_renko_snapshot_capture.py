@@ -17,7 +17,7 @@ Covers:
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -433,3 +433,73 @@ async def test_purge_orphan_helper_never_raises_on_delete_error(monkeypatch):
         max_brick_index=10,
     )
     assert result == 0
+
+
+# ─── session_date derivation (2026-10-04, migration 196) ───────────────────
+# The sweep call site does NOT pass session_date, so the column used to fall to
+# the DB CURRENT_DATE default — the SWEEP RUN date — stamping every brick in a
+# multi-week window with one (wrong) date. That collapsed ~30 real trading days
+# into 3 and starved v_talaria_daily_close. session_date must now come from the
+# brick's OWN ts unless the caller explicitly passes one.
+
+
+@pytest.mark.asyncio
+async def test_session_date_derived_from_brick_ts_when_not_passed(monkeypatch):
+    """No session_date arg → each row's session_date == its own ts::date (UTC)."""
+    captured = _fake_post_capture(monkeypatch)
+
+    # Two real per-bar epochs on DIFFERENT UTC days (2026-09-22 and 2026-09-23).
+    day1 = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc).timestamp()
+    day2 = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc).timestamp()
+    bricks = [
+        {"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0, "timestamp": day1},
+        {"index": 1, "direction": "up", "open_price": 101.0, "close_price": 102.0, "timestamp": day2},
+    ]
+    await log_renko_bricks(
+        "AUDUSD", bricks, brick_size=0.00005, has_real_timestamps=True,
+    )
+
+    rows = captured["json"]
+    assert rows[0]["session_date"] == "2026-09-22"
+    assert rows[1]["session_date"] == "2026-09-23"
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_date_still_wins(monkeypatch):
+    """An explicit session_date arg overrides per-brick derivation (single grid)."""
+    captured = _fake_post_capture(monkeypatch)
+
+    day1 = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc).timestamp()
+    day2 = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc).timestamp()
+    bricks = [
+        {"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0, "timestamp": day1},
+        {"index": 1, "direction": "up", "open_price": 101.0, "close_price": 102.0, "timestamp": day2},
+    ]
+    await log_renko_bricks(
+        "AUDUSD", bricks, brick_size=0.00005, session_date="2026-09-28",
+        has_real_timestamps=True,
+    )
+
+    rows = captured["json"]
+    assert all(r["session_date"] == "2026-09-28" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_session_date_derived_from_fallback_ts_too(monkeypatch):
+    """When timestamps are synthesised (has_real_timestamps=False), session_date
+    still derives from the resulting ts — never the run date / DB default."""
+    captured = _fake_post_capture(monkeypatch)
+
+    # sweep_ts = 2026-10-04 23:00 UTC; 2 bricks -> hourly spacing back to 22:00.
+    sweep_ts = datetime(2026, 10, 4, 23, 0, tzinfo=timezone.utc).timestamp()
+    bricks = [
+        {"index": 0, "direction": "up", "open_price": 100.0, "close_price": 101.0},
+        {"index": 1, "direction": "up", "open_price": 101.0, "close_price": 102.0},
+    ]
+    await log_renko_bricks(
+        "AUDUSD", bricks, brick_size=0.00005, sweep_ts=sweep_ts,
+        has_real_timestamps=False,
+    )
+
+    rows = captured["json"]
+    assert all(r["session_date"] == "2026-10-04" for r in rows)

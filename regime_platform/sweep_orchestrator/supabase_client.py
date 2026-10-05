@@ -758,8 +758,19 @@ async def log_renko_bricks(
             "brick_index": b.get("index"),
             "ts": datetime.fromtimestamp(ts_epoch, tz=timezone.utc).isoformat(),
         }
+        # session_date: an EXPLICIT caller value wins (single-grid callers that
+        # want every row on one date). Otherwise derive it from the brick's OWN
+        # ts — never let the column fall to the DB CURRENT_DATE default. A single
+        # sweep rebuilds a MULTI-WEEK price window, so the run date is wrong for
+        # every brick except the last one: it collapsed ~30 real trading days
+        # into 3 and starved v_talaria_daily_close (see migration 196 header and
+        # nobletradingapp docs/scope-correlation-daily-close-repoint.md).
         if session_date:
             row["session_date"] = session_date
+        else:
+            row["session_date"] = datetime.fromtimestamp(
+                ts_epoch, tz=timezone.utc
+            ).strftime("%Y-%m-%d")
         rows.append(row)
 
     if not rows:
