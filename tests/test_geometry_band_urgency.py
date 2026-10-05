@@ -214,3 +214,71 @@ class TestLastFiredCooldown:
     def test_malformed_detail_skipped(self):
         out = self._run([{"symbol": "XAUUSD", "ts": "2026-10-05T00:47:36+00:00", "detail": "nope"}])
         assert out == {}
+
+
+class TestCooldownGate:
+    """End-to-end: a cell fired inside its cooldown window must NOT recompute.
+
+    Regression (2026-10-05): _load_last_fired() returns epoch SECONDS but the
+    gate ran that through _ts_or_none() (an ISO-string parser), which returned
+    None every time — so the cooldown silently never applied and every drifted
+    cell re-computed on every 15-min sweep (53 cells x 4 sweeps observed).
+    The loader was unit-tested; the WIRING between loader and gate was not.
+    """
+
+    def _run(self, last_fired_epoch):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        # One symbol, one drifted cell (bias 0.5 >= threshold 0.15).
+        cells = {("sell", "med_high_vol", "2-4"): {
+            "n": 50, "bias": 0.5, "bias_shrunk": 0.5,
+        }}
+        rows = [{
+            "symbol": "XAUUSD", "ts": "2026-10-04T00:00:00+00:00",
+            "signal": "sell", "entry_price": 100.0, "take_profit": 130.0,
+            "stop_loss": 90.0, "atr": 10.0, "outcome": "sl_hit",
+            "resolved_at": "2026-10-04T04:00:00+00:00",
+            "regime": "med_high_vol_bear", "p_win": 0.9,
+        }] * 30  # tp-entry=30, atr=10 -> ratio 3.0 -> bucket "2-4"
+
+        with patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency.fetch_active_symbols",
+            new=AsyncMock(return_value=[{"symbol": "XAUUSD"}]),
+        ), patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency._fetch_cell_bias",
+            new=AsyncMock(return_value=cells),
+        ), patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency._fetch_resolved_rows",
+            new=AsyncMock(return_value=rows),
+        ), patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency._load_last_fired",
+            new=AsyncMock(return_value=last_fired_epoch),
+        ), patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency._log_eod_action",
+            new=AsyncMock(),
+        ), patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency.upsert_bracket_reachability",
+            new=AsyncMock(),
+        ):
+            from regime_platform.sweep_orchestrator.geometry_band_urgency import (
+                check_geometry_band_urgency,
+            )
+            return asyncio.run(check_geometry_band_urgency())
+
+    def test_inside_cooldown_does_not_recompute(self):
+        import time
+        # Fired 30 min ago; cooldown is 4h -> must be skipped.
+        out = self._run({"XAUUSD:sell:med_high_vol:2-4": time.time() - 1800})
+        assert out["recomputed"] == 0
+        assert out["triggered"] == 0
+
+    def test_outside_cooldown_recomputes(self):
+        import time
+        # Fired 5h ago -> cooldown lapsed, must recompute.
+        out = self._run({"XAUUSD:sell:med_high_vol:2-4": time.time() - 5 * 3600})
+        assert out["recomputed"] == 1
+
+    def test_no_prior_fire_recomputes(self):
+        out = self._run({})
+        assert out["recomputed"] == 1

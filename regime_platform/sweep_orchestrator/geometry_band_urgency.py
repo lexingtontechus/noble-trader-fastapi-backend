@@ -370,8 +370,11 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
 
         for (side, vol_tier, bucket), cur in drifted:
             state_key = f"{symbol}:{side}:{vol_tier}:{bucket}"
-            last_ts = _ts_or_none(last_recomputed.get(state_key))
-            if last_ts is not None and (now - last_ts) < sym_cooldown * 3600.0:
+            # _load_last_fired returns epoch SECONDS; do not run it through
+            # _ts_or_none (that parses ISO strings and returned None here,
+            # silently disabling the cooldown — 2026-10-05).
+            last_ts = last_recomputed.get(state_key)
+            if last_ts is not None and (now - float(last_ts)) < sym_cooldown * 3600.0:
                 continue
 
             fresh = _recompute_cell(
