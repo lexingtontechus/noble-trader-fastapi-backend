@@ -53,6 +53,7 @@ from regime_platform.core.feature_flags import (
     get_timesfm_gate_mode,
     get_timesfm_k_adaptive_mode,
     get_trend_probs_gate_mode,
+    get_dynamic_deadline_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
@@ -1024,6 +1025,11 @@ def _build_signal_sim_payload(
     p_clef_dir: float | None = None,
     p_clef_wait: float | None = None,
     p_clef_symbol: str | None = None,
+    expected_resolution_hours: float | None = None,
+    expected_resolution_days: float | None = None,
+    resolution_confidence: str | None = None,
+    soft_deadline_hours: float | None = None,
+    hard_deadline_hours: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1198,6 +1204,18 @@ def _build_signal_sim_payload(
         payload["p_clef_wait"] = round(float(p_clef_wait), 4)
     if p_clef_symbol is not None:
         payload["p_clef_symbol"] = p_clef_symbol
+    # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN). Descriptive,
+    # not predictive — confidence always accompanies the numeric estimate.
+    if expected_resolution_hours is not None:
+        payload["expected_resolution_hours"] = round(float(expected_resolution_hours), 1)
+    if expected_resolution_days is not None:
+        payload["expected_resolution_days"] = round(float(expected_resolution_days), 1)
+    if resolution_confidence:
+        payload["resolution_confidence"] = str(resolution_confidence)
+    if soft_deadline_hours is not None:
+        payload["soft_deadline_hours"] = round(float(soft_deadline_hours), 1)
+    if hard_deadline_hours is not None:
+        payload["hard_deadline_hours"] = round(float(hard_deadline_hours), 1)
     return payload
 
 
@@ -5144,6 +5162,41 @@ class SweepOrchestrator(HeavySweepMixin):
                     p_win_dir=_p_win_dir,
                 )
 
+                # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN).
+                # Derive per-(symbol, vol_tier) deadline from reachability data.
+                # Fail-open: all-None on any failure or off mode.
+                _deadline_tier = None
+                if get_dynamic_deadline_mode() != "off":
+                    try:
+                        from regime_platform.sweep_orchestrator.dynamic_deadline import (
+                            derive_deadline_tier,
+                        )
+                        from regime_platform.sweep_orchestrator.supabase_client import (
+                            _headers,
+                            _url,
+                        )
+                        import httpx as _httpx
+                        async with _httpx.AsyncClient(timeout=10.0) as _client:
+                            _resp = await _client.get(
+                                _url("nt_bracket_reachability"),
+                                headers=_headers(),
+                                params={
+                                    "select": "symbol,vol_tier,n,p75_hours,p90_hours,median_hours_to_resolve",
+                                    "symbol": f"eq.{symbol}",
+                                    "limit": "100",
+                                },
+                            )
+                        _reach_rows = _resp.json() or []
+                        _vol_tier = _bracket_vol_tier or _vol_tier(regime_label)
+                        _deadline_tier = derive_deadline_tier(
+                            symbol, _vol_tier, _reach_rows,
+                        )
+                    except Exception as _exc:
+                        logger.debug(
+                            "[sweep:orch] %s: deadline tier derivation failed: %s",
+                            symbol, _exc,
+                        )
+
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
                     venue=venue_name,
@@ -5203,6 +5256,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     p_clef_dir=_clef_dir,
                     p_clef_wait=_clef_wait,
                     p_clef_symbol=_clef_model,
+                    expected_resolution_hours=_deadline_tier.median_hours if _deadline_tier else None,
+                    expected_resolution_days=round(_deadline_tier.median_hours / 24.0, 1) if _deadline_tier else None,
+                    resolution_confidence=_deadline_tier.confidence if _deadline_tier else None,
+                    soft_deadline_hours=_deadline_tier.soft_deadline_hours if _deadline_tier else None,
+                    hard_deadline_hours=_deadline_tier.hard_deadline_hours if _deadline_tier else None,
                     gate_outcome=(
                         "qualified" if published
                         else "suppressed" if _gates_pass
@@ -5271,6 +5329,11 @@ class SweepOrchestrator(HeavySweepMixin):
                         transition=_rank_transition,
                         p_win=sim_payload.get("p_win"),
                         ev_r=sim_payload.get("ev"),
+                        expected_resolution_hours=sim_payload.get("expected_resolution_hours"),
+                        expected_resolution_days=sim_payload.get("expected_resolution_days"),
+                        resolution_confidence=sim_payload.get("resolution_confidence"),
+                        soft_deadline_hours=sim_payload.get("soft_deadline_hours"),
+                        hard_deadline_hours=sim_payload.get("hard_deadline_hours"),
                     ), plan_ids=sym.get("plan_ids") or [])
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and

@@ -137,6 +137,11 @@ def build_signal_payload(
     transition: str | None = None,
     p_win: float | None = None,
     ev_r: float | None = None,
+    expected_resolution_hours: float | None = None,
+    expected_resolution_days: float | None = None,
+    resolution_confidence: str | None = None,
+    soft_deadline_hours: float | None = None,
+    hard_deadline_hours: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``signal`` broadcast payload for one qualified signal.
 
@@ -149,6 +154,12 @@ def build_signal_payload(
 
     ``rank`` / ``state`` / ``transition`` are Kairos RANK-board fields
     (20260928_RANK_BOARD_BROADCAST_DISCORD) — omitted when null (fail-open).
+
+    ``expected_resolution_hours`` / ``expected_resolution_days`` /
+    ``resolution_confidence`` are dynamic deadline tier fields
+    (20261005_REACHABILITY_REDESIGN) — omitted when null (fail-open).
+    The confidence field (high/medium/low) is ALWAYS present alongside
+    the numeric estimate when deadline data is available.
     """
     out: dict[str, Any] = {
         "symbol": symbol,
@@ -170,6 +181,17 @@ def build_signal_payload(
         out["p_win"] = round(float(p_win), 4)
     if ev_r is not None:
         out["ev_r"] = round(float(ev_r), 4)
+    # Dynamic deadline tier fields (20261005_REACHABILITY_REDESIGN)
+    if expected_resolution_hours is not None:
+        out["expected_resolution_hours"] = round(float(expected_resolution_hours), 1)
+    if expected_resolution_days is not None:
+        out["expected_resolution_days"] = round(float(expected_resolution_days), 1)
+    if resolution_confidence:
+        out["resolution_confidence"] = str(resolution_confidence)
+    if soft_deadline_hours is not None:
+        out["soft_deadline_hours"] = round(float(soft_deadline_hours), 1)
+    if hard_deadline_hours is not None:
+        out["hard_deadline_hours"] = round(float(hard_deadline_hours), 1)
     return out
 
 

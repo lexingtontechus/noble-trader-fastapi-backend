@@ -186,6 +186,30 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_tuning_cooldown_hours": 6,
     "geometry_tuning_min_consecutive": 2,
     "light_publish_geometry_gate": "shadow",
+    "dynamic_deadline_mode": "shadow",
+    "dynamic_deadline": {
+        "derive_from_reachability": True,
+        "soft_deadline_percentile": 0.75,
+        "hard_deadline_percentile": 0.90,
+        "min_soft_deadline_hours": 12.0,
+        "max_hard_deadline_hours": 120.0,
+        "min_n_for_high_confidence": 50,
+        "min_n_for_medium_confidence": 20,
+        "by_symbol": {
+            "XAUUSD": {"soft_deadline_hours": 18.0, "hard_deadline_hours": 36.0},
+            "XAUEUR": {"soft_deadline_hours": 18.0, "hard_deadline_hours": 36.0},
+            "XAUAUD": {"soft_deadline_hours": 18.0, "hard_deadline_hours": 36.0},
+            "XAGUSD": {"soft_deadline_hours": 18.0, "hard_deadline_hours": 36.0},
+            "USDCAD": {"soft_deadline_hours": 36.0, "hard_deadline_hours": 72.0},
+            "USDJPY": {"soft_deadline_hours": 24.0, "hard_deadline_hours": 48.0},
+        },
+    },
+    "dynamic_deadline_reopt": {
+        "enabled": True,
+        "cycle_hours": 4.0,
+        "drift_threshold": 0.15,
+        "min_n_for_update": 20,
+    },
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -1423,6 +1447,57 @@ def get_atr_reopt_urgency_config() -> dict[str, Any]:
     """
     defaults = dict(_DEFAULTS["atr_reopt_urgency"])
     cfg = _load().get("atr_reopt_urgency", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
+
+
+def get_dynamic_deadline_mode() -> str:
+    """Dynamic deadline tier mode: off | shadow | live (default shadow)."""
+    return _load().get(
+        "dynamic_deadline_mode", _DEFAULTS.get("dynamic_deadline_mode", "shadow"),
+    )
+
+
+def get_dynamic_deadline_config() -> dict[str, Any]:
+    """Dynamic deadline tier configuration.
+
+    Returns the ``dynamic_deadline`` block with per-symbol overrides,
+    percentile derivation settings, and confidence thresholds.
+    """
+    defaults = dict(_DEFAULTS["dynamic_deadline"])
+    cfg = _load().get("dynamic_deadline", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
+
+
+def get_dynamic_deadline_config_for_symbol(symbol: str) -> dict[str, Any]:
+    """Per-symbol dynamic deadline config (by_symbol override or defaults)."""
+    cfg = get_dynamic_deadline_config()
+    by_symbol = cfg.get("by_symbol", {})
+    sym_cfg = by_symbol.get(symbol, {})
+    return {
+        "soft_deadline_hours": sym_cfg.get("soft_deadline_hours", 24.0),
+        "hard_deadline_hours": sym_cfg.get("hard_deadline_hours", 48.0),
+        "derive_from_reachability": cfg.get("derive_from_reachability", True),
+        "min_soft_deadline_hours": cfg.get("min_soft_deadline_hours", 12.0),
+        "max_hard_deadline_hours": cfg.get("max_hard_deadline_hours", 120.0),
+    }
+
+
+def get_dynamic_deadline_reopt_config() -> dict[str, Any]:
+    """Dynamic deadline reopt urgency configuration.
+
+    4h cycle: re-derive deadline tiers from fresh reachability data.
+    Same pattern as atr_reopt_urgency.
+    """
+    defaults = dict(_DEFAULTS["dynamic_deadline_reopt"])
+    cfg = _load().get("dynamic_deadline_reopt", {})
     if isinstance(cfg, dict):
         for k, v in cfg.items():
             if k in defaults and v is not None:

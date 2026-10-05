@@ -84,6 +84,12 @@ async def maybe_send_discord_signal(
             rank=payload.get("kairos_rank_score"),
             state=payload.get("kairos_event_window") or payload.get("state"),
             ev_r=payload.get("ev"),
+            # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN)
+            expected_resolution_hours=payload.get("expected_resolution_hours"),
+            expected_resolution_days=payload.get("expected_resolution_days"),
+            resolution_confidence=payload.get("resolution_confidence"),
+            soft_deadline_hours=payload.get("soft_deadline_hours"),
+            hard_deadline_hours=payload.get("hard_deadline_hours"),
         )
         logger.info(
             "[discord:direct] %s %s signal alert sent (%s)",

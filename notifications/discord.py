@@ -463,6 +463,11 @@ class DiscordNotifier:
         rank: Optional[float] = None,
         state: Optional[str] = None,
         ev_r: Optional[float] = None,
+        expected_resolution_hours: Optional[float] = None,
+        expected_resolution_days: Optional[float] = None,
+        resolution_confidence: Optional[str] = None,
+        soft_deadline_hours: Optional[float] = None,
+        hard_deadline_hours: Optional[float] = None,
     ) -> bool:
         """
         Send a trading signal alert to #trade-signals (or per-plan /
@@ -611,6 +616,21 @@ class DiscordNotifier:
             rank_fields.append({
                 "name": "EV",
                 "value": f"{float(ev_r):+.2f}R",
+                "inline": True,
+            })
+        # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN)
+        # Descriptive, not predictive — always shows confidence alongside estimate.
+        if expected_resolution_hours is not None:
+            conf_str = f" ({resolution_confidence})" if resolution_confidence else ""
+            rank_fields.append({
+                "name": "Est. Resolution",
+                "value": f"~{expected_resolution_hours:.0f}h{conf_str}",
+                "inline": True,
+            })
+        if soft_deadline_hours is not None and hard_deadline_hours is not None:
+            rank_fields.append({
+                "name": "Deadline Range",
+                "value": f"{soft_deadline_hours:.0f}h – {hard_deadline_hours:.0f}h",
                 "inline": True,
             })
 
