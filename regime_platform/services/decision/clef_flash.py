@@ -20,8 +20,7 @@ Fail-open by construction: every function returns ``None`` on any failure
 (missing config, non-2xx, timeout, malformed body) so the caller's stamp
 simply stays NULL. This mirrors ``knowledge_index._embed_texts_cf``.
 
-Reaches the deployed Worker (``supabase/functions/cloudflare-ai-proxy/
-worker.js``) at ``{base}/decision``. Base URL is ``CF_DECISION_URL`` if set,
+Reaches the deployed Worker (``cloudflare/worker.js``) at ``{base}/decision``. Base URL is ``CF_DECISION_URL`` if set,
 else ``CF_EMBEDDINGS_URL`` (the same Worker hosts both routes). Auth is the
 optional ``x-worker-secret`` header (``CF_WORKER_SECRET``).
 """

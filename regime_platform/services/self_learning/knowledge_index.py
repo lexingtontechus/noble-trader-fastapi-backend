@@ -337,7 +337,7 @@ def embed_texts(texts: list[str]) -> np.ndarray:
     array, L2-normalized so cosine similarity reduces to a dot product.
 
     Tries Cloudflare Workers AI first (when `CF_EMBEDDINGS_URL` is set, via
-    the `cloudflare-ai-proxy` Cloudflare Worker), falls back to local
+    the `cloudflare/worker.js` Cloudflare Worker), falls back to local
     MiniLM-L6-v2 on any failure. This allows a zero-downtime migration: deploy
     the worker, set the Studio secret, verify results, then unset the
     local-model dependency at leisure.

@@ -21,7 +21,7 @@ with `@cf/baai/bge-small-en-v1.5` (384-dim, exact dimension match).
 ## Step 1: Deploy the Cloudflare Worker
 
 ```bash
-cd noble-trader-fastapi-backend/supabase/functions/cloudflare-ai-proxy/
+cd noble-trader-fastapi-backend/cloudflare/
 CLOUDFLARE_ACCOUNT_ID=e787a0b54e75a41d1c25d8a9bc9f8809 npx wrangler deploy worker.js --no-bundle
 ```
 

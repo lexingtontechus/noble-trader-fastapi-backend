@@ -64,10 +64,10 @@ export default {
 
     try {
       if (path === "embeddings") {
-        return _handleEmbeddings(request, env, corsHeaders);
+        return await _handleEmbeddings(request, env, corsHeaders);
       }
       if (path === "decision") {
-        return _handleDecision(request, env, corsHeaders);
+        return await _handleDecision(request, env, corsHeaders);
       }
 
       // Default: return usage info
@@ -225,8 +225,40 @@ async function _handleDecision(request, env, corsHeaders) {
   const model = body.model || "@cf/cloudflare/clef-flash";
   const { state, questions } = body;
 
-  // Cloudflare Workers AI Clef-Flash
-  const result = await _callAi(env, model, { state, questions });
+  // Cloudflare Workers AI Clef-Flash.
+  //
+  // Verified contract (2026-10-05, live): `questions` is an OBJECT keyed by
+  // question id; each value is {type, instructions, criteria?}.
+  //   type "choice" → {choice, probabilities{...}, confidence}
+  //   type "noul"   → {noul: P(true)}
+  //   type "score"  → REJECTED by the model ("Input should be a valid list").
+  //                   Do not use `score`; express a rating as `choice`.
+  // Wrap the upstream call so an upstream error returns structured JSON with
+  // the upstream status, instead of a bare 500.
+  let result;
+  try {
+    result = await _callAi(env, model, { state, questions });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // _callAi throws "Cloudflare AI API returned <status>: <body>" on non-2xx.
+    const m = /^Cloudflare AI API returned (\d{3}):/.exec(msg);
+    const upstreamStatus = m ? parseInt(m[1], 10) : 502;
+    return new Response(
+      JSON.stringify({
+        error: msg,
+        upstream_status: upstreamStatus,
+        hint:
+          upstreamStatus === 422
+            ? "questions must be an object keyed by id; each question needs a " +
+              "supported `type` (choice | noul). `score` is rejected by the model."
+            : undefined,
+      }),
+      {
+        status: upstreamStatus === 400 || upstreamStatus === 422 ? 400 : 502,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
+  }
 
   // Normalize: Cloudflare API returns { result: { answers: {...} } } or flat { answers: {...} }
   // env.AI.run may return either shape
