@@ -1,0 +1,15 @@
+{
+  "window": 200,
+  "interval": "1h",
+  "ticks_requested": 200,
+  "n_confirm_levels": [2, 3, 4],
+  "generated_at": "2026-10-05",
+  "source": "scripts/replay_regime_label_stability.py (live TDVA, Studio noble-trader-unified)",
+  "symbols": [
+    {"symbol": "US500", "n_ticks": 200, "raw_full_flip": 0.6935, "raw_cell_flip": 0.5477, "raw_trend_flip": 0.1005, "raw_major_flips": 51, "raw_minor_flips": 87, "consolidating_share": 0.76, "mean_confidence": 0.6864, "full_flip_n2": 0.1457, "full_flip_n3": 0.0553, "full_flip_n4": 0.0352},
+    {"symbol": "XAUAUD", "n_ticks": 200, "raw_full_flip": 0.7186, "raw_cell_flip": 0.6583, "raw_trend_flip": 0.1005, "raw_major_flips": 49, "raw_minor_flips": 94, "consolidating_share": 0.755, "mean_confidence": 0.6486, "full_flip_n2": 0.1457, "full_flip_n3": 0.0653, "full_flip_n4": 0.0302},
+    {"symbol": "GBPUSD", "n_ticks": 200, "raw_full_flip": 0.809, "raw_cell_flip": 0.7286, "raw_trend_flip": 0.1508, "raw_major_flips": 58, "raw_minor_flips": 103, "consolidating_share": 0.655, "mean_confidence": 0.6906, "full_flip_n2": 0.0905, "full_flip_n3": 0.0402, "full_flip_n4": 0.0151},
+    {"symbol": "AAPL", "n_ticks": 200, "raw_full_flip": 0.5578, "raw_cell_flip": 0.407, "raw_trend_flip": 0.1357, "raw_major_flips": 51, "raw_minor_flips": 60, "consolidating_share": 0.73, "mean_confidence": 0.7926, "full_flip_n2": 0.1106, "full_flip_n3": 0.0503, "full_flip_n4": 0.0352},
+    {"symbol": "XAGUSD", "n_ticks": 200, "raw_full_flip": 0.7839, "raw_cell_flip": 0.7387, "raw_trend_flip": 0.1508, "raw_major_flips": 73, "raw_minor_flips": 83, "consolidating_share": 0.555, "mean_confidence": 0.6573, "full_flip_n2": 0.1307, "full_flip_n3": 0.0302, "full_flip_n4": 0.005}
+  ]
+}

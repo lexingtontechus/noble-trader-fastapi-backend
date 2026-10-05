@@ -33,6 +33,7 @@ primary test is G2.2; L4/L5/L7 + HSMM + factor families 6–10 archived; worktre
 | `reports/20260927_halflife_t2.md` | Live T2 event-time half-life report |
 | `reports/20260926_rank_transition.md` | Live R1 ranking IC + transition event study |
 | `reports/20260926_rank_score_eval.md` | Walk-forward composite `rank_score` + shadow ΔD gate (episode-deduped) |
+| `reports/20261005_regime_label_stability_replay.md` | **Regime-label stability replay** (`scripts/replay_regime_label_stability.py`, live TDVA): 200-tick × 200-bar × 5 symbols. Raw full-label flip **71.3%** → debounced n=3 **4.8%**; cell (vol_tier\|direction) **61.6%**; trend/momentum read (`trend_filter`) **12.8%**; `consolidating` 69.1%. Trend layer is ~5.5× steadier than the HMM bucket ranking |
 | `assets/` | Edge-plane concept + P1 discovery HTML |
 | `p1/` | P1 discovery on history: `20260924_p1_discovery_nc{2,1}.txt` (n_confirm 2 primary / 1 sensitivity), summary json, cell×age matrices, html plane, 2026-09-23 smoke run |
 | `tests/` | Full-suite pytest logs at P0 (2026-09-23) and G2 labels (2026-09-24) |
