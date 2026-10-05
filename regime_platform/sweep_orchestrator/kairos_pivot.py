@@ -209,7 +209,24 @@ async def label_event(
     *,
     structure_note: str | None = None,
 ) -> dict[str, Any] | None:
-    """LLM-label one calendar event → pivot dict (with as_of / event_title)."""
+    """LLM-label one calendar event → pivot dict (with as_of / event_title).
+
+    When ``clef_flash_mode == "live"`` the structured-logit path is tried
+    first; any failure (None, missing config, unknown label) falls through to
+    the free-text chat path unchanged. The shadow stamp (``clef_flash_mode ==
+    "shadow"``) does NOT affect this — the classifier cutover is the ``live``
+    value only. See docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md.
+    """
+    from regime_platform.core.feature_flags import get_clef_flash_mode
+
+    if get_clef_flash_mode() == "live":
+        try:
+            v = await _label_event_clef(event, structure_note=structure_note)
+            if v is not None:
+                return v
+        except Exception as exc:  # noqa: BLE001 — fail open to the chat path
+            logger.debug("kairos_pivot: clef label_event failed: %s", exc)
+
     from regime_platform.services.self_learning.llm_client import call_llm_with_provider
 
     prompt = build_pivot_prompt(
@@ -226,6 +243,60 @@ async def label_event(
     v = validate_pivot(parsed)
     if v is None and isinstance(parsed.get("events"), list) and parsed["events"]:
         v = validate_pivot(parsed["events"][0])
+    if v is None:
+        return None
+    v["as_of"] = event.get("date")
+    v["event_title"] = event.get("title")
+    return v
+
+
+_PIVOT_CHOICE_CRITERIA = {
+    "major_pivot": "The print clearly changes a reaction function, the dominant policy tool, or the trajectory.",
+    "incremental": "A meaningful move in an existing direction, but not a regime change.",
+    "no_change": "Routine print — consistent with the prevailing reaction function.",
+}
+
+
+async def _label_event_clef(
+    event: dict[str, Any],
+    *,
+    structure_note: str | None = None,
+) -> dict[str, Any] | None:
+    """Structured-logit pivot label via Clef-Flash → same ``validate_pivot`` shape.
+
+    The label is the arg-max of the returned distribution; ``intensity`` is its
+    probability (a native confidence the free-text path cannot supply). Returns
+    ``None`` on any failure so the caller falls back to the chat path.
+    """
+    from regime_platform.services.decision.clef_flash import classify_choice
+
+    kind = "policy" if is_policy_event(event.get("title")) else "data"
+    state = {
+        "event_class": kind,
+        "event": event_brief(event),
+    }
+    if structure_note:
+        state["structure_note"] = structure_note
+    instructions = (
+        "Classify whether this macro event is a major_pivot (reaction function / "
+        "dominant policy tool / trajectory change), incremental, or no_change. "
+        "Major pivots are rare (~0-1 per year for policy). Prefer no_change or "
+        "incremental unless the print clearly changes a reaction function. "
+        "Do not call major_pivot from price TA alone."
+    )
+    probs = await classify_choice(
+        instructions=instructions, options=_PIVOT_CHOICE_CRITERIA, state=state,
+    )
+    if not probs:
+        return None
+    label = max(probs, key=probs.get)
+    v = validate_pivot({
+        "label": label,
+        "axis": "none",
+        "intensity": float(probs.get(label, 0.0)),
+        "surprise": 0.0,
+        "summary": "",
+    })
     if v is None:
         return None
     v["as_of"] = event.get("date")

@@ -162,6 +162,112 @@ async def test_decide_direction_end_to_end(monkeypatch):
     assert d.p_clef_wait == pytest.approx(0.107)
 
 
+# ── classify_choice (the categorizer primitive) ───────────────────────
+
+class TestClassifyChoice:
+    @pytest.mark.asyncio
+    async def test_returns_distribution(self, monkeypatch):
+        monkeypatch.setenv("CF_EMBEDDINGS_URL", "https://worker.example.dev")
+        resp = _ok_response({"answers": {"answer": {"choice": "no_change", "probabilities": {
+            "major_pivot": 0.05, "incremental": 0.15, "no_change": 0.80}}}})
+        with patch("httpx.AsyncClient", return_value=_mock_client(resp=resp)):
+            probs = await clef_flash.classify_choice(
+                instructions="classify", options={"a": "x", "b": "y"}, state={"k": 1})
+        assert probs == {"major_pivot": 0.05, "incremental": 0.15, "no_change": 0.80}
+
+    @pytest.mark.asyncio
+    async def test_empty_options_returns_none(self):
+        assert await clef_flash.classify_choice(
+            instructions="x", options={}, state={}) is None
+
+    @pytest.mark.asyncio
+    async def test_no_config_returns_none(self, monkeypatch):
+        monkeypatch.delenv("CF_DECISION_URL", raising=False)
+        monkeypatch.delenv("CF_EMBEDDINGS_URL", raising=False)
+        assert await clef_flash.classify_choice(
+            instructions="x", options={"a": "1"}, state={}) is None
+
+    @pytest.mark.asyncio
+    async def test_missing_answer_key_returns_none(self, monkeypatch):
+        monkeypatch.setenv("CF_EMBEDDINGS_URL", "https://worker.example.dev")
+        resp = _ok_response({"answers": {"other": {"probabilities": {"a": 1.0}}}})
+        with patch("httpx.AsyncClient", return_value=_mock_client(resp=resp)):
+            assert await clef_flash.classify_choice(
+                instructions="x", options={"a": "1"}, state={}) is None
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_probs_dropped(self, monkeypatch):
+        monkeypatch.setenv("CF_EMBEDDINGS_URL", "https://worker.example.dev")
+        resp = _ok_response({"answers": {"answer": {"probabilities": {
+            "a": 0.7, "b": "bad"}}}})
+        with patch("httpx.AsyncClient", return_value=_mock_client(resp=resp)):
+            probs = await clef_flash.classify_choice(
+                instructions="x", options={"a": "1", "b": "2"}, state={})
+        assert probs == {"a": 0.7}
+
+
+# ── kairos_pivot cutover (flag-gated fallback) ────────────────────────
+
+@pytest.mark.asyncio
+async def test_pivot_uses_clef_when_live(monkeypatch):
+    from regime_platform.sweep_orchestrator import kairos_pivot as kp
+    from regime_platform.core import feature_flags as ff
+    monkeypatch.setattr(ff, "_load", lambda: {"clef_flash_mode": "live"})
+
+    async def _fake_clef(event, *, structure_note=None):
+        return {"label": "incremental", "axis": "none", "intensity": 0.62,
+                "surprise": 0.0, "summary": "", "product_type": "none",
+                "as_of": event.get("date"), "event_title": event.get("title")}
+
+    monkeypatch.setattr(kp, "_label_event_clef", _fake_clef)
+    v = await kp.label_event({"title": "CPI", "date": "2026-10-04", "country": "US"})
+    assert v["label"] == "incremental"
+
+
+@pytest.mark.asyncio
+async def test_pivot_falls_back_to_chat_when_clef_none(monkeypatch):
+    from regime_platform.sweep_orchestrator import kairos_pivot as kp
+    from regime_platform.core import feature_flags as ff
+    from regime_platform.services.self_learning import llm_client
+    monkeypatch.setattr(ff, "_load", lambda: {"clef_flash_mode": "live"})
+
+    async def _clef_none(event, *, structure_note=None):
+        return None
+
+    async def _chat(system, prompt, max_tokens=512):
+        return ({"label": "no_change", "axis": "none", "intensity": 0.1,
+                 "surprise": 0.0, "summary": "routine"}, "nvidia_nim")
+
+    monkeypatch.setattr(kp, "_label_event_clef", _clef_none)
+    monkeypatch.setattr(llm_client, "call_llm_with_provider", _chat)
+    v = await kp.label_event({"title": "CPI", "date": "2026-10-04"})
+    assert v["label"] == "no_change"
+
+
+@pytest.mark.asyncio
+async def test_pivot_shadow_does_not_call_clef(monkeypatch):
+    from regime_platform.sweep_orchestrator import kairos_pivot as kp
+    from regime_platform.core import feature_flags as ff
+    from regime_platform.services.self_learning import llm_client
+    monkeypatch.setattr(ff, "_load", lambda: {"clef_flash_mode": "shadow"})
+
+    called = {"clef": False}
+
+    async def _clef(event, *, structure_note=None):
+        called["clef"] = True
+        return None
+
+    async def _chat(system, prompt, max_tokens=512):
+        return ({"label": "no_change", "axis": "none", "intensity": 0.1,
+                 "surprise": 0.0, "summary": "x"}, "nvidia_nim")
+
+    monkeypatch.setattr(kp, "_label_event_clef", _clef)
+    monkeypatch.setattr(llm_client, "call_llm_with_provider", _chat)
+    v = await kp.label_event({"title": "CPI", "date": "2026-10-04"})
+    assert v["label"] == "no_change"
+    assert called["clef"] is False  # shadow must not touch the classifier path
+
+
 # ── flag ──────────────────────────────────────────────────────────────
 
 def test_clef_flash_mode_default(monkeypatch):

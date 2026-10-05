@@ -55,6 +55,25 @@ so buy and sell rows are comparable. No `score(confidence)` question — the cho
 distribution is already the confidence signal, and adding a second question doubles the
 token cost for a research stamp with no consumer yet.
 
+## The categorizer primitive + first call-site wiring
+
+`clef_flash.classify_choice(instructions, options, state)` → `{label: probability}` — the
+generic structured-label primitive. It is the same call shape as the direction stamp but
+returns the whole distribution for any fixed label set.
+
+**First call site wired:** `kairos_pivot.py::label_event`. When
+`clef_flash_mode == "live"`, the structured-logit path (`_label_event_clef`) is tried
+first — label = arg-max, `intensity` = its probability — through the **same
+`validate_pivot`** the chat path uses. Any failure (None, missing config, unknown label)
+falls through to the existing free-text `call_llm_with_provider` path unchanged. In
+`shadow` (the default) the classifier path is **not** touched — the flag value is the
+cutover switch, and the shadow stamp is independent of it.
+
+**Verified against the live Worker** (2026-10-05): an FOMC-style event returns
+`{major_pivot: 0.077, incremental: 0.085, no_change: 0.838}`, `confidence: 0.574` — a
+proper distribution, no parsing. The second site (`macro_forecast_agent.py::classify_symbol`)
+is the identical shape and is the next wiring.
+
 ## Flag
 
 ```yaml

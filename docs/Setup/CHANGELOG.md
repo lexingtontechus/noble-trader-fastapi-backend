@@ -48,6 +48,15 @@ Three nullable research columns on `nt_signal_sim`:
 ≥200 episodes) was unmeetable — `p_clef` never existed. New gate: parse-failure rate +
 latency vs the chat path, and `AUC(p_clef_dir) > AUC(p_win_dir)` on ≥200 decided rows.
 
+#### Categorizer primitive + pivot call site
+
+`clef_flash.classify_choice(instructions, options, state)` → `{label: probability}` — the
+generic structured-label primitive. First call site wired: `kairos_pivot.py::label_event`
+uses it when `clef_flash_mode == "live"` (arg-max → same `validate_pivot`), falling
+through to the chat path on any failure. `shadow` (default) does not touch it. Verified
+against the live Worker: an FOMC event returns
+`{major_pivot: 0.077, incremental: 0.085, no_change: 0.838}`.
+
 #### Verification
 
 `tests/test_clef_flash.py` — 23 passed. Full suite: **1762 passed, 21 skipped**.

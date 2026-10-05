@@ -282,3 +282,56 @@ async def decide_direction(
     if answers is None:
         return None
     return parse_direction_answer(answers, signal=signal)
+
+
+async def classify_choice(
+    *,
+    instructions: str,
+    options: dict[str, str],
+    state: dict[str, Any],
+    question_id: str = "answer",
+) -> Optional[dict[str, float]]:
+    """Generic structured-label classification over a fixed label set.
+
+    ``options`` maps each allowed label to its one-line description (the
+    Clef-Flash ``choice`` criteria). Returns ``{label: probability}`` —
+    a proper distribution summing to ~1 — or ``None`` on any failure.
+
+    This is the primitive that makes Clef-Flash a *categorizer*: unlike the
+    free-text chat path (``llm_client``), there is no string to parse and the
+    returned distribution is a usable confidence (``max(probs)``) that a
+    caller can gate on. Used to replace the fragile chat classification at
+    ``kairos_pivot.py::label_event`` and
+    ``macro_forecast_agent.py::classify_symbol`` (scope §2.1 of
+    docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md).
+
+    Never raises. Missing/garbled labels are passed through as returned —
+    the caller's own validator is the authority on the allowed vocab.
+    """
+    if not options:
+        return None
+    questions = {
+        question_id: {
+            "type": "choice",
+            "instructions": instructions,
+            "criteria": dict(options),
+        }
+    }
+    answers = await decide(state, questions)
+    if answers is None:
+        return None
+    answer = answers.get(question_id)
+    if not isinstance(answer, dict):
+        return None
+    probs = answer.get("probabilities")
+    if not isinstance(probs, dict) or not probs:
+        return None
+    out: dict[str, float] = {}
+    for k, v in probs.items():
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if f == f:  # reject NaN
+            out[str(k)] = f
+    return out or None
