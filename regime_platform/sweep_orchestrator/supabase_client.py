@@ -291,6 +291,10 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # Batch tiered-ATR (migration 156): geometry / long-lag risk
     "tp_distance_atr", "sl_distance_atr", "long_lag_hat",
     "geometry_risk_hat", "long_lag_risk",
+    # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN). Descriptive,
+    # not predictive — confidence always accompanies the numeric estimate.
+    "expected_resolution_hours", "expected_resolution_days",
+    "resolution_confidence", "soft_deadline_hours", "hard_deadline_hours",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.
