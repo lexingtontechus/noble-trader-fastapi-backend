@@ -215,6 +215,10 @@ _DEFAULTS: dict[str, Any] = {
         "min_n": 20,
         "cooldown_hours": 4,
         "min_age_hours": 4,
+        # lookback_days MUST be listed here: get_geometry_band_urgency_config()
+        # only copies keys already present in _DEFAULTS, so a YAML value for a
+        # key missing here is silently ignored (same trap as the MIN_RR split).
+        "lookback_days": 7,
         "by_symbol": {
             "FOREX": {"urgency_threshold": 0.15, "min_n": 20},
             "XAUUSD": {"urgency_threshold": 0.20, "min_n": 30},
@@ -897,7 +901,7 @@ def get_geometry_band_urgency_config(symbol: str | None = None) -> dict[str, Any
     symbol's own bucket bias); forex majors share ``by_symbol.FOREX``.
 
     Returns a dict with: enabled, urgency_threshold, min_n,
-    cooldown_hours, min_age_hours.
+    cooldown_hours, min_age_hours, lookback_days.
     """
     cfg = dict(_DEFAULTS["geometry_band_urgency"])
     raw = _load().get("geometry_band_urgency", {})
