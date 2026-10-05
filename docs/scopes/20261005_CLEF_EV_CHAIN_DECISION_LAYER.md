@@ -213,3 +213,113 @@ actually want answered.
 - Replacing `p_win` / `ev` / any gate — Clef is a modifier candidate, never a source.
 - Asking Clef for direction/trend/regime (re-derivation — retired).
 - The `p_clef_dir` research stamp already shipped (separate, keep as-is).
+
+## 9. Calibration or reachability — the question answered directly
+
+> *"What I'm looking for is a way to leverage Clef decision-making either on
+> calibration or reachability — is this possible?"*
+
+**Calibration: yes, and §2 already found the lever.** **Reachability: no — the
+missing covariate is numeric and deterministic.** Detail below, plus the live
+evidence that separates them.
+
+### 9.1 Why §2 is not "reprocessing the same data"
+
+The agreed prohibition is on asking Clef to **re-derive a number the chain already
+has** (direction, `p_win`). §2 does not do that. Coherence is a judgment **about
+the chain's own inputs** — whether `p_regime`, `p_timesfm`, `p_markov_hold_n`
+agree — and a fixed-weight logit pool **structurally cannot produce it**: with
+equal weights, `(0.9, 0.2)` and `(0.55, 0.55)` pool to the same `p_win`. The
+disagreement is information the pool discards on the way in.
+
+So the test is not "does Clef read price data" (it must not) but **"is the
+answer already in the pipeline?"** For coherence, it is not. For direction, it is.
+That is the whole distinction, and it is why §2 survives the prohibition.
+
+### 9.2 Live evidence — the stamp that proves the negative
+
+The shipped `p_clef_dir` stamp (a **re-derivation** — it re-states direction) has
+now been measured. Episode-deduped, n=85 decided (2026-10-05):
+
+| Predictor | AUC (→ `tp_hit`) |
+|---|---|
+| `p_clef_dir` | **0.506** (chance) |
+| `p_win_dir` / `p_win_bracket` | 0.665 |
+| base rate | 0.165 |
+
+`p_clef_wait` averages **0.52** — the model abstains on over half of signals.
+This is below the ≥200-row bar in `20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md`
+§6, so it is directional not conclusive — but it is exactly where §1 of the value
+audit predicted a re-derivation would land.
+
+**Read this as the control condition.** It is the measured cost of asking Clef a
+question the chain already answers. §2's hypothesis is only worth building if it
+beats this, and D1 is what settles it.
+
+### 9.3 Reachability — the verdict is no
+
+The reachability table's real structural gap is the **"remaining regime clock"**:
+a bucket's `pct_expired` is geometry-only and ignores how much regime life is left
+(`worklog/kairos/20260925_PATH_RISK_AND_REGIME_SURVIVAL.md` §E).
+
+That covariate is **numeric and already computable** — Kaplan-Meier survival of
+the current regime is deterministic arithmetic over the stored series. Asking
+Clef to judge it is asking a model to perform an in-process numpy calculation on
+data we already hold: the rejected pattern, one level down.
+
+**Recommendation: do not put Clef on reachability.** Compute the remaining-regime
+clock deterministically and join it into reachability. Revisit only if a
+*qualitative* residual survives that (e.g. "does this bucket's geometry suit this
+regime **type**?"), and only with a defined label set and a pass bar.
+
+### 9.4 A second calibration lever (complementary to §2)
+
+§2 treats calibration as a **continuous** input: coherence shrinks `p_win` when
+sources conflict. There is a second, **categorical** lever worth noting.
+
+Today `calibration_enforcement.py` applies one remedy family to every
+overconfident cell (Bayesian shrink → kelly reduction → stagnation kill switch).
+It treats all overconfidence as one illness, but the causes are observably
+different: a **stale regime label**, **geometry too tight** for the vol tier, a
+**transition artifact**, or **small-sample noise**. Only the last is correctly
+treated by shrinkage — shrinking a stale-regime cell *hides* the fault instead of
+re-fitting it.
+
+A cause classifier over the cell's own record (no candle array, no renko series —
+the §1 input rule holds) would route the remedy:
+
+```
+questions:
+  cause: { type: choice, criteria: {
+    regime_stale, geometry_too_tight, transition_artifact,
+    small_sample, unexplained } }
+```
+
+Scored against **"did the chosen remedy reduce the cell's bias?"** — a question
+about the platform's own error correction, not about price. Pass bar: ≥70%
+agreement with a hand-labelled sample on ≥50 cells, **and** cause-routed cells
+show a larger bias reduction than the uniform-shrink control at 95% CI.
+
+**Sequencing recommendation:** §2 (coherence → `p_win` modifier) first — it is the
+broader lever, its endpoint is already defined (D0–D3), and it is the one that
+attaches to the EV chain. The cause classifier is narrower and attaches to
+enforcement; it is worth a second scope once D1 has answered the coherence
+question. Do not build both at once.
+
+### 9.5 The test-first requirement (both levers)
+
+Adopted after the `geometry_band_urgency` defect cycle — six defects, four
+introduced in-build, **all passing a green suite**
+(`worklog/20261005_GEOMETRY_BAND_URGENCY_DEFECTS_AND_BUILD.md`). Any build from
+this scope ships its end-to-end test **before** the implementation, and it must:
+
+1. **Drive the real entry point** with the fake at the **transport boundary**
+   (`httpx.AsyncClient`) — never by patching the module's own helpers. Patching
+   the loader is exactly how the cooldown defect hid from its own unit test.
+2. **Assert the observable contract** — the captured request bodies (what would
+   land on `nt_signal_sim` / `nt_eod_actions`) and the returned value. Not
+   internal call counts.
+3. **Be verified to fail on the pre-fix code** (revert the line, watch it fail,
+   restore).
+4. **Include a fixture-integrity guard** so it cannot pass on a degenerate
+   fixture.
