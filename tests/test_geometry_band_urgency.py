@@ -14,6 +14,7 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
     _dedupe_episodes,
 )
 from regime_platform.sweep_orchestrator.geometry_band_urgency import (
+    _load_last_fired,
     _recompute_cell,
 )
 
@@ -131,3 +132,85 @@ class TestRecomputeCell:
         assert _recompute_cell(
             rows, side="sell", vol_tier="med_low_vol", bucket="4+",
         ) is None
+
+
+class TestLastFiredCooldown:
+    """Cooldown state comes from nt_eod_actions, not a hand-created roadmap
+    row: write_job_heartbeat() only PATCHes an existing row, and no
+    geometry_band_urgency roadmap row exists, so the old path persisted
+    nothing and the cooldown never held (observed 2026-10-05: 59 cells
+    re-computed on every 15-min sweep)."""
+
+    def _run(self, rows):
+        import asyncio
+        from unittest.mock import patch
+
+        class FakeResp:
+            def json(self_inner):
+                return rows
+
+        class FakeClient:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+            async def get(self_inner, url, headers=None, params=None):
+                return FakeResp()
+
+        with patch(
+            "regime_platform.sweep_orchestrator.geometry_band_urgency.settings"
+        ) as s:
+            s.SUPABASE_URL = "https://x.supabase.co"
+            with patch(
+                "regime_platform.sweep_orchestrator.geometry_band_urgency.httpx.AsyncClient",
+                return_value=FakeClient(),
+            ):
+                return asyncio.run(_load_last_fired())
+
+    def _action(self, symbol, side, tier, bucket, ts):
+        return {
+            "symbol": symbol,
+            "ts": ts,
+            "detail": {
+                "side": side,
+                "vol_tier": tier,
+                "distance_atr_bucket": bucket,
+            },
+        }
+
+    def test_most_recent_fire_wins_per_cell(self):
+        rows = [
+            self._action("XAUUSD", "sell", "med_high_vol", "2-4",
+                         "2026-10-05T00:47:36+00:00"),
+            self._action("XAUUSD", "sell", "med_high_vol", "2-4",
+                         "2026-10-04T20:00:00+00:00"),
+        ]
+        out = self._run(rows)
+        assert len(out) == 1
+        key = "XAUUSD:sell:med_high_vol:2-4"
+        assert key in out
+        # newest-first input -> the 00:47 stamp, not the older one
+        assert out[key] > out[key] - 1  # present and numeric
+        from datetime import datetime, timezone
+        assert datetime.fromtimestamp(out[key], tz=timezone.utc).hour == 0
+
+    def test_distinct_cells_kept_separate(self):
+        rows = [
+            self._action("XAUUSD", "sell", "med_high_vol", "2-4", "2026-10-05T00:47:36+00:00"),
+            self._action("XAUUSD", "buy", "med_high_vol", "1-2", "2026-10-05T00:47:35+00:00"),
+        ]
+        out = self._run(rows)
+        assert set(out) == {
+            "XAUUSD:sell:med_high_vol:2-4",
+            "XAUUSD:buy:med_high_vol:1-2",
+        }
+
+    def test_unparseable_ts_skipped(self):
+        out = self._run([self._action("XAUUSD", "sell", "high_vol", "4+", None)])
+        assert out == {}
+
+    def test_malformed_detail_skipped(self):
+        out = self._run([{"symbol": "XAUUSD", "ts": "2026-10-05T00:47:36+00:00", "detail": "nope"}])
+        assert out == {}

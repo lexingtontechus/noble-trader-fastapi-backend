@@ -10,12 +10,13 @@ Replicates the dynamic_atr methodology on the geometry side:
      threshold lookup.
   3. Upsert the fresh stats into nt_bracket_reachability.
   4. Log a ``geometry_band_urgency`` row to nt_eod_actions.
-  5. Persist per-cell last-fired stamps in nt_roadmap (survives restarts).
-
+  5. Per-cell cooldown read back from nt_eod_actions (durable, no state row).
 Cadence: called at the END of every light sweep (orchestrator._sweep_group
 -> _run_geometry_band_urgency) so bands stay current BETWEEN qualified-signal
 generations. A per-cell cooldown (geometry_band_urgency.cooldown_hours,
-default 4h) stops it firing every 15 min.
+default 4h) stops it firing every 15 min; the cooldown reads the most recent
+geometry_band_urgency row per cell back out of nt_eod_actions (durable across
+restarts, no hand-created state row).
 
 Correctness notes (2026-10-04):
   * Resolved rows are episode-deduped (``_dedupe_episodes``) before any
@@ -34,7 +35,6 @@ Usage (standalone):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -61,49 +61,62 @@ from regime_platform.sweep_orchestrator.supabase_client import (
 
 logger = logging.getLogger("regime.sweep.geometry_band_urgency")
 
-_URGENCY_STATE_MECH = "geometry_band_urgency"
 _PAGE_SIZE = 1000
 
 
-# ─── Durable state (nt_roadmap) ──────────────────────────────────────────────
+# ─── Durable state (nt_eod_actions) ─────────────────────────────────────────
+#
+# Cooldown state comes from the action ledger itself, NOT a hand-created
+# nt_roadmap row. write_job_heartbeat() only PATCHes an EXISTING row and no
+# `geometry_band_urgency` row exists, so the old roadmap path silently
+# persisted nothing and the per-cell cooldown never held — it re-computed
+# all 59 drifted cells on EVERY 15-min sweep instead of every 4h
+# (observed 2026-10-05 00:47). Reading the most recent action per cell is
+# durable across restarts and needs no manual setup or new table.
 
-async def _load_urgency_state() -> dict[str, Any]:
-    """Durable last-fired stamps from nt_roadmap (survives restart)."""
+async def _load_last_fired() -> dict[str, float]:
+    """Most recent geometry_band_urgency fire per cell, from nt_eod_actions.
+
+    Returns {symbol:side:vol_tier:bucket -> epoch seconds}. Bounded to the
+    last 7 days of actions (a cell idle longer than that is past any
+    cooldown anyway, so treating it as never-fired is correct).
+    """
     if not settings.SUPABASE_URL:
         return {}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
-                _url("nt_roadmap"),
+                _url("nt_eod_actions"),
                 headers=_headers(),
                 params={
-                    "select": "current_state",
-                    "mechanism": f"eq.{_URGENCY_STATE_MECH}",
+                    "select": "symbol,ts,detail",
+                    "action": "eq.geometry_band_urgency",
+                    "ts": f"gte.{(datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}",
+                    "order": "ts.desc",
+                    "limit": "500",
                 },
             )
         rows = resp.json() or []
-        if not isinstance(rows, list) or not rows:
-            return {}
-        raw = rows[0].get("current_state") or ""
-        # heartbeat_state() prefixes a human line; the JSON payload follows "·"
-        if "·" in raw:
-            raw = raw.split("·", 1)[1].strip()
-        return json.loads(raw) if raw.startswith("{") else {}
     except Exception as exc:
-        logger.warning("[geo:urg] state load failed: %s", exc)
+        logger.warning("[geo:urg] last-fired fetch failed: %s", exc)
         return {}
 
-
-async def _save_urgency_state(state: dict[str, Any]) -> None:
-    try:
-        from regime_platform.sweep_orchestrator.kairos import write_job_heartbeat
-        await write_job_heartbeat(_URGENCY_STATE_MECH, state)
-    except Exception as exc:
-        logger.warning("[geo:urg] state save failed: %s", exc)
-
-
-def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    out: dict[str, float] = {}
+    for r in rows:
+        detail = r.get("detail") or {}
+        if not isinstance(detail, dict):
+            continue
+        key = ":".join(str(detail.get(k)) for k in (
+            "side", "vol_tier", "distance_atr_bucket",
+        ))
+        state_key = f"{r.get('symbol')}:{key}"
+        ts = _ts_or_none(r.get("ts"))
+        if ts is None:
+            continue
+        # Rows arrive newest-first; keep the first (most recent) per cell.
+        if state_key not in out:
+            out[state_key] = ts
+    return out
 
 
 def _ts_or_none(raw: Any) -> float | None:
@@ -314,8 +327,7 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
     cooldown_h = float(cfg.get("cooldown_hours", 4))
     lookback_days = int(cfg.get("lookback_days", 7))
 
-    state = await _load_urgency_state()
-    last_recomputed: dict[str, str] = state.get("last_recomputed_at") or {}
+    last_recomputed: dict[str, float] = await _load_last_fired()
     errors: list[str] = []
     checked = triggered = recomputed = 0
 
@@ -409,14 +421,11 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
                 bias=fresh["bias_shrunk"],
             )
 
-            last_recomputed[state_key] = _iso(now)
+            # In-memory stamp so a second drifted cell for the same symbol in
+            # this run is cooldown-checked too. Durability comes from the
+            # nt_eod_actions row just written (read back by _load_last_fired).
+            last_recomputed[state_key] = now
             recomputed += 1
-
-    state["last_recomputed_at"] = last_recomputed
-    state["last_run_at"] = _iso(now)
-    state["checked"] = checked
-    state["recomputed"] = recomputed
-    await _save_urgency_state(state)
 
     logger.info(
         "[geo:urg] checked=%d triggered=%d recomputed=%d errors=%d",
