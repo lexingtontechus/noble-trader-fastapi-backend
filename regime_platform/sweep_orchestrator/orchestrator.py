@@ -4258,7 +4258,7 @@ class SweepOrchestrator(HeavySweepMixin):
         macro_label: str | None = None
         macro_strength: float | None = None
         if signal_is_qualifiable:
-            from regime_platform.core.feature_flags import get_macro_regime_mode
+            from regime_platform.core.feature_flags import get_macro_regime_mode, is_macro_enabled_for_symbol
             macro_mode = get_macro_regime_mode()
             if macro_mode != "off":
                 from regime_platform.sweep_orchestrator.macro_filter import (
@@ -4271,16 +4271,26 @@ class SweepOrchestrator(HeavySweepMixin):
                         macro_label = macro_row.get("macro_label")
                         macro_strength = macro_row.get("macro_strength")
                         if macro_mode == "live" and macro_label is not None:
-                            macro_mult = kelly_macro_multiplier(
-                                macro_label, macro_strength, trade_signal["signal"],
-                            )
-                            effective_kelly = effective_kelly * macro_mult
-                            logger.info(
-                                "[sweep:orch] %s: macro filter LIVE — label=%s "
-                                "strength=%.4f mult=%.4f, kelly→%.6f",
-                                symbol, macro_label, macro_strength or 0.0,
-                                macro_mult, effective_kelly,
-                            )
+                            # Stage 2 (2026-10-05): per-symbol macro enable/disable.
+                            # AAPL's 200-day SMA is a constant (always "bull"),
+                            # not a signal — macro filter disabled for AAPL.
+                            if not is_macro_enabled_for_symbol(symbol):
+                                logger.info(
+                                    "[sweep:orch] %s: macro filter DISABLED for symbol "
+                                    "(per-symbol config) — skipping multiplier",
+                                    symbol,
+                                )
+                            else:
+                                macro_mult = kelly_macro_multiplier(
+                                    macro_label, macro_strength, trade_signal["signal"],
+                                )
+                                effective_kelly = effective_kelly * macro_mult
+                                logger.info(
+                                    "[sweep:orch] %s: macro filter LIVE — label=%s "
+                                    "strength=%.4f mult=%.4f, kelly→%.6f",
+                                    symbol, macro_label, macro_strength or 0.0,
+                                    macro_mult, effective_kelly,
+                                )
                 except Exception as exc:
                     logger.warning(
                         "[sweep:orch] %s: macro filter read failed (%s: %s), skipping",

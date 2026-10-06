@@ -103,8 +103,11 @@ _DEFAULTS: dict[str, Any] = {
         "ema_half_life_days": 10,
         "bear_bull_threshold": 0.05,
         "strength_saturation": 0.15,
-        "boost_scale": 0.3,
-        "penalty_scale": 0.5,
+        "boost_scale": 0.30,
+        "penalty_scale": 0.50,
+        "by_symbol": {
+            "AAPL": {"enabled": False},
+        },
     },
     "heavy_sweep_reachability_mode": "off",
     # 2026-09-29 GOAL: wr>=0.5, exp<=0.2. Settings BY CLASS; one live decision.
@@ -474,6 +477,30 @@ def get_macro_regime_mode() -> str:
     return str(_load().get(
         "macro_regime_mode", _DEFAULTS["macro_regime_mode"],
     )).lower()
+
+
+def get_macro_config() -> dict[str, Any]:
+    """Macro filter configuration (SMA window, thresholds, per-symbol overrides)."""
+    defaults = dict(_DEFAULTS.get("macro", {}))
+    cfg = _load().get("macro", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
+
+
+def is_macro_enabled_for_symbol(symbol: str) -> bool:
+    """Per-symbol macro filter enable/disable.
+
+    Stage 2 (2026-10-05): AAPL's 200-day SMA is a constant (always "bull"),
+    not a signal. The macro filter is disabled for AAPL — the HMM regime
+    is the correct clock for a 22-40h signal. See worklog/20261005_AAPL_MACRO_REFRAME.md.
+    """
+    cfg = get_macro_config()
+    by_symbol = cfg.get("by_symbol", {})
+    sym_cfg = by_symbol.get(symbol, {})
+    return sym_cfg.get("enabled", True)
 
 
 def _macro_number(key: str) -> float:

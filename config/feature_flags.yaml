@@ -367,6 +367,13 @@ macro:
   strength_saturation: 0.15      # |macro_score_smoothed| at/beyond this -> macro_strength=1.0
   boost_scale: 0.3               # max +30% kelly at full strength when direction agrees
   penalty_scale: 0.5             # max -50% kelly at full strength when direction opposes
+  # Stage 2 (2026-10-05): per-symbol macro enable/disable.
+  # AAPL's 200-day SMA is a constant (always "bull"), not a signal.
+  # The HMM regime is the correct clock for a 22-40h signal.
+  # See worklog/20261005_AAPL_MACRO_REFRAME.md.
+  by_symbol:
+    AAPL:
+      enabled: false
 
 # Medium-term (10-50 day) trend-confirmation filter (2026-09-10, worklog
 # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7). Sibling
