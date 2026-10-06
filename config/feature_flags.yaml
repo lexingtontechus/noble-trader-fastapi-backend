@@ -642,6 +642,16 @@ dynamic_deadline_reopt:
   drift_threshold: 0.15
   min_n_for_update: 20
 
+# regime_edge (20261005_REGIME_EDGE_DESIGN): per-(symbol, signal, regime)
+# qualification gate. The HMM regime label is a stronger signal than the
+# macro label (which is a constant for AAPL). Shadow: compute + stamp,
+# no gate. Live: reject signals in buckets with WR < min_win_rate.
+regime_edge_mode: "shadow"
+regime_edge:
+  min_n: 20
+  min_win_rate: 0.50
+  rebuild_interval_hours: 24
+
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
 # long-lag than baseline, allow ATR candidates into deadline-aware pool

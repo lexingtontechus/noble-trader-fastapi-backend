@@ -54,6 +54,8 @@ from regime_platform.core.feature_flags import (
     get_timesfm_k_adaptive_mode,
     get_trend_probs_gate_mode,
     get_dynamic_deadline_mode,
+    get_regime_edge_mode,
+    get_regime_edge_config,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
@@ -4501,7 +4503,39 @@ class SweepOrchestrator(HeavySweepMixin):
             # shrink so the agent can still choose to trade at reduced
             # size. Above MIN_P_WIN: full kelly.
             "p_win_ok": p_win_ok,
+            # ── Regime edge gate (20261005_REGIME_EDGE_DESIGN) ────────
+            # Per-(symbol, signal, regime) edge lookup. Shadow: stamp only.
+            # Live: reject if edge exists and WR < min_win_rate.
+            # Fail-open: if no edge or n < min_n, pass (no evidence).
+            "regime_edge_ok": True,  # default: pass (fail-open)
         }
+        # Regime edge gate (20261005_REGIME_EDGE_DESIGN)
+        if get_regime_edge_mode() == "live":
+            try:
+                from regime_platform.sweep_orchestrator.regime_edge import (
+                    get_regime_edge,
+                    should_reject_by_regime_edge,
+                )
+                _edge = await get_regime_edge(
+                    symbol, trade_signal["signal"], regime_label,
+                )
+                _reject, _reason = should_reject_by_regime_edge(
+                    _edge,
+                    min_n=get_regime_edge_config().get("min_n", 20),
+                    min_win_rate=get_regime_edge_config().get("min_win_rate", 0.50),
+                )
+                if _reject:
+                    gate_results["regime_edge_ok"] = False
+                    _suppress_reason = _reason
+                    logger.info(
+                        "[sweep:orch] %s: REJECTED (regime_edge) — %s",
+                        symbol, _reason,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[sweep:orch] %s: regime_edge gate failed: %s",
+                    symbol, exc,
+                )
         # Only participates in `qualified` (below) when live — see the
         # "5b-3" block above for why shadow mode must not affect it.
         if context_alignment_live:

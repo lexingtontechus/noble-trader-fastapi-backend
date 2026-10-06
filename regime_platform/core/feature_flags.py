@@ -213,6 +213,12 @@ _DEFAULTS: dict[str, Any] = {
         "drift_threshold": 0.15,
         "min_n_for_update": 20,
     },
+    "regime_edge_mode": "shadow",
+    "regime_edge": {
+        "min_n": 20,
+        "min_win_rate": 0.50,
+        "rebuild_interval_hours": 24,
+    },
     "min_rr": 2.0,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
@@ -1525,6 +1531,24 @@ def get_dynamic_deadline_reopt_config() -> dict[str, Any]:
     """
     defaults = dict(_DEFAULTS["dynamic_deadline_reopt"])
     cfg = _load().get("dynamic_deadline_reopt", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
+
+
+def get_regime_edge_mode() -> str:
+    """Regime edge mode: off | shadow | live (default shadow)."""
+    return str(_load().get(
+        "regime_edge_mode", _DEFAULTS.get("regime_edge_mode", "shadow"),
+    )).lower()
+
+
+def get_regime_edge_config() -> dict[str, Any]:
+    """Regime edge configuration (min_n, min_win_rate, rebuild interval)."""
+    defaults = dict(_DEFAULTS.get("regime_edge", {}))
+    cfg = _load().get("regime_edge", {})
     if isinstance(cfg, dict):
         for k, v in cfg.items():
             if k in defaults and v is not None:
