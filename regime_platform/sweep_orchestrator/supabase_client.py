@@ -215,6 +215,11 @@ NT_SWEEP_RESULT_COLUMNS: frozenset[str] = frozenset({
     # no-combo heavy sweep still leaves a row (observability, not silent
     # absence). Written only when the per-symbol sweep did not complete.
     "error",
+    # Kairos geometry fields (migration 199) — expose the ATR-scaling
+    # pipeline so the frontend can display the scaling factor and base value.
+    "base_brick_size",       # YAML brick_size before ATR scaling
+    "brick_vol_scale",       # ATR scaling factor applied (1.0 = no scaling)
+    "vol_ratio",             # Short/long realized vol ratio at signal time
 })
 
 NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({

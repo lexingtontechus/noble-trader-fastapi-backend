@@ -179,6 +179,53 @@ async def _save_urgency_state(state: dict[str, Any]) -> None:
         logger.warning("[deadline:urg] state save failed: %s", exc)
 
 
+async def _write_deadline_tiers_to_db(
+    symbols: list[str],
+    vol_tiers: list[str],
+    reach_rows: list[dict[str, Any]],
+) -> None:
+    """Write derived deadline tiers to nt_deadline_tiers (migration 200).
+
+    Best-effort: failures are logged and swallowed. Uses upsert on
+    (symbol, vol_tier) so each reopt cycle replaces the prior row.
+    """
+    try:
+        import httpx
+        from regime_platform.core.settings import settings
+        from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+        if not settings.SUPABASE_URL:
+            return
+
+        rows = []
+        for sym in symbols:
+            for vt in vol_tiers:
+                tier = derive_deadline_tier(sym, vt, reach_rows)
+                rows.append({
+                    "symbol": sym,
+                    "vol_tier": vt,
+                    "soft_deadline_hours": tier.soft_deadline_hours,
+                    "hard_deadline_hours": tier.hard_deadline_hours,
+                    "median_hours": tier.median_hours,
+                    "n": tier.n,
+                    "confidence": tier.confidence,
+                })
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                _url("nt_deadline_tiers"),
+                headers={**_headers(), "Prefer": "resolution=merge-duplicates"},
+                json=rows,
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "[deadline:urg] nt_deadline_tiers upsert HTTP %d — %s",
+                    resp.status_code, resp.text[:200],
+                )
+    except Exception as exc:
+        logger.warning("[deadline:urg] nt_deadline_tiers write failed: %s", exc)
+
+
 def _ts_or_none(raw: Any) -> float | None:
     if not raw:
         return None
@@ -303,6 +350,7 @@ async def check_deadline_reopt_urgency() -> dict[str, Any]:
                     "n": tier.n,
                 }
         await _save_urgency_state(state)
+        await _write_deadline_tiers_to_db(symbols, vol_tiers, reach_rows)
 
         logger.warning(
             "[deadline:urg] checked=%d drifted=%d cycle=%sh",

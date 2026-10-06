@@ -3818,6 +3818,9 @@ class SweepOrchestrator(HeavySweepMixin):
                 logger.debug("[kairos] run tracker %s: %s", symbol, _k_exc)
 
         brick_size, sl_bricks, tp_bricks = await self._load_brick_params(symbol)
+        _base_brick_size = brick_size  # YAML value before ATR scaling
+        _brick_vol_scale = 1.0        # ATR scaling factor (1.0 = no scaling)
+        _vol_ratio = None             # Short/long realized vol ratio
 
         # ── T1/T2 intraday ATR drift scale (2026-09-19) ─────────────
         # Uses nt_brick_params_state.atr_at_write vs live ATR; scales
@@ -3842,6 +3845,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 _bstate = await fetch_brick_state(symbol)
                 _atr_at_write = float(_bstate.get("atr_at_write")) if _bstate and _bstate.get("atr_at_write") else None
                 _vscale = brick_vol_scale(atr, _atr_at_write)
+                _brick_vol_scale = _vscale
                 if _vscale != 1.0:
                     _scaled_brick = brick_size * _vscale
                     logger.info(
@@ -3855,6 +3859,19 @@ class SweepOrchestrator(HeavySweepMixin):
                         brick_size = float(_scaled_brick)
             except Exception as exc:
                 logger.warning("[geo:intraday] %s failed: %s", symbol, exc)
+
+        # ── Compute vol_ratio from prices (short/long realized vol) ──
+        # Used by the frontend to show the vol regime context.
+        try:
+            from regime_platform.sweep_orchestrator.tiered_atr import compute_vol_ratio
+            import numpy as np
+            if prices and len(prices) >= 169:  # vol_long(168) + 1
+                _closes = np.array([float(p) for p in prices], dtype="float64")
+                _vr = compute_vol_ratio(_closes, len(_closes) - 1, 24, 168)
+                if np.isfinite(_vr):
+                    _vol_ratio = round(float(_vr), 4)
+        except Exception:
+            pass  # vol_ratio is best-effort
 
         # Extract p_up / p_dn from the HMM's 3x3 transition matrix
         #
@@ -4790,6 +4807,9 @@ class SweepOrchestrator(HeavySweepMixin):
             "take_profit": round(trade_signal["take_profit"], 6),
             "aggression": ev_result.aggression,
             "brick_size": brick_size,
+            "base_brick_size": _base_brick_size,
+            "brick_vol_scale": round(_brick_vol_scale, 6) if _brick_vol_scale != 1.0 else None,
+            "vol_ratio": _vol_ratio,
             "sl_bricks": sl_bricks,
             "tp_bricks": tp_bricks,
             "kelly_f": round(kelly_f, 6),
