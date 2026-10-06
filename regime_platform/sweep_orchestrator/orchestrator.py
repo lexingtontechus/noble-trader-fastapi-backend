@@ -3862,9 +3862,9 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── Compute vol_ratio from prices (short/long realized vol) ──
         # Used by the frontend to show the vol regime context.
+        # np is already imported at module level (line 26).
         try:
             from regime_platform.sweep_orchestrator.tiered_atr import compute_vol_ratio
-            import numpy as np
             if prices and len(prices) >= 169:  # vol_long(168) + 1
                 _closes = np.array([float(p) for p in prices], dtype="float64")
                 _vr = compute_vol_ratio(_closes, len(_closes) - 1, 24, 168)
