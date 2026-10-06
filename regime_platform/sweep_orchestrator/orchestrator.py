@@ -5414,16 +5414,21 @@ class SweepOrchestrator(HeavySweepMixin):
                     engine = RenkoBrickEngine(brick_size=brick_size)
                     bricks = engine.build_from_prices(prices, timestamps=real_timestamps)
                     if bricks:
+                        logger.debug(
+                            "%s: renko brick capture — %d bricks, has_real_timestamps=%s",
+                            symbol, len(bricks), real_timestamps is not None,
+                        )
                         asyncio.create_task(log_renko_bricks(
                             symbol=symbol,
                             bricks=[b.to_dict() for b in bricks],
                             brick_size=brick_size,
+                            session_date=time.strftime("%Y-%m-%d", time.gmtime()),
                             sweep_ts=time.time(),
                             has_real_timestamps=real_timestamps is not None,
                         ))
                 except Exception as exc:
-                    logger.debug(
-                        "%s: renko brick capture skipped: %s", symbol, exc,
+                    logger.warning(
+                        "%s: renko brick capture failed: %s", symbol, exc,
                     )
             except RuntimeError:
                 # No running event loop (e.g. a test invoking
