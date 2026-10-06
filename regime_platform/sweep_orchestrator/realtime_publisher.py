@@ -142,6 +142,7 @@ def build_signal_payload(
     resolution_confidence: str | None = None,
     soft_deadline_hours: float | None = None,
     hard_deadline_hours: float | None = None,
+    p_clef_wait: float | None = None,
 ) -> dict[str, Any]:
     """Build the ``signal`` broadcast payload for one qualified signal.
 
@@ -192,6 +193,8 @@ def build_signal_payload(
         out["soft_deadline_hours"] = round(float(soft_deadline_hours), 1)
     if hard_deadline_hours is not None:
         out["hard_deadline_hours"] = round(float(hard_deadline_hours), 1)
+    if p_clef_wait is not None:
+        out["p_clef_wait"] = round(float(p_clef_wait), 4)
     return out
 
 

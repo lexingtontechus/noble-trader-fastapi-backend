@@ -468,6 +468,7 @@ class DiscordNotifier:
         resolution_confidence: Optional[str] = None,
         soft_deadline_hours: Optional[float] = None,
         hard_deadline_hours: Optional[float] = None,
+        p_clef_wait: Optional[float] = None,
     ) -> bool:
         """
         Send a trading signal alert to #trade-signals (or per-plan /
@@ -631,6 +632,14 @@ class DiscordNotifier:
             rank_fields.append({
                 "name": "Deadline Range",
                 "value": f"{soft_deadline_hours:.0f}h – {hard_deadline_hours:.0f}h",
+                "inline": True,
+            })
+        if p_clef_wait is not None:
+            wait_pct = p_clef_wait * 100
+            wait_emoji = "⏸️" if p_clef_wait > 0.5 else "▶️"
+            rank_fields.append({
+                "name": "Model Confidence",
+                "value": f"{wait_emoji} {wait_pct:.0f}% wait",
                 "inline": True,
             })
 

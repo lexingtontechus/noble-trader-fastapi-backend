@@ -5378,6 +5378,7 @@ class SweepOrchestrator(HeavySweepMixin):
                         resolution_confidence=sim_payload.get("resolution_confidence"),
                         soft_deadline_hours=sim_payload.get("soft_deadline_hours"),
                         hard_deadline_hours=sim_payload.get("hard_deadline_hours"),
+                        p_clef_wait=sim_payload.get("p_clef_wait"),
                     ), plan_ids=sym.get("plan_ids") or [])
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and

@@ -62,7 +62,7 @@ async def maybe_send_discord_signal(
         await discord_notifier.send_signal(
             symbol=payload.get("symbol", "UNKNOWN"),
             direction=signal.upper(),
-            pattern="regime_trade",
+            pattern="Regime Signal",
             price=payload.get("entry_price", 0.0),
             confidence=payload.get("p_win"),
             regime=payload.get("regime"),
@@ -90,6 +90,8 @@ async def maybe_send_discord_signal(
             resolution_confidence=payload.get("resolution_confidence"),
             soft_deadline_hours=payload.get("soft_deadline_hours"),
             hard_deadline_hours=payload.get("hard_deadline_hours"),
+            # Clef-Flash abstention (20261004)
+            p_clef_wait=payload.get("p_clef_wait"),
         )
         logger.info(
             "[discord:direct] %s %s signal alert sent (%s)",
