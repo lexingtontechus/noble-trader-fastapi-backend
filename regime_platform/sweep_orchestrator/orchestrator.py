@@ -5513,6 +5513,12 @@ class SweepOrchestrator(HeavySweepMixin):
             # the result dict so the caller (_sweep_group) can persist
             # them to nt_sweep_result via log_sweep_result().
             **_ta_snapshot,
+            # ── Kairos geometry fields (migration 199) ──────────────────
+            # Expose the ATR-scaling pipeline so the frontend can display
+            # the scaling factor and base value.
+            "base_brick_size": _base_brick_size,
+            "brick_vol_scale": round(_brick_vol_scale, 6) if _brick_vol_scale != 1.0 else None,
+            "vol_ratio": _vol_ratio,
         }
 
     # ── Stale-symbol background check ─────────────────────────────
