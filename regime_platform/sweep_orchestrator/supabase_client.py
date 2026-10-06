@@ -846,6 +846,8 @@ NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
     # Migration 159: buy | sell | all. Consumers of the pooled stats must
     # filter signal='all' (see bracket_reachability.py).
     "signal",
+    # Migration 201: previous urgency-computed stats for drift detection.
+    "previous_stats",
 })
 
 

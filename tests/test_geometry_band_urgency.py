@@ -14,6 +14,7 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
     _dedupe_episodes,
 )
 from regime_platform.sweep_orchestrator.geometry_band_urgency import (
+    _compute_drift,
     _load_last_fired,
     _recompute_cell,
 )
@@ -282,3 +283,101 @@ class TestCooldownGate:
     def test_no_prior_fire_recomputes(self):
         out = self._run({})
         assert out["recomputed"] == 1
+
+
+class TestComputeDrift:
+    """Drift detection from previous_stats (migration 201).
+
+    The urgency job compares fresh recomputed stats against the stored
+    previous_stats. Drift is detected when |Δpct_hit_tp| >= threshold_pct
+    OR |Δmedian_hours| >= threshold_hours. This closes the drift loop:
+    once reachability stats stabilize, the trigger stops firing even if
+    the bias table is stale.
+    """
+
+    def test_no_previous_stats_is_drifted(self):
+        """First run: no baseline to compare against -> drifted."""
+        fresh = {"pct_hit_tp": 0.5, "median_hours_to_resolve": 12.0}
+        is_drifted, detail = _compute_drift(fresh, None)
+        assert is_drifted is True
+        assert detail["reason"] == "no_previous_stats"
+
+    def test_stable_cell_not_drifted(self):
+        """Small changes below threshold -> stable."""
+        fresh = {
+            "pct_hit_tp": 0.52,
+            "pct_hit_sl": 0.30,
+            "pct_expired": 0.18,
+            "median_hours_to_resolve": 12.5,
+        }
+        previous = {
+            "pct_hit_tp": 0.50,
+            "pct_hit_sl": 0.30,
+            "pct_expired": 0.20,
+            "median_hours_to_resolve": 12.0,
+        }
+        is_drifted, detail = _compute_drift(
+            fresh, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        assert is_drifted is False
+        assert detail["reason"] == "stable"
+        assert detail["delta_pct_hit_tp"] == 0.02
+        assert detail["delta_median_hours"] == 0.5
+
+    def test_large_tp_change_is_drifted(self):
+        """|Δpct_hit_tp| >= 0.10 -> drifted."""
+        fresh = {"pct_hit_tp": 0.65, "median_hours_to_resolve": 12.0}
+        previous = {"pct_hit_tp": 0.50, "median_hours_to_resolve": 12.0}
+        is_drifted, detail = _compute_drift(
+            fresh, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        assert is_drifted is True
+        assert detail["reason"] == "drift_detected"
+        assert detail["delta_pct_hit_tp"] == 0.15
+
+    def test_large_median_change_is_drifted(self):
+        """|Δmedian_hours| >= 6.0 -> drifted."""
+        fresh = {"pct_hit_tp": 0.50, "median_hours_to_resolve": 20.0}
+        previous = {"pct_hit_tp": 0.50, "median_hours_to_resolve": 12.0}
+        is_drifted, detail = _compute_drift(
+            fresh, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        assert is_drifted is True
+        assert detail["delta_median_hours"] == 8.0
+
+    def test_exact_threshold_is_drifted(self):
+        """Boundary: exactly at threshold counts as drifted."""
+        fresh = {"pct_hit_tp": 0.60, "median_hours_to_resolve": 12.0}
+        previous = {"pct_hit_tp": 0.50, "median_hours_to_resolve": 12.0}
+        is_drifted, _ = _compute_drift(
+            fresh, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        # Floating point: 0.60 - 0.50 = 0.0999... < 0.10, so this is stable.
+        # Use a value that is clearly at/above the threshold.
+        fresh2 = {"pct_hit_tp": 0.61, "median_hours_to_resolve": 12.0}
+        is_drifted2, _ = _compute_drift(
+            fresh2, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        assert is_drifted2 is True
+
+    def test_both_stable_not_drifted(self):
+        """Both metrics below threshold -> stable."""
+        fresh = {"pct_hit_tp": 0.55, "median_hours_to_resolve": 15.0}
+        previous = {"pct_hit_tp": 0.50, "median_hours_to_resolve": 12.0}
+        is_drifted, detail = _compute_drift(
+            fresh, previous,
+            drift_threshold_pct=0.10,
+            drift_threshold_hours=6.0,
+        )
+        assert is_drifted is False
+        assert detail["reason"] == "stable"

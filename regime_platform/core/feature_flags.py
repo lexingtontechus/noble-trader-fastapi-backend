@@ -252,6 +252,8 @@ _DEFAULTS: dict[str, Any] = {
         # only copies keys already present in _DEFAULTS, so a YAML value for a
         # key missing here is silently ignored (same trap as the MIN_RR split).
         "lookback_days": 7,
+        "drift_threshold_pct": 0.10,
+        "drift_threshold_hours": 6.0,
         "by_symbol": {
             "FOREX": {"urgency_threshold": 0.15, "min_n": 20},
             "XAUUSD": {"urgency_threshold": 0.20, "min_n": 30},

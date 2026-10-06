@@ -910,6 +910,11 @@ geometry_band_urgency:
   cooldown_hours: 4
   min_age_hours: 4
   lookback_days: 7
+  # Drift detection thresholds (migration 201): compare fresh recomputed
+  # stats against previous_stats. Drift is detected when |Δpct_hit_tp| >=
+  # drift_threshold_pct OR |Δmedian_hours| >= drift_threshold_hours.
+  drift_threshold_pct: 0.10
+  drift_threshold_hours: 6.0
   by_symbol:
     FOREX:
       urgency_threshold: 0.15

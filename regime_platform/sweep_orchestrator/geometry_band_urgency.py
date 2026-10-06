@@ -202,6 +202,91 @@ async def _fetch_cell_bias(symbol: str, min_n: int) -> dict[tuple, dict]:
     return out
 
 
+async def _fetch_reachability_row(
+    symbol: str,
+    *,
+    vol_tier: str,
+    bucket: str,
+    side: str,
+) -> dict[str, Any] | None:
+    """Fetch the current nt_bracket_reachability row for one cell.
+
+    Returns the row dict (including previous_stats JSONB) or None if no
+    row exists for this (symbol, vol_tier, bucket, side) key.
+    """
+    if not settings.SUPABASE_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_bracket_reachability"),
+                headers=_headers(),
+                params={
+                    "select": (
+                        "symbol,vol_tier,distance_atr_bucket,signal,"
+                        "pct_hit_tp,pct_hit_sl,pct_expired,"
+                        "median_hours_to_resolve,p75_hours,p90_hours,"
+                        "previous_stats"
+                    ),
+                    "symbol": f"eq.{symbol}",
+                    "vol_tier": f"eq.{vol_tier}",
+                    "distance_atr_bucket": f"eq.{bucket}",
+                    "signal": f"eq.{side}",
+                    "limit": "1",
+                },
+            )
+        rows = resp.json() or []
+        if not isinstance(rows, list) or not rows:
+            return None
+        return rows[0]
+    except Exception as exc:
+        logger.warning("[geo:urg] reachability fetch failed for %s: %s", symbol, exc)
+        return None
+
+
+def _compute_drift(
+    fresh: dict[str, Any],
+    previous: dict[str, Any] | None,
+    *,
+    drift_threshold_pct: float = 0.10,
+    drift_threshold_hours: float = 6.0,
+) -> tuple[bool, dict[str, Any]]:
+    """Compare fresh recomputed stats against previous stats.
+
+    Returns (is_drifted, drift_detail). Drift is detected when:
+    - |Δpct_hit_tp| >= drift_threshold_pct, OR
+    - |Δmedian_hours_to_resolve| >= drift_threshold_hours
+
+    If previous is None (first run), the cell is considered drifted
+    (we have no baseline to compare against).
+    """
+    if previous is None:
+        return True, {"reason": "no_previous_stats"}
+
+    delta_tp = abs(
+        float(fresh.get("pct_hit_tp") or 0.0)
+        - float(previous.get("pct_hit_tp") or 0.0)
+    )
+    delta_median = abs(
+        float(fresh.get("median_hours_to_resolve") or 0.0)
+        - float(previous.get("median_hours_to_resolve") or 0.0)
+    )
+
+    is_drifted = (
+        delta_tp >= drift_threshold_pct
+        or delta_median >= drift_threshold_hours
+    )
+
+    detail = {
+        "delta_pct_hit_tp": round(delta_tp, 4),
+        "delta_median_hours": round(delta_median, 2),
+        "drift_threshold_pct": drift_threshold_pct,
+        "drift_threshold_hours": drift_threshold_hours,
+        "reason": "drift_detected" if is_drifted else "stable",
+    }
+    return is_drifted, detail
+
+
 # ─── Re-computation ──────────────────────────────────────────────────────────
 
 def _recompute_cell(
@@ -312,31 +397,40 @@ async def _log_eod_action(symbol: str, detail: dict[str, Any], bias: float) -> N
 async def check_geometry_band_urgency() -> dict[str, Any]:
     """Sweep-triggered geometry-band drift check + re-computation.
 
-    Returns {enabled, checked, triggered, recomputed, errors}. Best-effort:
-    never raises into the sweep tick.
+    Drift detection uses the reachability row's own previous_stats (migration
+    201) rather than nt_calibration_bias_by_cell. The bias table is still
+    read as a pre-filter (which cells to check), but the drift verdict comes
+    from comparing fresh recomputed stats against the stored previous_stats.
+    This closes the drift loop: once reachability stats stabilize, the trigger
+    stops firing even if the bias table is stale.
+
+    Returns {enabled, checked, triggered, recomputed, stable, errors}.
+    Best-effort: never raises into the sweep tick.
     """
     from regime_platform.core.feature_flags import get_geometry_band_urgency_config
 
     cfg = get_geometry_band_urgency_config()
     if not cfg.get("enabled", True):
         return {"enabled": False, "checked": 0, "triggered": 0,
-                "recomputed": 0, "errors": []}
+                "recomputed": 0, "stable": 0, "errors": []}
 
     threshold = float(cfg.get("urgency_threshold", 0.15))
     min_n = int(cfg.get("min_n", 20))
     cooldown_h = float(cfg.get("cooldown_hours", 4))
     lookback_days = int(cfg.get("lookback_days", 7))
+    drift_threshold_pct = float(cfg.get("drift_threshold_pct", 0.10))
+    drift_threshold_hours = float(cfg.get("drift_threshold_hours", 6.0))
 
     last_recomputed: dict[str, float] = await _load_last_fired()
     errors: list[str] = []
-    checked = triggered = recomputed = 0
+    checked = triggered = recomputed = stable = 0
 
     try:
         peers = [p for p in await fetch_active_symbols() if p.get("symbol")]
     except Exception as exc:
         logger.warning("[geo:urg] peers fetch failed: %s", exc)
         return {"enabled": True, "checked": 0, "triggered": 0,
-                "recomputed": 0, "errors": [str(exc)]}
+                "recomputed": 0, "stable": 0, "errors": [str(exc)]}
 
     now = time.time()
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -383,7 +477,41 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
             if fresh is None or fresh["n"] < sym_min_n:
                 continue
 
+            # Fetch the current reachability row to get previous_stats
+            reach_row = await _fetch_reachability_row(
+                symbol, vol_tier=vol_tier, bucket=bucket, side=side,
+            )
+            previous_stats = None
+            if reach_row and isinstance(reach_row.get("previous_stats"), dict):
+                previous_stats = reach_row["previous_stats"]
+
+            # Drift detection: compare fresh vs. previous_stats
+            is_drifted, drift_detail = _compute_drift(
+                fresh,
+                previous_stats,
+                drift_threshold_pct=drift_threshold_pct,
+                drift_threshold_hours=drift_threshold_hours,
+            )
+
+            if not is_drifted:
+                stable += 1
+                logger.debug(
+                    "[geo:urg] %s:%s:%s:%s stable — %s",
+                    symbol, side, vol_tier, bucket, drift_detail,
+                )
+                continue
+
             triggered += 1
+
+            # Build previous_stats JSONB from fresh stats
+            previous_stats_json = {
+                "pct_hit_tp": fresh["pct_hit_tp"],
+                "pct_hit_sl": fresh["pct_hit_sl"],
+                "pct_expired": fresh["pct_expired"],
+                "median_hours_to_resolve": fresh["median_hours_to_resolve"],
+                "p75_hours": fresh["p75_hours"],
+                "p90_hours": fresh["p90_hours"],
+            }
 
             # Upsert fresh reachability stats (real nt_bracket_reachability
             # column names; keyed on symbol, vol_tier, bucket, signal).
@@ -403,6 +531,7 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
                     "p75_hours": fresh["p75_hours"],
                     "p90_hours": fresh["p90_hours"],
                     "atr_source": fresh["atr_source"],
+                    "previous_stats": previous_stats_json,
                 }])
             except Exception as exc:
                 errors.append(f"{symbol}: upsert failed: {exc}")
@@ -420,6 +549,7 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
                     "new_n": fresh["n"],
                     "lookback_days": lookback_days,
                     "source": "sweep",
+                    "drift_detail": drift_detail,
                 },
                 bias=fresh["bias_shrunk"],
             )
@@ -431,14 +561,15 @@ async def check_geometry_band_urgency() -> dict[str, Any]:
             recomputed += 1
 
     logger.info(
-        "[geo:urg] checked=%d triggered=%d recomputed=%d errors=%d",
-        checked, triggered, recomputed, len(errors),
+        "[geo:urg] checked=%d triggered=%d recomputed=%d stable=%d errors=%d",
+        checked, triggered, recomputed, stable, len(errors),
     )
     return {
         "enabled": True,
         "checked": checked,
         "triggered": triggered,
         "recomputed": recomputed,
+        "stable": stable,
         "errors": errors,
     }
 
