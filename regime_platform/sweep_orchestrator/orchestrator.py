@@ -3390,6 +3390,10 @@ class SweepOrchestrator(HeavySweepMixin):
                     "ta_bb_power": result.get("ta_bb_power"),
                     "ta_macd": result.get("ta_macd"),
                     "ta_rsi": result.get("ta_rsi"),
+                    # ── Kairos geometry fields (migration 199) ──────────
+                    "base_brick_size": result.get("base_brick_size"),
+                    "brick_vol_scale": result.get("brick_vol_scale"),
+                    "vol_ratio": result.get("vol_ratio"),
                 })
             except Exception as exc:
                 logger.error("%s: sweep failed: %s", symbol, exc)
