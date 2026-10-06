@@ -148,10 +148,88 @@ async def get_macro_regime(symbol: str) -> dict[str, Any] | None:
     return await fetch_macro_regime(symbol)
 
 
+async def _clef_macro_coherence(
+    symbol: str,
+    price_label: str,
+    price_strength: float,
+    narrative_label: str,
+    narrative_strength: float,
+    thesis: str,
+    drivers: list[dict],
+    risks: list[dict],
+    regime_label: str | None = None,
+    regime_conf: float | None = None,
+    vol_tier: str | None = None,
+) -> float | None:
+    """Ask Clef-Flash: do the price trend and narrative forecast agree?
+
+    This is a COHERENCE read, not a re-derivation. The model reads the
+    narrative text (thesis/drivers/risks) and the price-based label,
+    and answers whether they agree. It never sees price data.
+
+    Returns P(agree) as a float, or None on any failure (fail-open).
+    """
+    if not thesis:
+        return None
+
+    try:
+        from regime_platform.core.feature_flags import get_clef_flash_mode
+        if get_clef_flash_mode() == "off":
+            return None
+
+        from regime_platform.services.decision.clef_flash import decide
+
+        state = {
+            "symbol": symbol,
+            "price_macro_label": price_label,
+            "price_macro_strength": round(price_strength, 4),
+            "narrative_thesis": thesis,
+            "narrative_direction": narrative_label,
+            "narrative_strength": round(narrative_strength, 4),
+            "drivers": [d.get("name", "") for d in drivers[:4]],
+            "risks": [r.get("name", "") for r in risks[:3]],
+        }
+        if regime_label:
+            state["regime_label"] = regime_label
+        if regime_conf is not None:
+            state["regime_conf"] = round(regime_conf, 4)
+        if vol_tier:
+            state["vol_tier"] = vol_tier
+
+        questions = {
+            "coherence": {
+                "type": "noul",
+                "instructions": (
+                    "Does the price-based macro trend agree with the narrative "
+                    "forecast direction? Answer true if they point the same way, "
+                    "false if they conflict."
+                ),
+            },
+        }
+
+        answers = await decide(state, questions)
+        if answers is None:
+            return None
+
+        coherence_answer = answers.get("coherence", {})
+        p_agree = coherence_answer.get("noul")
+        if p_agree is None:
+            return None
+
+        return float(p_agree)
+    except Exception as exc:
+        logger.debug("macro_filter: clef coherence failed for %s: %s", symbol, exc)
+        return None
+
+
 async def refresh_macro_regime(symbols: list[str] | None = None) -> list[dict[str, Any]]:
     """Daily job: fetch fresh daily bars, recompute, upsert
     ``nt_macro_regime``. Returns the computed rows. Best-effort: logs and
     returns an empty list on failure, never raises.
+
+    Also computes Clef-Flash macro coherence (shadow) when the narrative
+    forecast is available. The coherence stamp is written to
+    ``nt_macro_forecast.coherence`` — never read back into a decision.
     """
     try:
         active = await fetch_active_symbols()
@@ -216,6 +294,81 @@ async def refresh_macro_regime(symbols: list[str] | None = None) -> list[dict[st
     logger.info(
         "macro_filter: refreshed %d symbol(s)", len(output_rows),
     )
+
+    # ── Clef-Flash macro coherence (shadow) ────────────────────────────
+    # Runs after the price macro refresh. Reads the narrative forecast
+    # from nt_macro_forecast, asks Clef-Flash whether price and narrative
+    # agree, and stamps the result. Never read back into a decision.
+    try:
+        from regime_platform.core.feature_flags import get_clef_flash_mode
+        if get_clef_flash_mode() != "off":
+            from regime_platform.sweep_orchestrator.supabase_client import (
+                _headers,
+                _url,
+            )
+            import httpx
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _url("nt_macro_forecast"),
+                    headers=_headers(),
+                    params={
+                        "select": "symbol,direction,strength,thesis,drivers,risks",
+                        "limit": "100",
+                    },
+                )
+            forecasts = resp.json() if resp.status_code == 200 else []
+
+            for fc in forecasts:
+                sym = fc.get("symbol")
+                if not sym:
+                    continue
+                # Find the matching macro row
+                macro_row = next((r for r in output_rows if r["symbol"] == sym), None)
+                if not macro_row:
+                    continue
+
+                price_label = macro_row.get("macro_label", "neutral")
+                price_strength = macro_row.get("macro_strength", 0.0)
+                narrative_label = fc.get("direction", "neutral")
+                narrative_strength = fc.get("strength", 0.0)
+                thesis = fc.get("thesis", "")
+                drivers = fc.get("drivers", [])
+                risks = fc.get("risks", [])
+
+                coherence = await _clef_macro_coherence(
+                    symbol=sym,
+                    price_label=price_label,
+                    price_strength=price_strength,
+                    narrative_label=narrative_label,
+                    narrative_strength=narrative_strength,
+                    thesis=thesis,
+                    drivers=drivers,
+                    risks=risks,
+                )
+
+                if coherence is not None:
+                    # Stamp on nt_macro_forecast
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            await client.patch(
+                                _url("nt_macro_forecast"),
+                                headers={**_headers(), "Content-Type": "application/json"},
+                                params={"symbol": f"eq.{sym}"},
+                                json={
+                                    "coherence": round(coherence, 4),
+                                    "coherence_model": "@cf/cloudflare/clef-flash",
+                                },
+                            )
+                        logger.info(
+                            "macro_filter: %s coherence=%.4f (price=%s narrative=%s)",
+                            sym, coherence, price_label, narrative_label,
+                        )
+                    except Exception as exc:
+                        logger.debug("macro_filter: %s coherence stamp failed: %s", sym, exc)
+    except Exception as exc:
+        logger.debug("macro_filter: coherence pass failed: %s", exc)
+
     return output_rows
 
 

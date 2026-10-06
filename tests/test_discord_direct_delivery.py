@@ -118,7 +118,7 @@ def test_helper_sends_when_enabled(monkeypatch):
     kwargs = send.await_args.kwargs
     assert kwargs["symbol"] == "XAUUSD"
     assert kwargs["direction"] == "BUY"
-    assert kwargs["pattern"] == "regime_trade"
+    assert kwargs["pattern"] == "Regime Signal"
     assert kwargs["price"] == 4000.0
     assert kwargs["sl_price"] == 3990.0
     assert kwargs["tp_price"] == 4020.0
