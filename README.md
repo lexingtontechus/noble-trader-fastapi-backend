@@ -307,13 +307,54 @@ Redis, the proxy, and the per-plan StreamSplitter fan-out were all retired
 delivery path, gated by `NOBLE_TRADER_DISCORD_SIGNALS_ENABLED`.
 
 ```
-noble-trader-fastapi-backend (LightningAI sweep orchestrator)
-   │  qualification gates (EV / Kelly / regime confidence / TimesFM)
-   ▼
-Discord webhook delivery (direct, per-asset-class or per-plan channel routing)
+TradingView candles → Renko bricks → HMM regime → TimesFM forecast → EV Engine v5 → 7 gates → QUALIFIED
+                                                                                                    │
+                                                                    ┌───────────────────────────────┘
+                                                                    ▼
+nt_signal_sim (resolved rows) → bracket_reachability (per symbol×vol_tier×bucket)
+                                                                    │
+                                                                    ▼
+calibration_bias_bucket (4h) → geometry_band_urgency (sweep-triggered, 4h cooldown)
+                                                                    │
+                                                                    ▼
+dynamic_deadline (per symbol×vol_tier, from reachability percentiles)
+                                                                    │
+                                                                    ▼
+harmonized scoring (ATR bucket + dynamic deadline decay + graduated expectancy) → best combo
+                                                                    │
+                                                                    ▼
+expectation surfacing (nt_signal_sim columns + Discord/dashboard)
 ```
 
-- **Version:** `v7.9.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
+**LLM / AI components in the chain:**
+
+| Component | Role | Output |
+|---|---|---|
+| **Clef-Flash** (Cloudflare Worker) | Macro coherence: does price-based SMA agree with LLM narrative? | `p_clef_coherence` stamp on `nt_macro_forecast` |
+| **Macro Forecast Agent** (LLM) | 12-month trend/direction/strength per symbol | `nt_macro_forecast` (thesis, drivers, risks) |
+| **TimesFM 2.5** (Google) | 12h directional forecast | `p_timesfm` (EV blend source) |
+| **HMM** (4-state Gaussian) | Regime detection (vol × trend) | `regime_label`, `regime_conf` |
+| **EV Engine v6** | Logit-pooled P_win blend | `p_win`, `ev`, `kelly` |
+
+**Calibration feedback loop:**
+
+```
+nt_signal_sim (resolved) → bracket_reachability → calibration_bias_bucket
+                                                        │
+                                                        ▼
+                                              geometry_band_urgency (4h)
+                                                        │
+                                                        ▼
+                                              dynamic_deadline (per symbol×vol_tier)
+                                                        │
+                                                        ▼
+                                              harmonized scoring → best combo
+                                                        │
+                                                        ▼
+                                              expectation surfacing (Discord/dashboard)
+```
+
+- **Version:** `v8.2.0` (uniform across `pyproject.toml`, `main.py`, `openapi.yaml`).
 - **CORS:** live middleware (`main.py`) reads **`CORS_ALLOWED_ORIGINS`** (default
   `http://localhost:3000`). The legacy `CORS_ORIGINS` var was removed — do not use it.
 - **License validation:** the proxy validates subscriber `X-License-Key` via the
@@ -741,7 +782,7 @@ last-run) persists to Supabase (`nt_system_config`) instead of Redis.
 
 **Active path**: `regime_platform/sweep_orchestrator/`
 - Runs as standalone Python service (not Supabase edge functions)
-- Schedules per-symbol sweeps via APScheduler cron jobs (`*/5 * * * *`)
+- Schedules per-symbol sweeps via APScheduler cron jobs (`*/15 * * * *`)
 - Fetches TimesFM predictions (cached 15min) → 3-source EV blend
 - Enforces 7 qualification gates + cooldown before publishing
 
@@ -752,12 +793,12 @@ settings; some names still appear as env leftovers that are **ignored**):
 |------|-------|------------|--------------|----------------|
 | 1 | Signal is buy/sell (not neutral) | — | — | yes (neutral drops) |
 | 2 | HMM regime confidence ≥ threshold | `regime_conf` / `MIN_REGIME_CONF` | 0.60 | **yes — primary** |
-| 3 | Kelly fraction ≥ threshold | `min_kelly` / `MIN_KELLY` | 0.02 | **yes — primary** |
+| 3 | ~~Kelly fraction~~ | — | — | **removed 2026-09-27** (sizing research only) |
 | 4 | TimesFM available | `timesfm_gate_mode=soft` → not a veto | soft | informational in soft |
 | 5 | TimesFM confidence | `timesfm_gate_mode` | soft shrink | soft-band kelly, not hard veto |
 | 6 | EV allowed (`ev > 0` **and** `rr ≥ min_rr`) | `min_ev` / `min_rr` | 0.0 / **1.5** | **RR clause inert** (see below); EV>0 still applies |
 | 7 | Blended p_win | hard floor 0.50; soft band → `MIN_P_WIN` 0.55 | 0.50 / 0.55 | **yes — primary** |
-| + | Cooldown | `signal_cooldown_minutes` | 60 | yes (post-gate suppress) |
+| + | Cooldown | `signal_cooldown_minutes` | 15 | yes (post-gate suppress) |
 
 **`min_rr` note (2026-09-20):** maintained at `feature_flags.yaml` → `min_rr: 1.5`
 via `get_min_rr()`. Still present in EVEngine Step 6 and the heavy grid filter, but
@@ -865,13 +906,27 @@ See `docs/SIGNAL_PIPELINE.md` for the full path.
 | `predicted_p_win_raw` | float | `0.91` | Sweep capture (opt-in) | Pre-enforcement p_win (`NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW`) — separates model miscalibration from enforcement shrink |
 | `calibration_brier` | float | `0.01` | EOD resolver | Brier score per record: (1−p)² on win / p² on loss (raw p_win when available) |
 
-**Status thresholds:**
-| Condition | Label |
-|---|---|
-| \|bias\| < 0.05 | `CALIBRATED` — predictions match outcomes |
-| bias ≥ +0.05 | `OVERCONFIDENT` — too optimistic |
-| bias ≤ −0.05 | `UNDERCONFIDENT` — too pessimistic |
-| < 20 records (rolling 7-day window) | `INSUFFICIENT_DATA` |
+**Status thresholds (tiered — platform calibration vs user information):**
+
+The platform uses **two different thresholds** for the same concept:
+- **Enforcement threshold** (±0.10): drives live Kelly/p_win adjustment. This is the "platform calibration" — when the model is wrong enough to warrant action.
+- **Display threshold** (tiered): informs the user about the degree of miscalibration. This is "user information" — the risk implication of +0.06 is very different from +0.25.
+
+| Bias range | Label | User-facing meaning |
+|---|---|---|
+| \|bias\| < 0.05 | `CALIBRATED` | Predictions match outcomes |
+| +0.05 to +0.15 | `MILD_OVERCONFIDENT` | Slightly optimistic — reduce size ~15% |
+| +0.15 to +0.30 | `OVERCONFIDENT` | Optimistic — reduce size ~30-50% |
+| > +0.30 | `SEVERE_OVERCONFIDENT` | Severely optimistic — skip or minimal size |
+| −0.05 to −0.15 | `MILD_UNDERCONFIDENT` | Slightly pessimistic — size can increase |
+| −0.15 to −0.30 | `UNDERCONFIDENT` | Pessimistic — size can increase |
+| < −0.30 | `SEVERE_UNDERCONFIDENT` | Severely pessimistic — strong signal |
+| < 20 records | `INSUFFICIENT_DATA` | Not enough evidence |
+
+**Enforcement actions** (driven by the ±0.10 threshold):
+- `bayesian_penalty`: shrink p_win toward 0.5 before qualification
+- `kelly_reduction`: reduce Kelly sizing by 50%
+- `emergency_heavy_sweep`: re-run heavy sweep with fresh params
 
 ### Sweep Fatigue Fields (v3)
 
@@ -893,7 +948,7 @@ tracked to a review date in `nt_roadmap`:
 | Mechanism | Mode (current) | What it does |
 |---|---|---|
 | `heavy_sweep_deadline_aware_scoring_mode` | **live** (2026-09-08) | Re-scores every grid candidate with a 48h-deadline-capped Sharpe — a backtest trade that would resolve after the live signal's expiry window no longer counts as a "win" at selection time. |
-| `heavy_sweep_atr_anchored_bricks_mode` | **shadow** (2026-09-13, "Phase 3b") | Adds 3 extra ATR-scaled brick candidates to the grid so symbols whose native grid never lands near price (e.g. gold pairs) get a chance at a tighter, more reachable bracket. |
+| `heavy_sweep_atr_anchored_bricks_mode` | **live** (2026-10-07, "Phase 3b") | Adds 3 extra ATR-scaled brick candidates to the grid so symbols whose native grid never lands near price (e.g. gold pairs) get a chance at a tighter, more reachable bracket. |
 | `reachability_vol_tier` | **live** (2026-09-13) | Buckets historical bracket-resolution expectancy by `(symbol, vol_tier, distance/ATR)` instead of `(symbol, distance/ATR)` alone — the same distance/ATR bucket has very different real win rates depending on the HMM's current vol regime. |
 | `heavy_sweep_reachability_mode` | **shadow** (2026-08-28, "Phase 3a") | `reachability_aware_pick()` compares the raw Sharpe-best pick against a reachability/expectancy-aware alternative — if the Sharpe-best bracket lands in a bucket with negative historical expectancy and a better-expectancy alternative exists, shadow mode logs what it *would* have picked instead. |
 | `macro_regime_mode` | **shadow** (2026-08-28) | 200-day-SMA trend read per symbol (`macro_filter.py`) + `nt_macro_edge_by_symbol` tracks whether trading with vs. against that trend actually wins historically, per symbol. |
