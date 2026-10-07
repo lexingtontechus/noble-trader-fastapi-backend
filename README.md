@@ -97,7 +97,7 @@ Read: `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
 |---|---|
 | **Is** | a sweep orchestrator and **signal producer** — regime detection, EV/geometry, qualification, calibration feedback, Discord delivery |
 | **Is not** | a trade executor. `ExecutorFactory.get_executor` raises by design; live trade journaling and order placement live in the Hermes agent (Talaria) |
-| **Cadence** | light sweep every **15 min** × 14 symbols; heavy sweep **daily 17:06 UTC**; EOD recalibration nightly 00:30 + 4h correction passes |
+| **Cadence** | light sweep every **15 min** × 14 symbols; heavy sweep **daily 17:06 UTC**; EOD recalibration nightly 00:30 + 4h correction passes; **dynamic tier optimization every 15 min** (pre-sweep, `:05/:20/:35/:50`) |
 | **Data** | Supabase (Postgres) — signals, calibration records, sweep results, research tables |
 
 ---
@@ -156,8 +156,10 @@ noble-trader-fastapi-backend/
 │
 ├── main.py                           Main FastAPI app — HMM, Renko, EV, auth
 ├── server.py                         TimesFM forecasting service (port 8002)
-├── proxy.py                          Gateway reverse proxy (port 8000 → 8001/8002)
-├── start.sh                          Launcher — starts main + timesfm + proxy
+├── start.sh                          Launcher — starts main + timesfm
+# Note: port 8000 is code-server (VS Code web), not a gateway.
+# TimesFM runs directly on port 8002. The orchestrator's primary URL
+# is http://localhost:8002/forecast (no proxy needed).
 ├── setup.py                          Editable install shim (delegates to pyproject.toml)
 ├── pyproject.toml                    Modern packaging metadata + tool config
 ├── requirements.txt
@@ -261,17 +263,17 @@ pip install -e ".[dev]"     # includes torch + timesfm
 export TIMESFM_API_KEYS="your-key-here"
 export API_KEY="your-shared-secret"
 
-# 3. Start (three-layer stack)
+# 3. Start (two-layer stack)
 ./start.sh
 # Launches:
 #   main.py   on port 8001  (HMM/Renko/auth)
 #   server.py on port 8002  (TimesFM forecasting)
-#   proxy.py  on port 8000  (gateway — this is the public port)
+# Note: port 8000 is code-server (VS Code web), not a gateway.
 
 # 4. Verify
-curl http://localhost:8000/health                    # aggregated health
-curl http://localhost:8000/forecast                  # → TimesFM (port 8002)
-curl http://localhost:8000/regime/detect             # → main app (port 8001)
+curl http://localhost:8002/health                    # TimesFM health
+curl http://localhost:8002/forecast                  # TimesFM forecast
+curl http://localhost:8001/regime/detect             # main app (HMM)
 ```
 
 **Direct (single-service) mode:**
@@ -288,14 +290,16 @@ python server.py
 ```
 start.sh
   ├── PORT=8001  python main.py      (HMM, Renko, auth, all routers)
-  ├── PORT=8002  python server.py    (TimesFM forecasting API)
-  └── PORT=8000  python proxy.py     (routes by path prefix)
+  └── PORT=8002  python server.py    (TimesFM forecasting API)
 
-Client → proxy:8000
-  /forecast*  → server.py:8002
+Client → main.py:8001
+  /forecast*  → server.py:8002 (via orchestrator, primary URL)
   /info*      → server.py:8002
-  /health     → aggregated from both
+  /health     → main.py:8001
   /*          → main.py:8001
+
+Note: port 8000 is code-server (VS Code web), not a gateway.
+The orchestrator's primary TimesFM URL is http://localhost:8002/forecast.
 ```
 
 ### Signal pipeline (system topology)
@@ -324,6 +328,14 @@ harmonized scoring (ATR bucket + dynamic deadline decay + graduated expectancy) 
                                                                     │
                                                                     ▼
 expectation surfacing (nt_signal_sim columns + Discord/dashboard)
+
+Dynamic tier optimization (pre-sweep, every 15 min):
+  dynamic_tier_optimizer.py recomputes all dynamic tier parameters before each
+  light/heavy sweep (:05/:20/:35/:50). Same dataset as the nightly EOD build
+  (nt_signal_sim, last 10d, 48h resolution, contaminated=false). Writes to
+  nt_dynamic_tier_state. The sweep uses these parameters when the corresponding
+  feature flag is live. All dynamic tier flags remain in shadow mode until
+  validated.
 ```
 
 **LLM / AI components in the chain:**
