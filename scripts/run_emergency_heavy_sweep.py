@@ -37,6 +37,9 @@ async def run(symbols: list[str] | None = None) -> None:
     from regime_platform.services.hmm import FeatureBuffer, HmmModel
     mixin._hmm_buffer = FeatureBuffer()
     mixin._hmm_model = HmmModel(mixin._hmm_buffer)
+    mixin._hmm_bootstrapped = set()
+    from regime_platform.services.statistics.ev_engine import EVEngine
+    mixin._ev_engine = EVEngine()
     for sym in targets:
         s = sym_map.get(sym)
         if not s:
