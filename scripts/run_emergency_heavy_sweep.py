@@ -31,7 +31,7 @@ async def run(symbols: list[str] | None = None) -> None:
     # _sweep_locks and _sizer are defined on SweepOrchestrator, not the
     # mixin — initialize them so run_heavy_sweep_for_symbol works standalone.
     mixin._sweep_locks = {}
-    from regime_platform.services.statistics.position_sizer import PositionSizer
+    from regime_platform.core.position_sizer import PositionSizer
     mixin._sizer = PositionSizer()
     for sym in targets:
         s = sym_map.get(sym)
