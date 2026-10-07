@@ -28,9 +28,11 @@ async def run(symbols: list[str] | None = None) -> None:
         targets = [s.upper() for s in symbols]
 
     mixin = HeavySweepMixin()
-    # _sweep_locks is defined on SweepOrchestrator, not the mixin —
-    # initialize it so run_heavy_sweep_for_symbol can acquire per-symbol locks.
+    # _sweep_locks and _sizer are defined on SweepOrchestrator, not the
+    # mixin — initialize them so run_heavy_sweep_for_symbol works standalone.
     mixin._sweep_locks = {}
+    from regime_platform.services.statistics.position_sizer import PositionSizer
+    mixin._sizer = PositionSizer()
     for sym in targets:
         s = sym_map.get(sym)
         if not s:
