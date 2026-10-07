@@ -775,7 +775,7 @@ heavy_sweep_grid:
 # configured off, while the shadow table correctly stayed empty
 # (explaining why it looked inert even though the grid search itself
 # was not). Quoting forces YAML to parse this as the string "off".
-heavy_sweep_atr_anchored_bricks_mode: shadow
+heavy_sweep_atr_anchored_bricks_mode: live
 
 # heavy_sweep_deadline_aware_scoring_mode (2026-09-08, worklog
 # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md) — THE root-cause fix,
