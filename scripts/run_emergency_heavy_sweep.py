@@ -28,6 +28,9 @@ async def run(symbols: list[str] | None = None) -> None:
         targets = [s.upper() for s in symbols]
 
     mixin = HeavySweepMixin()
+    # _sweep_locks is defined on SweepOrchestrator, not the mixin —
+    # initialize it so run_heavy_sweep_for_symbol can acquire per-symbol locks.
+    mixin._sweep_locks = {}
     for sym in targets:
         s = sym_map.get(sym)
         if not s:
