@@ -377,15 +377,15 @@ async def _fetch_timesfm_cached(
         # Priority:
         #   1. TIMESFM_INFERENCE_URL env var (explicit override)
         #   2. TIMESFM_URL env var (legacy alias)
-        #   3. http://localhost:8000/forecast (the gateway/proxy on port
-        #      8000, which routes /forecast → TimesFM on port 8002)
+        #   3. http://localhost:8002/forecast (TimesFM server.py directly)
         #
-        # If the gateway is down or misconfigured, we fall back to hitting
-        # TimesFM directly on port 8002 (see _TIMESFM_FALLBACK_URL below).
+        # Port 8000 is code-server (VS Code web), not a gateway — it returns
+        # 405 on POST. TimesFM runs on port 8002. The fallback URL is kept
+        # for backward compatibility but is now the same as the primary.
         primary_url = (
             os.getenv("TIMESFM_INFERENCE_URL") or
             os.getenv("TIMESFM_URL") or
-            "http://localhost:8000/forecast"
+            "http://localhost:8002/forecast"
         )
         # Direct fallback: bypass the gateway, hit TimesFM server.py on
         # port 8002. Only used if the primary URL returns a connection
@@ -1409,8 +1409,8 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.warning(
                 "TIMESFM_API_KEYS is set but no TIMESFM_INFERENCE_URL / "
                 "TIMESFM_URL env var found — will default to "
-                "http://localhost:8000/forecast (the gateway). If the "
-                "gateway is not running, p_timesfm will be None."
+                "http://localhost:8002/forecast (TimesFM server.py). If "
+                "TimesFM is not running, p_timesfm will be None."
             )
         else:
             logger.info(
