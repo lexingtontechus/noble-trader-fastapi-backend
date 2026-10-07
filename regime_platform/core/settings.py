@@ -443,6 +443,16 @@ class Settings(BaseSettings):
     # controls whether the two background jobs run at all.
     MACRO_REGIME_ENABLED: bool = True
 
+    # DYNAMIC_TIER_OPTIMIZATION_ENABLED (default True, 2026-10-07, worklog/
+    # 20261007_TABLE_FRESHNESS_AND_DYNAMIC_TIER_DESIGN.md §5.4): kill switch
+    # for the pre-sweep dynamic tier optimization job
+    # (dynamic_tier_optimizer.py, :05/:20/:35/:50). Recomputes dynamic ATR,
+    # dynamic deadline, regime edge, and geometry incubation parameters
+    # before each light/heavy sweep. Same dataset as the nightly EOD build
+    # (nt_signal_sim, last 10d, 48h resolution, contaminated=false).
+    # Best-effort: failures are logged, never raised into the sweep tick.
+    DYNAMIC_TIER_OPTIMIZATION_ENABLED: bool = True
+
     # HMM_SHADOW_ACCURACY_ENABLED (default True, 2026-08-31, worklog/
     # 20260831_SHADOW_TO_LIVE_ROADMAP.md): kill switch for the weekly
     # outcome-linked accuracy diagnostic (hmm_shadow_accuracy.py),

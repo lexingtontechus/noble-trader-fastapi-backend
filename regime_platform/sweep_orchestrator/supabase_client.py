@@ -851,6 +851,34 @@ NT_BRACKET_REACHABILITY_COLUMNS: frozenset[str] = frozenset({
 })
 
 
+async def _delete_old_rows(table: str, symbols: list[str]) -> None:
+    """Delete all rows for the given symbols from a diagnostic table.
+
+    Used before upserting fresh rows so the table always reflects the latest
+    build (2026-10-07). Without this, old rows accumulate and a limit=N
+    query returns an arbitrary subset that looks stale even though the latest
+    build is fresh.
+
+    Best-effort: logs and returns on failure, never raises.
+    """
+    if not settings.SUPABASE_URL or not symbols:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(
+                _url(table),
+                headers={**_headers(), "Prefer": "return=minimal"},
+                params={"symbol": f"in.({','.join(symbols)})"},
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "_delete_old_rows %s: HTTP %d — %s",
+                    table, resp.status_code, resp.text[:200],
+                )
+    except Exception as exc:
+        logger.warning("_delete_old_rows %s failed: %s", table, exc)
+
+
 async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
     """Upsert bucket rows into ``nt_bracket_reachability`` (best-effort).
 
@@ -1073,6 +1101,47 @@ NT_ENTRY_DRIFT_COLUMNS: frozenset[str] = frozenset({
     "avg_drift_4h_pct", "stdev_drift_4h_pct",
     "avg_drift_24h_pct", "stdev_drift_24h_pct",
 })
+
+
+NT_DYNAMIC_TIER_STATE_COLUMNS: frozenset[str] = frozenset({
+    "symbol", "tier_type", "tier_key", "tier_value",
+    "n", "computed_at", "source",
+})
+
+
+async def upsert_dynamic_tier_state(rows: list[dict[str, Any]]) -> None:
+    """Upsert pre-sweep dynamic tier parameters into ``nt_dynamic_tier_state``.
+
+    Keyed on ``(symbol, tier_type, tier_key)`` — same upsert-on-conflict
+    shape as ``upsert_bracket_reachability``/``upsert_calibration_bias_by_bucket``.
+    Written by ``dynamic_tier_optimizer.py`` before each light/heavy sweep.
+    """
+    if not settings.SUPABASE_URL:
+        return
+
+    clean_rows = [_filter_payload(r, NT_DYNAMIC_TIER_STATE_COLUMNS) for r in rows]
+    if not clean_rows:
+        logger.debug("upsert_dynamic_tier_state: no rows — skipping")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_dynamic_tier_state')}?on_conflict=symbol,tier_type,tier_key",
+                headers={
+                    **_headers(),
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates",
+                },
+                json=clean_rows,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_dynamic_tier_state: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_dynamic_tier_state: insert failed: %s", exc)
 
 
 async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:

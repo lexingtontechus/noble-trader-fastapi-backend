@@ -58,6 +58,7 @@ from regime_platform.sweep_orchestrator.price_fetcher import (
     fetch_candles_for_symbols,
 )
 from regime_platform.sweep_orchestrator.supabase_client import (
+    _delete_old_rows,
     _headers,
     _url,
     fetch_active_symbols,
@@ -172,6 +173,7 @@ async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[st
     params: dict[str, str] = {
         "select": "symbol,ts,entry_price,take_profit,stop_loss,atr,outcome,resolved_at,regime,signal",
         "outcome": "not.is.null",
+        "contaminated": "eq.false",
         "order": "ts.asc",
         "limit": str(_PAGE_SIZE),
     }
@@ -348,6 +350,16 @@ async def build_reachability_table(symbols: list[str] | None = None) -> list[dic
             "p90_hours": round(float(np.percentile(hours, 90)), 2) if hours else None,
             "atr_source": atr_source,
         })
+
+    # Delete-then-insert: remove old rows for these symbols before upserting
+    # fresh ones, so the table always reflects the latest build (2026-10-07).
+    # Without this, old rows accumulate and a limit=50 query returns an
+    # arbitrary subset that looks stale even though the latest build is fresh.
+    try:
+        symbols_in_build = sorted({r["symbol"] for r in output_rows})
+        await _delete_old_rows("nt_bracket_reachability", symbols_in_build)
+    except Exception as exc:
+        logger.warning("bracket_reachability: delete old rows failed: %s", exc)
 
     try:
         await upsert_bracket_reachability(output_rows)

@@ -1629,6 +1629,24 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Dynamic tier optimization (2026-10-07, worklog/
+        # 20261007_TABLE_FRESHNESS_AND_DYNAMIC_TIER_DESIGN.md §5.4):
+        # pre-sweep refresh of dynamic ATR, dynamic deadline, regime edge,
+        # and geometry incubation parameters. Runs 5 min before each light
+        # sweep (:05/:20/:35/:50) so the sweep uses fresh parameters instead
+        # of waiting for the nightly EOD pass. Same dataset as the nightly
+        # build (nt_signal_sim, last 10d, 48h resolution, contaminated=false).
+        # Best-effort: failures are logged, never raised into the sweep tick.
+        if getattr(settings, "DYNAMIC_TIER_OPTIMIZATION_ENABLED", True):
+            self._scheduler.add_job(
+                self._run_dynamic_tier_optimization,
+                trigger=CronTrigger.from_crontab("5,20,35,50 * * * *"),
+                id="dynamic-tier-optimization",
+                name="Dynamic tier optimization (pre-sweep)",
+                misfire_grace_time=300,
+                coalesce=True,
+            )
+
         # Macro filter daily refresh (2026-08-28, worklog/
         # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
         # full build scope"): 06:00 UTC daily, own cadence (independent
@@ -2536,6 +2554,32 @@ class SweepOrchestrator(HeavySweepMixin):
                 )
             except Exception as exc:
                 logger.error("[hmm-shadow-accuracy] failed: %s", exc)
+
+    async def _run_dynamic_tier_optimization(self) -> None:
+        """Pre-sweep dynamic tier optimization (2026-10-07, worklog/
+        20261007_TABLE_FRESHNESS_AND_DYNAMIC_TIER_DESIGN.md §5.4).
+
+        Recomputes dynamic ATR, dynamic deadline, regime edge, and
+        geometry incubation parameters before each light/heavy sweep.
+        Same dataset as the nightly EOD build (nt_signal_sim, last 10d,
+        48h resolution, contaminated=false). Best-effort: failures are
+        logged, never raised into the sweep tick.
+        """
+        from regime_platform.sweep_orchestrator.dynamic_tier_optimizer import (
+            run_dynamic_tier_optimization,
+        )
+        try:
+            summary = await run_dynamic_tier_optimization()
+            logger.info(
+                "[dynamic-tier] done: atr=%d deadline=%d edge=%d incubation=%d errors=%d",
+                summary.get("atr_picks", 0),
+                summary.get("deadline_tiers", 0),
+                summary.get("regime_edges", 0),
+                summary.get("incubation_verdicts", 0),
+                len(summary.get("errors", [])),
+            )
+        except Exception as exc:
+            logger.error("[dynamic-tier] failed: %s", exc)
 
     async def _run_macro_regime_refresh(self) -> None:
         """Macro filter daily refresh (2026-08-28, worklog/

@@ -59,6 +59,7 @@ from regime_platform.sweep_orchestrator.bracket_reachability import (
 )
 from regime_platform.sweep_orchestrator.p_win_bracket import beta_shrunk_win_rate
 from regime_platform.sweep_orchestrator.supabase_client import (
+    _delete_old_rows,
     _headers,
     _url,
     upsert_calibration_bias_by_bucket,
@@ -102,7 +103,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     nt_calibration_records is built from (expired rows are excluded by
     construction, matching the existing calibration formula).
     """
-    filters: dict[str, str] = {"outcome": "in.(tp_hit,sl_hit)"}
+    filters: dict[str, str] = {"outcome": "in.(tp_hit,sl_hit)", "contaminated": "eq.false"}
     if symbols:
         filters["symbol"] = f"in.({','.join(symbols)})"
 
@@ -235,6 +236,14 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
             "daily_expectancy_r": daily_expectancy_r,
             "atr_source": "stored",
         })
+
+    # Delete-then-insert: remove old rows for these symbols before upserting
+    # fresh ones (2026-10-07). Same rationale as bracket_reachability.py.
+    try:
+        symbols_in_build = sorted({r["symbol"] for r in output_rows})
+        await _delete_old_rows("nt_calibration_bias_by_bucket", symbols_in_build)
+    except Exception as exc:
+        logger.warning("calibration_bias_bucket: delete old rows failed: %s", exc)
 
     try:
         await upsert_calibration_bias_by_bucket(output_rows)
