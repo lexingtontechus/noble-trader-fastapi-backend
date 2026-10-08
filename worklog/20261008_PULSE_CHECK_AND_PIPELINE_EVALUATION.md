@@ -317,19 +317,39 @@ The `nt_calibration_bias_by_bucket` table shows **negative expectancy in most bu
 
 **Timeline**: This is a heavy-sweep parameter — next heavy sweep is daily 20:00 UTC.
 
-#### C3. Investigate GBPUSD and USDCAD sell signals
+#### C3. Investigate GBPUSD and USDCAD sell signals — ✅ INVESTIGATED 2026-10-08
 
-**Problem**: GBPUSD sell has 0% WR (54 samples), USDCAD sell has 0% WR (43 samples).
+**Problem**: GBPUSD sell had 0% WR (54 samples), USDCAD sell 0% WR (43 samples) in the 24h read.
 
-**Action**: Check if these symbols have a systematic issue (e.g., wrong regime label, stale prices, or bracket geometry).
+**Investigation** (7d, episode-deduped — the raw 0% was a small-sample 24h slice; the true rates are 6.4% and 14.2%):
 
-**Steps**:
-1. Pull all GBPUSD sell signals from the past 7 days
-2. Check if they share a common regime label, brick size, or entry price
-3. Check if the resolver is correctly resolving these signals
-4. If the issue is systematic, disable the signal for these symbols
+| | GBPUSD sell | USDCAD sell |
+|---|---|---|
+| episodes (7d, deduped) | 204 | 148 |
+| wins | 13 (6.4%) | 21 (14.2%) |
+| raw outcomes | 345 SL / 16 TP / 30 exp | 144 SL / 21 TP / 198 exp |
+| live geometry | TP 1.61 ATR / SL 0.34 ATR | TP 1.75 ATR / SL 0.35 ATR |
+| avg p_win | 0.329 | 0.367 |
+| avg MAE (adverse excursion) | **1.96 ATR** | **1.93 ATR** |
+| MAE / SL | **2.3×** | **1.4×** |
 
-**Timeline**: Immediate — these are losing money.
+**Root cause (confirmed): the stops sit inside normal intrabar noise.** Both symbols run a ~0.35-ATR stop against a 1.6–1.75-ATR TP, while the realised average adverse excursion over the 48h window is ~1.95 ATR — **2.3× (GBPUSD) / 1.4× (USDCAD) the stop distance**. A 1h bar's high-low range is itself ~1 ATR, so a 0.35-ATR stop is inside the noise band and gets touched by a routine wiggle long before a 1.6-ATR target is reached. This is the same failure the pulse check flagged for the whole pipeline (see §3.2) — it is not symbol-specific.
+
+Two contributing factors, both in the **geometry layer**, not the signal layer:
+
+1. **Close-walk vs intrabar mismatch.** The live resolver is `intrabar` (high/low touch), but `tiered_atr.build_paths()` walks **closes only** (`b["c"]`), and `settlement_contract._excursions` also walks closes. So the geometry picker and its backtest under-count stop-outs — a close-walk backtest never sees the wiggle that trips a 0.35-ATR stop. This is the same basis gap already recorded for the geometry replay (worklog `20261008` §3.2 / the resolver-basis pitfall).
+2. **The dynamic-ATR band is pinned at a tight SL.** `dynamic_atr.by_class.forex` / `by_symbol.FOREX` clamp `sl_atr ∈ [0.30, 0.45]` and `tp_atr ∈ [1.6, 1.85]` — so every FX symbol is locked into a tight-stop/wide-target shape that the intrabar basis punishes. (`dynamic_atr_pick` returns `None` for both symbols on current data, i.e. the *live* pick falls through to the heavy-sweep geometry, which is what produced the 0.34-ATR stop above.)
+
+**Regime-edge evidence (shadow gate, `nt_regime_edge`)**: every GBPUSD/USDCAD sell bucket except two has WR < 50% at n ≥ 20, so the shadow `regime_edge` gate **would reject 13 of 15 buckets** — including all the high-n ones (GBPUSD `med_low_vol_strong_bear` 17.0% n=235; USDCAD `med_low_vol_bear` 6.8% n=148). Only GBPUSD `low_vol_bear` (63.5%, n=52) and USDCAD `low_vol_strong_bear` (39.9%, n=228 — still below the 0.50 bar) are marginal. This is strong independent confirmation that the problem is real and regime-wide, not a labelling bug.
+
+**Direction is NOT the problem.** GBPUSD sell rows are `trending_down` (166/204) — direction agrees with the regime. USDCAD sell rows are `trending_up` (148/148) — i.e. the sell is *against* the trend label, which is a separate curiosity worth a look, but with MAE/SL at 1.4× even the aligned GBPUSD sells lose. The geometry, not the direction, is the binding failure.
+
+**Recommendation** (do NOT disable these symbols — the failure is geometry-wide, disabling two symbols masks it):
+- Fix the basis first: make the ATR picker / geometry backtest use the same intrabar (high/low) walk as the live resolver before trusting any SL/TP choice. Same fix as the pipeline-wide C2.
+- Then re-derive the FX `sl_atr` band — a 0.35-ATR stop cannot survive an intrabar basis where the median adverse excursion is ~2 ATR. Widening SL and/or tightening TP is the lever (C2), not symbol suppression.
+- The `regime_edge` shadow gate already identifies these buckets correctly; it is the right mechanism to act on once it goes live (roadmap id 91).
+
+**Timeline**: geometry/basis fix, not an immediate symbol disable.
 
 ### 6.2 HIGH — This Week
 
