@@ -77,6 +77,16 @@ ALL_TIER_TYPES = (
     TIER_BRICK_STATE,
 )
 
+# Tiers that mirror into nt_dynamic_tier_state. brick_state is EXCLUDED — it
+# mirrors to nt_brick_params_state (written by the heavy sweep), so including
+# it here would create phantom parity mismatches.
+_MIRROR_TIER_TYPES = (
+    TIER_DYNAMIC_ATR,
+    TIER_DYNAMIC_DEADLINE,
+    TIER_REGIME_EDGE,
+    TIER_GEOMETRY_INCUBATION,
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS params (
     symbol      TEXT NOT NULL,
@@ -278,24 +288,53 @@ async def sync_to_supabase() -> dict[str, Any]:
     This is the AUDIT path — it must never be the read path for an
     optimization. A failure here is logged and does not affect the local
     authority, matching every other best-effort write in this codebase.
+
+    Two rules (2026-10-08):
+      • ``brick_state`` is EXCLUDED — that tier mirrors to
+        ``nt_brick_params_state`` (the heavy sweep writes it), not here.
+      • STALE mirror keys are PRUNED after the upsert — the mirror is a
+        reflection of the local authority, so a key that no longer exists
+        locally must not linger (otherwise the mirror accumulates every key
+        ever computed and parity can never converge; same accumulate-stale-rows
+        trap as the other diagnostic tables, Known Pitfall 5b).
     """
-    rows = read_all()
+    all_rows = read_all()
+    rows = [r for r in all_rows if r.get("tier_type") in _MIRROR_TIER_TYPES]
     if not rows:
         return {"mirrored": 0, "ok": True, "note": "empty_local_store"}
     # nt_dynamic_tier_state.tier_value is TEXT — normalise any JSON-object
-    # values (regime_edge carries win_rate + expectancy_r) to a JSON string
-    # before the PostgREST upsert, which rejects a dict for a text column.
+    # values (regime_edge carries win_rate + expectancy_r, dynamic_deadline
+    # the full payload) to a JSON string before the PostgREST upsert, which
+    # rejects a dict for a text column.
     mirror_rows = [
         {**r, "tier_value": _normalise_value(r.get("tier_value"))}
         for r in rows
     ]
+    pruned = 0
     try:
         from regime_platform.sweep_orchestrator.supabase_client import (
+            delete_dynamic_tier_state_rows,
             upsert_dynamic_tier_state,
         )
 
         await upsert_dynamic_tier_state(mirror_rows)
-        return {"mirrored": len(mirror_rows), "ok": True}
+        # Prune mirror keys that no longer exist in the local authority.
+        try:
+            remote = await _fetch_supabase_rows(None)
+            local_keys = {
+                (r["symbol"], r["tier_type"], str(r["tier_key"])) for r in rows
+            }
+            stale = [
+                {"symbol": r["symbol"], "tier_type": r["tier_type"],
+                 "tier_key": str(r["tier_key"])}
+                for r in remote
+                if (r["symbol"], r["tier_type"], str(r["tier_key"])) not in local_keys
+            ]
+            if stale:
+                pruned = await delete_dynamic_tier_state_rows(stale)
+        except Exception as exc:
+            logger.warning("param_store: mirror prune failed: %s", exc)
+        return {"mirrored": len(mirror_rows), "pruned": pruned, "ok": True}
     except Exception as exc:
         logger.warning("param_store: sync_to_supabase failed: %s", exc)
         return {"mirrored": 0, "ok": False, "error": str(exc)}
@@ -355,6 +394,7 @@ async def parity_report(symbols: list[str] | None = None) -> dict[str, Any]:
     local = {
         (r["symbol"], r["tier_type"], str(r["tier_key"])): r
         for r in read_all()
+        if r.get("tier_type") in _MIRROR_TIER_TYPES
     }
     try:
         remote_rows = await _fetch_supabase_rows(symbols)

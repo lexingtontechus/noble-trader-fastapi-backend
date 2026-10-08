@@ -1144,6 +1144,48 @@ async def upsert_dynamic_tier_state(rows: list[dict[str, Any]]) -> None:
         logger.error("upsert_dynamic_tier_state: insert failed: %s", exc)
 
 
+async def delete_dynamic_tier_state_rows(keys: list[dict[str, Any]]) -> int:
+    """Delete specific ``nt_dynamic_tier_state`` rows by (symbol, tier_type, tier_key).
+
+    Used by ``param_store.sync_to_supabase()`` to PRUNE mirror keys that no
+    longer exist in the local authority — the mirror is a reflection, so a
+    stale key must not linger (otherwise it accumulates every key ever
+    computed and parity can never converge; same trap as Known Pitfall 5b).
+
+    PostgREST delete needs one request per key (no OR-of-tuples filter that
+    maps cleanly onto a composite key), so this issues them concurrently.
+    Best-effort: returns the number deleted, never raises.
+    """
+    if not settings.SUPABASE_URL or not keys:
+        return 0
+    url = _url("nt_dynamic_tier_state")
+
+    async def _del_one(client: httpx.AsyncClient, key: dict[str, Any]) -> bool:
+        params = {
+            "symbol": f"eq.{key['symbol']}",
+            "tier_type": f"eq.{key['tier_type']}",
+            "tier_key": f"eq.{key['tier_key']}",
+        }
+        try:
+            resp = await client.delete(url, headers=_headers(), params=params)
+            return resp.is_success or resp.status_code == 204
+        except Exception as exc:
+            logger.warning(
+                "delete_dynamic_tier_state_rows %s: %s", key, exc,
+            )
+            return False
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            results = await asyncio.gather(
+                *[_del_one(client, k) for k in keys], return_exceptions=False,
+            )
+        return sum(1 for r in results if r)
+    except Exception as exc:
+        logger.error("delete_dynamic_tier_state_rows failed: %s", exc)
+        return 0
+
+
 async def upsert_entry_drift(rows: list[dict[str, Any]]) -> None:
     """Upsert per-symbol rows into ``nt_entry_drift`` (best-effort).
 

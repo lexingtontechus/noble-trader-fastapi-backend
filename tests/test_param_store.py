@@ -38,6 +38,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+async def _async_ret(value):
+    """Awaitable returning ``value`` — for monkeypatching async callables."""
+    return value
+
+
 # ── Store primitives ─────────────────────────────────────────────────────
 
 def test_write_then_read_roundtrip():
@@ -126,11 +131,90 @@ def test_sync_to_supabase_normalises_json_values(monkeypatch):
     import regime_platform.sweep_orchestrator.supabase_client as sc
     monkeypatch.setattr(sc, "upsert_dynamic_tier_state", _capture)
 
+    async def _remote(symbols=None):
+        return []
+
+    monkeypatch.setattr(param_store, "_fetch_supabase_rows", _remote)
+    monkeypatch.setattr(sc, "delete_dynamic_tier_state_rows", lambda keys: _async_ret(0))
+
     _run(param_store.sync_to_supabase())
     assert captured["rows"], "mirror was not called"
     v = captured["rows"][0]["tier_value"]
     assert isinstance(v, str)
     assert json.loads(v)["win_rate"] == 0.3
+
+
+def test_sync_to_supabase_excludes_brick_state(monkeypatch):
+    """brick_state must NOT mirror to nt_dynamic_tier_state (it goes to
+    nt_brick_params_state) — otherwise it creates phantom parity keys."""
+    _run(param_store.write_params([
+        {"symbol": "X", "tier_type": param_store.TIER_DYNAMIC_ATR, "tier_key": "1-2", "tier_value": 0.5, "n": 3},
+        {"symbol": "X", "tier_type": param_store.TIER_BRICK_STATE, "tier_key": "latest", "tier_value": {"brick_size": 1.0}, "n": 1},
+    ]))
+    captured = {}
+
+    async def _capture(rows):
+        captured["rows"] = rows
+
+    async def _remote(symbols=None):
+        return []
+
+    import regime_platform.sweep_orchestrator.supabase_client as sc
+    monkeypatch.setattr(sc, "upsert_dynamic_tier_state", _capture)
+    monkeypatch.setattr(param_store, "_fetch_supabase_rows", _remote)
+    monkeypatch.setattr(sc, "delete_dynamic_tier_state_rows", lambda keys: _async_ret(0))
+
+    _run(param_store.sync_to_supabase())
+    types = {r["tier_type"] for r in captured["rows"]}
+    assert param_store.TIER_BRICK_STATE not in types
+    assert param_store.TIER_DYNAMIC_ATR in types
+
+
+def test_sync_to_supabase_prunes_stale_mirror_keys(monkeypatch):
+    """Mirror keys absent from the local authority are deleted."""
+    _run(param_store.write_params([
+        {"symbol": "A", "tier_type": param_store.TIER_DYNAMIC_ATR, "tier_key": "1-2", "tier_value": 0.1, "n": 5},
+    ]))
+
+    async def _remote(symbols=None):
+        # mirror has the local key + two stale keys
+        return [
+            {"symbol": "A", "tier_type": param_store.TIER_DYNAMIC_ATR, "tier_key": "1-2", "tier_value": "0.1", "n": 5},
+            {"symbol": "A", "tier_type": param_store.TIER_REGIME_EDGE, "tier_key": "buy:stale", "tier_value": "{}", "n": 5},
+            {"symbol": "B", "tier_type": param_store.TIER_DYNAMIC_DEADLINE, "tier_key": "low_vol", "tier_value": "{}", "n": 5},
+        ]
+
+    deleted = {}
+
+    async def _delete(keys):
+        deleted["keys"] = keys
+        return len(keys)
+
+    import regime_platform.sweep_orchestrator.supabase_client as sc
+    monkeypatch.setattr(sc, "upsert_dynamic_tier_state", lambda rows: _async_ret(None))
+    monkeypatch.setattr(param_store, "_fetch_supabase_rows", _remote)
+    monkeypatch.setattr(sc, "delete_dynamic_tier_state_rows", _delete)
+
+    result = _run(param_store.sync_to_supabase())
+    assert result["ok"] is True
+    assert result["pruned"] == 2
+    stale_keys = {(k["symbol"], k["tier_key"]) for k in deleted["keys"]}
+    assert stale_keys == {("A", "buy:stale"), ("B", "low_vol")}
+
+
+def test_parity_report_ignores_brick_state(monkeypatch):
+    """brick_state must not appear in parity (it mirrors elsewhere)."""
+    _run(param_store.write_params([
+        {"symbol": "X", "tier_type": param_store.TIER_BRICK_STATE, "tier_key": "latest", "tier_value": {"a": 1}, "n": 1},
+    ]))
+
+    async def _remote(symbols=None):
+        return []  # nt_dynamic_tier_state has no brick_state row (correct)
+
+    monkeypatch.setattr(param_store, "_fetch_supabase_rows", _remote)
+    report = _run(param_store.parity_report())
+    assert report["ok"] is True
+    assert report["local_keys"] == 0
 
 
 # ── Optimizer writes local, not Supabase ─────────────────────────────────

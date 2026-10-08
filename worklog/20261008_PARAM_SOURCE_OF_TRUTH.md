@@ -139,7 +139,20 @@ All four follow-ups below are **DONE** (2026-10-08, same session).
 3. ✅ **Deploy order:** migration 203 applied to production (version `20261008215739`); code deploy + Studio pull/restart follow this worklog.
 4. ✅ **Dead `upsert_dynamic_tier_state` import removed** from `dynamic_tier_optimizer.py` — it no longer calls it directly (goes through `param_store.sync_to_supabase()`); `supabase_client.upsert_dynamic_tier_state` now has exactly one caller (the store's mirror).
 
-Tests: `tests/test_param_store.py` is now **17 tests** (4 added for FU1/FU2). Full suite: **1828 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ships_shadow_qs`, unrelated — HEAD ships `calibration_evidence_pool_mode: live`).
+Tests: `tests/test_param_store.py` is now **20 tests**. Full suite: **1831 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ships_shadow_qs`, unrelated — HEAD ships `calibration_evidence_pool_mode: live`).
+
+---
+
+## 7b. Live-deploy verification found two real bugs (2026-10-08, fixed)
+
+After the Studio pull + orchestrator restart, the 22:20 UTC optimizer run wrote **238 rows** to `config/param_store.sqlite` (14 dynamic_atr, 56 dynamic_deadline, 154 regime_edge, 14 geometry_incubation) — proof the deploy took. But running `parity_report()` on the Studio surfaced two defects in the mirror path:
+
+1. **`brick_state` was being mirrored into `nt_dynamic_tier_state`.** That tier belongs in `nt_brick_params_state` (the heavy sweep writes it there); mirroring it here created keys that could never match, so parity could never converge. Fixed: `_MIRROR_TIER_TYPES` excludes `brick_state` from both the mirror upsert and the parity comparison.
+2. **The mirror never pruned stale keys.** `nt_dynamic_tier_state` upserts but never deletes, so it accumulated every key any build had ever produced (298 mirror rows vs 238 local; parity reported `missing_local: 60` — stale `geometry_incubation`/`regime_edge` keys from earlier builds). The mirror is a *reflection* of the local authority, so a key that no longer exists locally must not linger — otherwise parity can never converge and the nightly audit row fires forever. Fixed: `sync_to_supabase()` now prunes mirror keys absent from the local store (new `supabase_client.delete_dynamic_tier_state_rows`), and `parity_report()` compares only `_MIRROR_TIER_TYPES`.
+
+Both are the same accumulate-stale-rows trap already documented for the other diagnostic tables (Known Pitfall 5b) — a mirror that only upserts is not a mirror.
+
+**Observation, not a defect:** the local store holds 238 rows while the mirror held 298; after the prune fix the mirror converges to the local authority on the next optimizer cycle. That is the intended "local authoritative, mirror reflects it" direction, not a data-loss concern (the mirror is audit only).
 
 ---
 
@@ -147,7 +160,8 @@ Tests: `tests/test_param_store.py` is now **17 tests** (4 added for FU1/FU2). Fu
 
 | File | Change |
 |---|---|
-| `regime_platform/core/param_store.py` | **new** — local authority + mirror + parity + `run_parity_check` |
+| `regime_platform/core/param_store.py` | **new** — local authority + mirror (+prune) + parity + `run_parity_check`; `_MIRROR_TIER_TYPES` |
+| `regime_platform/sweep_orchestrator/supabase_client.py` | **new** `delete_dynamic_tier_state_rows` (mirror prune) |
 | `regime_platform/sweep_orchestrator/dynamic_tier_optimizer.py` | write local-first, mirror-second; JSON-object tier values; dead import removed |
 | `regime_platform/sweep_orchestrator/regime_edge.py` | local-first read in `get_regime_edge` |
 | `regime_platform/sweep_orchestrator/dynamic_deadline.py` | **new** `read_local_deadline_tier` |
