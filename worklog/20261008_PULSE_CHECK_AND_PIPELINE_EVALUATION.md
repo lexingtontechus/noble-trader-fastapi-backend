@@ -304,18 +304,9 @@ The `nt_calibration_bias_by_bucket` table shows **negative expectancy in most bu
 
 **Timeline**: This is the highest priority — the model is currently useless for position sizing.
 
-#### C2. Widen bracket geometry or tighten TP
+#### C2. Widen bracket geometry or tighten TP — SUPERSEDED by the basis fix
 
-**Problem**: Most brackets are in the "4+ ATR" bucket with very low TP hit rates (0-24%). The bracket geometry is too wide for the 48h deadline.
-
-**Action**: Review the TP/SL geometry for each symbol. Consider tightening TP or widening SL.
-
-**Steps**:
-1. For each symbol, compute the optimal TP/SL geometry using post-cutover data
-2. Update `config/brick_params.yaml` with new geometries
-3. Re-run the heavy sweep to validate
-
-**Timeline**: This is a heavy-sweep parameter — next heavy sweep is daily 20:00 UTC.
+**Do not action C2 as written.** It is premature: you cannot evaluate a bracket change while the chooser measures on a different basis than the resolver. C2 and C3 are one issue — see `worklog/20261008_GEOMETRY_BASIS_DIVERGENCE.md`. Sequence: harmonize the basis (Stage 1–3 there), then re-derive the geometry (Stage 4).
 
 #### C3. Investigate GBPUSD and USDCAD sell signals — ✅ INVESTIGATED 2026-10-08
 
@@ -334,6 +325,8 @@ The `nt_calibration_bias_by_bucket` table shows **negative expectancy in most bu
 | MAE / SL | **2.3×** | **1.4×** |
 
 **Root cause (confirmed): the stops sit inside normal intrabar noise.** Both symbols run a ~0.35-ATR stop against a 1.6–1.75-ATR TP, while the realised average adverse excursion over the 48h window is ~1.95 ATR — **2.3× (GBPUSD) / 1.4× (USDCAD) the stop distance**. A 1h bar's high-low range is itself ~1 ATR, so a 0.35-ATR stop is inside the noise band and gets touched by a routine wiggle long before a 1.6-ATR target is reached. This is the same failure the pulse check flagged for the whole pipeline (see §3.2) — it is not symbol-specific.
+
+**This is a GEOMETRY defect, not a reachability one.** Reachability (`bracket_reachability.py`) reads the *stored* `outcome` — i.e. the live resolver's own verdict — so its basis is correct (it already shows GBPUSD sell 4+ as TP 5% / expired 86%). Geometry (the TP/SL *choice* in `tiered_atr.py` / `heavy_sweep.py`) **re-derives outcomes from prices with its own rule** and that rule disagrees with the resolver. Full analysis: `worklog/20261008_GEOMETRY_BASIS_DIVERGENCE.md`.
 
 Two contributing factors, both in the **geometry layer**, not the signal layer:
 
