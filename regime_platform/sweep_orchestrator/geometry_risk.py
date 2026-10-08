@@ -254,7 +254,29 @@ def brick_vol_scale(
 
 
 async def fetch_brick_state(symbol: str) -> Optional[dict[str, Any]]:
-    """Latest nt_brick_params_state row (atr_at_write, geometry at write)."""
+    """Latest brick-params state (atr_at_write, geometry at write).
+
+    2026-10-08 single-source-of-truth fix (worklog
+    20261008_PARAM_SOURCE_OF_TRUTH.md §7 FU1): the LOCAL param store is the
+    runtime authority — the heavy sweep writes brick state there, so the
+    light path reads it from disk instead of a per-signal Supabase
+    round-trip to ``nt_brick_params_state`` (which ``geometry_intraday_scale``
+    does on every qualified signal). Supabase remains the durable mirror +
+    cross-instance fallback.
+    """
+    # 1) Local authority (no network).
+    try:
+        from regime_platform.core import param_store
+
+        local = param_store.read_dict(
+            symbol, param_store.TIER_BRICK_STATE, "latest",
+        )
+        if local:
+            return local
+    except Exception as exc:
+        logger.debug("fetch_brick_state %s: local read failed: %s", symbol, exc)
+
+    # 2) Supabase fallback (cold local store).
     if not settings.SUPABASE_URL:
         return None
     try:
@@ -274,6 +296,47 @@ async def fetch_brick_state(symbol: str) -> Optional[dict[str, Any]]:
     except Exception as exc:
         logger.warning("fetch_brick_state %s: %s", symbol, exc)
         return None
+
+
+async def persist_brick_state_local(
+    symbol: str,
+    *,
+    brick_size: float,
+    sl_bricks: int,
+    tp_bricks: int,
+    atr_at_write: Optional[float],
+    asset_class: Optional[str],
+    source: str,
+) -> None:
+    """Write brick state to the LOCAL param store (runtime authority).
+
+    Called by the heavy sweep alongside its Supabase mirror write. The light
+    path's ``fetch_brick_state`` reads this first (2026-10-08 FU1).
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from regime_platform.core import param_store
+
+        await param_store.write_params([{
+            "symbol": symbol,
+            "tier_type": param_store.TIER_BRICK_STATE,
+            "tier_key": "latest",
+            "tier_value": {
+                "symbol": symbol,
+                "brick_size": brick_size,
+                "sl_bricks": int(sl_bricks),
+                "tp_bricks": int(tp_bricks),
+                "atr_at_write": float(atr_at_write) if atr_at_write else None,
+                "asset_class": asset_class,
+                "source": source,
+                "written_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "n": 1,
+            "source": source,
+        }])
+    except Exception as exc:
+        logger.warning("persist_brick_state_local %s: %s", symbol, exc)
 
 
 async def write_eod_action(

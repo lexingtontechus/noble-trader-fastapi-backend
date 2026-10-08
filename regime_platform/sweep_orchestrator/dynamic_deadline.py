@@ -138,6 +138,40 @@ def derive_all_deadline_tiers(
     return tiers
 
 
+def read_local_deadline_tier(symbol: str, vol_tier: str) -> "DeadlineTier | None":
+    """Read a DeadlineTier from the LOCAL param store (no network).
+
+    2026-10-08 single-source-of-truth fix (worklog
+    20261008_PARAM_SOURCE_OF_TRUTH.md): the pre-sweep optimizer writes
+    deadline tiers to ``config/param_store.sqlite``; the sweep reads them
+    back from disk instead of re-deriving from a Supabase reachability
+    fetch on every signal. Returns ``None`` when absent → caller falls
+    back to ``derive_deadline_tier`` (fail-open).
+    """
+    try:
+        from regime_platform.core import param_store
+
+        parsed = param_store.read_dict(
+            symbol, param_store.TIER_DYNAMIC_DEADLINE, vol_tier,
+        )
+        if not parsed:
+            return None
+        tiers = param_store.read_tier(symbol, param_store.TIER_DYNAMIC_DEADLINE)
+        row = tiers.get(str(vol_tier)) or {}
+        return DeadlineTier(
+            symbol=symbol,
+            vol_tier=vol_tier,
+            soft_deadline_hours=float(parsed.get("soft_deadline_hours", 24.0)),
+            hard_deadline_hours=float(parsed.get("hard_deadline_hours", 48.0)),
+            median_hours=float(parsed.get("median_hours", 24.0)),
+            n=int(row.get("n", 0) or 0),
+            confidence=str(parsed.get("confidence", "low")),
+        )
+    except Exception as exc:
+        logger.debug("[deadline] local store read failed for %s/%s: %s", symbol, vol_tier, exc)
+        return None
+
+
 # ─── Urgency reopt (4h cycle, same pattern as atr_reopt.py) ──────────────
 
 _URGENCY_STATE_MECH = "dynamic_deadline_reopt_urgency"

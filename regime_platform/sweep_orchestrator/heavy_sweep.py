@@ -2072,6 +2072,23 @@ class HeavySweepMixin:
             }},
         )
         # Phase C1 (tiered ATR): persist ATR-at-write for vol-drift risk.
+        # 2026-10-08 FU1: write the LOCAL param store first (runtime
+        # authority — the light path's geometry_intraday_scale reads it
+        # without a Supabase round-trip), then the Supabase mirror.
+        try:
+            from regime_platform.sweep_orchestrator.geometry_risk import (
+                persist_brick_state_local,
+            )
+            await persist_brick_state_local(
+                symbol,
+                brick_size=brick, sl_bricks=int(sl), tp_bricks=int(tp),
+                atr_at_write=float(atr) if atr else None,
+                asset_class=asset_class, source=source,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[tiered:atr] %s local brick_state write failed: %s", symbol, exc,
+            )
         try:
             from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
             import httpx

@@ -56,7 +56,6 @@ from regime_platform.sweep_orchestrator.supabase_client import (
     _headers,
     _url,
     fetch_active_symbols,
-    upsert_dynamic_tier_state,
 )
 
 logger = logging.getLogger("regime.sweep.dynamic_tier_optimizer")
@@ -501,7 +500,12 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
         logger.warning("dynamic_tier_optimizer: compute_geometry_incubation failed: %s", exc)
         incubation_verdicts = {}
 
-    # Write results to nt_dynamic_tier_state
+    # Write results to the LOCAL param store (the runtime authority), then
+    # mirror to Supabase (durable audit trail, best-effort). 2026-10-08
+    # single-source-of-truth fix (worklog 20261008_PARAM_SOURCE_OF_TRUTH.md):
+    # an optimization process must NOT retrieve its own parameters back out
+    # of a DB to run. Local SQLite is the authority the sweep reads; the
+    # nt_dynamic_tier_state table is a mirror, never a read path.
     try:
         state_rows = []
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -522,7 +526,14 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
                 "symbol": tier["symbol"],
                 "tier_type": "dynamic_deadline",
                 "tier_key": tier["vol_tier"],
-                "tier_value": tier["soft_deadline_hours"],
+                # JSON object: the sweep needs soft+hard+median+confidence to
+                # build a DeadlineTier without a network round-trip.
+                "tier_value": {
+                    "soft_deadline_hours": tier["soft_deadline_hours"],
+                    "hard_deadline_hours": tier["hard_deadline_hours"],
+                    "median_hours": tier["median_hours"],
+                    "confidence": tier["confidence"],
+                },
                 "n": tier["n"],
                 "computed_at": now_iso,
                 "source": "dynamic_tier_optimizer",
@@ -533,7 +544,13 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
                 "symbol": edge["symbol"],
                 "tier_type": "regime_edge",
                 "tier_key": f"{edge['signal']}:{edge['regime']}",
-                "tier_value": edge["expectancy_r"],
+                # JSON object so the local store carries BOTH win_rate and
+                # expectancy_r — the regime_edge gate needs win_rate, the
+                # ranking path needs expectancy_r. One row, both fields.
+                "tier_value": {
+                    "win_rate": edge.get("win_rate"),
+                    "expectancy_r": edge.get("expectancy_r"),
+                },
                 "n": edge["n"],
                 "computed_at": now_iso,
                 "source": "dynamic_tier_optimizer",
@@ -551,12 +568,17 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
             })
 
         if state_rows:
-            await upsert_dynamic_tier_state(state_rows)
-            summary["state_rows_written"] = len(state_rows)
+            from regime_platform.core import param_store
+
+            written = await param_store.write_params(state_rows)
+            summary["state_rows_written"] = written
+            # Mirror to Supabase (audit only — never blocks the sweep).
+            mirror = await param_store.sync_to_supabase()
+            summary["mirrored_to_supabase"] = mirror.get("mirrored", 0)
 
     except Exception as exc:
-        summary["errors"].append(f"upsert_dynamic_tier_state: {exc}")
-        logger.warning("dynamic_tier_optimizer: upsert_dynamic_tier_state failed: %s", exc)
+        summary["errors"].append(f"param_store write: {exc}")
+        logger.warning("dynamic_tier_optimizer: param_store write failed: %s", exc)
 
     summary["duration_ms"] = round((time.time() - start) * 1000)
     logger.info(

@@ -160,6 +160,17 @@ config/knowledge_index.sqlite
 config/knowledge_index.sqlite-wal
 config/knowledge_index.sqlite-shm
 
+# Param store (2026-10-08, regime_platform/core/param_store.py) — the
+# single local source of truth for runtime-mutated parameters (dynamic ATR,
+# dynamic deadline, regime edge, geometry incubation). Written by the
+# pre-sweep optimizer, read by the sweep on the hot path. Supabase's
+# nt_dynamic_tier_state is the durable audit MIRROR, never the read path.
+# Same live-mutated-runtime-state shape as the files above. See worklog
+# 20261008_PARAM_SOURCE_OF_TRUTH.md.
+config/param_store.sqlite
+config/param_store.sqlite-wal
+config/param_store.sqlite-shm
+
 # Production data backups (2026-10-01, scripts/backup_retention_tables.py)
 # — point-in-time exports of nt_renko_bricks/nt_sweep_result/nt_regime_log
 # before retention cleanup. Data dumps, not code; kept on disk, not in git

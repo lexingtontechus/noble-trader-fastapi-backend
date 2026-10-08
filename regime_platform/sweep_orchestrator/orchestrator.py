@@ -2189,6 +2189,26 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[eod:lookback] sweep_result/regime_log retention failed: %s", exc)
 
+        # ── Part IX: param-store parity check (2026-10-08, FU2) ────────────
+        # Single source of truth enforcement: compare the local authority
+        # (config/param_store.sqlite) against the Supabase mirror
+        # (nt_dynamic_tier_state) and write a parameter_decay_check audit row
+        # when they diverge. Turns "local is authoritative, Supabase is a
+        # mirror" from a comment into a monitored signal. Runs last so it
+        # sees the mirror the pre-sweep optimizer wrote during the day.
+        # Best-effort: failures are logged, never raised.
+        # See worklog/20261008_PARAM_SOURCE_OF_TRUTH.md §7 FU2.
+        try:
+            from regime_platform.core import param_store
+
+            parity = await param_store.run_parity_check()
+            logger.info(
+                "[eod:lookback] param-store parity done: ok=%s %s",
+                parity.get("ok"), parity.get("counts"),
+            )
+        except Exception as exc:
+            logger.error("[eod:lookback] param-store parity failed: %s", exc)
+
     async def _execute_emergency_heavy_sweeps(self, emergency_syms: list[str]) -> None:
         """Run emergency/geometry-tuning heavy sweeps (best-effort).
 
@@ -5277,9 +5297,34 @@ class SweepOrchestrator(HeavySweepMixin):
                 # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN).
                 # Derive per-(symbol, vol_tier) deadline from reachability data.
                 # Fail-open: all-None on any failure or off mode.
+                #
+                # 2026-10-08 single-source-of-truth fix (worklog
+                # 20261008_PARAM_SOURCE_OF_TRUTH.md): read the tier the
+                # pre-sweep optimizer already computed into the LOCAL param
+                # store first — no Supabase round-trip on the hot path. Only
+                # fall back to the live reachability derivation when the local
+                # store has no entry for this (symbol, vol_tier).
                 _deadline_tier = None
                 if get_dynamic_deadline_mode() != "off":
                     try:
+                        from regime_platform.sweep_orchestrator.bracket_reachability import (
+                            _vol_tier as _vol_tier_of,
+                        )
+                        _vt = _bracket_vol_tier or _vol_tier_of(regime_label)
+                        from regime_platform.sweep_orchestrator.dynamic_deadline import (
+                            read_local_deadline_tier,
+                        )
+                        _deadline_tier = read_local_deadline_tier(symbol, _vt)
+                    except Exception as _exc:
+                        logger.debug(
+                            "[sweep:orch] %s: local deadline tier read failed: %s",
+                            symbol, _exc,
+                        )
+                if _deadline_tier is None and get_dynamic_deadline_mode() != "off":
+                    try:
+                        from regime_platform.sweep_orchestrator.bracket_reachability import (
+                            _vol_tier as _vol_tier_of,
+                        )
                         from regime_platform.sweep_orchestrator.dynamic_deadline import (
                             derive_deadline_tier,
                         )
@@ -5299,9 +5344,9 @@ class SweepOrchestrator(HeavySweepMixin):
                                 },
                             )
                         _reach_rows = _resp.json() or []
-                        _vol_tier = _bracket_vol_tier or _vol_tier(regime_label)
+                        _vt = _bracket_vol_tier or _vol_tier_of(regime_label)
                         _deadline_tier = derive_deadline_tier(
-                            symbol, _vol_tier, _reach_rows,
+                            symbol, _vt, _reach_rows,
                         )
                     except Exception as _exc:
                         logger.debug(

@@ -218,8 +218,38 @@ async def get_regime_edge(
 ) -> dict[str, Any] | None:
     """Look up the edge for one (symbol, signal, regime) bucket.
 
+    Read order (2026-10-08 single-source-of-truth fix, worklog
+    20261008_PARAM_SOURCE_OF_TRUTH.md): the LOCAL param store is the
+    runtime authority — the optimizer writes there, so the sweep reads
+    there without a DB round-trip. Supabase ``nt_regime_edge`` is the
+    fallback for a cold local store (first boot / fresh instance).
+
     Returns None if no bucket exists (fail-open — no evidence).
     """
+    # 1) Local authority (no network).
+    try:
+        from regime_platform.core import param_store
+
+        entry = param_store.read_tier(symbol, param_store.TIER_REGIME_EDGE)
+        row = entry.get(f"{signal}:{regime}")
+        if row is not None:
+            # tier_value is a JSON object carrying win_rate + expectancy_r.
+            parsed = param_store.read_dict(
+                symbol, param_store.TIER_REGIME_EDGE, f"{signal}:{regime}",
+            ) or {}
+            return {
+                "symbol": symbol,
+                "signal": signal,
+                "regime": regime,
+                "n": row.get("n", 0),
+                "win_rate": parsed.get("win_rate"),
+                "expectancy_r": parsed.get("expectancy_r"),
+                "source": "param_store",
+            }
+    except Exception as exc:
+        logger.debug("regime_edge: local store read failed: %s", exc)
+
+    # 2) Supabase fallback (cold local store).
     import httpx
     from regime_platform.sweep_orchestrator.supabase_client import (
         _headers,
