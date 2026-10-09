@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09
 **Scope:** Replace the fixed `EXPIRY_BARS = 48` settlement horizon with a per-signal expiry derived from `nt_bracket_reachability`, shadow-first.
-**Status:** **Built + shipped at `shadow`/`fixed`.** Flag `settlement_expiry_mode` defaults to **`fixed`** (byte-identical to today); `shadow` is the calibration run; `live` is the flip.
+**Status:** **Built + shipped at `shadow`.** Flag `settlement_expiry_mode` currently **`shadow`** on the Studio (flipped from `fixed` 2026-10-09 20:51 UTC, no restart — `_load()` is mtime-keyed). Shadow logs the dynamic expiry per resolved signal and settles unchanged on 48 bars. **A 24h replay (see §10) produced ZERO outcome flips — the lever is inert on the intrabar basis. Do not flip to `live` on current evidence.** Roadmap item added (2026-10-11 review → decide `off`).
 
 ---
 
@@ -91,3 +91,37 @@ Full suite at ship: **1893 passed, 21 skipped, 1 pre-existing failure** (`test_y
 ## 9. Next step (not built — separate scope)
 
 The continuous / per-symbol-normalized ATR rekey (§2). Gated on the shadow run showing whether the coarse bucket is usable. That is the change that would make the expiry genuinely reflect `dynamic_atr` rather than a 5-rung global ladder.
+
+---
+
+## 10. FINDING — 24h replay: the lever is inert (null result)
+
+**Shipped at `shadow` 2026-10-09 20:51 UTC. A 24h replay of every resolved signal through the resolver at fixed-48 vs dynamic bars produced ZERO outcome flips.** This is the decisive finding and it corrects §1's framing.
+
+### The replay
+All **981 signals resolved in the 24h after the flip** were re-judged twice with the resolver's own code path (`resolve_signal_outcome_ohlc` + `anchor_post_entry_bars`, the exact path the hourly job uses) — once at `expiry_bars=48`, once at each signal's dynamic bars.
+
+| Outcome @ fixed 48 | n | delta under dynamic |
+|---|---|---|
+| `sl_hit` | 563 | **identical** |
+| `tp_hit` | 228 | **identical** |
+| `expired` | 10 | **identical** |
+| (fail-open, n<20) | 180 | fell back to 48 by design |
+
+**Not one signal flipped.** 801 tp/sl resolutions were byte-identical; the only category that *could* move (`expired`, n=10) didn't.
+
+### Why — and it's not a bug
+On the **intrabar basis**, a signal resolves the *instant* price touches TP or SL — the expiry window is irrelevant to it. The expiry window only governs the residual that touches **neither** level within the horizon, and that residual is **10 signals (1.0%)** in 24h. The dynamic expiry's entire effect lives in that 1% tail. The tight buckets whose medians are 4–7h aren't producing late resolutions because they've **already touched a level** by then — they never reach the expiry boundary.
+
+So §1's "48h over-generous for 120/180 buckets" is true about the **p90 statistic** but **not actionable on the intrabar basis**: the expiry window is inert for 99% of signals. The lever would only matter under a **max-hold-time strategy** (hold to expiry deliberately) — which this resolver is not. It resolves on first touch.
+
+### Consequence
+Flipping to `live` would be **all risk, zero measured benefit**:
+- feedback-loop contamination of `pct_expired` (§6 risk 1),
+- resolution lag on the 4+ bucket (§6 risk 3),
+- for a delta that measured **0 in 981 signals**.
+
+### Decision (user, 2026-10-09)
+- **Maintain `shadow`** — harmless diagnostic, no live change.
+- **Roadmap item added: review 2026-10-11 (48h) → decide `off`.** If the next 48h confirms zero flips, retire the lever (set `settlement_expiry_mode: off`) rather than leave dead shadow code paths live.
+- The **real** signal in the data is elsewhere: the **4+ bucket's 54% expiry rate** is a **geometry/reachability** problem (wide brackets genuinely not resolving), not a settlement-expiry problem. Redirect effort there.
