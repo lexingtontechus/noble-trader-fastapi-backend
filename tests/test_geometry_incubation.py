@@ -5,6 +5,8 @@ worklog/20260923_GEOMETRY_FORWARD_TEST_SCOPE.md
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from regime_platform.core.feature_flags import (
     get_geometry_incubation_max_expiry_regression,
     get_geometry_incubation_min_days,
@@ -13,6 +15,7 @@ from regime_platform.core.feature_flags import (
 )
 from regime_platform.sweep_orchestrator.geometry_incubation import (
     ForwardStats,
+    adaptive_min_days,
     compute_forward_stats,
     evaluate_promotion,
 )
@@ -206,3 +209,156 @@ class TestReconcileIsWired:
             code = code[:first] + code[second + 3:]
         assert "n_forward_resolved" not in code
         assert "n_resolved" in code
+
+
+# ── Adaptive evidence-relative time floor (Part B, 2026-10-09) ─────────
+
+class TestAdaptiveMinDays:
+    """Pure math of the adaptive time floor (worklog
+    20261009_ATR_GEOMETRY_SINGLE_SOURCE.md Part B). Replaces the static
+    min_days=7 with a per-symbol floor derived from the fresh resolution
+    rate, clamped to [floor_days, cap_days] and fail-open to cap on no
+    evidence.
+    """
+
+    def _d(self, rate, *, mr=20, floor=1, cap=7):
+        return adaptive_min_days(
+            rate, min_resolved=mr, floor_days=floor, cap_days=cap,
+        )
+
+    def test_no_evidence_fails_open_to_cap(self):
+        # None (cold) and non-positive rates → the old static floor.
+        assert self._d(None) == 7.0
+        assert self._d(0) == 7.0
+        assert self._d(-3.0) == 7.0
+
+    def test_fast_symbol_gets_floor(self):
+        # XAGUSD ~101/active-day: 20/101 → ceil(0.198) = 1 → clamped to floor.
+        assert self._d(101.0) == 1.0
+
+    def test_mid_symbol_scales(self):
+        # ~29/active-day (US500): 20/29 → ceil(0.69) = 1.
+        assert self._d(29.0) == 1.0
+        # ~10/active-day: 20/10 = 2 days exactly.
+        assert self._d(10.0) == 2.0
+        # ~7/active-day: 20/7 → ceil(2.86) = 3.
+        assert self._d(7.0) == 3.0
+
+    def test_slow_symbol_capped(self):
+        # ~1/active-day: 20/1 = 20 → clamped to cap 7 (never looser than old).
+        assert self._d(1.0) == 7.0
+
+    def test_respects_configured_bounds(self):
+        # floor raises a fast symbol; cap lowers a slow one.
+        assert self._d(200.0, floor=3) == 3.0
+        assert self._d(1.0, cap=3) == 3.0
+
+    def test_min_resolved_scales_the_floor(self):
+        # Higher sample bar → longer floor for the same rate.
+        assert self._d(10.0, mr=20) == 2.0
+        assert self._d(10.0, mr=50) == 5.0
+
+
+class TestAdaptiveFlags:
+    def test_defaults(self):
+        from regime_platform.core.feature_flags import (
+            get_geometry_incubation_adaptive_days_mode,
+            get_geometry_incubation_adaptive_floor_days,
+            get_geometry_incubation_adaptive_cap_days,
+        )
+        # Ships at shadow — computes + logs, never changes the live gate.
+        assert get_geometry_incubation_adaptive_days_mode() == "shadow"
+        assert get_geometry_incubation_adaptive_floor_days() == 1.0
+        assert get_geometry_incubation_adaptive_cap_days() == 7.0
+
+
+class TestReconcileUsesAdaptiveFloor:
+    """The live mode must gate on the adaptive floor; shadow must gate on the
+    static floor (zero live change); off must not even fetch the rate.
+    """
+
+    def _run(self, monkeypatch, *, adaptive_mode, rate):
+        import asyncio
+        from regime_platform.sweep_orchestrator import geometry_incubation as gi
+
+        seen = {}
+        fetched = {}
+
+        # One incubating row, 2 days elapsed, enough samples to promote.
+        row = {
+            "id": 1, "symbol": "XAGUSD", "brick_size": 0.001,
+            "sl_bricks": 3, "tp_bricks": 12, "asset_class": "metal",
+            "started_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+            "baseline_pct_expired": 0.2,
+        }
+
+        async def _fetch_incubating():
+            return [row]
+
+        async def _fetch_forward(*a, **k):
+            return [{"outcome": "tp_hit"}] * 20  # n_resolved=20, positive exp
+
+        async def _fetch_rate(symbol, **k):
+            fetched["called"] = True
+            return rate
+
+        async def _baseline(symbol):
+            return 0.2
+
+        def _eval(**kw):
+            seen["min_days"] = kw["min_days"]
+            return PromotionVerdict("promoted", "promoted")
+
+        async def _patch(table, filters, patch):
+            return True
+
+        monkeypatch.setattr(gi, "_fetch_incubating", _fetch_incubating)
+        monkeypatch.setattr(gi, "_fetch_forward_resolved", _fetch_forward)
+        monkeypatch.setattr(gi, "fetch_resolution_rate", _fetch_rate)
+        monkeypatch.setattr(gi, "fetch_baseline_pct_expired", _baseline)
+        monkeypatch.setattr(gi, "evaluate_promotion", _eval)
+        monkeypatch.setattr(gi, "_patch_rows", _patch)
+
+        # Patch the flag getters the reconcile reads.
+        from regime_platform.core import feature_flags as ff
+        monkeypatch.setattr(ff, "get_geometry_incubation_mode", lambda: "shadow")
+        monkeypatch.setattr(ff, "get_geometry_incubation_min_days", lambda: 7.0)
+        monkeypatch.setattr(ff, "get_geometry_incubation_min_resolved", lambda: 20)
+        monkeypatch.setattr(ff, "get_geometry_incubation_max_expiry_regression", lambda: 0.10)
+        monkeypatch.setattr(ff, "get_geometry_incubation_adaptive_days_mode", lambda: adaptive_mode)
+        monkeypatch.setattr(ff, "get_geometry_incubation_adaptive_floor_days", lambda: 1.0)
+        monkeypatch.setattr(ff, "get_geometry_incubation_adaptive_cap_days", lambda: 7.0)
+
+        # The reconcile imports these names locally, so patch on the module too.
+        import regime_platform.sweep_orchestrator.geometry_incubation as gimod
+        for name, val in [
+            ("get_geometry_incubation_mode", "shadow"),
+            ("get_geometry_incubation_min_days", 7.0),
+            ("get_geometry_incubation_min_resolved", 20),
+            ("get_geometry_incubation_max_expiry_regression", 0.10),
+            ("get_geometry_incubation_adaptive_days_mode", adaptive_mode),
+            ("get_geometry_incubation_adaptive_floor_days", 1.0),
+            ("get_geometry_incubation_adaptive_cap_days", 7.0),
+        ]:
+            if hasattr(gimod, name):
+                monkeypatch.setattr(gimod, name, (lambda v: (lambda: v))(val))
+
+        asyncio.run(gi.reconcile_incubations())
+        return seen, fetched
+
+    def test_live_uses_adaptive_floor(self, monkeypatch):
+        # rate 101/active-day → adaptive floor 1.0 (below static 7).
+        seen, fetched = self._run(monkeypatch, adaptive_mode="live", rate=101.0)
+        assert fetched.get("called") is True
+        assert seen["min_days"] == 1.0
+
+    def test_shadow_gates_on_static_floor(self, monkeypatch):
+        # shadow computes the rate but still gates on static 7 — zero live change.
+        seen, fetched = self._run(monkeypatch, adaptive_mode="shadow", rate=101.0)
+        assert fetched.get("called") is True
+        assert seen["min_days"] == 7.0
+
+    def test_off_does_not_fetch(self, monkeypatch):
+        seen, fetched = self._run(monkeypatch, adaptive_mode="off", rate=101.0)
+        assert fetched.get("called") is None
+        assert seen["min_days"] == 7.0

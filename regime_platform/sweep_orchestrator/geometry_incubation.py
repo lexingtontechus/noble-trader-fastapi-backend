@@ -159,6 +159,52 @@ def evaluate_promotion(
     return PromotionVerdict("promoted", "promoted")
 
 
+def adaptive_min_days(
+    resolution_rate: Optional[float],
+    *,
+    min_resolved: int,
+    floor_days: float,
+    cap_days: float,
+) -> float:
+    """Evidence-relative time floor for the incubation gate.
+
+    The static ``min_days=7`` assumed a uniform ~1 resolution/day cadence.
+    Live data shows a 3-5x spread (XAGUSD ~101/24h … US500 ~29/24h), so a
+    fixed 7-day floor is either unreachable (fast symbols never survive the
+    no-change supersede churn that resets the clock) or far too generous.
+
+    This computes the number of *days* the symbol needs, at its own observed
+    resolution rate, to accumulate ``min_resolved`` forward samples:
+
+        days_for_samples = min_resolved / resolution_rate
+
+    then clamps it to ``[floor_days, cap_days]``:
+
+      * ``floor_days`` — never demand less than a minimum wall-clock window
+        (at least a full trading day, so a promotion is not decided on an
+        intraday slice). Default 1.
+      * ``cap_days`` — never relax *below* the old conservative floor when
+        there is no usable evidence; a cold/unknown rate returns ``cap_days``
+        so the fail-open behaviour is identical to the pre-change gate.
+
+    ``resolution_rate`` is resolved rows per *active day* (distinct
+    ``resolved_at`` dates), computed from fresh ``nt_signal_sim`` data — never
+    from a stale/cached dataset. A non-positive/None rate means "no evidence",
+    which returns ``cap_days``.
+    """
+    if resolution_rate is None or resolution_rate <= 0:
+        return cap_days
+    days_for_samples = float(min_resolved) / float(resolution_rate)
+    # ceil so a fractional day counts as a whole day (0.2 -> 1, 1.5 -> 2).
+    import math
+    days_needed = math.ceil(days_for_samples)
+    if days_needed < floor_days:
+        days_needed = floor_days
+    if days_needed > cap_days:
+        days_needed = cap_days
+    return float(days_needed)
+
+
 # ─── I/O helpers (best-effort Supabase REST, mirrors paper_book.py) ────
 
 
@@ -294,6 +340,64 @@ async def _fetch_forward_resolved(
         return []
 
 
+async def fetch_resolution_rate(symbol: str, *, window_days: int = 7) -> Optional[float]:
+    """Fresh resolved-rows-per-active-day for one symbol.
+
+    Reads ``nt_signal_sim`` over the last ``window_days`` (default 7),
+    counting RESOLVED rows (tp_hit/sl_hit/expired) grouped by the distinct
+    ``resolved_at`` DATE. The rate is ``total_resolved / active_days``, where
+    ``active_days`` is the number of distinct dates that actually had a
+    resolution — not the raw window length — so a weekend with no forex
+    resolves does not dilute the per-active-day rate.
+
+    This is deliberately a FRESH read every reconcile call (the cadence is
+    hourly, the cost is one small indexed query per incubating symbol). It
+    must never be cached or derived from a stale dataset: the entire point
+    of the adaptive floor is to track each symbol's *current* cadence.
+
+    Returns None (no evidence) when there are fewer than 2 active days, so
+    the caller fails open to the conservative ``cap_days`` floor.
+    """
+    try:
+        from regime_platform.core.settings import settings
+        if not settings.SUPABASE_URL:
+            return None
+        import httpx
+        from datetime import datetime as _dt, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - timedelta(days=window_days)).isoformat().replace("+00:00", "Z")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                _table_url("nt_signal_sim"),
+                headers=_headers(),
+                params={
+                    "select": "resolved_at",
+                    "symbol": f"eq.{symbol}",
+                    "outcome": "in.(tp_hit,sl_hit,expired)",
+                    "resolved_at": f"gte.{cutoff}",
+                    "limit": "5000",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                return None
+            active_dates = {
+                str(r.get("resolved_at"))[:10]
+                for r in rows
+                if r.get("resolved_at")
+            }
+            active_days = len(active_dates)
+            if active_days < 2:
+                return None
+            return len(rows) / active_days
+    except Exception as exc:
+        logger.warning(
+            "geometry_incubation: resolution-rate fetch failed for %s: %s",
+            symbol, exc,
+        )
+        return None
+
+
 async def fetch_baseline_pct_expired(symbol: str) -> Optional[float]:
     """Best-effort: previous live combo's pct_expired, from
     nt_brick_params_state's ATR-at-write joined against the pooled
@@ -419,9 +523,13 @@ async def reconcile_incubations() -> dict[str, Any]:
         get_geometry_incubation_min_days,
         get_geometry_incubation_min_resolved,
         get_geometry_incubation_max_expiry_regression,
+        get_geometry_incubation_adaptive_days_mode,
+        get_geometry_incubation_adaptive_floor_days,
+        get_geometry_incubation_adaptive_cap_days,
     )
 
     mode = get_geometry_incubation_mode()
+    adaptive_mode = get_geometry_incubation_adaptive_days_mode()
     summary = {"checked": 0, "promoted": 0, "rejected": 0, "held": 0, "errors": 0}
     if mode == "off":
         return summary
@@ -429,6 +537,8 @@ async def reconcile_incubations() -> dict[str, Any]:
     min_days = get_geometry_incubation_min_days()
     min_resolved = get_geometry_incubation_min_resolved()
     max_regression = get_geometry_incubation_max_expiry_regression()
+    adaptive_floor_days = get_geometry_incubation_adaptive_floor_days()
+    adaptive_cap_days = get_geometry_incubation_adaptive_cap_days()
     now = datetime.now(timezone.utc)
 
     candidates = await _fetch_incubating()
@@ -447,6 +557,31 @@ async def reconcile_incubations() -> dict[str, Any]:
                 started_at = started_at.replace(tzinfo=timezone.utc)
             days_elapsed = (now - started_at).total_seconds() / 86400.0
 
+            # Adaptive, evidence-relative time floor (Part B). Fetch the
+            # symbol's FRESH resolution rate and derive the floor it actually
+            # needs to accumulate min_resolved samples. off → static floor;
+            # shadow → compute + log but gate on static (zero live change);
+            # live → gate on the adaptive floor.
+            symbol_min_days = min_days
+            if adaptive_mode != "off":
+                resolution_rate = await fetch_resolution_rate(symbol)
+                adaptive_days = adaptive_min_days(
+                    resolution_rate,
+                    min_resolved=min_resolved,
+                    floor_days=adaptive_floor_days,
+                    cap_days=adaptive_cap_days,
+                )
+                if adaptive_mode == "live":
+                    symbol_min_days = adaptive_days
+                else:  # shadow — observe only
+                    logger.info(
+                        "[geometry_incubation] %s adaptive_days=%.1f "
+                        "(rate=%s/active-day, static=%.1f, would_use=%s)",
+                        symbol, adaptive_days,
+                        "none" if resolution_rate is None else f"{resolution_rate:.1f}",
+                        min_days, adaptive_days,
+                    )
+
             forward_rows = await _fetch_forward_resolved(
                 symbol, brick_size, sl_bricks, tp_bricks,
                 started_at.isoformat(),
@@ -458,7 +593,7 @@ async def reconcile_incubations() -> dict[str, Any]:
                 days_elapsed=days_elapsed,
                 stats=stats,
                 baseline_pct_expired=row.get("baseline_pct_expired"),
-                min_days=min_days,
+                min_days=symbol_min_days,
                 min_resolved=min_resolved,
                 max_expiry_regression=max_regression,
             )

@@ -1025,6 +1025,28 @@ geometry_incubation_min_resolved: 20
 # baseline_pct_expired — a candidate should never legitimately go live if
 # it resolves worse than what it is replacing.
 geometry_incubation_max_expiry_regression: 0.10
+# Adaptive evidence-relative time floor (2026-10-09, worklog
+# 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md Part B). The static min_days=7 above
+# assumed a uniform ~1 resolution/day cadence; live data shows a 3-5x spread
+# (XAGUSD ~101/24h … US500 ~29/24h), and fast symbols never survive the
+# no-change supersede churn that resets the 7-day clock (max observed
+# incubation age 7.6h; 149/427 supersedes are no-change). adaptive_days_mode
+# replaces the fixed floor with one derived from the symbol's FRESH
+# nt_signal_sim resolution rate (resolved rows / active day):
+#   off:    static geometry_incubation_min_days (historical behaviour).
+#   shadow: compute + LOG the adaptive floor, still gate on the static floor
+#           (zero live behaviour change).
+#   live:   gate on the adaptive floor = ceil(min_resolved / rate), clamped to
+#           [adaptive_floor_days, adaptive_cap_days]. A cold/None rate fails
+#           open to adaptive_cap_days (= the old floor), so it is never looser
+#           than the pre-change gate when there is no evidence.
+geometry_incubation_adaptive_days_mode: "shadow"
+# Never demand less than this many wall-clock days (a full trading day, so a
+# promotion is never decided on an intraday slice), even for the fastest symbol.
+geometry_incubation_adaptive_floor_days: 1
+# Never relax below this many days; a cold/unknown rate returns exactly this,
+# making the fail-open behaviour identical to the old static floor.
+geometry_incubation_adaptive_cap_days: 7
 
 # signal_sim_retention_resolved_days (2026-09-23, user-approved; replaces
 # settings.EOD_RETENTION_RESOLVED_DAYS=30, which Studio never read — Studio

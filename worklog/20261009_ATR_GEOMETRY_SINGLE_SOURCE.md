@@ -257,3 +257,24 @@ This design doesn't just unlock the 7-day gate — it makes the gate **calibrate
 
 The gate assumed a uniform cadence when evidence showed massive spread (3× between fastest and slowest). The same assumption manifested in the deadline metadata (fixed 48h expiry, one-size-fits-all). The **one methodology** that works for both is evidence-relative: **resolution counts, not calendar clocks**.
 
+---
+
+## Part B — as built (2026-10-09)
+
+The design above is now implemented. No longer prose:
+
+| Piece | Where | Shape |
+|---|---|---|
+| `adaptive_min_days()` | `geometry_incubation.py` | pure: `ceil(min_resolved / rate)` clamped to `[floor_days, cap_days]`; `None`/non-positive rate → `cap_days` (fail-open to the old floor) |
+| `fetch_resolution_rate(symbol)` | `geometry_incubation.py` | **fresh** `nt_signal_sim` read each call over a 7-day window; resolved rows ÷ distinct `resolved_at` dates (active days, not raw window); `None` when < 2 active days |
+| wiring | `reconcile_incubations()` | per-symbol: fetch rate → `adaptive_min_days` → pass as `min_days` to `evaluate_promotion` |
+| flag | `geometry_incubation_adaptive_days_mode` | `off` \| `shadow` (**default**) \| `live` + `adaptive_floor_days` (1) / `adaptive_cap_days` (7) |
+
+**Ships at `shadow`** — every reconcile call fetches the fresh rate and logs the adaptive floor it *would* use (`[geometry_incubation] X adaptive_days=1.0 (rate=101.0/active-day, static=7.0, would_use=1.0)`), but still gates on the static 7-day floor. **Zero live behaviour change** until flipped to `live` (one config edit, no restart).
+
+**The stale-dataset caution is enforced structurally**: `fetch_resolution_rate` is a live query with no cache, run on the hourly reconcile cadence. There is no code path that reads a stored/cached rate — the adaptive floor is only ever as fresh as the last hourly call.
+
+**Tests** (`tests/test_geometry_incubation.py`, +12 → 25 total): the `adaptive_min_days` math (fail-open, floor/cap clamp, per-rate scaling, `min_resolved` scaling), flag defaults, and reconcile wiring for all three modes (`live` uses the adaptive floor, `shadow` gates on static, `off` never fetches).
+
+Full suite: **1879 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ships_shadow_qs` — unrelated).
+

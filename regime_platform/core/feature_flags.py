@@ -282,6 +282,13 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_incubation_min_days": 7,
     "geometry_incubation_min_resolved": 20,
     "geometry_incubation_max_expiry_regression": 0.10,
+    # Adaptive (evidence-relative) time floor — see geometry_incubation.adaptive_min_days
+    # (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md Part B). off = static
+    # min_days (the historical behaviour); live = per-symbol floor derived from
+    # the fresh nt_signal_sim resolution rate, clamped to [floor_days, cap_days].
+    "geometry_incubation_adaptive_days_mode": "shadow",
+    "geometry_incubation_adaptive_floor_days": 1,
+    "geometry_incubation_adaptive_cap_days": 7,
     "signal_sim_retention_resolved_days": 120,
     "kairos_mode": "shadow",
     # clef_flash_mode (2026-10-04, docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md
@@ -1150,6 +1157,49 @@ def get_geometry_incubation_max_expiry_regression() -> float:
         ))
     except (TypeError, ValueError):
         return float(_DEFAULTS["geometry_incubation_max_expiry_regression"])
+
+
+def get_geometry_incubation_adaptive_days_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-10-09, worklog
+    20261009_ATR_GEOMETRY_SINGLE_SOURCE.md Part B) — adaptive, evidence-relative
+    time floor for the incubation gate.
+
+    off: the historical static ``geometry_incubation_min_days`` (7).
+    shadow: compute the adaptive per-symbol floor and LOG it, but still gate
+    on the static floor (zero live behaviour change).
+    live: gate on the adaptive floor derived from the symbol's fresh
+    ``nt_signal_sim`` resolution rate, clamped to
+    ``[adaptive_floor_days, adaptive_cap_days]``.
+
+    Unknown values fall back to shadow. A cold/None rate fails open to
+    ``adaptive_cap_days`` (== the old floor), so behaviour is never looser
+    than the pre-change gate when there is no evidence.
+    """
+    v = str(_load().get(
+        "geometry_incubation_adaptive_days_mode",
+        _DEFAULTS["geometry_incubation_adaptive_days_mode"],
+    )).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_geometry_incubation_adaptive_floor_days() -> float:
+    try:
+        return float(_load().get(
+            "geometry_incubation_adaptive_floor_days",
+            _DEFAULTS["geometry_incubation_adaptive_floor_days"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["geometry_incubation_adaptive_floor_days"])
+
+
+def get_geometry_incubation_adaptive_cap_days() -> float:
+    try:
+        return float(_load().get(
+            "geometry_incubation_adaptive_cap_days",
+            _DEFAULTS["geometry_incubation_adaptive_cap_days"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["geometry_incubation_adaptive_cap_days"])
 
 
 def get_regime_warm_start_mode() -> str:
