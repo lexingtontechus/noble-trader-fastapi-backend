@@ -191,6 +191,138 @@ def _same_bar_policy() -> str:
         return sc.SAME_BAR_TP_FIRST
 
 
+# ─── Per-signal dynamic settlement expiry (shadow-first) ──────────────
+# worklog 20261009_P90_HOURS_LIVE_MODE.md. Both _judge sites below look up
+# the signal's bracket row and, in shadow/live mode, derive a market-driven
+# expiry from it. fixed (default) = the historical EXPIRY_BARS=48, unchanged.
+
+
+def _settlement_expiry_mode() -> str:
+    try:
+        from regime_platform.core.feature_flags import get_settlement_expiry_mode
+        return get_settlement_expiry_mode()
+    except Exception:
+        return "fixed"
+
+
+async def _fetch_reachability_index() -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Best-effort: the reachability table keyed by (symbol, vol_tier,
+    distance_atr_bucket). One fetch per resolve run (the resolver batches),
+    not per signal. Returns {} on any failure → every signal fails open to
+    EXPIRY_BARS.
+    """
+    try:
+        if not settings.SUPABASE_URL:
+            return {}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                _url("nt_bracket_reachability"),
+                headers=_headers(),
+                params={
+                    "select": "symbol,vol_tier,distance_atr_bucket,n,"
+                              "median_hours_to_resolve,p90_hours",
+                    "limit": "1000",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+        idx: dict[tuple[str, str, str], dict[str, Any]] = {}
+        if isinstance(rows, list):
+            for r in rows:
+                key = (
+                    str(r.get("symbol") or ""),
+                    str(r.get("vol_tier") or ""),
+                    str(r.get("distance_atr_bucket") or ""),
+                )
+                idx[key] = r
+        return idx
+    except Exception as exc:
+        logger.warning("eod_resolver: reachability index fetch failed: %s", exc)
+        return {}
+
+
+# Run-scoped reachability index. ``_judge``/``_judge_bars`` stay pure (no
+# I/O): the index is populated once per resolve run via ``_prime_reach_index``
+# (called at the top of the batch loop) and read synchronously by the judge.
+# In fixed mode it stays empty and every signal uses EXPIRY_BARS.
+_REACH_INDEX: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def _prime_reach_index(index: dict[tuple[str, str, str], dict[str, Any]]) -> None:
+    global _REACH_INDEX
+    _REACH_INDEX = index or {}
+
+
+async def _ensure_reach_index() -> None:
+    """Populate the run-scoped reachability index once, on first use, when
+    the mode needs it. No-op in fixed mode."""
+    if _settlement_expiry_mode() == "fixed":
+        return
+    if not _REACH_INDEX:
+        _prime_reach_index(await _fetch_reachability_index())
+
+
+def _reach_row_for(sig: dict[str, Any], index: dict[tuple[str, str, str], dict[str, Any]]):
+    """The reachability row for one signal, by (symbol, vol_tier, bucket).
+    Falls back vol_tier-agnostic (symbol, "", bucket) then bucket-agnostic
+    when the exact vol_tier key is absent — the resolver wants the best
+    available row for the bracket, not silence."""
+    if not index:
+        return None
+    sym = str(sig.get("symbol") or "")
+    vol = str(sig.get("bracket_vol_tier") or "")
+    bucket = str(sig.get("bracket_bucket") or "")
+    if not bucket:
+        # Derive the bucket from the stored continuous tp_distance_atr when
+        # the label wasn't stamped (older rows) — same ladder as reachability.
+        from regime_platform.sweep_orchestrator.bracket_reachability import _bucket_for
+        tp_atr = sig.get("tp_distance_atr")
+        if tp_atr:
+            bucket = _bucket_for(float(tp_atr)) or ""
+    return (
+        index.get((sym, vol, bucket))
+        or index.get((sym, "", bucket))
+        or None
+    )
+
+
+def _dynamic_expiry_bars(sig: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
+    """Return (expiry_bars_to_use, log_info_or_None). In fixed mode this is
+    always (EXPIRY_BARS, None). In shadow it computes the dynamic bars for
+    logging but STILL returns EXPIRY_BARS (zero live change). In live it
+    returns the dynamic bars (fail-open to EXPIRY_BARS on no evidence).
+    Uses the run-scoped ``_REACH_INDEX`` (primed once per resolve run).
+    """
+    mode = _settlement_expiry_mode()
+    if mode == "fixed":
+        return EXPIRY_BARS, None
+
+    from regime_platform.sweep_orchestrator import settlement_expiry as se
+    from regime_platform.core.feature_flags import (
+        get_settlement_expiry_floor_hours,
+        get_settlement_expiry_cap_hours,
+        get_settlement_expiry_tight_safety_mult,
+    )
+    row = _reach_row_for(sig, _REACH_INDEX)
+    hours = se.dynamic_expiry_hours(
+        row,
+        floor_hours=get_settlement_expiry_floor_hours(),
+        cap_hours=get_settlement_expiry_cap_hours(),
+        tight_safety_mult=get_settlement_expiry_tight_safety_mult(),
+    )
+    dyn_bars = se.hours_to_bars(hours, fixed_bars=EXPIRY_BARS)
+    info = {
+        "symbol": sig.get("symbol"),
+        "bucket": (row or {}).get("distance_atr_bucket") or sig.get("bracket_bucket"),
+        "n": (row or {}).get("n"),
+        "dynamic_hours": round(hours, 1) if hours else None,
+        "dynamic_bars": dyn_bars,
+        "fixed_bars": EXPIRY_BARS,
+        "mode": mode,
+    }
+    return (EXPIRY_BARS if mode == "shadow" else dyn_bars), info
+
+
 def _drift_fields(
     entry_price: float,
     window: Sequence[float],
@@ -702,13 +834,17 @@ def _judge_bars(
     if entry is None or stop is None or tp is None:
         return None, None
 
+    _expiry_bars, _expiry_info = _dynamic_expiry_bars(sig)
+    if _expiry_info and _settlement_expiry_mode() == "shadow":
+        logger.info("[settlement:expiry] %s", _expiry_info)
+
     resolved = resolve_signal_outcome_ohlc(
         entry, stop, tp,
         bars,
         direction=sig.get("signal") or "buy",
-        expiry_bars=EXPIRY_BARS,
+        expiry_bars=_expiry_bars,
     )
-    if resolved["outcome"] == "expired" and len(bars) < EXPIRY_BARS:
+    if resolved["outcome"] == "expired" and len(bars) < _expiry_bars:
         return "pending", resolved
     return resolved["outcome"], resolved
 
@@ -730,11 +866,15 @@ def _judge(
     if entry is None or stop is None or tp is None:
         return None, None
 
+    _expiry_bars, _expiry_info = _dynamic_expiry_bars(sig)
+    if _expiry_info and _settlement_expiry_mode() == "shadow":
+        logger.info("[settlement:expiry] %s", _expiry_info)
+
     resolved = resolve_signal_outcome(
         entry, stop, tp,
         closes,
         direction=sig.get("signal") or "buy",
-        expiry_bars=EXPIRY_BARS,
+        expiry_bars=_expiry_bars,
     )
 
     # ── Minimum-age gate (2026-08-23 fix) ──────────────────────────────
@@ -752,7 +892,7 @@ def _judge(
     # would-be "expired" verdict is deferred. See
     # worklog/20260823_AAPL_US500_EXCEPTION_ROOT_CAUSE.md root cause 3 and
     # worklog/20260823_CALIBRATION_BIAS_CHECK_AUDIT.md.
-    if resolved["outcome"] == "expired" and len(closes) < EXPIRY_BARS:
+    if resolved["outcome"] == "expired" and len(closes) < _expiry_bars:
         return "pending", resolved
     return resolved["outcome"], resolved
 
@@ -916,6 +1056,11 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
     if not settings.SUPABASE_URL:
         logger.warning("eod_resolver: Supabase not configured — nothing to resolve")
         return summary
+
+    # Per-signal dynamic settlement expiry (shadow-first): prime the
+    # run-scoped reachability index once, up front, so the pure _judge sites
+    # can read it synchronously. No-op in fixed mode.
+    await _ensure_reach_index()
 
     fetch_ts = datetime.now(timezone.utc)
     # Only resolve signals whose entry falls inside the candle window the

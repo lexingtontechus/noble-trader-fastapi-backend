@@ -1047,6 +1047,34 @@ geometry_incubation_adaptive_floor_days: 1
 # Never relax below this many days; a cold/unknown rate returns exactly this,
 # making the fail-open behaviour identical to the old static floor.
 geometry_incubation_adaptive_cap_days: 7
+# settlement_expiry_mode (2026-10-09, worklog 20261009_P90_HOURS_LIVE_MODE.md):
+# fixed | shadow | live. Per-signal dynamic settlement expiry, replacing the
+# hard-coded EXPIRY_BARS=48 with a per-bracket horizon derived from
+# nt_bracket_reachability. The fixed 48h bar is right for wide brackets and
+# wrong for tight ones (median p90: 1-2 bucket 23h, 4+ bucket 56h; 67% of
+# n>=30 buckets have p90<=48h). A flat ceil(p90) is the wrong rule — a tight
+# bracket that settles in ~4h median would get a LOOSER leash under p90 — so
+# the expiry is bracket-aware: median*safety_mult for tight/mid buckets,
+# p90 for the wide 4+ bucket (its 54% expiry rate is largely the 48h bar
+# cutting a 41h-median/56h-p90 tail). Clamped to [floor, cap].
+#   fixed:  byte-identical to today (EXPIRY_BARS=48).
+#   shadow: compute + LOG the dynamic expiry and the fixed-vs-dynamic delta,
+#           still settle on 48 (zero live change). This is the calibration run.
+#   live:   settle each signal on its dynamic expiry; cold/missing
+#           reachability row fails open to 48.
+# NOTE: the reachability key is currently the coarse 5-bucket ladder, and the
+# continuous tp_distance_atr spans a 10x range WITHIN the 4+ bucket. Shadow
+# exists to observe whether the coarse bucket yields a usable expiry before
+# any rekey to a continuous / per-symbol-normalized ATR is committed to.
+settlement_expiry_mode: "fixed"
+# Never expire before half a day — a resolving signal must get a real chance.
+settlement_expiry_floor_hours: 12.0
+# Never hold past 3 days even if p90 is extreme (wide-bucket p90 runs to 78h);
+# an unbounded expiry would stall the resolver loop.
+settlement_expiry_cap_hours: 72.0
+# Tight/mid bucket expiry = median_hours_to_resolve * this multiple. 2.0 → a
+# bracket that settles in ~4h gets an ~8h expiry, not a 48h leash.
+settlement_expiry_tight_safety_mult: 2.0
 
 # signal_sim_retention_resolved_days (2026-09-23, user-approved; replaces
 # settings.EOD_RETENTION_RESOLVED_DAYS=30, which Studio never read — Studio

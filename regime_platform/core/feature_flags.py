@@ -289,6 +289,16 @@ _DEFAULTS: dict[str, Any] = {
     "geometry_incubation_adaptive_days_mode": "shadow",
     "geometry_incubation_adaptive_floor_days": 1,
     "geometry_incubation_adaptive_cap_days": 7,
+    # Per-signal dynamic settlement expiry (worklog 20261009_P90_HOURS_LIVE_MODE.md).
+    # fixed = the historical hard-coded EXPIRY_BARS=48 (byte-identical);
+    # shadow = compute + log the dynamic expiry, still settle on 48 (zero live
+    # change); live = settle each signal on a per-bracket expiry derived from
+    # nt_bracket_reachability (median*safety for tight buckets, p90 for the
+    # wide 4+ bucket, clamped to [floor_hours, cap_hours]).
+    "settlement_expiry_mode": "fixed",
+    "settlement_expiry_floor_hours": 12.0,
+    "settlement_expiry_cap_hours": 72.0,
+    "settlement_expiry_tight_safety_mult": 2.0,
     "signal_sim_retention_resolved_days": 120,
     "kairos_mode": "shadow",
     # clef_flash_mode (2026-10-04, docs/scopes/20261004_CLEF_FLASH_CLASSIFIER_ROLE_SCOPE.md
@@ -1200,6 +1210,56 @@ def get_geometry_incubation_adaptive_cap_days() -> float:
         ))
     except (TypeError, ValueError):
         return float(_DEFAULTS["geometry_incubation_adaptive_cap_days"])
+
+
+def get_settlement_expiry_mode() -> str:
+    """``fixed`` | ``shadow`` | ``live`` (2026-10-09, worklog
+    20261009_P90_HOURS_LIVE_MODE.md) — per-signal dynamic settlement expiry.
+
+    fixed: the historical hard-coded ``EXPIRY_BARS = 48`` (byte-identical).
+    shadow: compute the dynamic per-bracket expiry and LOG the fixed-vs-
+    dynamic delta, but still settle on EXPIRY_BARS (zero live change).
+    live: settle each signal on a per-bracket expiry derived from
+    ``nt_bracket_reachability`` (median*safety for tight buckets, p90 for
+    the wide 4+ bucket), clamped to ``[floor_hours, cap_hours]``; a cold/
+    missing row fails open to EXPIRY_BARS.
+
+    Unknown values fall back to fixed.
+    """
+    v = str(_load().get(
+        "settlement_expiry_mode", _DEFAULTS["settlement_expiry_mode"],
+    )).lower()
+    return v if v in ("fixed", "shadow", "live") else "fixed"
+
+
+def get_settlement_expiry_floor_hours() -> float:
+    try:
+        return float(_load().get(
+            "settlement_expiry_floor_hours",
+            _DEFAULTS["settlement_expiry_floor_hours"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["settlement_expiry_floor_hours"])
+
+
+def get_settlement_expiry_cap_hours() -> float:
+    try:
+        return float(_load().get(
+            "settlement_expiry_cap_hours",
+            _DEFAULTS["settlement_expiry_cap_hours"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["settlement_expiry_cap_hours"])
+
+
+def get_settlement_expiry_tight_safety_mult() -> float:
+    try:
+        return float(_load().get(
+            "settlement_expiry_tight_safety_mult",
+            _DEFAULTS["settlement_expiry_tight_safety_mult"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["settlement_expiry_tight_safety_mult"])
 
 
 def get_regime_warm_start_mode() -> str:
