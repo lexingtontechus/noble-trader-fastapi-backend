@@ -227,7 +227,17 @@ _DEFAULTS: dict[str, Any] = {
     "heavy_sweep_atr_anchored_bricks_mode": "off",
     "heavy_sweep_deadline_aware_scoring_mode": "off",
     "settlement_contract_mode": "live",
-    "settlement_same_bar_policy": "tp_first",
+    # 2026-10-08: aligned to the live intrabar resolver's actual behaviour
+    # (it hardcoded SL-first). See config/feature_flags.yaml + worklog
+    # 20261008_GEOMETRY_BASIS_DIVERGENCE.md.
+    "settlement_same_bar_policy": "sl_first",
+    # dynamic_atr consistency gate (2026-10-08, worklog
+    # 20261008_GEOMETRY_BASIS_DIVERGENCE.md Stage 5): a pick whose walked TP
+    # rate disagrees with the platform's measured bucket rate is the optimizer
+    # contradicting its own measurements. shadow logs; live falls back to the
+    # heavy pick; off disables.
+    "dynamic_atr_consistency_mode": "shadow",
+    "dynamic_atr_consistency_tol": 0.20,
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "live",
@@ -671,6 +681,31 @@ def get_dynamic_atr_mode() -> str:
     return str(_load().get(
         "dynamic_atr_mode", _DEFAULTS.get("dynamic_atr_mode", "shadow"),
     )).lower()
+
+
+def get_dynamic_atr_consistency_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — pick ↔ reachability consistency gate.
+
+    2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md Stage 5):
+    a pick whose walked TP rate disagrees with the platform's own measured
+    bucket rate by more than ``dynamic_atr_consistency_tol`` is the optimizer
+    contradicting its own measurements. ``shadow`` logs; ``live`` falls back
+    to the heavy pick; ``off`` disables.
+    """
+    return str(_load().get(
+        "dynamic_atr_consistency_mode",
+        _DEFAULTS.get("dynamic_atr_consistency_mode", "shadow"),
+    )).lower()
+
+
+def get_dynamic_atr_consistency_tol() -> float:
+    try:
+        return float(_load().get(
+            "dynamic_atr_consistency_tol",
+            _DEFAULTS.get("dynamic_atr_consistency_tol", 0.20),
+        ))
+    except (TypeError, ValueError):
+        return 0.20
 
 
 def get_dynamic_atr_config(

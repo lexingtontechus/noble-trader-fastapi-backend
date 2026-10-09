@@ -1153,6 +1153,45 @@ class HeavySweepMixin:
 
             venue_name = _derive_venue(sym)
 
+            # ── Live-basis cross-check (2026-10-08, worklog
+            # 20261008_GEOMETRY_BASIS_DIVERGENCE.md Stage 1, heavy grid).
+            # The heavy grid picks by the Renko brick engine, which resolves
+            # on brick CLOSES — a third basis distinct from the live resolver's
+            # intrabar high/low. Re-score the CHOSEN bracket with the single
+            # shared primitive on the live basis and log the gap, so the
+            # engine's optimism is measurable per symbol rather than assumed.
+            # Observation only — no behaviour change (the engine owns the pick).
+            try:
+                from regime_platform.sweep_orchestrator.tiered_atr import (
+                    live_basis, live_same_bar_policy,
+                )
+                from regime_platform.sweep_orchestrator.settlement_contract import (
+                    bracket_envelope, resolve_bracket_from_envelope,
+                )
+                _entry = float(trade_signal.get("entry_price") or 0) if trade_signal else 0.0
+                _atr_v = float(atr or 0)
+                if _entry and _atr_v > 0:
+                    _dir = "sell" if "bear" in str(result.regime_label).lower() else "buy"
+                    _fav, _adv = bracket_envelope(
+                        entry_price=_entry, direction=_dir,
+                        bars=[{"h": c, "l": c, "c": c} for c in prices[-48:]],
+                        basis=live_basis(),
+                    )
+                    _tp_atr = best.brick_size * best.tp_bricks / _atr_v
+                    _sl_atr = best.brick_size * best.sl_bricks / _atr_v
+                    _out, _pnl, _ = resolve_bracket_from_envelope(
+                        _fav, _adv, _tp_atr, _sl_atr,
+                        same_bar_policy=live_same_bar_policy(),
+                    )
+                    logger.info(
+                        "[sweep:heavy] %s live-basis cross-check: bracket "
+                        "tp=%.2fATR sl=%.2fATR -> %s (pnl %+.2f ATR) "
+                        "[engine picked on brick-close basis]",
+                        symbol, _tp_atr, _sl_atr, _out, _pnl,
+                    )
+            except Exception as exc:
+                logger.debug("[sweep:heavy] %s live-basis cross-check skipped: %s", symbol, exc)
+
             # ── 7. Persist optimised brick params to YAML ─────────────
             # Forward-test / incubation gate (2026-09-23, worklog
             # 20260923_GEOMETRY_FORWARD_TEST_SCOPE.md,

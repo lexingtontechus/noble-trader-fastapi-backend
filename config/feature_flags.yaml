@@ -499,6 +499,19 @@ heavy_sweep_reachability_mode: shadow
 #   US500    13.23/8.09 EV +0.55
 dynamic_atr_mode: "live"
 dynamic_atr_risk_cap: 0.35
+
+# dynamic_atr_consistency_mode (2026-10-08, worklog
+# 20261008_GEOMETRY_BASIS_DIVERGENCE.md Stage 5): off | shadow | live.
+# The picker re-walks prices to score a candidate bracket; the platform also
+# MEASURES every bracket that traded, per (symbol, distance_atr_bucket), in
+# nt_bracket_reachability. This gate compares the two: a pick whose walked TP
+# rate disagrees with its measured bucket rate by more than
+# dynamic_atr_consistency_tol is the optimizer contradicting its own
+# measurements. shadow = log only; live = reject the pick (fall back to the
+# heavy pick); off = disabled. Fail-open when the bucket is cold (< 30 samples).
+dynamic_atr_consistency_mode: "shadow"
+dynamic_atr_consistency_tol: 0.20
+
 dynamic_atr:
   lookback_days: 10
   tp_atr: [1.71, 2.0, 3.0, 5.0, 8.0, 13.0]
@@ -831,10 +844,21 @@ heavy_sweep_deadline_aware_scoring_mode: live
 settlement_contract_mode: "live"
 
 # settlement_same_bar_policy: tp_first | sl_first. tp_first = historical
-# live convention (optimistic). sl_first = conservative, matches heavy-sweep
-# Renko OCO default. Flip only after scripts/replay_settlement_parity.py
-# evidence (worklog Phase 1.4). Keep tp_first until that table exists.
-settlement_same_bar_policy: "tp_first"
+# CLOSE-WALK convention (optimistic — a close-walk can only ever see one
+# price per bar, so a "same-bar tie" is close-walk-impossible). sl_first =
+# conservative; with only hourly OHLC the order of two touches inside one bar
+# is unknowable, so assuming the stop filled is the honest choice.
+#
+# 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): set to
+# **sl_first** to make the flag match what the LIVE intrabar resolver actually
+# did. `eod_resolver.resolve_signal_outcome_ohlc` hardcoded SL-first while this
+# flag read tp_first — the flag and the behaviour disagreed. The live path
+# only ever runs the intrabar judge (eod_resolver_basis: intrabar), so
+# sl_first is behaviour-preserving for live settlement and removes the silent
+# divergence. The geometry picker now reads this same flag, so picker and
+# resolver share one tie-break. A close-walk replay of pre-cutover history
+# should pass tp_first explicitly.
+settlement_same_bar_policy: "sl_first"
 
 # p_win_bracket_mode (Batch C, worklog 20260916): off | shadow | live.
 # shadow (default): compute p_resolve * p_win|resolve from stored-ATR

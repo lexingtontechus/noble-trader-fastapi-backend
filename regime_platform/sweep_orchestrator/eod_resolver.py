@@ -298,43 +298,29 @@ def resolve_signal_outcome_ohlc(
     is_buy = str(direction or "buy").strip().lower() not in ("sell", "short", "s")
     window = list(bars or [])[: max(int(expiry_bars or 0), 0)]
 
-    outcome = "expired"
-    exit_price: float | None = None
-    exit_idx: int | None = None
-    ambiguous = False
+    # 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): resolve
+    # through settlement_contract's single `resolve_bracket_path` primitive so
+    # this resolver, the geometry picker and the heavy-sweep grid can never
+    # disagree about what "hit" means. The same-bar tie-break now honours
+    # ``settlement_same_bar_policy`` (it used to hardcode SL-first while the
+    # flag read tp_first — a silent divergence between the flag and behaviour).
+    from regime_platform.sweep_orchestrator import settlement_contract as _sc
 
-    for i, bar in enumerate(window):
-        try:
-            hi = float(bar.get("h") if bar.get("h") is not None else bar.get("c"))
-            lo = float(bar.get("l") if bar.get("l") is not None else bar.get("c"))
-            cl = float(bar.get("c"))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if is_buy:
-            tp_touch, sl_touch = hi >= take_profit, lo <= stop_loss
-        else:
-            tp_touch, sl_touch = lo <= take_profit, hi >= stop_loss
-
-        if tp_touch and sl_touch:
-            # One bar spans both levels — order is unknowable from OHLC.
-            ambiguous = True
-            outcome = "sl_hit"          # conservative: assume the stop filled
-            exit_price, exit_idx = stop_loss, i
-            break
-        if sl_touch:
-            outcome, exit_price, exit_idx = "sl_hit", stop_loss, i
-            break
-        if tp_touch:
-            outcome, exit_price, exit_idx = "tp_hit", take_profit, i
-            break
-        # neither touched; remember the close in case we expire
-        exit_price = cl
-
-    if outcome == "expired" and window:
-        try:
-            exit_price = float(window[-1].get("c"))
-        except (AttributeError, TypeError, ValueError):
-            exit_price = None
+    _same_bar = _same_bar_policy()
+    _res = _sc.resolve_bracket_path(
+        entry_price=float(entry_price),
+        stop_loss=float(stop_loss),
+        take_profit=float(take_profit),
+        direction=direction or "buy",
+        bars=window,
+        basis=_sc.BASIS_INTRABAR,
+        same_bar_policy=_same_bar,
+        expiry_bars=int(expiry_bars or 0),
+    )
+    outcome = _res["outcome"]
+    exit_price = _res["exit_price"]
+    exit_idx = _res["exit_idx"]
+    ambiguous = bool(_res["ambiguous"])
 
     walked = window if exit_idx is None else window[: exit_idx + 1]
     highs, lows = [], []
@@ -803,6 +789,7 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
         "pnl_bricks": pnl["pnl_bricks"],
         "pnl_dollars": pnl["pnl_dollars"],
         "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "ambiguous": resolved.get("ambiguous"),
         "drift_1h_pct": resolved.get("drift_1h_pct"),
         "drift_4h_pct": resolved.get("drift_4h_pct"),
         "drift_12h_pct": resolved.get("drift_12h_pct"),
@@ -854,6 +841,7 @@ async def _resolve_one_bars(sig: dict[str, Any], bars: list[dict[str, Any]]) -> 
         "pnl_bricks": pnl["pnl_bricks"],
         "pnl_dollars": pnl["pnl_dollars"],
         "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "ambiguous": resolved.get("ambiguous"),
         "drift_1h_pct": resolved.get("drift_1h_pct"),
         "drift_4h_pct": resolved.get("drift_4h_pct"),
         "drift_12h_pct": resolved.get("drift_12h_pct"),

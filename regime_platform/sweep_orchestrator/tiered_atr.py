@@ -70,24 +70,173 @@ def asset_class_key(asset_class: str | None) -> str:
 
 
 # ─── Replay walk (same rule as the live resolver) ──────────────────────────
+#
+# 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): this module's
+# walk IS the geometry picker, and it used to resolve on closes-only with a
+# TP-first tie-break while the live resolver settles on high/low with SL-first.
+# The picker therefore scored +0.61 ATR/signal on a bracket the resolver
+# settled at −0.24 — the gap was measurement, not market. The walk now defers
+# to settlement_contract's single `resolve_bracket` rule and takes an explicit
+# ``basis`` (intrabar | close_walk) and ``same_bar_policy`` (sl_first |
+# tp_first). The live basis is the default for every picker call site.
 
-def walk(paths: np.ndarray, tp_atr: float, sl_atr: float) -> tuple[np.ndarray, np.ndarray]:
-    """First-passage over direction-signed, ATR-scaled close paths.
+from regime_platform.sweep_orchestrator.settlement_contract import (
+    BASIS_CLOSE,
+    BASIS_INTRABAR,
+    OUTCOME_EXPIRED,
+    OUTCOME_SL,
+    OUTCOME_TP,
+    SAME_BAR_SL_FIRST,
+    SAME_BAR_TP_FIRST,
+    resolve_bracket_from_envelope,
+)
+
+# The basis/policy the LIVE resolver settles on. Kept as module constants so
+# a picker can state the assumption explicitly; callers may override for
+# parity replays of pre-cutover history.
+LIVE_BASIS = BASIS_INTRABAR
+LIVE_SAME_BAR_POLICY = SAME_BAR_SL_FIRST
+
+
+def live_basis() -> str:
+    """Basis the live resolver currently settles on (``eod_resolver_basis``)."""
+    try:
+        from regime_platform.core.feature_flags import get_eod_resolver_basis
+        return str(get_eod_resolver_basis() or LIVE_BASIS).strip().lower()
+    except Exception:
+        return LIVE_BASIS
+
+
+def live_same_bar_policy() -> str:
+    """Same-bar tie-break the live resolver uses (``settlement_same_bar_policy``)."""
+    try:
+        from regime_platform.core.feature_flags import get_settlement_same_bar_policy
+        return str(get_settlement_same_bar_policy() or LIVE_SAME_BAR_POLICY).strip().lower()
+    except Exception:
+        return LIVE_SAME_BAR_POLICY
+
+
+def walk(
+    paths: np.ndarray,
+    tp_atr: float,
+    sl_atr: float,
+    *,
+    same_bar_policy: str = SAME_BAR_TP_FIRST,
+) -> tuple[np.ndarray, np.ndarray]:
+    """First-passage over direction-signed, ATR-scaled **close** paths.
 
     ``paths`` is (n, 48): (close - entry) * dir / atr. Returns
-    (realised pnl in ATR at the triggering close, expired mask). TP first on
-    a same-bar tie; expired trades are marked to market at bar 48.
+    (realised pnl in ATR at the triggering close, expired mask).
+
+    ``same_bar_policy`` defaults to ``tp_first`` (the historical close-walk
+    convention) so a close-path replay is byte-stable; pass ``sl_first`` for
+    the conservative OCO rule. Prefer ``walk_envelopes`` on the live basis —
+    a close path cannot see an intrabar wick, so it under-counts stop-outs.
     """
     n = len(paths)
     hit_tp = paths >= tp_atr
     hit_sl = paths <= -sl_atr
     ti = np.where(hit_tp.any(1), hit_tp.argmax(1), EXPIRY_BARS)
     si = np.where(hit_sl.any(1), hit_sl.argmax(1), EXPIRY_BARS)
-    tp_first = (ti < EXPIRY_BARS) & (ti <= si)
-    sl_first = ~tp_first & (si < EXPIRY_BARS)
+    if str(same_bar_policy).strip().lower() == SAME_BAR_SL_FIRST:
+        sl_first = (si < EXPIRY_BARS) & (si <= ti)
+        tp_first = ~sl_first & (ti < EXPIRY_BARS)
+    else:
+        tp_first = (ti < EXPIRY_BARS) & (ti <= si)
+        sl_first = ~tp_first & (si < EXPIRY_BARS)
     exit_bar = np.where(tp_first, ti, np.where(sl_first, si, EXPIRY_BARS - 1))
     pnl = paths[np.arange(n), exit_bar]
     return pnl, ~(tp_first | sl_first)
+
+
+def build_envelopes(
+    signals: list[dict],
+    bars: dict[str, list[dict]],
+    *,
+    basis: str = LIVE_BASIS,
+    return_vol: bool = False,
+    vol_short: int = 24,
+    vol_long: int = 168,
+):
+    """(n, EXPIRY_BARS, 2) favourable/adverse envelope, ATR-scaled, time-ordered.
+
+    ``[:, :, 0]`` is the favourable excursion per bar (max profit reachable),
+    ``[:, :, 1]`` the adverse excursion (max drawdown reachable). Both are in
+    ATR units and direction-signed. This is the shape the picker must use on
+    the **intrabar** basis: it carries the wick a close path cannot see.
+
+    ``basis="close_walk"`` degrades each bar to its close (identical shape),
+    so a grid search can switch basis without changing its arithmetic.
+    """
+    bas = str(basis or LIVE_BASIS).strip().lower()
+    use_ohlc = bas != BASIS_CLOSE
+    tcache = {s: np.array([float(b["t"]) for b in rows], dtype="float64") for s, rows in bars.items()}
+    ccache = {s: np.array([float(b["c"]) for b in rows], dtype="float64") for s, rows in bars.items()}
+    if use_ohlc:
+        hcache = {s: np.array([float(b["h"]) if b.get("h") is not None else float(b["c"])
+                               for b in rows], dtype="float64") for s, rows in bars.items()}
+        lcache = {s: np.array([float(b["l"]) if b.get("l") is not None else float(b["c"])
+                               for b in rows], dtype="float64") for s, rows in bars.items()}
+    out, vols = [], []
+    for r in sorted(signals, key=lambda x: x["_ts"]):
+        t = tcache.get(r["symbol"])
+        if t is None or not len(t):
+            continue
+        j = int(np.searchsorted(t, r["_ts"], side="right")) - 1   # bar in progress at entry
+        if j < 0 or j + EXPIRY_BARS > len(t):
+            continue
+        d = 1.0 if r["signal"] == "buy" else -1.0
+        atr = float(r["atr"]); entry = float(r["entry_price"])
+        cl = ccache[r["symbol"]][j:j + EXPIRY_BARS]
+        if use_ohlc:
+            hi = hcache[r["symbol"]][j:j + EXPIRY_BARS]
+            lo = lcache[r["symbol"]][j:j + EXPIRY_BARS]
+        else:
+            hi = lo = cl
+        up = (hi - entry) * d / atr
+        dn = (lo - entry) * d / atr
+        fav = np.maximum(up, dn)
+        adv = np.minimum(up, dn)
+        out.append(np.stack([fav, adv], axis=1))
+        vols.append(compute_vol_ratio(ccache[r["symbol"]], j, vol_short, vol_long))
+    env = np.stack(out) if out else np.empty((0, EXPIRY_BARS, 2))
+    if return_vol:
+        return env, vols
+    return env
+
+
+def walk_envelopes(
+    env: np.ndarray,
+    tp_atr: float,
+    sl_atr: float,
+    *,
+    same_bar_policy: str = LIVE_SAME_BAR_POLICY,
+) -> tuple[np.ndarray, np.ndarray]:
+    """First-passage over an (n, 48, 2) favourable/adverse envelope.
+
+    Same rule as ``settlement_contract.resolve_bracket_from_envelope`` (which
+    it defers to per row), vectorised for a grid search. Returns
+    (realised pnl in ATR, expired mask). A same-bar both-touch resolves by
+    ``same_bar_policy`` — default ``sl_first``, matching the live resolver.
+    """
+    n = len(env)
+    if n == 0:
+        return np.zeros(0), np.ones(0, dtype=bool)
+    fav = env[:, :, 0]
+    adv = env[:, :, 1]
+    hit_tp = fav >= tp_atr
+    hit_sl = adv <= -sl_atr
+    ti = np.where(hit_tp.any(1), hit_tp.argmax(1), EXPIRY_BARS)
+    si = np.where(hit_sl.any(1), hit_sl.argmax(1), EXPIRY_BARS)
+    if str(same_bar_policy).strip().lower() == SAME_BAR_SL_FIRST:
+        sl_first = (si < EXPIRY_BARS) & (si <= ti)
+        tp_first = ~sl_first & (ti < EXPIRY_BARS)
+    else:
+        tp_first = (ti < EXPIRY_BARS) & (ti <= si)
+        sl_first = ~tp_first & (si < EXPIRY_BARS)
+    expired = ~(tp_first | sl_first)
+    pnl = np.where(tp_first, tp_atr, np.where(sl_first, -sl_atr, 0.0))
+    return pnl, expired
 
 
 @dataclass(frozen=True)
@@ -130,7 +279,7 @@ class DynamicAtrPick:
 
 
 def select_tp_sl(
-    paths: np.ndarray,
+    paths: np.ndarray | None = None,
     *,
     tp_grid: list[float],
     sl_grid: list[float],
@@ -142,15 +291,30 @@ def select_tp_sl(
     tp_atr_max: float | None = None,
     sl_atr_min: float | None = None,
     sl_atr_max: float | None = None,
+    envelopes: np.ndarray | None = None,
+    same_bar_policy: str = LIVE_SAME_BAR_POLICY,
 ) -> Optional[DynamicAtrPick]:
     """Best TP/SL by expectancy; must be positive in both halves (rows are time-ordered).
+
+    Two input shapes (pass exactly one):
+      * ``paths`` (n, 48) close paths → resolved with ``walk`` (close basis,
+        TP-first) — the historical call shape, kept for parity replays.
+      * ``envelopes`` (n, 48, 2) favourable/adverse envelope → resolved with
+        ``walk_envelopes`` on the LIVE basis (intrabar, sl_first). **This is
+        the shape a live pick must use** — a close path cannot see the wick
+        that trips a tight stop (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md).
 
     Optional band clamps (2026-09-29 geometry_rework): drop candidates outside
     [tp_atr_min, tp_atr_max] x [sl_atr_min, sl_atr_max] even if the grid lists
     them — the 10d walk otherwise prefers a wide TP outside the replay's
     best region (TP 9-17 / SL 0.5-2).
     """
-    n = len(paths)
+    if envelopes is not None:
+        n = len(envelopes)
+    elif paths is not None:
+        n = len(paths)
+    else:
+        return None
     if n < min_signals:
         return None
     mid = n // 2
@@ -168,7 +332,11 @@ def select_tp_sl(
                 continue
             if sl_atr_max is not None and sl_f > sl_atr_max:
                 continue
-            pnl, expired = walk(paths, tp_f, sl_f)
+            if envelopes is not None:
+                pnl, expired = walk_envelopes(envelopes, tp_f, sl_f,
+                                              same_bar_policy=same_bar_policy)
+            else:
+                pnl, expired = walk(paths, tp_f, sl_f)
             if expired.mean() > max_expiry:
                 continue
             net = pnl - cost_atr
@@ -242,6 +410,100 @@ def build_paths(
     if return_vol:
         return paths, vols
     return paths
+
+
+# ─── Stage 5: pick ↔ reachability consistency gate (2026-10-08) ────────────
+#
+# The picker scores a candidate bracket by re-walking prices; the platform
+# ALSO measures every bracket that actually traded, per (symbol, vol_tier,
+# distance_atr_bucket), in nt_bracket_reachability. Those two must agree. A
+# pick whose walk implies a healthy expectancy while the bucket it lands in
+# shows a near-zero TP rate is the optimizer disagreeing with its own
+# platform's measurements — the exact failure the basis fix addresses, kept
+# as a standing guard so a future drift is caught rather than traded.
+
+# Tolerance: the walk's implied TP rate may differ from the measured bucket
+# rate by up to this before the pick is rejected. Generous on purpose — the
+# measured bucket pools many brackets, so a candidate need only be in the
+# same regime of plausibility, not identical.
+REACHABILITY_AGREE_TOL = 0.20
+# Minimum measured-bucket sample before the gate is willing to reject
+# (below this, the bucket is noise — fail-open).
+REACHABILITY_MIN_N = 30
+
+
+def check_pick_reachability_consistency(
+    walk_tp_rate: float | None,
+    measured_pct_hit_tp: float | None,
+    measured_n: int | None,
+    *,
+    tolerance: float = REACHABILITY_AGREE_TOL,
+    min_n: int = REACHABILITY_MIN_N,
+) -> tuple[bool, str]:
+    """Does a candidate's walked TP rate agree with its measured bucket?
+
+    Returns ``(consistent, reason)``. Fail-open: ``True`` when either side is
+    missing or the bucket is below ``min_n`` (no evidence to contradict the
+    walk). Only a bucket with enough samples that DISAGREES by more than
+    ``tolerance`` rejects the pick.
+    """
+    if walk_tp_rate is None or measured_pct_hit_tp is None:
+        return True, "no_comparison"
+    try:
+        n = int(measured_n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < min_n:
+        return True, "bucket_below_min_n"
+    diff = abs(float(walk_tp_rate) - float(measured_pct_hit_tp))
+    if diff > tolerance:
+        return False, (
+            f"walk_tp={float(walk_tp_rate):.2f} vs measured_tp={float(measured_pct_hit_tp):.2f} "
+            f"(Δ{diff:.2f} > {tolerance:.2f}, n={n})"
+        )
+    return True, "ok"
+
+
+async def fetch_bucket_measured_tp(
+    symbol: str, distance_atr_bucket: str,
+) -> tuple[float | None, int | None]:
+    """(pct_hit_tp, n) for one (symbol, distance_atr_bucket) from reachability.
+
+    Reads the platform's OWN measurement of brackets that traded (the live
+    resolver's verdicts) — the ground truth the walk must agree with. Pools
+    across vol_tier (the picker is symbol-pooled; it has no live vol tier at
+    pick time) by taking the highest-n row for the bucket.
+    """
+    import httpx
+
+    from regime_platform.core.settings import settings
+    from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+    if not settings.SUPABASE_URL:
+        return None, None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_bracket_reachability"),
+                headers=_headers(),
+                params={
+                    "select": "n,pct_hit_tp,vol_tier,computed_at",
+                    "symbol": f"eq.{symbol}",
+                    "distance_atr_bucket": f"eq.{distance_atr_bucket}",
+                    "signal": "eq.all",
+                    "order": "n.desc",
+                    "limit": "1",
+                },
+            )
+        rows = resp.json() or []
+        if not rows:
+            return None, None
+        r = rows[0]
+        tp = r.get("pct_hit_tp")
+        return (float(tp) if tp is not None else None, int(r.get("n") or 0))
+    except Exception as exc:
+        logger.debug("tiered_atr fetch_bucket_measured_tp %s: %s", symbol, exc)
+        return None, None
 
 
 # ─── Production entry point ────────────────────────────────────────────────
@@ -394,8 +656,16 @@ async def dynamic_atr_pick(
             scope, _vr_now, vol_min, vol_max,
         )
 
-    paths, vols = build_paths(
-        signals, bars, return_vol=True, vol_short=vol_short, vol_long=vol_long,
+    # 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): build the
+    # picker's evidence on the LIVE basis (intrabar high/low + sl_first), so
+    # the bracket this chooses is scored the same way the resolver settles it.
+    # ``basis`` is read from the live flag; a "close_walk" basis reproduces
+    # the historical close-path pick for parity replays only.
+    _basis = live_basis()
+    _policy = live_same_bar_policy()
+    env, vols = build_envelopes(
+        signals, bars, basis=_basis, return_vol=True,
+        vol_short=vol_short, vol_long=vol_long,
     )
     if vol_min is not None or vol_max is not None:
         keep = []
@@ -407,13 +677,19 @@ async def dynamic_atr_pick(
             if vol_max is not None and v > float(vol_max):
                 continue
             keep.append(i)
-        paths = paths[keep] if keep else np.empty((0, EXPIRY_BARS))
+        env = env[keep] if keep else np.empty((0, EXPIRY_BARS, 2))
         logger.info(
-            "[dynamic:atr] scope=%s vol-filtered paths %d → %d (band [%s,%s])",
-            scope, len(vols), len(paths), vol_min, vol_max,
+            "[dynamic:atr] scope=%s basis=%s policy=%s vol-filtered %d → %d (band [%s,%s])",
+            scope, _basis, _policy, len(vols), len(env), vol_min, vol_max,
+        )
+    else:
+        logger.info(
+            "[dynamic:atr] scope=%s basis=%s policy=%s n=%d",
+            scope, _basis, _policy, len(env),
         )
     pick = select_tp_sl(
-        paths,
+        envelopes=env,
+        same_bar_policy=_policy,
         tp_grid=[float(x) for x in cfg["tp_atr"]],
         sl_grid=[float(x) for x in cfg["sl_atr"]],
         min_rr=min_rr,
@@ -427,6 +703,50 @@ async def dynamic_atr_pick(
         sl_atr_min=cfg.get("sl_atr_min"),
         sl_atr_max=cfg.get("sl_atr_max"),
     )
+    # Stage 5 (2026-10-08): does the pick's walked TP rate agree with the
+    # platform's own measured bucket? shadow = log; live = reject (fall back
+    # to the heavy pick). Fail-open on a cold bucket.
+    if pick is not None and symbol:
+        try:
+            from regime_platform.core.feature_flags import (
+                get_dynamic_atr_consistency_mode,
+                get_dynamic_atr_consistency_tol,
+            )
+            _cmode = get_dynamic_atr_consistency_mode()
+            if _cmode != "off":
+                # walked TP rate = TP / decided, from the SAME envelope the
+                # pick was chosen on.
+                _pnl, _exp = walk_envelopes(env, pick.tp_atr, pick.sl_atr,
+                                            same_bar_policy=_policy)
+                _dec = int((~_exp).sum())
+                _walk_tp = float(((_pnl > 0) & (~_exp)).sum() / _dec) if _dec else None
+                from regime_platform.sweep_orchestrator.bracket_reachability import _bucket_for
+                _bkt = _bucket_for(float(pick.tp_atr)) or ""
+                _meas_tp, _meas_n = await fetch_bucket_measured_tp(symbol, _bkt)
+                _ok, _reason = check_pick_reachability_consistency(
+                    _walk_tp, _meas_tp, _meas_n,
+                    tolerance=get_dynamic_atr_consistency_tol(),
+                )
+                if not _ok:
+                    logger.warning(
+                        "[dynamic:atr] %s CONSISTENCY %s — pick tp=%.2f sl=%.2f "
+                        "contradicts measured bucket (%s)",
+                        symbol, "REJECT" if _cmode == "live" else "shadow",
+                        pick.tp_atr, pick.sl_atr, _reason,
+                    )
+                    if _cmode == "live":
+                        _PICK_CACHE[grid_fp] = (time.time(), None)
+                        return None
+                else:
+                    logger.info(
+                        "[dynamic:atr] %s consistency ok (%s walk_tp=%s meas_tp=%s n=%s)",
+                        symbol, _reason,
+                        f"{_walk_tp:.2f}" if _walk_tp is not None else "—",
+                        f"{_meas_tp:.2f}" if _meas_tp is not None else "—", _meas_n,
+                    )
+        except Exception as exc:
+            logger.debug("[dynamic:atr] %s consistency check failed: %s", symbol, exc)
+
     _PICK_CACHE[grid_fp] = (time.time(), pick)
     return pick
 

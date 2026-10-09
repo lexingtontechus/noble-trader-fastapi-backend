@@ -48,13 +48,18 @@ def _is_buy(direction: str | None) -> bool:
     return str(direction or "buy").strip().lower() not in ("sell", "short", "s")
 
 
-def _as_float_list(bars: Sequence[Any] | None, key: str) -> list[float] | None:
+def _as_float_list(bars: Sequence[Any] | None, *keys: str) -> list[float] | None:
+    """First non-None value across ``keys`` for each bar (aliases: h/high, …)."""
     if bars is None:
         return None
     out: list[float] = []
     for b in bars:
         if isinstance(b, Mapping):
-            v = b.get(key)
+            v = None
+            for k in keys:
+                v = b.get(k)
+                if v is not None:
+                    break
         else:
             v = b
         if v is None:
@@ -70,16 +75,21 @@ def normalize_bars(
 
     Returns ``(closes, highs, lows)``. highs/lows are None when the input
     is close-only — callers then fall back to close-walk.
+
+    Accepts both key conventions used in this codebase: the price fetcher's
+    short keys (``c``/``h``/``l``) and the long form (``close``/``high``/
+    ``low``). Without the alias, a fetcher-shaped bar would raise and the
+    basis fix would silently fall back to close-walk.
     """
     if not bars:
         return [], None, None
     if not isinstance(bars[0], Mapping):
         return [float(x) for x in bars], None, None
-    closes = _as_float_list(bars, "close")
-    highs = _as_float_list(bars, "high")
-    lows = _as_float_list(bars, "low")
+    closes = _as_float_list(bars, "close", "c")
+    highs = _as_float_list(bars, "high", "h")
+    lows = _as_float_list(bars, "low", "l")
     if closes is None:
-        raise ValueError("settlement_contract: OHLC bars require a 'close' field")
+        raise ValueError("settlement_contract: OHLC bars require a close/'c' field")
     return closes, highs, lows
 
 
@@ -361,3 +371,224 @@ def settle_from_closes(
         brick_size=brick_size,
         costs=costs,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# resolve_bracket — the ONE first-passage walk (Stage 1, 2026-10-08)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Why this exists (worklog/20261008_GEOMETRY_BASIS_DIVERGENCE.md):
+# four sites resolved a bracket with three different semantics — the live
+# resolver (high/low, SL-first), the geometry picker (closes, TP-first), and
+# the heavy-sweep Renko backtest (brick close, SL-first). The picker therefore
+# scored +0.61 ATR/signal on a bracket the resolver settled at −0.24: the
+# entire gap was measurement, not market.
+#
+# This function is the single definition of "did this bracket win". Every
+# consumer — resolver, geometry picker, monthly/4h reopt, heavy-sweep grid,
+# first-passage read — resolves through it, so a bracket chosen on one basis
+# can never disagree with the basis that settles it.
+#
+# BASIS is the sole knob that changes the answer:
+#   BASIS_INTRABAR  — touch the level at any point in the bar (high/low).
+#                     This is the live basis (eod_resolver_basis: intrabar).
+#   BASIS_CLOSE     — only the bar's close counts. A wick that trips a tight
+#                     stop is invisible. Optimistic; kept for parity replay
+#                     of pre-cutover history and the legacy resolver path.
+#
+# ``resolve_bracket`` returns the raw per-bar envelope (or a scalar verdict),
+# so both a vectorised grid search and a single live signal use the same rule.
+
+BASIS_INTRABAR = "intrabar"
+BASIS_CLOSE = "close_walk"
+_VALID_BASES = (BASIS_INTRABAR, BASIS_CLOSE)
+
+
+def resolve_bracket_path(
+    *,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    direction: str,
+    bars: Sequence[Any],
+    basis: str = BASIS_INTRABAR,
+    same_bar_policy: str = SAME_BAR_SL_FIRST,
+    expiry_bars: int = EXPIRY_BARS,
+) -> dict[str, Any]:
+    """Resolve one bracket against one post-entry window. THE single walk.
+
+    ``bars``: OHLC mappings (``{"h","l","c"}`` or ``{"high","low","close"}``)
+    or plain closes. Returns a dict with:
+
+      outcome       tp_hit | sl_hit | expired
+      exit_price    fill price (level for a touch, last close on expiry)
+      exit_idx      bar index of the resolution (None on expiry)
+      hold_bars     bars held (exit_idx+1, or the window length on expiry)
+      bar_mode      "ohlc" | "close"
+      ambiguous     True when a single bar first-touched BOTH levels (the
+                    order is unknowable from OHLC; resolved by policy)
+      same_bar_policy, basis  — echo the rule that produced the verdict
+
+    This is the reference implementation. ``settle`` and the numpy path
+    builder below are both defined in terms of this rule so they cannot drift.
+    """
+    pol = str(same_bar_policy or SAME_BAR_SL_FIRST).strip().lower()
+    if pol not in _VALID_POLICIES:
+        pol = SAME_BAR_SL_FIRST
+    bas = str(basis or BASIS_INTRABAR).strip().lower()
+    if bas not in _VALID_BASES:
+        bas = BASIS_INTRABAR
+
+    is_buy = _is_buy(direction)
+
+    # Pre-filter malformed bars (where any required field is None).
+    # The old inline walk caught this per-bar with try/except; we filter upfront.
+    valid_bars: list[Any] = []
+    for b in bars:
+        if isinstance(b, Mapping):
+            if b.get("close", b.get("c")) is not None:
+                valid_bars.append(b)
+        else:
+            # Plain float close
+            try:
+                if b is not None:
+                    valid_bars.append(b)
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        n_closes, n_highs, n_lows = normalize_bars(valid_bars)
+    except ValueError:
+        n_closes, n_highs, n_lows = [], None, None
+
+    if n_closes is None:
+        n_closes = []
+
+    closes, highs, lows = n_closes, n_highs, n_lows
+    use_ohlc = bas == BASIS_INTRABAR and highs is not None and lows is not None
+    bar_mode = "ohlc" if use_ohlc else "close"
+    window_n = min(len(closes), max(int(expiry_bars or 0), 0))
+
+    outcome, exit_price, exit_idx, ambiguous = OUTCOME_EXPIRED, None, None, False
+    for i in range(window_n):
+        close = float(closes[i])
+        if use_ohlc:
+            hi = float(highs[i])  # type: ignore[index]
+            lo = float(lows[i])   # type: ignore[index]
+            tp_touch, sl_touch = ((hi >= take_profit, lo <= stop_loss) if is_buy
+                                  else (lo <= take_profit, hi >= stop_loss))
+        else:
+            tp_touch, sl_touch = ((close >= take_profit, close <= stop_loss) if is_buy
+                                  else (close <= take_profit, close >= stop_loss))
+
+        if tp_touch and sl_touch:
+            ambiguous = True
+            if pol == SAME_BAR_SL_FIRST:
+                outcome, exit_price, exit_idx = OUTCOME_SL, (
+                    float(stop_loss) if use_ohlc else close), i
+            else:
+                outcome, exit_price, exit_idx = OUTCOME_TP, (
+                    float(take_profit) if use_ohlc else close), i
+            break
+        if sl_touch:
+            outcome, exit_price, exit_idx = OUTCOME_SL, (
+                float(stop_loss) if use_ohlc else close), i
+            break
+        if tp_touch:
+            outcome, exit_price, exit_idx = OUTCOME_TP, (
+                float(take_profit) if use_ohlc else close), i
+            break
+        exit_price = close  # remember the mark in case we expire
+
+    if outcome == OUTCOME_EXPIRED:
+        exit_price = float(closes[window_n - 1]) if window_n > 0 else None
+
+    hold_bars = (exit_idx + 1) if exit_idx is not None else window_n
+    return {
+        "outcome": outcome,
+        "exit_price": exit_price,
+        "exit_idx": exit_idx,
+        "hold_bars": hold_bars,
+        "bar_mode": bar_mode,
+        "ambiguous": ambiguous,
+        "same_bar_policy": pol,
+        "basis": bas,
+    }
+
+
+def bracket_envelope(
+    *,
+    entry_price: float,
+    direction: str,
+    bars: Sequence[Any],
+    basis: str = BASIS_INTRABAR,
+    expiry_bars: int = EXPIRY_BARS,
+) -> tuple[list[float], list[float]]:
+    """Per-bar (favourable, adverse) ATR-agnostic excursion envelope.
+
+    Returns two equal-length lists, in PRICE DELTA from entry, signed so that
+    a larger ``favourable`` is better for the trade's direction. This is the
+    shared shape the geometry picker and first-passage read consume: a grid
+    search can evaluate every (tp, sl) pair from one envelope without
+    re-walking prices, and the envelope is built from the SAME rule
+    (``resolve_bracket_path``) so a pick and its settlement agree.
+
+    ``basis`` selects high/low (intrabar) or close-only excursions.
+    """
+    bas = str(basis or BASIS_INTRABAR).strip().lower()
+    if bas not in _VALID_BASES:
+        bas = BASIS_INTRABAR
+    is_buy = _is_buy(direction)
+    closes, highs, lows = normalize_bars(bars)
+    use_ohlc = bas == BASIS_INTRABAR and highs is not None and lows is not None
+    n = min(len(closes), max(int(expiry_bars or 0), 0))
+
+    fav: list[float] = []
+    adv: list[float] = []
+    for i in range(n):
+        close = float(closes[i])
+        if use_ohlc:
+            hi = float(highs[i])  # type: ignore[index]
+            lo = float(lows[i])   # type: ignore[index]
+        else:
+            hi = lo = close
+        up = (hi - entry_price) if is_buy else (entry_price - lo)
+        dn = (lo - entry_price) if is_buy else (entry_price - hi)
+        fav.append(up)
+        adv.append(dn)
+    return fav, adv
+
+
+def resolve_bracket_from_envelope(
+    fav: Sequence[float],
+    adv: Sequence[float],
+    tp_dist: float,
+    sl_dist: float,
+    *,
+    same_bar_policy: str = SAME_BAR_SL_FIRST,
+) -> tuple[str, float, int | None]:
+    """Resolve a bracket from a pre-built envelope (vectorised-grid friendly).
+
+    ``fav``/``adv`` are per-bar favourable/adverse deltas (see
+    ``bracket_envelope``). ``tp_dist``/``sl_dist`` are positive distances.
+    Returns ``(outcome, pnl_in_distance_units, exit_idx)`` where a TP pays
+    ``+tp_dist`` and an SL pays ``-sl_dist`` — the same settlement the price
+    walk produces, expressed in whatever unit the envelope was built in
+    (price, ATR multiples, bricks).
+    """
+    pol = str(same_bar_policy or SAME_BAR_SL_FIRST).strip().lower()
+    if pol not in _VALID_POLICIES:
+        pol = SAME_BAR_SL_FIRST
+    n = min(len(fav), len(adv))
+    for i in range(n):
+        tp_touch = fav[i] >= tp_dist
+        sl_touch = adv[i] <= -sl_dist
+        if tp_touch and sl_touch:
+            if pol == SAME_BAR_SL_FIRST:
+                return OUTCOME_SL, -float(sl_dist), i
+            return OUTCOME_TP, float(tp_dist), i
+        if sl_touch:
+            return OUTCOME_SL, -float(sl_dist), i
+        if tp_touch:
+            return OUTCOME_TP, float(tp_dist), i
+    return OUTCOME_EXPIRED, 0.0, None

@@ -101,11 +101,88 @@ Only after 1–3: re-run the FX `sl_atr` band against the intrabar+policy basis.
 
 ---
 
-## 6. Evidence files
+## 6. Built — Stages 1–5 (2026-10-08)
+
+All five stages shipped. Tests: `tests/test_geometry_basis_harmonization.py`
+(11 tests, all green) proves the contract end-to-end.
+
+### Stage 1 — one `resolve_bracket` primitive, every consumer imports it
+
+`settlement_contract.py` now owns the single definition of "did this bracket win":
+
+| Function | Role |
+|---|---|
+| `resolve_bracket_path(...)` | **the reference walk** — one bracket vs one window, returns outcome/exit/ambiguous/basis |
+| `bracket_envelope(...)` | per-bar (favourable, adverse) envelope — the grid-search shape |
+| `resolve_bracket_from_envelope(...)` | resolve a bracket from a prebuilt envelope (vectorised grid) |
+| `BASIS_INTRABAR` / `BASIS_CLOSE` | the sole knob that changes the answer |
+
+Repointed consumers:
+- **`tiered_atr.walk`** — gained `same_bar_policy`; new `walk_envelopes`,
+  `build_envelopes`, `live_basis()`, `live_same_bar_policy()`.
+- **`tiered_atr.select_tp_sl`** — accepts `envelopes=` (live basis) or `paths=`
+  (close-walk parity); `dynamic_atr_pick` now builds envelopes on the live basis.
+- **`atr_reopt`** (monthly **and** the 4h urgency that auto-applies clamps) —
+  `_paths_for`/`eval_cell`/`solve_free` now measure on the live envelope.
+- **`heavy_sweep`** — the grid still runs the Renko brick engine (a full trade
+  lifecycle), so rewriting it was out of scope; instead the CHOSEN bracket is
+  re-scored with the shared primitive on the live basis and the gap logged
+  (`live-basis cross-check`) — observation only, no behaviour change.
+
+**Proof** (`test_geometry_basis_harmonization.py`): `walk_envelopes`,
+`resolve_bracket_path` and `resolve_bracket_from_envelope` each agree with the
+live resolver **300/300** on random windows. `resolve_bracket_path` and
+`walk_envelopes` reproduce `resolve_signal_outcome_ohlc` exactly.
+
+### Stage 2 — one basis flag, honoured everywhere
+
+- `eod_resolver.resolve_signal_outcome_ohlc` now **delegates** to
+  `resolve_bracket_path` instead of running its own inline walk.
+- The same-bar tie-break now honours `settlement_same_bar_policy` — it used to
+  **hardcode SL-first while the flag read `tp_first`**. Set the flag to
+  `sl_first` in both `config/feature_flags.yaml` and `feature_flags.py`
+  `_DEFAULTS`, which (a) matches what live actually did and (b) removes the
+  silent divergence. Live settlement is byte-preserved (the intrabar path only
+  ever ran SL-first).
+
+### Stage 3 — persist the ambiguity
+
+Migration **204** adds `nt_signal_sim.ambiguous BOOLEAN` (nullable, additive)
++ a partial index. The resolver now writes it (both patch sites). Rows before
+2026-10-08 read NULL = unknown; no fabricated backfill. This makes the 21.4%
+same-bar population measurable per bucket.
+
+### Stage 4 — re-derive geometry on the harmonized basis
+
+Enabled by 1–3: the picker now optimises on the basis that settles, so the
+next pick cycle re-derives the FX `sl_atr` band against the intrabar reality
+(the tight 0.30–0.45 band was a close-walk artefact). The geometry replay
+(roadmap id 71) must be re-run on this basis before any manual band change —
+its earlier "TP 9–17 / SL 0.5–2" result is a close-walk figure.
+
+### Stage 5 — the picker must agree with its own measurements
+
+`dynamic_atr_consistency_mode` (off | shadow | **shadow** default):
+`tiered_atr.check_pick_reachability_consistency()` compares the pick's walked
+TP rate against the platform's measured `nt_bracket_reachability` bucket rate
+(`fetch_bucket_measured_tp`). shadow logs; live rejects the pick (falls back to
+the heavy pick); fail-open below 30 samples. Directly catches the GBPUSD case:
+`walk_tp=0.48 vs measured_tp=0.05 (Δ0.43 > 0.20, n=400)`.
+
+### Migration + flags
+
+- `supabase/migrations/204_signal_sim_ambiguous.sql` — **applied** (idempotent).
+- `settlement_same_bar_policy: "tp_first" → "sl_first"` (behaviour-preserving).
+- `dynamic_atr_consistency_mode: shadow`, `dynamic_atr_consistency_tol: 0.20`.
+
+---
+
+## 7. Evidence files
 
 Ad-hoc scripts (scratch, not committed):
 - `basis_replay.py` — same signals, close-walk vs intrabar envelope grid
 - `isolate_divergence.py` — the 4-way basis × tie-break matrix (table in §2)
 - `resolver_truth.py` — re-resolves stored episodes with the real resolver (83% agreement; the 17% gap is the tie-break + window anchoring)
+- `verify_primitive.py` / `verify2.py` — the 300/300 primitive-agreement proofs
 
 Key figures: picker +0.607 vs live −0.239 ATR/signal at TP1.65/SL0.35; same-bar-both-touched **21.4%**; live GBPUSD sell 7d WR 6.4% (n=204 episodes).

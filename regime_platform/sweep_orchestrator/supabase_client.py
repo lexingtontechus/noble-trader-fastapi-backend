@@ -305,6 +305,10 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # a plain filtered insert into the same table.
     "outcome", "exit_price", "exit_ts", "hold_bars",
     "mfe", "mae", "pnl_bricks", "pnl_dollars", "resolved_at",
+    # ambiguous (migration 204, 2026-10-08): True when a single bar
+    # first-touched both TP and SL. See worklog
+    # 20261008_GEOMETRY_BASIS_DIVERGENCE.md.
+    "ambiguous",
 })
 
 

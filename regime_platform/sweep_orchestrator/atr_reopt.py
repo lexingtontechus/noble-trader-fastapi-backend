@@ -26,7 +26,15 @@ from typing import Any, Optional
 
 import numpy as np
 
-from regime_platform.sweep_orchestrator.tiered_atr import EXPIRY_BARS, build_paths
+from regime_platform.sweep_orchestrator.tiered_atr import (
+    EXPIRY_BARS,
+    build_envelopes,
+    build_paths,
+    live_basis,
+    live_same_bar_policy,
+    walk,
+    walk_envelopes,
+)
 
 logger = logging.getLogger("regime.sweep.atr_reopt")
 
@@ -100,12 +108,16 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def eval_cell(paths: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
-    from regime_platform.sweep_orchestrator.tiered_atr import walk
+def eval_cell(env: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
+    """Score one (tp, sl) cell on the LIVE basis envelope.
 
-    if paths is None or len(paths) == 0:
+    ``env`` is (n, EXPIRY_BARS, 2) from ``tiered_atr.build_envelopes`` — the
+    intrabar/sl_first shape the resolver settles on (2026-10-08 basis fix).
+    """
+    if env is None or len(env) == 0:
         return None
-    pnl, exp = walk(paths, float(tp), float(sl))
+    pnl, exp = walk_envelopes(env, float(tp), float(sl),
+                              same_bar_policy=live_same_bar_policy())
     tp_hit = (~exp) & (pnl > 0)
     sl_hit = (~exp) & (pnl <= 0)
     dec = int(tp_hit.sum() + sl_hit.sum())
@@ -113,7 +125,7 @@ def eval_cell(paths: np.ndarray, tp: float, sl: float, cost: float = COST) -> Op
         return None
     wr = float(tp_hit.sum() / dec)
     net = pnl - cost
-    mid = len(paths) // 2
+    mid = len(env) // 2
     return {
         "tp": float(tp),
         "sl": float(sl),
@@ -122,7 +134,7 @@ def eval_cell(paths: np.ndarray, tp: float, sl: float, cost: float = COST) -> Op
         "ev": float(net.mean()),
         "ev_h1": float(net[:mid].mean()) if mid else float("nan"),
         "ev_h2": float(net[mid:].mean()) if mid else float("nan"),
-        "n": int(paths.shape[0]),
+        "n": int(env.shape[0]),
         "dec": dec,
     }
 
@@ -135,9 +147,12 @@ def _ok(sc: Optional[dict[str, Any]]) -> bool:
     return bool(sc["ev_h1"] > 0 and sc["ev_h2"] > 0)
 
 
-def solve_free(paths: np.ndarray) -> Optional[dict[str, Any]]:
-    """Coarse 0.25 → 0.05 → 0.01. Both halves EV>0. Same bar as research."""
-    if paths is None or len(paths) < MIN_PATHS:
+def solve_free(env: np.ndarray) -> Optional[dict[str, Any]]:
+    """Coarse 0.25 → 0.05 → 0.01. Both halves EV>0. Same bar as research.
+
+    ``env`` is the LIVE-basis envelope (intrabar/sl_first) — see ``eval_cell``.
+    """
+    if env is None or len(env) < MIN_PATHS:
         return None
 
     def scan(tps, sls):
@@ -146,7 +161,7 @@ def solve_free(paths: np.ndarray) -> Optional[dict[str, Any]]:
             for sl in sls:
                 if tp / sl < 1.0:
                     continue
-                sc = eval_cell(paths, tp, sl)
+                sc = eval_cell(env, tp, sl)
                 if _ok(sc) and (best is None or sc["ev"] > best["ev"]):
                     best = sc
         return best
@@ -270,7 +285,7 @@ async def _paths_for(symbols: list[str], members: list[dict], since: datetime, u
 
     signals = await _load_signals(symbols, since, until)
     if len(signals) < MIN_PATHS:
-        return np.empty((0, EXPIRY_BARS)), []
+        return np.empty((0, EXPIRY_BARS, 2)), []
     bars: dict[str, list[dict]] = {}
     await fetch_tradingview_batch(
         [{"symbol": m["symbol"], "tradingview_symbol": m["tradingview_symbol"]} for m in members],
@@ -282,7 +297,11 @@ async def _paths_for(symbols: list[str], members: list[dict], since: datetime, u
         s: [b for b in rows if b.get("t") is not None and b.get("c") is not None]
         for s, rows in bars.items()
     }
-    return build_paths(signals, bars), signals
+    # 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): the reopt
+    # proposes the SAME clamps the live picker uses, so it must measure on the
+    # SAME basis — the live resolver's intrabar/sl_first rule. Building close
+    # paths here would re-propose the tight stop the resolver keeps stopping out.
+    return build_envelopes(signals, bars, basis=live_basis()), signals
 
 
 def _fmt_sc(sc: dict[str, Any] | None) -> str:

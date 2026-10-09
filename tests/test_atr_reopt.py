@@ -18,6 +18,18 @@ def _paths(n=120, edge=2.0, noise=0.3, seed=0):
     return np.vstack([base + rng.normal(0, noise, 48) for _ in range(n)])
 
 
+def _envelopes(n=120, edge=2.0, noise=0.3, seed=0):
+    """(n, 48, 2) envelope with fav=adv=close — the close-basis degenerate case.
+
+    The reopt now measures on the LIVE (intrabar) envelope, so its unit tests
+    build envelopes. A close-degenerate envelope (fav == adv == the close path)
+    reproduces the historical close-walk result, which is what these
+    assertions were calibrated against.
+    """
+    paths = _paths(n=n, edge=edge, noise=noise, seed=seed)
+    return np.stack([paths, paths], axis=2)
+
+
 def _mixed_paths(n=200, edge=2.5, noise=0.15, seed=1):
     """Alternating up/down drifts — wr≈0.5 on symmetric brackets."""
     rng = np.random.default_rng(seed)
@@ -29,9 +41,14 @@ def _mixed_paths(n=200, edge=2.5, noise=0.15, seed=1):
     return np.vstack(out)
 
 
+def _mixed_envelopes(n=200, edge=2.5, noise=0.15, seed=1):
+    paths = _mixed_paths(n=n, edge=edge, noise=noise, seed=seed)
+    return np.stack([paths, paths], axis=2)
+
+
 def test_eval_cell_wr_and_ev():
-    paths = _paths()
-    sc = eval_cell(paths, 1.0, 1.0)
+    env = _envelopes()
+    sc = eval_cell(env, 1.0, 1.0)
     assert sc is not None
     assert sc["dec"] >= 40
     assert 0.0 <= sc["wr"] <= 1.0
@@ -39,8 +56,8 @@ def test_eval_cell_wr_and_ev():
 
 def test_solve_free_balanced_cell():
     # Mixed up/down drifts → balanced wr with RR>1 EV-positive cell
-    paths = _mixed_paths()
-    sc = solve_free(paths)
+    env = _mixed_envelopes()
+    sc = solve_free(env)
     assert sc is not None
     assert 0.40 <= sc["wr"] <= 0.60
     assert sc["ev_h1"] > 0 and sc["ev_h2"] > 0
