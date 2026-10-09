@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from regime_platform.core import param_store
+from regime_platform.sweep_orchestrator import tiered_atr as ta
 
 
 @pytest.fixture(autouse=True)
@@ -224,7 +225,8 @@ def test_optimizer_writes_local_store(monkeypatch):
     import regime_platform.sweep_orchestrator.dynamic_tier_optimizer as opt
 
     async def _fake_symbols():
-        return [{"symbol": "XAUUSD"}]
+        return [{"symbol": "XAUUSD", "asset_class": "commodity",
+                 "tradingview_symbol": "OANDA:XAUUSD"}]
 
     async def _fake_resolved(symbols, **kw):
         return []
@@ -235,21 +237,31 @@ def test_optimizer_writes_local_store(monkeypatch):
     async def _fake_incubation():
         return {}
 
+    async def _fake_pick(asset_class, *, cfg, min_rr, symbol=None, use_store=True):
+        pick = ta.DynamicAtrPick(tp_atr=4.94, sl_atr=1.0, exp_atr=1.23,
+                                 exp_h1=0.5, exp_h2=0.7, expiry=0.05, n=134)
+        await ta.write_pick_to_store(symbol, pick, source="test")
+        return pick
+
     monkeypatch.setattr(opt, "fetch_active_symbols", _fake_symbols)
     monkeypatch.setattr(opt, "_fetch_resolved_rows", _fake_resolved)
     monkeypatch.setattr(opt, "_fetch_reachability_rows", _fake_reach)
     monkeypatch.setattr(opt, "_compute_geometry_incubation", _fake_incubation)
-
-    # Force a non-empty ATR pick so there is something to persist.
-    monkeypatch.setattr(opt, "_compute_dynamic_atr", lambda rows: {
-        "XAUUSD": {"bucket": "2-4", "expectancy_r": -0.31, "n": 134},
-    })
+    # 2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the
+    # optimizer no longer computes its own ATR — it calls the one picker,
+    # which persists the usable geometry. Stub the picker instead.
+    monkeypatch.setattr(ta, "dynamic_atr_pick", _fake_pick)
 
     summary = _run(opt.run_dynamic_tier_optimization())
     assert summary["atr_picks"] == 1
-    assert summary["state_rows_written"] >= 1
-    # The local authority holds the pick.
-    assert param_store.read_float("XAUUSD", param_store.TIER_DYNAMIC_ATR, "2-4") == pytest.approx(-0.31)
+    # The ATR tier is written by the PICKER, not this row list — so the
+    # optimizer's own row count is independent of the ATR pick (2026-10-09).
+    assert "state_rows_written" in summary
+    # The local authority holds the USABLE geometry (not a bucket label).
+    stored = ta.read_pick_from_store("XAUUSD")
+    assert stored is not None
+    assert stored.tp_atr == pytest.approx(4.94)
+    assert stored.sl_atr == pytest.approx(1.0)
 
 
 # ── Consumer read paths (local first) ────────────────────────────────────

@@ -46,11 +46,7 @@ import numpy as np
 
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.bracket_reachability import (
-    _bucket_for,
     _dedupe_episodes,
-    _hours_between,
-    _signal_side,
-    _vol_tier,
 )
 from regime_platform.sweep_orchestrator.supabase_client import (
     _headers,
@@ -145,86 +141,44 @@ async def _fetch_reachability_rows(
 
 # ─── Tier 1: Dynamic ATR ────────────────────────────────────────────────────
 
-def _compute_dynamic_atr(
-    rows: list[dict[str, Any]],
-    *,
-    lookback_days: int = _LOOKBACK_DAYS,
-) -> dict[str, Any]:
-    """Compute dynamic ATR pick per symbol from resolved signals.
+async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Refresh the dynamic-ATR tier by calling the ONE picker.
 
-    Same algorithm as tiered_atr.walk() but operating on the full
-    symbol population (not per-class). Returns per-symbol picks.
+    2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): this
+    replaces the old ``_compute_dynamic_atr``, which bucketed stored brackets
+    and produced a *diagnostic* (a bucket label + expectancy) that no consumer
+    could use as geometry. The picker (``tiered_atr.dynamic_atr_pick``) is the
+    single computation of ATR TP/SL; it now persists its own result to the
+    ``dynamic_atr`` tier, and this function is the 15-min clock that calls it.
+
+    Returns ``{symbol: pick}`` for the summary; the tier write happens inside
+    the picker (``write_pick_to_store``). ``use_store=False`` forces a real
+    recompute — without it the picker would read back its own previous write.
     """
-    by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for r in rows:
-        sym = r.get("symbol")
-        if sym:
-            by_symbol[sym].append(r)
+    from regime_platform.core.feature_flags import (
+        get_dynamic_atr_config,
+        get_min_rr,
+    )
+    from regime_platform.sweep_orchestrator.tiered_atr import dynamic_atr_pick
 
     picks: dict[str, Any] = {}
-    for symbol, sym_rows in by_symbol.items():
-        if len(sym_rows) < _MIN_SIGNALS:
+    for p in peers:
+        symbol = p.get("symbol")
+        if not symbol or not p.get("tradingview_symbol"):
             continue
-
-        # Compute ATR for each row (use stored ATR, skip if missing)
-        atr_rows = [r for r in sym_rows if r.get("atr")]
-        if len(atr_rows) < _MIN_SIGNALS:
+        try:
+            pick = await dynamic_atr_pick(
+                p.get("asset_class"),
+                cfg=get_dynamic_atr_config(p.get("asset_class"), symbol),
+                min_rr=get_min_rr(),
+                symbol=symbol,
+                use_store=False,
+            )
+        except Exception as exc:
+            logger.warning("dynamic_tier_optimizer: atr refresh %s failed: %s", symbol, exc)
             continue
-
-        # Bucket by distance/ATR
-        bucket_data: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {"n": 0, "tp": 0, "sl": 0, "exp": 0, "rr_sum": 0.0, "hours": []}
-        )
-        for r in atr_rows:
-            entry = r.get("entry_price")
-            tp = r.get("take_profit")
-            outcome = r.get("outcome")
-            if entry is None or tp is None or outcome not in ("tp_hit", "sl_hit", "expired"):
-                continue
-            atr = float(r["atr"])
-            ratio = abs(float(tp) - float(entry)) / atr
-            bucket = _bucket_for(ratio)
-            if bucket is None:
-                continue
-            d = bucket_data[bucket]
-            d["n"] += 1
-            if outcome == "tp_hit":
-                d["tp"] += 1
-                tp_bricks = r.get("tp_bricks") or 0
-                sl_bricks = r.get("sl_bricks") or 0
-                if sl_bricks:
-                    d["rr_sum"] += float(tp_bricks) / float(sl_bricks)
-            elif outcome == "sl_hit":
-                d["sl"] += 1
-            else:
-                d["exp"] += 1
-            if outcome in ("tp_hit", "sl_hit"):
-                hrs = _hours_between(r.get("ts"), r.get("resolved_at"))
-                if hrs is not None:
-                    d["hours"].append(hrs)
-
-        # Find best bucket by expectancy
-        best_bucket = None
-        best_exp = -999.0
-        for bucket, d in bucket_data.items():
-            n = d["n"]
-            if n < _MIN_SIGNALS:
-                continue
-            win_rate = d["tp"] / n
-            avg_rr = d["rr_sum"] / d["tp"] if d["tp"] else 0.0
-            exp = win_rate * avg_rr - (1 - win_rate) * 1.0
-            if exp > best_exp:
-                best_exp = exp
-                best_bucket = bucket
-
-        if best_bucket:
-            picks[symbol] = {
-                "bucket": best_bucket,
-                "expectancy_r": round(best_exp, 4),
-                "n": bucket_data[best_bucket]["n"],
-                "source": "dynamic_tier_optimizer",
-            }
-
+        if pick is not None:
+            picks[symbol] = pick
     return picks
 
 
@@ -436,6 +390,9 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
         "deadline_tiers": 0,
         "regime_edges": 0,
         "incubation_verdicts": 0,
+        # Set below; pre-seeded so the key is always present (the ATR tier is
+        # written by the picker, not this row list — see 2026-10-09 note).
+        "state_rows_written": 0,
         "errors": [],
     }
 
@@ -464,13 +421,14 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
         logger.warning("dynamic_tier_optimizer: fetch_reachability_rows failed: %s", exc)
         reachability_rows = []
 
-    # Tier 1: Dynamic ATR
+    # Tier 1: Dynamic ATR — the picker is the one computation; this is the
+    # clock that refreshes its persisted result (2026-10-09 single source).
     try:
-        atr_picks = _compute_dynamic_atr(resolved_rows)
+        atr_picks = await _refresh_dynamic_atr(peers)
         summary["atr_picks"] = len(atr_picks)
     except Exception as exc:
-        summary["errors"].append(f"compute_dynamic_atr: {exc}")
-        logger.warning("dynamic_tier_optimizer: compute_dynamic_atr failed: %s", exc)
+        summary["errors"].append(f"refresh_dynamic_atr: {exc}")
+        logger.warning("dynamic_tier_optimizer: refresh_dynamic_atr failed: %s", exc)
         atr_picks = {}
 
     # Tier 2: Dynamic Deadline
@@ -510,16 +468,11 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
         state_rows = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        for symbol, pick in atr_picks.items():
-            state_rows.append({
-                "symbol": symbol,
-                "tier_type": "dynamic_atr",
-                "tier_key": pick["bucket"],
-                "tier_value": pick["expectancy_r"],
-                "n": pick["n"],
-                "computed_at": now_iso,
-                "source": "dynamic_tier_optimizer",
-            })
+        # dynamic_atr is NOT assembled here (2026-10-09, worklog
+        # 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the picker
+        # (tiered_atr.dynamic_atr_pick) writes its own usable-geometry row to
+        # the tier via write_pick_to_store(), so the optimizer must not write
+        # a second, differently-shaped row for the same key.
 
         for key, tier in deadline_tiers.items():
             state_rows.append({

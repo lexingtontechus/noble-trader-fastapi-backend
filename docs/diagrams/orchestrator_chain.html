@@ -209,10 +209,10 @@
       </tr>
       <tr>
         <td><code>config/param_store.sqlite</code><br><span style="color:var(--mut);font-size:10.5px">(tier store, Supabase-mirrored)</span></td>
-        <td>dynamic_tier_optimizer</td>
-        <td><span class="warn">3 of 5 tiers</span> — deadline · regime_edge · brick_state</td>
+        <td>dynamic_tier_optimizer<br><span style="color:var(--mut);font-size:10.5px">+ tiered_atr picker (dynamic_atr)</span></td>
+        <td><span class="ok">4 of 5 tiers</span> — deadline · regime_edge · brick_state · <b>dynamic_atr</b></td>
         <td>15 min</td>
-        <td><code>dynamic_deadline</code> 56 · <code>regime_edge</code> 159 · <code>geometry_incubation</code> 28 · <code>dynamic_atr</code> 17 · <code>brick_state</code> 14</td>
+        <td><code>dynamic_atr</code> (usable geometry) · <code>dynamic_deadline</code> · <code>regime_edge</code> · <code>geometry_incubation</code> · <code>brick_state</code></td>
       </tr>
       <tr>
         <td>Supabase tables</td>
@@ -232,7 +232,7 @@
       <span class="arrow">→</span>
       <div class="box live"><div class="t">Renko + HMM</div><div class="f">regime_engine.py<br>4-state → regime_label</div></div>
       <span class="arrow">→</span>
-      <div class="box live"><div class="t">Geometry</div><div class="f">brick_params.yaml<br><span class="p">brick_size scaled per tick (live)<br>sl/tp brick COUNTS: daily only</span></div></div>
+      <div class="box live"><div class="t">Geometry</div><div class="f">brick_params.yaml<br><span class="p">+ dynamic_atr pick (shadow)<br>brick_size scaled per tick (live)</span></div></div>
       <span class="arrow">→</span>
       <div class="box live"><div class="t">TimesFM</div><div class="f">server.py :8002<br>→ p_timesfm</div></div>
       <span class="arrow">→</span>
@@ -272,7 +272,14 @@
       <span class="arrow">/</span>
       <div class="box live" style="max-width:210px"><div class="t">regime_edge</div><div class="f">read · shadow (stamp only)</div></div>
       <span class="arrow">/</span>
-      <div class="box dead" style="max-width:250px"><div class="t">dynamic_atr ✗</div><div class="f">WRITTEN 17 rows — NO READER</div></div>
+      <div class="box live" style="max-width:280px"><div class="t">dynamic_atr ✓</div><div class="f">read by BOTH sweeps (light: shadow)<br><span class="p">tier "dynamic_atr" key "latest" = usable geometry</span></div></div>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <div class="box live"><div class="t">tiered_atr.dynamic_atr_pick</div><div class="f">THE one ATR computation<br>live-basis walk → DynamicAtrPick</div></div>
+      <span class="arrow">→</span>
+      <div class="box live" style="max-width:230px"><div class="t">write_pick_to_store</div><div class="f">JSON geometry (not a bucket label)</div></div>
+      <span class="arrow">→</span>
+      <div class="box live" style="max-width:250px"><div class="t">heavy + light apply</div><div class="f">to_price_levels() → entry ± tp/sl·ATR</div></div>
     </div>
   </div>
 
@@ -280,15 +287,15 @@
   <div class="note">
     <h2>Gaps &amp; unwired processes</h2>
     <ol>
-      <li><b class="gap">dynamic_atr tier is a dead write.</b> <span class="k">dynamic_tier_optimizer._compute_dynamic_atr</span> writes 17 per-symbol picks into <span class="k">param_store</span> every 15&nbsp;min. <b>No production code reads <span class="k">TIER_DYNAMIC_ATR</span></b> — only <span class="k">tests/test_param_store.py</span>. The pre-sweep ATR optimization never reaches the sweep.</li>
+      <li><b class="ok">✓ FIXED 2026-10-09 — dynamic_atr tier is no longer a dead write.</b> <span class="k">tiered_atr.dynamic_atr_pick</span> is now the ONE ATR computation and writes the <b>usable geometry</b> (JSON: tp_atr/sl_atr/exp/n) to tier <span class="k">dynamic_atr</span> key <span class="k">latest</span>. The old parallel <span class="k">dynamic_tier_optimizer._compute_dynamic_atr</span> (bucket-label diagnostic) is <b>retired</b>. Worklog <span class="k">20261009_ATR_GEOMETRY_SINGLE_SOURCE.md</span>.</li>
 
-      <li><b class="gap">The ATR picker never runs on the light path.</b> <span class="k">tiered_atr.dynamic_atr_pick</span> is called <b>only from <span class="k">heavy_sweep.py</span></b> (live cron <span class="k">6 17 * * *</span> from <span class="k">nt_symbol.sweep_cron</span>; code default <span class="k">0 20 * * *</span> — AGENTS.md still says 20:00). The light sweep (every 15&nbsp;min) reads <span class="k">brick_params.yaml</span>, which only the heavy sweep rewrites. <b>Nuance:</b> the light path does scale <span class="k">brick_size</span> every tick via <span class="k">geometry_intraday_scale_mode: live</span> (ATR-now / ATR-at-write) — but <b>not</b> the brick <i>counts</i> (<span class="k">sl_bricks</span>/<span class="k">tp_bricks</span>). So the stop/target <i>shape</i> refreshes daily; only its <i>dollar size</i> tracks ATR at 15&nbsp;min.</li>
+      <li><b class="ok">✓ FIXED 2026-10-09 — the light path now reads the picker's ATR geometry.</b> <span class="k">_process_symbol</span> reads the SAME persisted pick and applies exact ATR price levels, mirroring <span class="k">heavy_sweep.py</span>. Ships behind <span class="k">dynamic_atr_light_mode: shadow</span> (logs the would-apply bracket, publishes unchanged) — flip to <span class="k">live</span> to apply. The optimizer is now the 15-min clock that <b>calls</b> the picker (<span class="k">_refresh_dynamic_atr</span>, <span class="k">use_store=False</span>), so the light sweep's stop/target <i>shape</i> can refresh every 15&nbsp;min instead of daily.</li>
 
-      <li><b class="gap">Two ATR mechanisms that never meet.</b> <span class="k">atr_reopt</span> (4h) patches <span class="k">feature_flags.yaml</span> clamps; <span class="k">dynamic_tier_optimizer</span> (15&nbsp;min) writes <span class="k">param_store</span>. The picker reads <b>only</b> the former. Same conceptual lever, two stores, one orphaned.</li>
+      <li><b class="warn">Two ATR mechanisms still meet only at the picker.</b> <span class="k">atr_reopt</span> (4h) patches <span class="k">feature_flags.yaml</span> clamps (the <i>search band</i> the picker walks); the picker writes <span class="k">param_store</span> (the <i>chosen geometry</i>). These are now genuinely different concerns — band vs result — not two sources for one value.</li>
 
       <li><b class="gap">geometry_incubation tier is write-only.</b> 28 rows per run; <span class="k">TIER_GEOMETRY_INCUBATION</span> has no reader. The module is imported only by <span class="k">heavy_sweep.py</span>.</li>
 
-      <li><b class="warn">Three of five tiers are shadow.</b> <span class="k">dynamic_deadline_mode</span>, <span class="k">regime_edge_mode</span>, <span class="k">geometry_incubation_mode</span> = <span class="k">shadow</span> — computed and stamped, but none gate a signal. Only <span class="k">geometry_intraday_scale_mode</span> and <span class="k">dynamic_atr_mode</span> are live (the latter on the heavy path only).</li>
+      <li><b class="warn">Three of five tiers are shadow.</b> <span class="k">dynamic_deadline_mode</span>, <span class="k">regime_edge_mode</span>, <span class="k">geometry_incubation_mode</span> = <span class="k">shadow</span> — computed and stamped, but none gate a signal. <span class="k">dynamic_atr_light_mode</span> is the fourth shadow (new); <span class="k">dynamic_atr_mode</span> is live on the heavy path only.</li>
 
       <li><b class="warn">9 modules have no importer.</b> Offline/CLI by design: <span class="k">fp_eval</span>, <span class="k">common_factor</span>, <span class="k">reachability_decay</span>, <span class="k">leverage_eval</span>, <span class="k">calibration_quality_gate</span>, <span class="k">timesfm_zmap</span>*, <span class="k">portfolio_compare</span>, <span class="k">paper_retroclose</span>, <span class="k">regime_state_store</span>*. <span style="color:var(--mut)">(* = actually live via function-local import)</span></li>
 

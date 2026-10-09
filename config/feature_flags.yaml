@@ -512,6 +512,15 @@ dynamic_atr_risk_cap: 0.35
 dynamic_atr_consistency_mode: "shadow"
 dynamic_atr_consistency_tol: 0.20
 
+# dynamic_atr_light_mode (2026-10-09, worklog
+# 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): off | shadow | live. The light
+# sweep now reads the SAME persisted ATR pick the heavy path chose (tier
+# "dynamic_atr", key "latest" in config/param_store.sqlite) and applies it
+# to the bracket via exact ATR price levels. shadow (default) computes and
+# logs the would-apply bracket WITHOUT changing the published signal; live
+# applies it; off disables. Ships shadow-first — this changes live geometry.
+dynamic_atr_light_mode: "shadow"
+
 dynamic_atr:
   lookback_days: 10
   tp_atr: [1.71, 2.0, 3.0, 5.0, 8.0, 13.0]

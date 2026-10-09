@@ -238,6 +238,7 @@ _DEFAULTS: dict[str, Any] = {
     # heavy pick; off disables.
     "dynamic_atr_consistency_mode": "shadow",
     "dynamic_atr_consistency_tol": 0.20,
+    "dynamic_atr_light_mode": "shadow",
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "live",
@@ -706,6 +707,22 @@ def get_dynamic_atr_consistency_tol() -> float:
         ))
     except (TypeError, ValueError):
         return 0.20
+
+
+def get_dynamic_atr_light_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — light-sweep ATR geometry apply.
+
+    2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the light
+    path now reads the SAME persisted ATR pick the heavy path chose, and
+    applies it to the bracket. ``shadow`` (default) computes and logs the
+    would-apply bracket without changing the published signal; ``live``
+    applies it; ``off`` disables. Ships shadow-first because this changes a
+    live signal's geometry.
+    """
+    return str(_load().get(
+        "dynamic_atr_light_mode",
+        _DEFAULTS.get("dynamic_atr_light_mode", "shadow"),
+    )).lower()
 
 
 def get_dynamic_atr_config(

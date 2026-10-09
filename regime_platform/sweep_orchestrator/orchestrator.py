@@ -3965,6 +3965,42 @@ class SweepOrchestrator(HeavySweepMixin):
             regime_label, current_price, brick_size, sl_bricks, tp_bricks,
         )
 
+        # ── Dynamic ATR geometry apply (2026-10-09, worklog
+        # 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md) ──────────────────────────
+        # Read the SAME persisted ATR pick the heavy sweep chose (tier
+        # "dynamic_atr", key "latest") and override the brick-quantised
+        # bracket with exact ATR price levels — mirroring heavy_sweep.py's
+        # block. shadow = log the would-apply bracket; live = apply.
+        # Fail-open: cold store / no pick → brick geometry untouched.
+        try:
+            from regime_platform.core.feature_flags import get_dynamic_atr_light_mode
+            _atr_light = get_dynamic_atr_light_mode()
+            if _atr_light != "off" and atr and atr > 0:
+                from regime_platform.sweep_orchestrator.tiered_atr import (
+                    read_pick_from_store,
+                )
+                _atr_pick = read_pick_from_store(symbol, max_age_hours=6.0)
+                if _atr_pick is not None:
+                    _tp_px, _sl_px = _atr_pick.to_price_levels(
+                        trade_signal["entry_price"], atr,
+                        trade_signal.get("signal", "buy"),
+                    )
+                    if _atr_light == "live":
+                        trade_signal["take_profit"] = _tp_px
+                        trade_signal["stop_loss"] = _sl_px
+                        logger.info(
+                            "[dynamic:atr:light] %s APPLIED tp=%.6f sl=%.6f "
+                            "(%s)", symbol, _tp_px, _sl_px, _atr_pick.as_log(),
+                        )
+                    else:
+                        logger.info(
+                            "[dynamic:atr:light] %s would apply tp=%.6f sl=%.6f "
+                            "(shadow, brick kept) (%s)",
+                            symbol, _tp_px, _sl_px, _atr_pick.as_log(),
+                        )
+        except Exception as _atr_exc:
+            logger.debug("[dynamic:atr:light] %s failed: %s", symbol, _atr_exc)
+
         # ── R2: p_win_bracket lookup BEFORE EV (2026-09-22) ─────────────
         # p_win_in_ev_mode=live needs p_win_bracket at EV time so the
         # published probability matches the settlement event (R2c). Gate

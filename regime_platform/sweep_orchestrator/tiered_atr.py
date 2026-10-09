@@ -277,6 +277,116 @@ class DynamicAtrPick:
         return (f"tp={self.tp_atr:g}ATR sl={self.sl_atr:g}ATR exp={self.exp_atr:+.3f} "
                 f"(h1 {self.exp_h1:+.3f} h2 {self.exp_h2:+.3f}) expiry={self.expiry:.0%} n={self.n}")
 
+    def to_json(self) -> dict[str, Any]:
+        """The pick as the param_store tier value (JSON object).
+
+        2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the
+        ``dynamic_atr`` tier carries the USABLE geometry, not a bucket
+        label — so both sweeps can build a bracket from one stored value.
+        """
+        return {
+            "tp_atr": float(self.tp_atr),
+            "sl_atr": float(self.sl_atr),
+            "exp_atr": float(self.exp_atr),
+            "exp_h1": float(self.exp_h1),
+            "exp_h2": float(self.exp_h2),
+            "expiry": float(self.expiry),
+            "n": int(self.n),
+        }
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any] | None) -> "DynamicAtrPick | None":
+        """Rebuild a pick from a stored tier value; ``None`` when malformed."""
+        if not isinstance(d, dict):
+            return None
+        try:
+            return cls(
+                tp_atr=float(d["tp_atr"]),
+                sl_atr=float(d["sl_atr"]),
+                exp_atr=float(d.get("exp_atr", 0.0)),
+                exp_h1=float(d.get("exp_h1", 0.0)),
+                exp_h2=float(d.get("exp_h2", 0.0)),
+                expiry=float(d.get("expiry", 0.0)),
+                n=int(d.get("n", 0) or 0),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+# ─── Store-backed pick (single source of truth, 2026-10-09) ───────────────
+#
+# One computation (`dynamic_atr_pick`) owns the ATR geometry; the
+# ``dynamic_atr`` tier in config/param_store.sqlite carries it so the light
+# and heavy sweeps read the SAME value instead of each deriving its own.
+# Key is ``latest`` — the pick is a whole-symbol value, not per-bucket.
+
+_DYNAMIC_ATR_KEY = "latest"
+
+
+def read_pick_from_store(
+    symbol: str, *, max_age_hours: float | None = None,
+) -> Optional["DynamicAtrPick"]:
+    """Read the symbol's ATR pick from the LOCAL param store (no network).
+
+    Returns ``None`` when absent, malformed, or older than ``max_age_hours``
+    — callers then compute (or keep the brick geometry), fail-open.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from regime_platform.core import param_store
+
+        parsed = param_store.read_dict(symbol, param_store.TIER_DYNAMIC_ATR, _DYNAMIC_ATR_KEY)
+        if not parsed:
+            return None
+        if max_age_hours is not None:
+            rows = param_store.read_tier(symbol, param_store.TIER_DYNAMIC_ATR)
+            row = rows.get(_DYNAMIC_ATR_KEY) or {}
+            ts = row.get("computed_at")
+            if ts:
+                try:
+                    computed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                    if computed.tzinfo is None:
+                        computed = computed.replace(tzinfo=timezone.utc)
+                    age_h = (datetime.now(timezone.utc) - computed).total_seconds() / 3600.0
+                    if age_h > float(max_age_hours):
+                        return None
+                except (TypeError, ValueError):
+                    pass  # unparseable stamp → treat as fresh (fail-open)
+        return DynamicAtrPick.from_json(parsed)
+    except Exception as exc:
+        logger.debug("tiered_atr read_pick_from_store %s: %s", symbol, exc)
+        return None
+
+
+async def write_pick_to_store(
+    symbol: str, pick: "DynamicAtrPick", *, source: str = "tiered_atr",
+) -> bool:
+    """Write the pick's usable geometry to the LOCAL param store.
+
+    This is what makes the ``dynamic_atr`` tier a live read path rather than
+    the dead bucket-label write it was before. Best-effort: returns False on
+    failure, never raises.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from regime_platform.core import param_store
+
+        await param_store.write_params([{
+            "symbol": symbol,
+            "tier_type": param_store.TIER_DYNAMIC_ATR,
+            "tier_key": _DYNAMIC_ATR_KEY,
+            "tier_value": pick.to_json(),
+            "n": int(pick.n),
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+        }])
+        return True
+    except Exception as exc:
+        logger.warning("tiered_atr write_pick_to_store %s: %s", symbol, exc)
+        return False
+
 
 def select_tp_sl(
     paths: np.ndarray | None = None,
@@ -562,9 +672,14 @@ async def dynamic_atr_pick(
     cfg: dict[str, Any],
     min_rr: float,
     symbol: str | None = None,
+    use_store: bool = True,
 ) -> Optional[DynamicAtrPick]:
     """TP/SL from recent signals. ``symbol`` walks only that symbol (per-symbol
     solve); otherwise the whole asset class. Cached 6h per (symbol|class, grid).
+
+    ``use_store`` (default True): return a fresh persisted pick without
+    walking. The pre-sweep refresh passes ``False`` so it always recomputes
+    (otherwise it would read back its own previous write and never refresh).
     """
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
     from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
@@ -598,8 +713,22 @@ async def dynamic_atr_pick(
         vol_long,
     )
     hit = _PICK_CACHE.get(grid_fp)
-    if hit and time.time() - hit[0] < _PICK_TTL_S:
+    if hit and time.time() - hit[0] < _PICK_TTL_S and use_store:
         return hit[1]
+
+    # Single source of truth (2026-10-09, worklog
+    # 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the optimizer refreshes this
+    # store every 15 min, so a fresh persisted pick is authoritative and we
+    # skip the walk entirely. Stale/absent → compute below (fail-open).
+    # ``use_store=False`` (the refresh path) always recomputes.
+    if symbol and use_store:
+        _stored = read_pick_from_store(symbol, max_age_hours=_PICK_TTL_S / 3600.0)
+        if _stored is not None:
+            logger.info(
+                "[dynamic:atr] %s store hit — %s (no walk)", symbol, _stored.as_log(),
+            )
+            _PICK_CACHE[grid_fp] = (time.time(), _stored)
+            return _stored
 
     peers = await fetch_active_symbols()
     if symbol:
@@ -746,6 +875,11 @@ async def dynamic_atr_pick(
                     )
         except Exception as exc:
             logger.debug("[dynamic:atr] %s consistency check failed: %s", symbol, exc)
+
+    # Persist the pick (single source of truth) so the light path can read the
+    # same geometry the heavy path just chose — no re-derivation. Best-effort.
+    if pick is not None and symbol:
+        await write_pick_to_store(symbol, pick, source="tiered_atr")
 
     _PICK_CACHE[grid_fp] = (time.time(), pick)
     return pick
