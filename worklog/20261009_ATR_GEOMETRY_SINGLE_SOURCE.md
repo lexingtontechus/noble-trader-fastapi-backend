@@ -99,7 +99,7 @@ The heavy apply is gated by the existing `dynamic_atr_mode` (already `live`). Th
 - The light path **applies** the store pick when `live` and **does not** when `shadow` (the published bracket is byte-identical to the pre-change geometry in shadow).
 - Fail-open: a cold store leaves the brick geometry untouched.
 
-Full suite: **1843 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ships_shadow_qs` — yaml ships `calibration_evidence_pool_mode: live`, the test still asserts `shadow`; unrelated to this change).
+Full suite at that commit: **1843 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ships_shadow_qs` — yaml ships `calibration_evidence_pool_mode: live`, the test still asserts `shadow`; unrelated to this change). *(Later commits on 2026-10-09 raised this to 1869 passed; the pre-existing failure is unchanged.)*
 
 ---
 
@@ -182,4 +182,78 @@ permanent parity drift (the same accumulate-stale-rows trap fixed for the
 mirror on 2026-10-08).
 
 Tests: `tests/test_atr_single_source.py` is now **13 tests**.
+
+---
+
+## Part B — Fix the incubation clock: evidence-relative `min_days`
+
+The gate that came out of Part A (14 rows, `n_resolved=0`, age 7.6h) revealed the fundamental flaw: **the 7-day floor is unreachable under today's reset cadence**.
+
+### Verified data (Studio prod, 2026-10-09 08:59 UTC)
+
+| metric | value |
+|---|---|
+| Total rows in `nt_geometry_incubation` | 441 |
+| Superseded | 427 |
+| Incubating | 14 |
+| Actual resets | 427 symbol-symbol supersede events |
+| **No-change supersedes** | **149 of 427 — 35%** |
+| Max observed incubation age | **7.6h** |
+| Resolution rate range | 21 → 101/24h |
+| Time for n=20 | 4.8h (XAGUSD) → 16.6h (US500) |
+
+The gate requires **`min_days=7` AND `min_resolved=20`**, but:
+- `min_resolved=20` is reached in under 17h for every symbol
+- The 7-day floor is **never met** because 35% of resets are no-change, and the worst-case age is 7.6h
+
+### The fix: evidence-relative `min_days`
+
+Compute `min_days` from the symbol's own resolution history instead of a calendar floor:
+
+```
+evidence_rate = (wins + losses) / (closed_days)      # e.g. 95/1 = 95/symbol/day for GBPUSD
+min_days = ceil(max(1, min_resolved / evidence_rate)) # e.g. ceil(20/95) = 1
+```
+
+If history shows a symbol reliably resolves 100×/day, 20 evidence takes ~20min; if it resolves 30×/day, 20 takes ~16h. The gate becomes **adaptive to the symbol's actual cadence**, not a fixed 168h that assumes one resolution per 24h.
+
+### Implementation (untested prose)
+
+1. `evaluate_promotion()` reads the last 7 days of `nt_signal_sim` for the symbol.
+2. Count `wins + losses` grouped by `resolved_at::date` → `closed_days`.
+3. Compute `evidence_rate = total_resolved / closed_days`.
+4. Set `min_days = ceil(20 / evidence_rate)` but cap at `max(min_days, 1)`.
+5. Proceed to check `days_elapsed >= min_days AND n_resolved >= 20`.
+6. Fail-open when `closed_days < 2` → fall back to `min_days=1` (one day minimum).
+
+### Integration point
+
+The gate lives in `geometry_incubation.evaluate_promotion()` (called by the new hourly `:48` scheduler job I wired in Part A). The new computation replaces the current line:
+
+```python
+if days_elapsed < 7 or n_resolved < 20:
+    return "incubating"
+```
+
+with:
+
+```python
+min_days = self._compute_adaptive_min_days(symbol, closed_days)
+if days_elapsed < min_days or n_resolved < 20:
+    return "incubating"
+```
+
+### Why not use `dynamic_deadline`?
+
+The per-signal `expected_resolution_hours` is stamped on `nt_signal_sim` and correlates well with the symbol's cadence, but it's **per-signal, not population-average**. Averaging it across 7 days would give a similar result to the direct count, but the direct count is cleaner and makes the gate's input explicit. Either way, **the key is replacing the fixed `min_days=7` with an evidence-relative figure**.
+
+### The deeper win
+
+This design doesn't just unlock the 7-day gate — it makes the gate **calibrate to the market** rather than impose a foreign assumption. XAGUSD (100/24h) needs hours, not weeks. AUS500 (29/24h) needs a day. The gate respects what the data shows about the symbol's actual rhythm.
+
+---
+
+## Post-mortem on the old design
+
+The gate assumed a uniform cadence when evidence showed massive spread (3× between fastest and slowest). The same assumption manifested in the deadline metadata (fixed 48h expiry, one-size-fits-all). The **one methodology** that works for both is evidence-relative: **resolution counts, not calendar clocks**.
 
