@@ -80,6 +80,39 @@ ATR_BUCKETS: tuple[tuple[float, float | None, str], ...] = (
 _PAGE_SIZE = 1000
 
 
+async def _fetch_cutover_at() -> str | None:
+    """The resolver-basis cutover timestamp (nt_calibration_cutover), or None.
+
+    Reads the SAME single-row marker v_calibration_records_current and
+    calibration_bias_bucket use, so reachability, the bias table, and the live
+    calibration gate all exclude the same pre-intrabar era. Returns the ISO
+    timestamp with a PostgREST-safe ``Z`` suffix. Missing table/row/URL → None
+    (caller skips the era filter, fail-open). Kept local (not imported from
+    calibration_bias_bucket) to avoid a circular import — both read the same
+    table, which is the coherence point.
+    """
+    try:
+        if not settings.SUPABASE_URL:
+            return None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_calibration_cutover"),
+                headers=_headers(),
+                params={"select": "cutover_at", "limit": "1"},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                return None
+            raw = rows[0].get("cutover_at")
+            if not raw:
+                return None
+            return str(raw).replace("+00:00", "Z")
+    except Exception as exc:
+        logger.warning("bracket_reachability: cutover marker fetch failed: %s", exc)
+        return None
+
+
 def _bucket_for(ratio: float) -> str | None:
     for lo, hi, label in ATR_BUCKETS:
         if ratio >= lo and (hi is None or ratio < hi):
@@ -179,6 +212,17 @@ async def _fetch_resolved_rows(symbols: list[str] | None = None) -> list[dict[st
     }
     if symbols:
         params["symbol"] = f"in.({','.join(symbols)})"
+    # Era filter (worklog 20261009_CALIBRATION_REACHABILITY_TRIAGE.md §4/§5 and
+    # 20261009_P_WIN_BRACKET_COHERENCE.md): restrict to post-cutover (intrabar)
+    # evidence, reading the SAME nt_calibration_cutover marker the bias-by-bucket
+    # recompute and v_calibration_records_current use. Without this, reachability
+    # (and therefore p_win_bracket, which reads it) spans the pre-2026-10-02
+    # close-walk era — the tight buckets then read p_win_resolve≈0.27 when the
+    # clean post-cutover WR is 0.056, a ~5x overstatement feeding the EV engine.
+    # Missing marker → no filter (fail-open to prior behaviour).
+    cutover_at = await _fetch_cutover_at()
+    if cutover_at:
+        params["resolved_at"] = f"gte.{cutover_at}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
             resp = await client.get(

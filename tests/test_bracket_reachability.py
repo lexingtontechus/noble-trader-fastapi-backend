@@ -82,3 +82,80 @@ def test_signal_side_non_side_collapses_to_other():
     assert _signal_side(None) == "other"
     assert _signal_side("") == "other"
     assert _signal_side("hold") == "other"
+
+
+# ─── _fetch_resolved_rows era filter (20261009_P_WIN_BRACKET_COHERENCE.md) ──
+# _fetch_resolved_rows normally does real paginated Supabase I/O, but the era
+# filter it now applies is the coherence-critical part (reachability feeds
+# p_win_bracket, which was reading the pre-cutover close-walk era). Pin that it
+# forwards the nt_calibration_cutover marker as a resolved_at >= gte filter.
+
+
+class _FakeResp:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._rows
+
+
+class _RecordingClient:
+    """Records the params of each GET; serves the cutover marker for its
+    select, an empty signal_sim batch otherwise (we only assert the filter
+    was forwarded, not the bucket math)."""
+
+    def __init__(self, cutover_at="2026-10-02T00:00:00Z"):
+        self.cutover_at = cutover_at
+        self.seen = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        params = params or {}
+        select = params.get("select", "")
+        if "cutover_at" in select:
+            self.seen["cutover_fetched"] = True
+            return _FakeResp(
+                [{"cutover_at": self.cutover_at}] if self.cutover_at else []
+            )
+        # the paginated nt_signal_sim fetch
+        if "resolved_at" in params:
+            self.seen["era_filter"] = params["resolved_at"]
+        return _FakeResp([])
+
+
+def _run_fetch(client):
+    import asyncio
+    from unittest.mock import patch
+    from regime_platform.sweep_orchestrator import bracket_reachability as br
+    with (
+        patch.object(br.settings, "SUPABASE_URL", "https://x.supabase.co"),
+        patch.object(br, "_headers", return_value={"apikey": "k"}),
+        patch.object(br, "_url", return_value="https://x.supabase.co/rest/v1/t"),
+        patch.object(br.httpx, "AsyncClient", return_value=client),
+    ):
+        return asyncio.run(br._fetch_resolved_rows())
+
+
+def test_fetch_resolved_rows_forwards_cutover_era_filter():
+    client = _RecordingClient(cutover_at="2026-10-02T00:00:00Z")
+    _run_fetch(client)
+    assert client.seen.get("cutover_fetched") is True
+    # PostgREST-safe Z suffix, gte the cutover marker — same shape as the
+    # bias-by-bucket recompute, so both exclude the same era.
+    assert client.seen.get("era_filter") == "gte.2026-10-02T00:00:00Z"
+
+
+def test_fetch_resolved_rows_missing_marker_fails_open():
+    client = _RecordingClient(cutover_at=None)
+    _run_fetch(client)
+    # No marker → no era filter forwarded (prior behaviour preserved).
+    assert client.seen.get("cutover_fetched") is True
+    assert "era_filter" not in client.seen
