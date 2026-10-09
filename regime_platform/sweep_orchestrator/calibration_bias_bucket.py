@@ -72,6 +72,38 @@ logger = logging.getLogger("regime.sweep.calibration_bias_bucket")
 _PAGE_SIZE = 1000
 
 
+async def _fetch_cutover_at() -> str | None:
+    """The resolver-basis cutover timestamp (nt_calibration_cutover), or None.
+
+    Reads the SAME single-row marker the calibration-records view
+    (v_calibration_records_current, migration 192) uses, so the by-bucket
+    table and the live calibration gate exclude the same pre-intrabar era.
+    Returns the ISO timestamp normalised to a PostgREST-safe ``Z`` suffix
+    (no ``+00:00`` — PostgREST treats ``+`` as a space in filter values).
+    Missing table/row/URL → None (caller skips the era filter, fail-open).
+    """
+    try:
+        if not settings.SUPABASE_URL:
+            return None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_calibration_cutover"),
+                headers=_headers(),
+                params={"select": "cutover_at", "limit": "1"},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                return None
+            raw = rows[0].get("cutover_at")
+            if not raw:
+                return None
+            return str(raw).replace("+00:00", "Z")
+    except Exception as exc:
+        logger.warning("calibration_bias_bucket: cutover marker fetch failed: %s", exc)
+        return None
+
+
 async def _fetch_all(table: str, select: str, filters: dict[str, str]) -> list[dict[str, Any]]:
     if not settings.SUPABASE_URL:
         return []
@@ -106,6 +138,17 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
     filters: dict[str, str] = {"outcome": "in.(tp_hit,sl_hit)", "contaminated": "eq.false"}
     if symbols:
         filters["symbol"] = f"in.({','.join(symbols)})"
+    # Era filter (worklog 20261009_CALIBRATION_REACHABILITY_TRIAGE.md §5):
+    # restrict to post-cutover (intrabar-basis) evidence. Without this the
+    # by-bucket table spans the pre-2026-10-02 close-walk era (84k of 92k
+    # rows), which is what made the 4+ bucket's bias read +0.19 here vs -0.34
+    # on the 24h post-cutover cut — the sign-flip was the basis change, not
+    # the market. Reads the SAME marker the calibration-records view uses
+    # (nt_calibration_cutover), so the live gate and this table agree. A
+    # missing/empty marker → no filter (fail-open to prior behaviour).
+    cutover_at = await _fetch_cutover_at()
+    if cutover_at:
+        filters["resolved_at"] = f"gte.{cutover_at}"
 
     try:
         rows = await _fetch_all(
@@ -225,6 +268,7 @@ async def build_calibration_bias_by_bucket(symbols: list[str] | None = None) -> 
             "symbol": symbol,
             "vol_tier": vol_tier,
             "distance_atr_bucket": bucket,
+            "signal": "all",
             "n": n,
             "avg_p_win": round(avg_p_win, 4),
             "win_rate": round(win_rate, 4),

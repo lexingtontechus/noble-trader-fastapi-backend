@@ -29,12 +29,14 @@ class FakeResp:
 class FakeClient:
     """Serves different rows depending on which table is being queried
     (distinguished by the ``select``/params PostgREST sends), so one
-    fixture can stand in for both the nt_signal_sim fetch and the
-    nt_bracket_reachability join fetch in the same test run."""
+    fixture can stand in for the nt_signal_sim fetch, the
+    nt_bracket_reachability join fetch, and the nt_calibration_cutover
+    marker fetch in the same test run."""
 
-    def __init__(self, signal_sim_rows, reachability_rows=None):
+    def __init__(self, signal_sim_rows, reachability_rows=None, cutover_at="2026-10-02T00:00:00Z"):
         self.signal_sim_rows = signal_sim_rows
         self.reachability_rows = reachability_rows or []
+        self.cutover_at = cutover_at
 
     async def __aenter__(self):
         return self
@@ -44,13 +46,18 @@ class FakeClient:
 
     async def get(self, url, headers=None, params=None):
         select = (params or {}).get("select", "")
+        if "cutover_at" in select:
+            # nt_calibration_cutover marker fetch. None → fail-open (no era filter).
+            return FakeResp(
+                [{"cutover_at": self.cutover_at}] if self.cutover_at else []
+            )
         if "distance_atr_bucket,pct_expired" in select or "vol_tier,distance_atr_bucket,pct_expired" in select:
             return FakeResp(self.reachability_rows)
         return FakeResp(self.signal_sim_rows)
 
 
-def _run(signal_sim_rows, reachability_rows=None):
-    client = FakeClient(signal_sim_rows, reachability_rows)
+def _run(signal_sim_rows, reachability_rows=None, cutover_at="2026-10-02T00:00:00Z"):
+    client = FakeClient(signal_sim_rows, reachability_rows, cutover_at)
     with (
         patch(
             "regime_platform.sweep_orchestrator.calibration_bias_bucket.settings.SUPABASE_URL",
@@ -77,15 +84,17 @@ def _run(signal_sim_rows, reachability_rows=None):
 
 
 def _row(symbol, regime, entry, tp, atr, outcome, tp_bricks=5, sl_bricks=3, p_win=0.6):
+    # resolved_at is POST the 2026-10-02 cutover marker so the era filter
+    # (calibration_bias_bucket._fetch_cutover_at) includes these rows.
     return {
         "symbol": symbol,
-        "ts": "2026-09-01T00:00:00Z",
+        "ts": "2026-10-05T00:00:00Z",
         "entry_price": entry,
         "take_profit": tp,
         "atr": atr,
         "p_win": p_win,
         "outcome": outcome,
-        "resolved_at": "2026-09-01T04:00:00Z",
+        "resolved_at": "2026-10-05T04:00:00Z",
         "tp_bricks": tp_bricks,
         "sl_bricks": sl_bricks,
         "regime": regime,
@@ -156,3 +165,71 @@ def test_expectancy_r_well_defined_at_zero_wins_per_vol_tier():
     assert len(out) == 1
     assert out[0]["win_rate"] == 0.0
     assert out[0]["expectancy_r"] == -1.0
+
+
+# ── Era filter + signal column (worklog 20261009_CALIBRATION_REACHABILITY_TRIAGE.md) ──
+
+def test_output_rows_stamp_signal_all():
+    """Every pooled by-bucket row carries signal='all' (join parity with
+    nt_bracket_reachability, which already has the column)."""
+    rows = [_row("XAUUSD", "high_vol_bull", 100.0, 104.0, 10.0, "tp_hit")]
+    out = _run(rows)
+    assert out
+    assert all(r.get("signal") == "all" for r in out)
+
+
+def test_era_filter_uses_cutover_marker():
+    """The nt_signal_sim fetch must be bounded by resolved_at >= cutover_at
+    when the marker is present. Verified by asserting the FakeClient saw the
+    marker fetch AND that the build still returns rows (post-cutover rows
+    pass). The pre-cutover exclusion itself is a DB-side filter; here we pin
+    that the marker is read and forwarded, so a regression that drops the
+    filter fails this test."""
+    seen = {}
+
+    class RecordingClient(FakeClient):
+        async def get(self, url, headers=None, params=None):
+            select = (params or {}).get("select", "")
+            if "cutover_at" in select:
+                seen["cutover_fetched"] = True
+            if "resolved_at" in (params or {}):
+                seen["era_filter"] = (params or {})["resolved_at"]
+            return await super().get(url, headers=headers, params=params)
+
+    rows = [_row("XAUUSD", "high_vol_bull", 100.0, 104.0, 10.0, "tp_hit")]
+    client = RecordingClient(rows, cutover_at="2026-10-02T00:00:00Z")
+    with (
+        patch(
+            "regime_platform.sweep_orchestrator.calibration_bias_bucket.settings.SUPABASE_URL",
+            "https://x.supabase.co",
+        ),
+        patch(
+            "regime_platform.sweep_orchestrator.calibration_bias_bucket._headers",
+            return_value={"apikey": "k", "Authorization": "Bearer k"},
+        ),
+        patch(
+            "regime_platform.sweep_orchestrator.calibration_bias_bucket._url",
+            return_value="https://x.supabase.co/rest/v1/nt_signal_sim",
+        ),
+        patch(
+            "regime_platform.sweep_orchestrator.calibration_bias_bucket.httpx.AsyncClient",
+            return_value=client,
+        ),
+        patch(
+            "regime_platform.sweep_orchestrator.calibration_bias_bucket.upsert_calibration_bias_by_bucket",
+            new=AsyncMock(),
+        ),
+    ):
+        out = asyncio.run(build_calibration_bias_by_bucket())
+
+    assert seen.get("cutover_fetched") is True
+    # Filter value uses PostgREST-safe Z suffix, gte the cutover marker.
+    assert seen.get("era_filter") == "gte.2026-10-02T00:00:00Z"
+    assert out  # post-cutover row survives
+
+
+def test_missing_cutover_marker_fails_open():
+    """No marker row → no era filter (prior behaviour), build still runs."""
+    rows = [_row("XAUUSD", "high_vol_bull", 100.0, 104.0, 10.0, "tp_hit")]
+    out = _run(rows, cutover_at=None)
+    assert out  # fail-open: row still processed, not dropped

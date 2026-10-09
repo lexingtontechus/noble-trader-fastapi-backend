@@ -926,7 +926,7 @@ async def upsert_bracket_reachability(rows: list[dict[str, Any]]) -> None:
 
 
 NT_CALIBRATION_BIAS_BY_BUCKET_COLUMNS: frozenset[str] = frozenset({
-    "symbol", "vol_tier", "distance_atr_bucket", "n",
+    "symbol", "vol_tier", "distance_atr_bucket", "signal", "n",
     "avg_p_win", "win_rate", "bias", "pct_expired",
     "avg_rr_winners", "expectancy_r",
     "median_hours_to_resolve", "daily_expectancy_r",
@@ -952,7 +952,7 @@ async def upsert_calibration_bias_by_bucket(rows: list[dict[str, Any]]) -> None:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{_url('nt_calibration_bias_by_bucket')}?on_conflict=symbol,vol_tier,distance_atr_bucket",
+                f"{_url('nt_calibration_bias_by_bucket')}?on_conflict=symbol,vol_tier,distance_atr_bucket,signal",
                 headers={
                     **_headers(),
                     "Content-Type": "application/json",
