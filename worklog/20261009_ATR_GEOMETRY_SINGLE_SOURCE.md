@@ -123,3 +123,63 @@ Full suite: **1843 passed, 21 skipped, 1 pre-existing failure** (`test_yaml_ship
 | `config/feature_flags.yaml` | `dynamic_atr_light_mode: "shadow"` |
 | `tests/test_atr_single_source.py` | **new** — store round-trip + light apply + optimizer refresh |
 | `tests/test_param_store.py` | updated for the retired `_compute_dynamic_atr` |
+
+---
+
+## 8. Live-deploy verification (2026-10-09 05:20 UTC)
+
+Pulled `751bf30` on the Studio and restarted the orchestrator (PID 28650, health 200).
+The 05:20 pre-sweep proved the wiring end-to-end:
+
+```
+05:20:06 [dynamic:atr] scope=XAGUSD ... grid tp=[2.21,2.46,2.71] sl=[2.3,2.42,2.54]
+05:20:06 [dynamic:atr] scope=XAGUSD basis=intrabar policy=sl_first n=232
+... (all 14 symbols walked) ...
+05:20:16 [dynamic-tier] done: atr=0 deadline=56 edge=157 incubation=14 errors=0
+```
+
+The optimizer now **calls the picker for all 14 symbols** — the retired
+`_compute_dynamic_atr` is gone and `atr_picks` counts real picker results.
+
+### Finding: the picker returns `None` for every symbol — and that is correct
+
+`atr=0` is **not** a wiring failure. Dumped the full candidate grid for XAGUSD
+on the live basis:
+
+| tp | sl | exp (mean) | exp_h1 | exp_h2 | qualifies |
+|---|---|---|---|---|---|
+| 2.21 | 2.30 | +0.519 | **−0.123** | +1.160 | ✗ |
+| 2.46 | 2.42 | +0.525 | **−0.148** | +1.198 | ✗ |
+| 2.71 | 2.54 | +0.560 | **−0.141** | +1.262 | ✗ |
+
+Every candidate is **negative in the first half** and strongly positive in the
+second. `select_tp_sl` requires positive expectancy in *both* halves, so it
+correctly declines. This is the **same verdict the heavy sweep has always
+gotten** (`[dynamic:atr] XAGUSD mode=live no qualifying TP/SL — heavy kept`),
+and it is the direct, expected consequence of the 2026-10-08 geometry-basis
+harmonization: once the picker stops seeing a wick-free close-walk, the tight
+FX/commodity bands no longer clear the both-halves bar.
+
+**So the wiring is live and the value is legitimately absent.** Two
+consequences worth stating plainly:
+
+1. The light path's `dynamic_atr_light_mode: shadow` therefore logs nothing
+   today (there is no pick to would-apply) — it is a correct no-op until a
+   bracket qualifies. That is the intended fail-open behaviour, not a gap.
+2. The `dynamic_atr` tier will stay empty until a symbol clears the both-halves
+   bar. The **`brick_params.yaml` geometry remains the operative source** for
+   both sweeps meanwhile, exactly as before this change.
+
+### Cleanup: legacy per-bucket rows pruned
+
+The old code wrote one `dynamic_atr` row **per distance-bucket** (keys `4+`,
+`2-4`, `1-2`, `0.5-1`); the new code writes exactly one row (key `latest`).
+18 legacy rows existed on the Studio. `param_store.delete_keys()` (new) prunes
+them: `write_pick_to_store` prunes on a successful write, and
+`_refresh_dynamic_atr` prunes for every symbol regardless of pick outcome — so
+a symbol with no qualifying bracket does not keep unreachable rows alive as
+permanent parity drift (the same accumulate-stale-rows trap fixed for the
+mirror on 2026-10-08).
+
+Tests: `tests/test_atr_single_source.py` is now **13 tests**.
+

@@ -382,6 +382,12 @@ async def write_pick_to_store(
             "computed_at": datetime.now(timezone.utc).isoformat(),
             "source": source,
         }])
+        # Prune the pre-2026-10-09 per-bucket rows (keys like "4+") — the tier
+        # now holds exactly one row (key "latest"). They are unreachable and
+        # would otherwise linger as permanent parity drift.
+        param_store.delete_keys(
+            symbol, param_store.TIER_DYNAMIC_ATR, keep_keys=(_DYNAMIC_ATR_KEY,),
+        )
         return True
     except Exception as exc:
         logger.warning("tiered_atr write_pick_to_store %s: %s", symbol, exc)

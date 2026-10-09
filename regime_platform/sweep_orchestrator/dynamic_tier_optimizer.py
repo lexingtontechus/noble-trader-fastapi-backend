@@ -160,12 +160,24 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         get_min_rr,
     )
     from regime_platform.sweep_orchestrator.tiered_atr import dynamic_atr_pick
+    from regime_platform.core import param_store
 
     picks: dict[str, Any] = {}
     for p in peers:
         symbol = p.get("symbol")
         if not symbol or not p.get("tradingview_symbol"):
             continue
+        # Drop legacy per-bucket rows (keys like "4+") from the pre-2026-10-09
+        # shape — the tier now holds exactly one row (key "latest"). Runs even
+        # when the pick is None, so a symbol with no qualifying bracket does
+        # not keep unreachable rows alive as permanent parity drift.
+        try:
+            await asyncio.to_thread(
+                param_store.delete_keys,
+                symbol, param_store.TIER_DYNAMIC_ATR, ("latest",),
+            )
+        except Exception as exc:
+            logger.debug("dynamic_tier_optimizer: atr prune %s failed: %s", symbol, exc)
         try:
             pick = await dynamic_atr_pick(
                 p.get("asset_class"),

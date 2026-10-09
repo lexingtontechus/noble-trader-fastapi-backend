@@ -134,6 +134,37 @@ def test_picker_serves_from_store_without_walk(monkeypatch):
     assert got is not None and got.tp_atr == pytest.approx(1.61)
 
 
+def test_write_prunes_legacy_bucket_rows():
+    """The tier used to hold per-bucket rows (keys like "4+"); writing the
+    new "latest" row must remove them so they can't linger as parity drift."""
+    from regime_platform.core import param_store
+
+    # Seed a legacy-shaped row.
+    _run(param_store.write_params([{
+        "symbol": "EURUSD", "tier_type": param_store.TIER_DYNAMIC_ATR,
+        "tier_key": "4+", "tier_value": "-0.25", "n": 133, "source": "legacy",
+    }]))
+    assert param_store.read_float("EURUSD", param_store.TIER_DYNAMIC_ATR, "4+") is not None
+
+    _run(ta.write_pick_to_store("EURUSD", _pick(tp_atr=1.7, sl_atr=0.9)))
+
+    assert param_store.read_float("EURUSD", param_store.TIER_DYNAMIC_ATR, "4+") is None
+    keys = set(param_store.read_tier("EURUSD", param_store.TIER_DYNAMIC_ATR))
+    assert keys == {"latest"}
+
+
+def test_delete_keys_keeps_named_keys():
+    from regime_platform.core import param_store
+    _run(param_store.write_params([
+        {"symbol": "X", "tier_type": "dynamic_atr", "tier_key": "latest", "tier_value": "1.0"},
+        {"symbol": "X", "tier_type": "dynamic_atr", "tier_key": "2-4", "tier_value": "0.5"},
+        {"symbol": "X", "tier_type": "dynamic_atr", "tier_key": "4+", "tier_value": "0.1"},
+    ]))
+    n = param_store.delete_keys("X", "dynamic_atr", keep_keys=("latest",))
+    assert n == 2
+    assert set(param_store.read_tier("X", "dynamic_atr")) == {"latest"}
+
+
 # ── the light path applies only when live ────────────────────────────────
 
 def test_light_apply_flag_defaults_shadow():

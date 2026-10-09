@@ -461,6 +461,32 @@ def clear() -> None:
         conn.close()
 
 
+def delete_keys(symbol: str, tier_type: str, keep_keys: tuple[str, ...]) -> int:
+    """Delete a symbol's rows for a tier whose key is NOT in ``keep_keys``.
+
+    2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the
+    ``dynamic_atr`` tier used to hold one row per distance-bucket (keys like
+    ``4+``); it now holds exactly one row (key ``latest``). Old bucket rows
+    are unreachable and would otherwise linger as permanent parity drift.
+    Best-effort: returns the number deleted (0 on failure).
+    """
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" for _ in keep_keys) or "''"
+        cur = conn.execute(
+            f"DELETE FROM params WHERE symbol=? AND tier_type=? "
+            f"AND tier_key NOT IN ({placeholders})",
+            (symbol, tier_type, *keep_keys),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    except Exception as exc:
+        logger.warning("param_store: delete_keys failed for %s/%s: %s", symbol, tier_type, exc)
+        return 0
+    finally:
+        conn.close()
+
+
 # ── Scheduled parity enforcement (nightly EOD, FU2 2026-10-08) ───────────
 
 async def run_parity_check() -> dict[str, Any]:
