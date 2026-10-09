@@ -318,72 +318,58 @@ def _compute_regime_edge(
 
 # ─── Tier 4: Geometry Incubation ────────────────────────────────────────────
 
-async def _compute_geometry_incubation() -> dict[str, Any]:
-    """Check geometry incubation status from nt_geometry_incubation.
+async def _refresh_geometry_incubation() -> dict[str, Any]:
+    """Stamp the geometry-incubation tier by OBSERVING the real evaluator.
 
-    Returns promote/reject/keep-incubating verdicts for each candidate.
+    2026-10-09 (worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md):
+    this replaces ``_compute_geometry_incubation``, a second, divergent
+    incubation engine that (a) duplicated ``evaluate_promotion``'s logic and
+    (b) read ``row.get("n_forward_resolved")`` — a column that does not exist
+    (the table column is ``n_resolved``), so it was always 0 and every verdict
+    was permanently ``keep_incubating``.
+
+    **This tier does not evaluate.** The single source of truth is
+    ``geometry_incubation.reconcile_incubations``, owned by its own scheduler
+    job (``geometry-incubation-reconcile``). Here we only READ the table that
+    job writes, so the pre-sweep summary reflects the real verdicts. Calling
+    reconcile from this 15-min job would run the promotion engine 96×/day and,
+    in ``live`` mode, write ``brick_params.yaml`` from a pre-sweep tick — two
+    owners for one write, the exact defect this work removes.
     """
+    verdicts: dict[str, Any] = {}
+    for row in await _fetch_incubation_rows():
+        combo = (row.get("brick_size"), row.get("sl_bricks"), row.get("tp_bricks"))
+        key = f"{row.get('symbol')}:{combo[0]}:{combo[1]}:{combo[2]}"
+        verdicts[key] = {
+            "status": row.get("status", "incubating"),
+            "reason": row.get("reason"),
+            "n_resolved": row.get("n_resolved", 0),
+        }
+    return verdicts
+
+
+async def _fetch_incubation_rows() -> list[dict[str, Any]]:
+    """Read current incubation rows (as written by the reconcile job)."""
     if not settings.SUPABASE_URL:
-        return {}
+        return []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 _url("nt_geometry_incubation"),
                 headers=_headers(),
                 params={
-                    "select": "*",
+                    "select": "symbol,brick_size,sl_bricks,tp_bricks,status,"
+                              "reason,n_resolved,pct_expired,baseline_pct_expired",
                     "status": "eq.incubating",
                     "order": "started_at.desc",
                     "limit": "100",
                 },
             )
         rows = resp.json() or []
-        if not isinstance(rows, list):
-            return {}
+        return rows if isinstance(rows, list) else []
     except Exception as exc:
-        logger.warning("dynamic_tier_optimizer: incubation fetch failed: %s", exc)
-        return {}
-
-    verdicts: dict[str, Any] = {}
-    for row in rows:
-        symbol = row.get("symbol")
-        combo = row.get("brick_size"), row.get("sl_bricks"), row.get("tp_bricks")
-        key = f"{symbol}:{combo[0]}:{combo[1]}:{combo[2]}"
-
-        # Check if enough forward evidence has accumulated
-        started_at = row.get("started_at")
-        if started_at:
-            try:
-                start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                age_hours = (datetime.now(timezone.utc) - start_dt).total_seconds() / 3600
-            except (TypeError, ValueError):
-                age_hours = 0
-        else:
-            age_hours = 0
-
-        # Minimum 7 days incubation (same as geometry_incubation_min_days)
-        if age_hours < 168:
-            verdicts[key] = {"status": "keep_incubating", "age_hours": round(age_hours, 1)}
-            continue
-
-        # Check forward resolved count
-        n_resolved = row.get("n_forward_resolved", 0)
-        if n_resolved < 20:
-            verdicts[key] = {"status": "keep_incubating", "n_forward_resolved": n_resolved}
-            continue
-
-        # Check expiry regression
-        pct_expired = row.get("pct_expired")
-        baseline_pct = row.get("baseline_pct_expired")
-        if pct_expired is not None and baseline_pct is not None:
-            regression = pct_expired - baseline_pct
-            if regression > 0.10:
-                verdicts[key] = {"status": "reject", "reason": "expiry_regression", "regression": round(regression, 4)}
-                continue
-
-        verdicts[key] = {"status": "promote", "n_forward_resolved": n_resolved}
-
-    return verdicts
+        logger.warning("dynamic_tier_optimizer: incubation read failed: %s", exc)
+        return []
 
 
 # ─── Main entry point ────────────────────────────────────────────────────────
@@ -463,11 +449,11 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
 
     # Tier 4: Geometry Incubation
     try:
-        incubation_verdicts = await _compute_geometry_incubation()
+        incubation_verdicts = await _refresh_geometry_incubation()
         summary["incubation_verdicts"] = len(incubation_verdicts)
     except Exception as exc:
-        summary["errors"].append(f"compute_geometry_incubation: {exc}")
-        logger.warning("dynamic_tier_optimizer: compute_geometry_incubation failed: %s", exc)
+        summary["errors"].append(f"refresh_geometry_incubation: {exc}")
+        logger.warning("dynamic_tier_optimizer: refresh_geometry_incubation failed: %s", exc)
         incubation_verdicts = {}
 
     # Write results to the LOCAL param store (the runtime authority), then

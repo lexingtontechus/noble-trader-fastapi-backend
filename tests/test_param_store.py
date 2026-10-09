@@ -246,7 +246,7 @@ def test_optimizer_writes_local_store(monkeypatch):
     monkeypatch.setattr(opt, "fetch_active_symbols", _fake_symbols)
     monkeypatch.setattr(opt, "_fetch_resolved_rows", _fake_resolved)
     monkeypatch.setattr(opt, "_fetch_reachability_rows", _fake_reach)
-    monkeypatch.setattr(opt, "_compute_geometry_incubation", _fake_incubation)
+    monkeypatch.setattr(opt, "_refresh_geometry_incubation", _fake_incubation)
     # 2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the
     # optimizer no longer computes its own ATR — it calls the one picker,
     # which persists the usable geometry. Stub the picker instead.

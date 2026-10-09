@@ -215,3 +215,69 @@ None of items 1–5 require forcing calibration and reachability onto one datase
 - **"One dataset"** — incorrect as a chain-wide goal. Calibration (confidence accuracy, 7d, episode-level) and reachability (geometric reachability, all-history, bucket-level) measure different quantities; the divergence is the design working, not failing.
 
 The real defects are three specific wiring bugs (Part A) plus one genuine ownership ambiguity (`brick_params.yaml` vs the `dynamic_atr` tier). The fix is to repair those, **not** to unify the estimation layer — which would degrade calibration and reachability both.
+
+---
+
+# Part B (build) — Recommendation: retire `brick_params.yaml` as a *geometry authority*, keep it as a *rendering cache*
+
+**Question put:** should `dynamic_atr` be the source of truth, retiring `brick_params.yaml`?
+
+**Answer: yes on the principle, no on the deletion — and the distinction is load-bearing.** `dynamic_atr` should become the sole **geometry authority**. `brick_params.yaml` should stop being an authority but must **not** be deleted, because it is not only a geometry store: it is also the **brick-rendering + retention key** for the Renko engine. Deleting it breaks those consumers. The correct end state is *one authority, one derived cache*.
+
+## B.8 What `brick_params.yaml` actually is — three roles, not one
+
+Verified from the consumer map (`.gitignore:138` tracks it; 6 production readers):
+
+| Role | Consumers | What it needs |
+|---|---|---|
+| **1. Bracket geometry** | `orchestrator._load_brick_params` (light), `heavy_sweep` (writes), `geometry_incubation` (writes), `renko/router.py:2078` (Discord embed) | `sl_bricks`, `tp_bricks` |
+| **2. Brick rendering scale** | `renko_retention.py:203` (prune key), `renko/router.py` `get_brick_size()` | `brick_size` |
+| **3. Per-symbol defaults** | `load_brick_params` fallback `(0.5, 3, 6)` | both |
+
+**Role 2 is the trap.** `brick_size` is not a bracket parameter — it is the **Renko brick width**, and `renko_retention` uses it to decide which `nt_renko_bricks` rows are still current (a wrong value wiped 924k rows on 2026-10-01 — see the memory note). A naive "delete brick_params.yaml" removes the retention key and the Discord embed's price basis.
+
+## B.9 Why `dynamic_atr` is the right authority — the argument is structural, not preference
+
+The `dynamic_atr` pick *is* the bracket, in ATR units, computed from the live path on the live basis. `brick_params.yaml` holds the same decision **quantised into integer brick counts** — a lossy re-encoding:
+
+```python
+# tiered_atr.DynamicAtrPick.to_bricks — explicitly "Lossy vs exact ATR"
+brick = self.sl_atr * atr / sl_bricks          # brick_size derived FROM the pick
+tp_bricks = max(1, round(self.tp_atr / self.sl_atr * sl_bricks))
+```
+
+`brick_size` and `tp_bricks` are **functions of** `sl_atr`/`tp_atr` + a chosen `sl_bricks`. So `brick_params.yaml` is a *downstream encoding* of the `dynamic_atr` pick — it cannot be the authority for something it is derived from. Today the dependency runs backwards: the heavy sweep computes a pick, encodes it to bricks, writes the YAML, and the light path reads the encoding. That is the same "consumer re-derives / reads a lossy copy" defect as the geometry-basis and ATR-tier work.
+
+**The authority must be the thing that is not derived from anything else.** That is the pick (`tp_atr`, `sl_atr` in ATR units). Confirmed.
+
+## B.10 The blocker: `sl_bricks` is a free parameter, so the pick alone is not sufficient
+
+`to_bricks(atr, sl_bricks)` takes `sl_bricks` as an **input** — it is chosen by the heavy grid, not by the pick. So `(tp_atr, sl_atr)` does not uniquely determine `(brick_size, sl_bricks, tp_bricks)`; you must also fix `sl_bricks` (or equivalently the brick width).
+
+This is why a straight "make `dynamic_atr` authoritative, delete the YAML" fails: the light path needs three integers, and the pick supplies two ATR ratios plus a brick count that only the heavy grid knows.
+
+**Resolution — and it is the same shape as every other fix this week:** make the pick carry the missing input. Add `sl_bricks` (the chosen brick count) to the persisted `DynamicAtrPick` JSON. Then `to_bricks(atr, pick.sl_bricks)` fully determines all three integers from the authority, and `brick_params.yaml` becomes pure cache.
+
+## B.11 Recommended path (staged, shadow-first, reversible)
+
+| Stage | Change | Risk | Reversible |
+|---|---|---|---|
+| **1** | Persist `sl_bricks` in the `DynamicAtrPick` JSON (tier `dynamic_atr`). One field, additive. | none | yes |
+| **2** | Add `brick_params.load_from_store(symbol, atr)` — build `(brick_size, sl_bricks, tp_bricks)` from the tier via `to_bricks`, **falling back to the YAML** when the store is cold. | low (fail-open) | yes |
+| **3** | Point `orchestrator._load_brick_params` at `load_from_store` behind a new flag `brick_params_source: yaml \| store` (default `yaml`). | low | yes (flag) |
+| **4** | In `store` mode, keep **writing** the YAML from the store on each pick (so `renko_retention` + `renko/router` stay correct) — but mark it a *cache*: the write is now derived, never an input. | low | yes |
+| **5** | Flip `brick_params_source: store`. YAML becomes a derived artifact, exactly like `param_store.sqlite`'s Supabase mirror. | medium | yes (flag) |
+| **6** | *(optional)* Retire the heavy-sweep grid's authority over `sl_bricks` once the pick's own value proves stable. | higher | — |
+
+**Net effect:** `dynamic_atr` (param_store tier) = the authority; `brick_params.yaml` = a derived cache refreshed from it, still present for the Renko engine and the Discord embed. Nothing is deleted; the arrow direction is reversed.
+
+## B.12 What NOT to do, and why
+
+- **Do not delete `brick_params.yaml`.** It is the retention key for `nt_renko_bricks` and the Discord embed's price basis. Deleting it is the 2026-10-01 wipe waiting to happen again.
+- **Do not make the store authoritative while `dynamic_atr` is empty.** Right now the picker returns `None` for all 14 symbols (every candidate is negative in the first half — verified live). A store-authoritative light path with an empty store must fall back to the YAML, or the light sweep loses its geometry entirely. This is exactly why stage 2 is fail-open and stage 5 is a flag.
+- **Do not skip stage 1.** Without `sl_bricks` in the pick, the store cannot reconstruct the brick encoding, and any "store mode" would silently drift from the YAML.
+- **Do not force calibration/reachability onto the same dataset** while doing this (Part B.5) — the geometry authority question and the estimation-population question are independent.
+
+## B.13 Honest status
+
+This recommendation is **not yet built** — Part A is. The sequencing matters: stage 1 (`sl_bricks` in the pick) is a one-field change but it is a **prerequisite**, and it is currently blocked by the fact that **no symbol produces a pick at all**. Until the geometry bands clear the both-halves bar (the `atr=0` finding in `20261009_ATR_GEOMETRY_SINGLE_SOURCE.md` §8), the `dynamic_atr` tier is empty, so making it authoritative would move the light path from *a working YAML geometry* to *no geometry*. **Build stages 1–2 now (they are inert without a pick); flip the flag only once the picker produces values.**

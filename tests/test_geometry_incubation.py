@@ -135,3 +135,74 @@ class TestEvaluatePromotion:
             min_days=7, min_resolved=20, max_expiry_regression=0.10,
         )
         assert v.status == "promoted"
+
+
+# ── Wiring: the reconcile engine has a caller (2026-10-09) ───────────────
+
+class TestReconcileIsWired:
+    """worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md.
+
+    `reconcile_incubations` had NO caller anywhere — the forward-test gate
+    recorded candidates and never evaluated them (434 rows on prod, 0 with
+    n_resolved>0). These tests pin the wiring so it cannot silently regress.
+    """
+
+    def test_orchestrator_registers_the_reconcile_job(self):
+        """The job must exist on the scheduler with the documented id."""
+        import inspect
+        from regime_platform.sweep_orchestrator import orchestrator as orch
+
+        src = inspect.getsource(orch.SweepOrchestrator)
+        assert "_run_geometry_incubation_reconcile" in src
+        assert "geometry-incubation-reconcile" in src
+        # Hourly at :48, clear of the sweep grid and the other fixed jobs.
+        assert 'CronTrigger.from_crontab("48 * * * *")' in src
+
+    def test_reconcile_runner_calls_the_engine(self, monkeypatch):
+        """The runner must invoke reconcile_incubations (not re-implement it)."""
+        import asyncio
+        from regime_platform.sweep_orchestrator import orchestrator as orch
+        from regime_platform.sweep_orchestrator import geometry_incubation as gi
+
+        called = {}
+
+        async def _fake():
+            called["yes"] = True
+            return {"checked": 2, "promoted": 1, "rejected": 0, "held": 1, "errors": 0}
+
+        monkeypatch.setattr(gi, "reconcile_incubations", _fake)
+
+        inst = object.__new__(orch.SweepOrchestrator)
+        asyncio.run(orch.SweepOrchestrator._run_geometry_incubation_reconcile(inst))
+        assert called.get("yes") is True
+
+    def test_optimizer_has_no_parallel_incubation_engine(self):
+        """The divergent second engine (wrong column, always keep_incubating)
+        must be gone; the tier observes the real evaluator instead."""
+        from regime_platform.sweep_orchestrator import dynamic_tier_optimizer as opt
+        assert not hasattr(opt, "_compute_geometry_incubation")
+        assert hasattr(opt, "_refresh_geometry_incubation")
+
+    def test_optimizer_tier_reads_correct_column(self):
+        """Regression guard: the tier must read `n_resolved` (the real column),
+        never `n_forward_resolved` (which does not exist → always 0).
+
+        Checks the executed code (docstring/comments stripped), so the
+        explanatory note naming the old column does not trip it."""
+        import inspect
+        from regime_platform.sweep_orchestrator import dynamic_tier_optimizer as opt
+
+        src = inspect.getsource(opt._refresh_geometry_incubation)
+        # Drop the docstring + comment lines; only the executed body matters.
+        body_lines = [
+            ln for ln in src.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        # Strip the module docstring block (between the first pair of triple quotes).
+        code = "\n".join(body_lines)
+        if '"""' in code:
+            first = code.index('"""')
+            second = code.index('"""', first + 3)
+            code = code[:first] + code[second + 3:]
+        assert "n_forward_resolved" not in code
+        assert "n_resolved" in code

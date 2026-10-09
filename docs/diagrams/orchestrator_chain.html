@@ -180,6 +180,10 @@
             <div class="t"><span class="cron">45 1 / 0 2 / 30 2 / 45 2</span>Self-learning</div>
             <div class="f">knowledge index · detectors · triage · macro agent</div>
           </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">48 * * * *</span>Geometry incubation reconcile</div>
+            <div class="f">_run_geometry_incubation_reconcile<br>mode = shadow</div>
+          </div>
         </div>
       </div>
     </div>
@@ -293,7 +297,7 @@
 
       <li><b class="warn">Two ATR mechanisms still meet only at the picker.</b> <span class="k">atr_reopt</span> (4h) patches <span class="k">feature_flags.yaml</span> clamps (the <i>search band</i> the picker walks); the picker writes <span class="k">param_store</span> (the <i>chosen geometry</i>). These are now genuinely different concerns — band vs result — not two sources for one value.</li>
 
-      <li><b class="gap">geometry_incubation tier is write-only.</b> 28 rows per run; <span class="k">TIER_GEOMETRY_INCUBATION</span> has no reader. The module is imported only by <span class="k">heavy_sweep.py</span>.</li>
+      <li><b class="ok">✓ FIXED 2026-10-09 — geometry_incubation now has a caller.</b> <span class="k">reconcile_incubations()</span> had <b>no caller anywhere</b> (434 rows on prod, 0 with <span class="k">n_resolved&gt;0</span>, 0 with <span class="k">last_checked_at</span> set). New scheduler job <span class="k">geometry-incubation-reconcile</span> (hourly :48). The divergent second engine (<span class="k">dynamic_tier_optimizer._compute_geometry_incubation</span>, which read the non-existent <span class="k">n_forward_resolved</span> column → always <span class="k">keep_incubating</span>) is retired to an observer. Worklog <span class="k">20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md</span>.</li>
 
       <li><b class="warn">Three of five tiers are shadow.</b> <span class="k">dynamic_deadline_mode</span>, <span class="k">regime_edge_mode</span>, <span class="k">geometry_incubation_mode</span> = <span class="k">shadow</span> — computed and stamped, but none gate a signal. <span class="k">dynamic_atr_light_mode</span> is the fourth shadow (new); <span class="k">dynamic_atr_mode</span> is live on the heavy path only.</li>
 

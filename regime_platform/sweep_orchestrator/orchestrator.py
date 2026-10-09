@@ -1629,6 +1629,30 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
+        # Geometry incubation reconcile (2026-10-09, worklog/
+        # 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md): the caller
+        # `geometry_incubation.reconcile_incubations` never had. heavy_sweep
+        # records candidates via start_incubation; this job evaluates them
+        # against forward-resolved evidence and (only in `live` mode) promotes
+        # to config/brick_params.yaml. Without it the forward-test gate was
+        # inert (434 rows on prod, 0 evaluated).
+        #
+        # Hourly at :48 — clear of the light-sweep grid (:00/:15/:30/:45), the
+        # :17 nightly EOD, the :20 Kairos job, the :38 calibration resolve and
+        # the :05/:20/:35/:50 pre-sweep. It is deliberately NOT on the 15-min
+        # pre-sweep tick: it owns the brick_params.yaml promotion write, and
+        # running it 96x/day would race the heavy sweep for that file.
+        # Registered unconditionally; the mode (off|shadow|live) is read per
+        # run, so a feature_flags.yaml flip needs no restart.
+        self._scheduler.add_job(
+            self._run_geometry_incubation_reconcile,
+            trigger=CronTrigger.from_crontab("48 * * * *"),
+            id="geometry-incubation-reconcile",
+            name="Geometry incubation reconcile (hourly)",
+            misfire_grace_time=1800,
+            coalesce=True,
+        )
+
         # Dynamic tier optimization (2026-10-07, worklog/
         # 20261007_TABLE_FRESHNESS_AND_DYNAMIC_TIER_DESIGN.md §5.4):
         # pre-sweep refresh of dynamic ATR, dynamic deadline, regime edge,
@@ -2437,6 +2461,44 @@ class SweepOrchestrator(HeavySweepMixin):
                 )
         except Exception as exc:
             logger.error("[geo:urg] failed: %s", exc)
+
+    async def _run_geometry_incubation_reconcile(self) -> None:
+        """Re-evaluate incubating geometry candidates against forward evidence.
+
+        2026-10-09 (worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md):
+        this is the caller ``geometry_incubation.reconcile_incubations`` never
+        had. Without it the forward-test gate recorded candidates
+        (``start_incubation`` from heavy_sweep) and never evaluated them —
+        434 rows on prod, 0 with ``n_resolved > 0``, 0 with ``last_checked_at``
+        set. The gate was inert.
+
+        Cadence: hourly, :48 — clear of the light-sweep grid (:00/:15/:30/:45),
+        the :17 nightly EOD, the :20 Kairos job, the :38 calibration resolve and
+        the :05/:20/:35/:50 pre-sweep. It is cheap and idempotent (a handful of
+        rows, a few REST reads), and it must NOT run on the 15-min pre-sweep
+        tick: in ``live`` mode it writes ``config/brick_params.yaml``, so it is
+        the sole owner of that promotion write.
+
+        ``shadow`` (the shipped mode) updates row status/stats for review and
+        never touches the YAML. Best-effort: failures are logged, never raised.
+        """
+        from regime_platform.core.feature_flags import get_geometry_incubation_mode
+        from regime_platform.sweep_orchestrator.geometry_incubation import (
+            reconcile_incubations,
+        )
+
+        try:
+            summary = await reconcile_incubations()
+            logger.info(
+                "[geometry-incubation] reconcile done mode=%s — checked=%d "
+                "promoted=%d rejected=%d held=%d errors=%d",
+                get_geometry_incubation_mode(),
+                summary.get("checked", 0), summary.get("promoted", 0),
+                summary.get("rejected", 0), summary.get("held", 0),
+                summary.get("errors", 0),
+            )
+        except Exception as exc:
+            logger.error("[geometry-incubation] reconcile failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then
