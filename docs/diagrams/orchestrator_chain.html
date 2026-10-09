@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg: transparent;
+    --ink: var(--foreground, #e6e6e6);
+    --mut: var(--muted-foreground, #9aa0a6);
+    --acc: var(--accent, #4f8cff);
+    --bd: var(--border, #333);
+    --card: var(--card, rgba(255,255,255,.03));
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.45 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{width:1180px}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--mut);font-size:12px;margin-bottom:14px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 18px;font-size:11.5px;color:var(--mut)}
+  .legend b{color:var(--ink)}
+  .sw{display:flex;gap:9px;align-items:center;font-size:11px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .d-live{background:#2ea043}.d-shadow{background:#d29922}.d-dead{background:#f85149}
+  .d-doc{background:#8b949e}
+
+  .grid{display:grid;grid-template-columns:170px 1fr;gap:0 12px;align-items:start}
+
+  .lane{grid-column:1;color:var(--mut);font-size:10.5px;text-transform:uppercase;
+        letter-spacing:.07em;padding-top:14px;text-align:right;padding-right:4px}
+  .col{grid-column:2}
+
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;margin-bottom:9px}
+  .box{background:var(--card);border:1px solid var(--bd);border-radius:8px;
+       padding:7px 10px;min-width:0}
+  .box .t{font-weight:600;font-size:12px}
+  .box .f{color:var(--mut);font-size:10.5px;font-family:ui-monospace,Consolas,monospace;
+          margin-top:2px;word-break:break-word}
+  .box .p{color:var(--acc);font-size:10.5px;font-family:ui-monospace,Consolas,monospace;
+          margin-top:2px;word-break:break-word}
+  .cron{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:10px;
+        background:rgba(79,140,255,.13);color:var(--acc);border-radius:4px;padding:1px 5px;margin-right:5px}
+
+  .live{border-left:3px solid #2ea043}
+  .shadow{border-left:3px solid #d29922}
+  .dead{border-left:3px solid #f85149;background:rgba(248,81,73,.06)}
+  .doc{border-left:3px solid #8b949e}
+
+  .arrow{color:var(--mut);align-self:center;font-size:15px;padding:0 1px}
+
+  .band{border:1px dashed var(--bd);border-radius:10px;padding:10px 12px 4px;margin-bottom:12px}
+  .band>.cap{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+
+  table{border-collapse:collapse;width:100%;font-size:11.5px;margin-top:4px}
+  th,td{border:1px solid var(--bd);padding:5px 8px;text-align:left;vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+  td code{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--acc)}
+  .gap{color:#f85149;font-weight:600}
+  .ok{color:#2ea043;font-weight:600}
+  .warn{color:#d29922;font-weight:600}
+
+  .note{margin-top:16px;padding:11px 13px;border:1px solid var(--bd);border-radius:9px;
+        background:var(--card)}
+  .note h2{font-size:13px;margin:0 0 7px}
+  .note ol{margin:0;padding-left:19px}
+  .note li{margin-bottom:6px}
+  .k{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--acc)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Noble Trader — Sweep Orchestrator Chain</h1>
+  <div class="sub">All jobs live in one APScheduler process (<code>orchestrator.py</code>, port 8003). Arrows = data flow. Left colour = wiring status.</div>
+
+  <div class="legend">
+    <span class="sw"><i class="dot d-live"></i><b>live</b> — changes signals</span>
+    <span class="sw"><i class="dot d-shadow"></i><b>shadow</b> — computed, stamped, does not gate</span>
+    <span class="sw"><i class="dot d-dead"></i><b>dead</b> — written, never read</span>
+    <span class="sw"><i class="dot d-doc"></i><b>offline/CLI</b> — not scheduled</span>
+  </div>
+
+  <!-- ═══════════ SCHEDULED JOBS ═══════════ -->
+  <div class="band">
+    <div class="cap">1 · Scheduled jobs (APScheduler · orchestrator.py)</div>
+
+    <div class="grid">
+      <div class="lane">Sweeps</div>
+      <div class="col">
+        <div class="row">
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">*/15 * * * *</span>Light sweep</div>
+            <div class="f">_sweep_group → _process_symbol · 14 symbols</div>
+            <div class="p">geometry ← brick_params.yaml · gates ← feature_flags.yaml</div>
+          </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">6 17 * * *</span>Heavy sweep</div>
+            <div class="f">_heavy_sweep_group → heavy_sweep.py · 14 symbols</div>
+            <div class="p">grid ← feature_flags dynamic_atr · writes brick_params.yaml</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">Optimizers</div>
+      <div class="col">
+        <div class="row">
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">5,20,35,50 * * * *</span>Dynamic tier opt (pre-sweep)</div>
+            <div class="f">_run_dynamic_tier_optimization → dynamic_tier_optimizer.py</div>
+            <div class="p">writes config/param_store.sqlite — 4 tiers</div>
+          </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">0 */4 * * *</span>ATR reopt urgency</div>
+            <div class="f">_run_atr_reopt_urgency → atr_reopt.py</div>
+            <div class="p">patches feature_flags.yaml dynamic_atr.by_symbol clamps</div>
+          </div>
+          <div class="box doc" style="flex:0 0 190px">
+            <div class="t"><span class="cron">30 3 1 * *</span>ATR reopt monthly</div>
+            <div class="f">_run_atr_reopt → atr_reopt.py</div>
+            <div class="p">proposal + nt_roadmap heartbeat</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">EOD / calibration</div>
+      <div class="col">
+        <div class="row">
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">17 1 * * *</span>EOD lookback</div>
+            <div class="f">_run_eod_lookback → eod_resolver + eod_correction</div>
+            <div class="p">resolve → nt_signal_sim · bias → nt_eod_actions</div>
+          </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">30 4/8/12/16/20</span>EOD intraday correction</div>
+            <div class="f">_run_eod_correction_only → eod_correction.py</div>
+            <div class="p">bias + nt_eod_actions only (no resolver)</div>
+          </div>
+          <div class="box live" style="flex:0 0 190px">
+            <div class="t"><span class="cron">38 * * * *</span>Calibration resolve hourly</div>
+            <div class="f">_run_calibration_resolve_hourly</div>
+            <div class="p">mode = shadow</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">Refresh</div>
+      <div class="col">
+        <div class="row">
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">0 6 * * *</span>Macro regime</div>
+            <div class="f">_run_macro_regime_refresh → macro_filter.py</div>
+          </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">10 6 * * *</span>Trend regime</div>
+            <div class="f">_run_trend_regime_refresh → trend_filter.py</div>
+          </div>
+          <div class="box live" style="flex:1">
+            <div class="t"><span class="cron">0 7 * * sun</span>Bracket reachability</div>
+            <div class="f">_run_bracket_reachability</div>
+          </div>
+          <div class="box live" style="flex:0 0 150px">
+            <div class="t"><span class="cron">interval</span>Refresh symbols</div>
+            <div class="f">_refresh_symbols</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">Diagnostics</div>
+      <div class="col">
+        <div class="row">
+          <div class="box doc" style="flex:1">
+            <div class="t"><span class="cron">20 * * * *</span>Kairos drift backfill</div>
+            <div class="f">_run_kairos_daily · mode=shadow</div>
+          </div>
+          <div class="box doc" style="flex:1">
+            <div class="t"><span class="cron">30 1 * * *</span>Auto-tuner</div>
+            <div class="f">_run_auto_tuning → auto_tuner.py</div>
+          </div>
+          <div class="box doc" style="flex:1">
+            <div class="t"><span class="cron">45 1 / 0 2 / 30 2 / 45 2</span>Self-learning</div>
+            <div class="f">knowledge index · detectors · triage · macro agent</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ PARAM SOURCES ═══════════ -->
+  <div class="band">
+    <div class="cap">2 · Parameter sources — and which process reads/writes them</div>
+    <table>
+      <tr>
+        <th style="width:26%">Store</th><th style="width:19%">Written by</th>
+        <th style="width:19%">Read by (live path)</th><th style="width:12%">Cadence</th><th>Contents</th>
+      </tr>
+      <tr>
+        <td><code>config/feature_flags.yaml</code></td>
+        <td>atr_reopt (clamps)<br>hand edits</td>
+        <td><span class="ok">light + heavy</span> — every gate &amp; mode</td>
+        <td>4h clamps</td>
+        <td>all <code>*_mode</code> flags, <code>dynamic_atr</code> grid + <code>by_symbol</code>/<code>by_class</code> clamps, <code>settlement_same_bar_policy</code></td>
+      </tr>
+      <tr>
+        <td><code>config/brick_params.yaml</code></td>
+        <td>heavy_sweep<br>geometry_incubation (live)</td>
+        <td><span class="ok">light</span> via <code>_load_brick_params</code></td>
+        <td><span class="warn">daily 17:06</span></td>
+        <td><code>brick_size · sl_bricks · tp_bricks</code> — <b>the light path's actual geometry</b></td>
+      </tr>
+      <tr>
+        <td><code>config/param_store.sqlite</code><br><span style="color:var(--mut);font-size:10.5px">(tier store, Supabase-mirrored)</span></td>
+        <td>dynamic_tier_optimizer</td>
+        <td><span class="warn">3 of 5 tiers</span> — deadline · regime_edge · brick_state</td>
+        <td>15 min</td>
+        <td><code>dynamic_deadline</code> 56 · <code>regime_edge</code> 159 · <code>geometry_incubation</code> 28 · <code>dynamic_atr</code> 17 · <code>brick_state</code> 14</td>
+      </tr>
+      <tr>
+        <td>Supabase tables</td>
+        <td>resolver · sweeps</td>
+        <td><span class="ok">everywhere</span></td>
+        <td>continuous</td>
+        <td><code>nt_signal_sim</code> · <code>nt_bracket_reachability</code> · <code>nt_dynamic_tier_state</code> (mirror, never read)</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ═══════════ LIGHT PIPELINE ═══════════ -->
+  <div class="band">
+    <div class="cap">3 · Light-sweep pipeline (the live signal generator)</div>
+    <div class="row">
+      <div class="box live"><div class="t">Prices</div><div class="f">price_fetcher.py<br>TradingView 1h×200</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">Renko + HMM</div><div class="f">regime_engine.py<br>4-state → regime_label</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">Geometry</div><div class="f">brick_params.yaml<br><span class="p">brick_size scaled per tick (live)<br>sl/tp brick COUNTS: daily only</span></div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">TimesFM</div><div class="f">server.py :8002<br>→ p_timesfm</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">EV Engine v5</div><div class="f">p_regime 5/14 · p_timesfm 5/14<br>p_markov_hold_n 4/14</div></div>
+    </div>
+    <div class="row" style="margin-top:2px">
+      <span class="arrow" style="padding-left:150px">→</span>
+      <div class="box live" style="flex:1">
+        <div class="t">7-gate qualification chain</div>
+        <div class="f">signal_qualifiable · regime_conf_ok · timesfm_available · timesfm_confidence_ok · ev_allowed · p_win_ok <span class="warn">(+ regime_edge_ok — shadow, always passes)</span></div>
+      </div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">Publish</div><div class="f">discord_delivery.py<br>cooldown gate</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">Capture</div><div class="f">nt_signal_sim<br>+ ambiguous (mig 204)</div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ FEEDBACK LOOP ═══════════ -->
+  <div class="band">
+    <div class="cap">4 · Feedback loop — where it closes and where it breaks</div>
+    <div class="row">
+      <div class="box live"><div class="t">nt_signal_sim</div><div class="f">resolved outcomes</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">eod_resolver + correction</div><div class="f">settlement_contract (live)<br>bias → nt_eod_actions</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">calibration_enforcement</div><div class="f">applied in _process_symbol</div></div>
+      <span class="arrow">↩</span>
+      <div class="box live"><div class="t">next sweep</div><div class="f">p_win shrunk by bias</div></div>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <div class="box live"><div class="t">nt_signal_sim</div><div class="f">last 10d · 48h · clean</div></div>
+      <span class="arrow">→</span>
+      <div class="box live"><div class="t">dynamic_tier_optimizer</div><div class="f">4 tiers → param_store</div></div>
+      <span class="arrow">→</span>
+      <div class="box live" style="max-width:210px"><div class="t">dynamic_deadline</div><div class="f">read · shadow (stamp only)</div></div>
+      <span class="arrow">/</span>
+      <div class="box live" style="max-width:210px"><div class="t">regime_edge</div><div class="f">read · shadow (stamp only)</div></div>
+      <span class="arrow">/</span>
+      <div class="box dead" style="max-width:250px"><div class="t">dynamic_atr ✗</div><div class="f">WRITTEN 17 rows — NO READER</div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ FINDINGS ═══════════ -->
+  <div class="note">
+    <h2>Gaps &amp; unwired processes</h2>
+    <ol>
+      <li><b class="gap">dynamic_atr tier is a dead write.</b> <span class="k">dynamic_tier_optimizer._compute_dynamic_atr</span> writes 17 per-symbol picks into <span class="k">param_store</span> every 15&nbsp;min. <b>No production code reads <span class="k">TIER_DYNAMIC_ATR</span></b> — only <span class="k">tests/test_param_store.py</span>. The pre-sweep ATR optimization never reaches the sweep.</li>
+
+      <li><b class="gap">The ATR picker never runs on the light path.</b> <span class="k">tiered_atr.dynamic_atr_pick</span> is called <b>only from <span class="k">heavy_sweep.py</span></b> (live cron <span class="k">6 17 * * *</span> from <span class="k">nt_symbol.sweep_cron</span>; code default <span class="k">0 20 * * *</span> — AGENTS.md still says 20:00). The light sweep (every 15&nbsp;min) reads <span class="k">brick_params.yaml</span>, which only the heavy sweep rewrites. <b>Nuance:</b> the light path does scale <span class="k">brick_size</span> every tick via <span class="k">geometry_intraday_scale_mode: live</span> (ATR-now / ATR-at-write) — but <b>not</b> the brick <i>counts</i> (<span class="k">sl_bricks</span>/<span class="k">tp_bricks</span>). So the stop/target <i>shape</i> refreshes daily; only its <i>dollar size</i> tracks ATR at 15&nbsp;min.</li>
+
+      <li><b class="gap">Two ATR mechanisms that never meet.</b> <span class="k">atr_reopt</span> (4h) patches <span class="k">feature_flags.yaml</span> clamps; <span class="k">dynamic_tier_optimizer</span> (15&nbsp;min) writes <span class="k">param_store</span>. The picker reads <b>only</b> the former. Same conceptual lever, two stores, one orphaned.</li>
+
+      <li><b class="gap">geometry_incubation tier is write-only.</b> 28 rows per run; <span class="k">TIER_GEOMETRY_INCUBATION</span> has no reader. The module is imported only by <span class="k">heavy_sweep.py</span>.</li>
+
+      <li><b class="warn">Three of five tiers are shadow.</b> <span class="k">dynamic_deadline_mode</span>, <span class="k">regime_edge_mode</span>, <span class="k">geometry_incubation_mode</span> = <span class="k">shadow</span> — computed and stamped, but none gate a signal. Only <span class="k">geometry_intraday_scale_mode</span> and <span class="k">dynamic_atr_mode</span> are live (the latter on the heavy path only).</li>
+
+      <li><b class="warn">9 modules have no importer.</b> Offline/CLI by design: <span class="k">fp_eval</span>, <span class="k">common_factor</span>, <span class="k">reachability_decay</span>, <span class="k">leverage_eval</span>, <span class="k">calibration_quality_gate</span>, <span class="k">timesfm_zmap</span>*, <span class="k">portfolio_compare</span>, <span class="k">paper_retroclose</span>, <span class="k">regime_state_store</span>*. <span style="color:var(--mut)">(* = actually live via function-local import)</span></li>
+
+      <li><b class="gap">First-passage is built but unwired.</b> AGENTS.md says it replaces the HMM; <span class="k">first_passage.py</span> is imported only by <span class="k">fp_eval.py</span> (offline). It reaches no live gate.</li>
+    </ol>
+  </div>
+
+</div>
+</body>
+</html>
