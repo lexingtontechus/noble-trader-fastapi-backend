@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --ink: var(--foreground, #e6e6e6);
+    --mut: var(--muted-foreground, #9aa0a6);
+    --acc: var(--accent, #4f8cff);
+    --bd: var(--border, #333);
+    --card: var(--card, rgba(255,255,255,.03));
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:transparent;color:var(--ink);
+       font:13px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{width:1120px}
+  h1{font-size:16px;margin:0 0 3px}
+  .sub{color:var(--mut);font-size:12px;margin-bottom:14px}
+  h2{font-size:13px;margin:18px 0 7px}
+  table{border-collapse:collapse;width:100%;font-size:11.5px;margin:6px 0 4px}
+  th,td{border:1px solid var(--bd);padding:5px 8px;text-align:left;vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+  code{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--acc)}
+  .ok{color:#2ea043;font-weight:600}
+  .no{color:#f85149;font-weight:600}
+  .warn{color:#d29922;font-weight:600}
+  .mut{color:var(--mut)}
+  .note{margin-top:14px;padding:11px 13px;border:1px solid var(--bd);border-radius:9px;background:var(--card)}
+  .note h3{font-size:12.5px;margin:0 0 6px}
+  .note ul{margin:0;padding-left:18px}
+  .note li{margin-bottom:5px}
+  .q{font-weight:600;color:var(--acc)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Chain harmonization audit — one methodology, one dataset?</h1>
+  <div class="sub">Verified against <code>config/*</code> on the Studio (HEAD <code>4c43cc4</code>) + live <code>nt_roadmap</code> / <code>nt_geometry_incubation</code>.</div>
+
+  <h2>Q1 · Is <code>geometry_incubation</code> in shadow, and is that roadmap id 71?</h2>
+  <table>
+    <tr><th style="width:34%">Check</th><th>Finding</th></tr>
+    <tr>
+      <td><code>geometry_incubation_mode</code></td>
+      <td><span class="ok">"shadow"</span> — confirmed in <code>config/feature_flags.yaml:996</code> <b>and</b> <code>feature_flags.py:276</code> (<code>_DEFAULTS</code>). Thresholds: min_days 7 · min_resolved 20 · max_expiry_regression 0.10.</td>
+    </tr>
+    <tr>
+      <td>Is roadmap <b>id 71</b> = incubation?</td>
+      <td><span class="no">No — different mechanism.</span> id 71 is <code>geometry_replay_wide_tp_tight_sl</code> (<b>status pending</b>, review 2026-10-05), an <b>offline replay finding</b>: "TP too wide: confirmed; SL too tight: NOT supported". Its review condition is "re-run <code>scripts/kairos_geometry_replay.py</code> before any geometry lever".</td>
+    </tr>
+    <tr>
+      <td>The incubation tier / table</td>
+      <td>Separate: tier <code>geometry_incubation</code> in <code>param_store</code> (28 rows/run) + table <code>nt_geometry_incubation</code> (migration 165). Currently all rows <span class="mut">superseded</span> — <code>n_resolved=0</code> on every row.</td>
+    </tr>
+    <tr>
+      <td>Does the replay script exist?</td>
+      <td><span class="no">No.</span> <code>scripts/kairos_geometry_replay.py</code> is <b>absent</b>; only <code>aapl_geometry_replay.py</code> and <code>control_geometry_replay.py</code> exist. id 71's review condition therefore <b>cannot be executed as written</b>.</td>
+    </tr>
+  </table>
+
+  <h2>Q2 · What is "first-passage is built but unwired"?</h2>
+  <table>
+    <tr><th style="width:34%">Check</th><th>Finding</th></tr>
+    <tr>
+      <td>The module</td>
+      <td><code>first_passage.py</code> exists — <code>first_passage()</code> = P(TP before SL) via the same <code>walk()</code> rule; <code>first_passage_score()</code> = regime-transition-reinforced read. 34 tests pass.</td>
+    </tr>
+    <tr>
+      <td>Intended role (AGENTS.md)</td>
+      <td>Replace the HMM's <code>p_markov_hold_n</code> (withdrawn from the EV blend 2026-10-01; measured 0.525 vs 0.5655 base rate).</td>
+    </tr>
+    <tr>
+      <td>Actual importers</td>
+      <td><span class="no">Only offline:</span> <code>fp_eval.py</code> (Phase-2 evaluator) + its tests. <b>No live gate, no orchestrator path, no EV-blend slot reads it.</b></td>
+    </tr>
+    <tr>
+      <td>Verdict</td>
+      <td><b>Phase 2 RESULT = 1/5 bar items pass.</b> First-passage skill <b>−0.0691</b> (below the 0.7041 base rate); the D5 overlay <i>subtracts</i>. Kill criteria met → option F. So it is unwired <b>by decision</b>, not by omission.</td>
+    </tr>
+  </table>
+
+  <h2>Q3 · Did the triage harmonize the full chain — same methodology, dataset, and <code>config/*</code> params?</h2>
+  <table>
+    <tr>
+      <th style="width:20%">Consumer</th><th style="width:20%">Resolution rule</th>
+      <th style="width:16%">Window</th><th style="width:22%">Dataset / filters</th><th>Params source</th>
+    </tr>
+    <tr>
+      <td><b>eod_resolver</b><br><span class="mut">live settlement</span></td>
+      <td class="ok">resolve_bracket_path<br>(intrabar, sl_first)</td>
+      <td>48 bars</td>
+      <td><code>nt_signal_sim</code> rows</td>
+      <td>flag: <code>eod_resolver_basis</code>, <code>settlement_same_bar_policy</code></td>
+    </tr>
+    <tr>
+      <td><b>tiered_atr picker</b><br><span class="mut">geometry chooser</span></td>
+      <td class="ok">bracket_envelope<br>(intrabar, sl_first)</td>
+      <td>10 d lookback<br>48-bar expiry</td>
+      <td><code>nt_signal_sim</code> <code>source=sweep-light</code>, buy/sell</td>
+      <td><code>feature_flags.dynamic_atr</code> grid + by_symbol clamps</td>
+    </tr>
+    <tr>
+      <td><b>atr_reopt</b><br><span class="mut">monthly + 4h urgency</span></td>
+      <td class="ok">build_envelopes<br>(intrabar, sl_first)</td>
+      <td class="warn">45 d lookback</td>
+      <td><code>nt_signal_sim</code> (free lattice)</td>
+      <td>writes <code>feature_flags</code> by_symbol clamps</td>
+    </tr>
+    <tr>
+      <td><b>heavy_sweep</b><br><span class="mut">grid backtest</span></td>
+      <td class="warn">Renko brick engine<br>(brick-close) + live cross-check</td>
+      <td>grid</td>
+      <td>Renko bricks</td>
+      <td><code>feature_flags</code> + <code>brick_params.yaml</code> write</td>
+    </tr>
+    <tr>
+      <td><b>dynamic_tier_optimizer</b><br><span class="mut">pre-sweep clock</span></td>
+      <td class="ok">calls the picker<br>(<code>use_store=False</code>)</td>
+      <td>10 d</td>
+      <td><code>nt_signal_sim</code> resolved, contaminated=false, deduped</td>
+      <td>reads <code>feature_flags.dynamic_atr</code></td>
+    </tr>
+  </table>
+
+  <div class="note">
+    <h3>Verdict — partial, and here is exactly what is and is not harmonized</h3>
+    <ul>
+      <li><span class="ok">✓ Resolution rule — DONE.</span> Four sites, previously three semantics (close/TP-first, intrabar/SL-first, brick-close). Now <b>three of four resolve through <code>resolve_bracket_path</code></b> on the live basis (intrabar + sl_first). The heavy Renko engine keeps its own basis but is <b>cross-checked and logged</b> on the live basis, not silently divergent.</li>
+      <li><span class="ok">✓ Same-bar policy — DONE.</span> One flag (<code>settlement_same_bar_policy: sl_first</code>), read by every consumer. The hardcoded SL-first that ignored the flag is gone.</li>
+      <li><span class="ok">✓ Param source of truth — DONE.</span> <code>config/*</code> is authoritative; the optimizer <b>calls</b> the picker rather than re-deriving. The <code>dynamic_atr</code> tier now carries usable geometry, read by both sweeps (light behind <code>shadow</code>).</li>
+      <li><span class="warn">✗ Same window — NOT harmonized.</span> Pickers use <b>10 d</b>, <code>atr_reopt</code> uses <b>45 d</b>, <code>regime_edge</code> uses <b>90 d</b>. These are deliberate (rediscovery clock vs fast refresh) but they are <b>different datasets</b>, so a 10 d pick and a 45 d band can disagree.</li>
+      <li><span class="warn">✗ Same data filters — NOT harmonized.</span> The picker reads <code>source=sweep-light</code> signals only; the optimizer's <code>_fetch_resolved_rows</code> reads all resolved rows with <code>contaminated=false</code>. Different populations.</li>
+      <li><span class="warn">✗ <code>brick_params.yaml</code> is a second geometry store.</span> The light path's operative geometry comes from the heavy sweep's YAML write (daily), not from the <code>dynamic_atr</code> tier — so the new tier read is a shadow no-op until a bracket clears the both-halves bar.</li>
+      <li><span class="no">✗ Roadmap id 71 cannot be closed.</span> Its review condition names a script that does not exist.</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>
