@@ -521,6 +521,17 @@ dynamic_atr_consistency_tol: 0.20
 # applies it; off disables. Ships shadow-first — this changes live geometry.
 dynamic_atr_light_mode: "shadow"
 
+# brick_params_source (2026-10-09, worklog
+# 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md Part B): yaml | store.
+# "yaml" (default) — the historical read: the light sweep loads geometry from
+# config/brick_params.yaml (written by the heavy sweep).
+# "store" — the LOCAL param store's `brick_state` tier is the geometry
+# AUTHORITY; brick_params.yaml becomes a derived cache (still written, because
+# renko_retention's prune key and renko/router's Discord embed read brick_size
+# from it). Falls back to the YAML whenever the store is cold, so a flip can
+# never leave the sweep without geometry. Read per call — no restart needed.
+brick_params_source: "yaml"
+
 dynamic_atr:
   lookback_days: 10
   tp_atr: [1.71, 2.0, 3.0, 5.0, 8.0, 13.0]

@@ -70,6 +70,69 @@ def reload() -> None:
     logger.info("Brick params YAML cache invalidated — next read will re-load file")
 
 
+# ─── Store authority (2026-10-09, Part B single source of truth) ───────────
+#
+# worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md Part B: the
+# LOCAL param store is the geometry AUTHORITY; brick_params.yaml is a derived
+# CACHE. The YAML stays written (renko_retention's prune key and
+# renko/router's Discord embed read brick_size from it) but it is no longer
+# the thing the sweep treats as truth.
+#
+# The store already carries the complete triple in the `brick_state` tier
+# (written by the heavy sweep alongside the YAML), so no schema change and no
+# new field on the ATR pick are needed.
+
+def load_from_store(symbol: str) -> Tuple[float, int, int] | None:
+    """Read ``(brick_size, sl_bricks, tp_bricks)`` from the LOCAL param store.
+
+    Local-only, no network. Returns ``None`` when the store has no usable
+    entry for the symbol — the caller MUST fall back to the YAML (fail-open;
+    a cold store must never leave the sweep without geometry).
+    """
+    try:
+        from regime_platform.core import param_store
+
+        d = param_store.read_dict(symbol, param_store.TIER_BRICK_STATE, "latest")
+        if not d:
+            return None
+        bs, sl, tp = d.get("brick_size"), d.get("sl_bricks"), d.get("tp_bricks")
+        if bs is None or sl is None or tp is None:
+            return None
+        return (float(bs), int(sl), int(tp))
+    except Exception as exc:
+        logger.debug("load_from_store %s: %s", symbol, exc)
+        return None
+
+
+def load_brick_params_authoritative(symbol: str) -> Tuple[float, int, int]:
+    """The sweep-facing read: store first (authority), YAML second (cache).
+
+    Gated by ``brick_params_source`` (config/feature_flags.yaml):
+      * ``yaml``  (default) — the historical read, unchanged.
+      * ``store`` — read the store; fall back to the YAML when cold.
+
+    ``store`` mode is the Part B end state: one authority, one derived cache.
+    It ships defaulted to ``yaml`` so the flip is one config edit with no
+    restart, and a cold store is never fatal.
+    """
+    try:
+        from regime_platform.core.feature_flags import get_brick_params_source
+
+        mode = get_brick_params_source()
+    except Exception:
+        mode = "yaml"
+
+    if mode == "store":
+        stored = load_from_store(symbol)
+        if stored is not None:
+            return stored
+        logger.debug(
+            "brick_params_source=store but no stored geometry for %s — "
+            "falling back to YAML", symbol,
+        )
+    return load_brick_params(symbol)
+
+
 def load_brick_params(symbol: str) -> Tuple[float, int, int]:
     """Load (brick_size, sl_bricks, tp_bricks) for a symbol.
 

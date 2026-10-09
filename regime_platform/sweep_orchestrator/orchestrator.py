@@ -5805,18 +5805,20 @@ class SweepOrchestrator(HeavySweepMixin):
         return ["*/15 * * * *"]
 
     async def _load_brick_params(self, symbol: str) -> tuple[float, int, int]:
-        """Load brick_size, sl_bricks, tp_bricks from the YAML config (v5).
+        """Load brick_size, sl_bricks, tp_bricks for the light sweep.
 
-        Replaces the Redis ``trading:config:{symbol}`` hash lookup. The
-        YAML file (``config/brick_params.yaml``) is the source of truth;
-        the heavy sweep (daily, unconditional — no TimesFM confidence
-        gate as of 2026-09-09) rewrites it with ATR-scaled optimised
-        values. Light sweep reads from the YAML — no Redis round-trip.
+        2026-10-09 (worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md
+        Part B): the read is now ``load_brick_params_authoritative`` — store
+        first (the ``brick_state`` tier is the geometry authority when
+        ``brick_params_source: store``), YAML second. With the shipped default
+        (``yaml``) this is byte-identical to the historical read; the store
+        path is fail-open, so a cold store falls back to the YAML rather than
+        leaving the sweep without geometry.
 
-        Falls back to (0.5, 3, 6) if the YAML is missing or malformed.
+        Falls back to (0.5, 3, 6) if both are missing/malformed.
         """
-        from regime_platform.config.brick_params import load_brick_params
-        return load_brick_params(symbol)
+        from regime_platform.config.brick_params import load_brick_params_authoritative
+        return load_brick_params_authoritative(symbol)
 
     def _smoothed_markov_hold_prob(
         self,

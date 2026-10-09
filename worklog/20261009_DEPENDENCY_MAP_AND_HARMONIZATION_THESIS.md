@@ -280,4 +280,39 @@ This is why a straight "make `dynamic_atr` authoritative, delete the YAML" fails
 
 ## B.13 Honest status
 
-This recommendation is **not yet built** — Part A is. The sequencing matters: stage 1 (`sl_bricks` in the pick) is a one-field change but it is a **prerequisite**, and it is currently blocked by the fact that **no symbol produces a pick at all**. Until the geometry bands clear the both-halves bar (the `atr=0` finding in `20261009_ATR_GEOMETRY_SINGLE_SOURCE.md` §8), the `dynamic_atr` tier is empty, so making it authoritative would move the light path from *a working YAML geometry* to *no geometry*. **Build stages 1–2 now (they are inert without a pick); flip the flag only once the picker produces values.**
+**BUILT 2026-10-09.** The plan below changed when the build started: the store
+**already** carried the complete triple. `param_store` tier `brick_state`
+(key `latest`) holds `{brick_size, sl_bricks, tp_bricks, atr_at_write}`, written
+by `geometry_risk.persist_brick_state_local` from the same heavy-sweep call that
+writes the YAML (`heavy_sweep._persist_brick_params_to_yaml`). So **stage 1 from
+the sketch was unnecessary** — no new field on `DynamicAtrPick`, no schema
+change. The `brick_state` tier is an authority-in-waiting; the light path simply
+did not read it.
+
+What shipped:
+
+| Stage | Built |
+|---|---|
+| **1** | *(not needed)* — `brick_state` already holds the resolved triple |
+| **2** | ✅ `brick_params.load_from_store()` — local-only read of the triple |
+| **3** | ✅ `load_brick_params_authoritative()` + flag `brick_params_source: yaml \| store` (default `yaml`); `orchestrator._load_brick_params` routes through it |
+| **4** | ✅ *(already true)* — the heavy sweep dual-writes YAML + store, so the YAML stays current as cache with no change |
+| **5** | ⏳ flag flip — **deferred**, see below |
+| **6** | ⏳ retire the grid's authority over `sl_bricks` — not started |
+
+**Why the flip is deferred, and it is the same reason as before:** `store` mode
+only becomes *meaningful* once the store holds values the YAML does not — i.e.
+once the ATR picker produces picks. Today it returns `None` for all 14 symbols
+(every candidate is negative in the first half, verified live in
+`20261009_ATR_GEOMETRY_SINGLE_SOURCE.md` §8), and the `brick_state` tier is
+written by the heavy sweep's own YAML path, so store and YAML hold the *same*
+values. Flipping now would be a no-op at best. The machinery is in place and
+fail-open; flip `brick_params_source: store` when a symbol's pick diverges from
+its heavy-grid brick encoding — that is the moment the store becomes the truer
+authority.
+
+Tests: `tests/test_brick_params_source.py` (10) — flag default + fail-safe,
+store read/cold/partial, `yaml` mode byte-identical, `store` mode reads store,
+`store`+cold falls back, and a guard that the light path routes through the
+authoritative read.
+

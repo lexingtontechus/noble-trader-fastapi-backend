@@ -239,6 +239,11 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_consistency_mode": "shadow",
     "dynamic_atr_consistency_tol": 0.20,
     "dynamic_atr_light_mode": "shadow",
+    # Part B single source of truth (2026-10-09, worklog
+    # 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md): "yaml" (historical
+    # read) | "store" (param_store brick_state tier is the geometry authority;
+    # YAML is the derived cache). Ships "yaml" so the flip is one config edit.
+    "brick_params_source": "yaml",
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "live",
@@ -723,6 +728,21 @@ def get_dynamic_atr_light_mode() -> str:
         "dynamic_atr_light_mode",
         _DEFAULTS.get("dynamic_atr_light_mode", "shadow"),
     )).lower()
+
+
+def get_brick_params_source() -> str:
+    """``yaml`` | ``store`` — where the sweep reads brick geometry from.
+
+    2026-10-09 (worklog 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md
+    Part B): ``store`` makes the LOCAL param store's ``brick_state`` tier the
+    geometry authority and demotes ``config/brick_params.yaml`` to a derived
+    cache. ``yaml`` (default) is the historical read. Read per call, so a flip
+    needs no restart. Unknown values fail safe to ``yaml``.
+    """
+    v = str(_load().get(
+        "brick_params_source", _DEFAULTS.get("brick_params_source", "yaml"),
+    )).lower()
+    return v if v in ("yaml", "store") else "yaml"
 
 
 def get_dynamic_atr_config(
