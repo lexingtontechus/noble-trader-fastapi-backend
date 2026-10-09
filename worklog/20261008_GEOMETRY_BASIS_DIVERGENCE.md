@@ -175,6 +175,34 @@ the heavy pick); fail-open below 30 samples. Directly catches the GBPUSD case:
 - `settlement_same_bar_policy: "tp_first" → "sl_first"` (behaviour-preserving).
 - `dynamic_atr_consistency_mode: shadow`, `dynamic_atr_consistency_tol: 0.20`.
 
+### Deploy (2026-10-09 02:46 UTC)
+
+Commit `8097208` pulled on the Studio (`/teamspace/studios/this_studio/noble-trader`,
+which is the cwd of the running orchestrator), orchestrator restarted (PID 7707,
+health 200). Verification:
+
+- **Migration 204 confirmed on the real prod DB** (`pcvscowltlrxzgxjurcr`): the
+  `ambiguous` column exists on `nt_signal_sim`. (The MCP Supabase tools point at
+  a *different* project — always confirm through the Studio's own `.env.local`.)
+  Zero non-null rows at deploy time because no resolution had run since the
+  restart; the next hourly resolve populates it.
+- **Process newer than the changed files** (`settlement_contract.py` /
+  `tiered_atr.py` mtime 02:45:15 < process start 02:46:18) — the new code is live.
+- Imports resolve with the right values: `live_basis=intrabar`,
+  `live_same_bar_policy=sl_first`, `consistency=shadow/0.2`.
+- Pre-sweep optimizer ran cleanly under the new process (02:50).
+
+**The Studio's `config/feature_flags.yaml` carries runtime-tuned optimizer output**
+(`atr_reopt.py` patches `dynamic_atr.by_symbol.<SYMBOL>` clamps). It was stashed,
+the pull taken, then popped — the incoming hunk (new flags, ~line 499/844) and the
+local hunk (by_symbol clamps, ~line 375/528/574/589) are disjoint, so both merged
+with no conflict. Backup kept at `/tmp/ff_studio_backup_*.yaml`.
+
+**Notable:** the live-tuned forex band on the Studio is already
+`sl_atr [1.45, 1.57, 1.69]` — ~4× wider than the committed `[0.30, 0.35, 0.40]`,
+i.e. the realtime optimizer had *already* widened the stop, consistent with the
+Stage-4 prediction that the tight band was a close-walk artefact.
+
 ---
 
 ## 7. Evidence files
