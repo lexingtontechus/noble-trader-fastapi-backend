@@ -342,7 +342,15 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
         paths, _ = await _paths_for(symbols, members, since, until)
         sc = solve_free(paths)
         asset = members[0].get("asset_class")
-        cmp = compare_to_current(scope if scope != "forex" else None, sc, asset if scope != "forex" else "forex")
+        # Config-layer parity (worklog 20261010_REOPT_CLAMP_HARMONIZATION.md):
+        # compare against the SAME dynamic_atr layer the picker applies. For the
+        # pooled forex scope the picker resolves by_symbol.FOREX (via any major
+        # symbol, feature_flags.py:848-851), so pass a forex member as `symbol`
+        # here — otherwise get_dynamic_atr_config(symbol=None) falls through to
+        # the wide GLOBAL clamps and reopt's solve never flags drift vs the
+        # tight FOREX band the picker is actually bound by.
+        cmp_symbol = members[0]["symbol"]  # forex: a major resolves by_symbol.FOREX
+        cmp = compare_to_current(cmp_symbol, sc, asset if scope != "forex" else "forex")
         row = f"| {scope} | {_fmt_sc(sc)} | drift={cmp['drift']} | {'; '.join(cmp['reasons']) or '—'} |"
         print(row, flush=True)
         lines.append(row)

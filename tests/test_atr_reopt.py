@@ -107,3 +107,24 @@ def test_clamp_block_narrow_lattice():
     assert blk["tp_atr_min"] < 8.07 < blk["tp_atr_max"]
     assert blk["sl_atr_min"] < 1.77 < blk["sl_atr_max"]
 
+
+def test_forex_drift_flags_against_for_override():
+    """Config-layer parity (worklog 20261010_REOPT_CLAMP_HARMONIZATION.md).
+
+    The pooled forex scope's solve must be compared against the SAME
+    dynamic_atr layer the picker applies — by_symbol.FOREX — not by_class.forex
+    (which can be a WIDER band: Studio has by_class.forex tp_max 5.02 vs
+    by_symbol.FOREX 1.85). Passing a forex member resolves the by_symbol.FOREX
+    override the picker uses, so a wide solve (4.52/2.75) flags drift; with
+    symbol=None it can read the wider by_class band and miss it.
+    """
+    sc = {"tp": 4.52, "sl": 2.75, "wr": 0.404, "ev": 0.086, "exp": 0.0,
+          "n": 6506, "dec": 6506}
+    # The fix path: a forex member → by_symbol.FOREX override → drift flagged.
+    new = compare_to_current("USDJPY", sc, "forex")
+    assert new["drift"] is True, "wide forex solve must drift vs the FOREX override"
+    assert any("above clamp" in r for r in new["reasons"])
+    # The FOREX override must be tight enough to reject 4.52 (this is the band
+    # the picker is actually bound by).
+    assert new["tp_atr_max"] is not None and float(new["tp_atr_max"]) < 4.52
+
