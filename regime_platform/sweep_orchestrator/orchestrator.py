@@ -56,6 +56,7 @@ from regime_platform.core.feature_flags import (
     get_dynamic_deadline_mode,
     get_regime_edge_mode,
     get_regime_edge_config,
+    get_router_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
@@ -1032,6 +1033,7 @@ def _build_signal_sim_payload(
     resolution_confidence: str | None = None,
     soft_deadline_hours: float | None = None,
     hard_deadline_hours: float | None = None,
+    strategy_archetype: str | None = None,
 ) -> dict[str, Any]:
     """Build the ``nt_signal_sim`` payload for one generated signal.
 
@@ -1218,6 +1220,14 @@ def _build_signal_sim_payload(
         payload["soft_deadline_hours"] = round(float(soft_deadline_hours), 1)
     if hard_deadline_hours is not None:
         payload["hard_deadline_hours"] = round(float(hard_deadline_hours), 1)
+    # R1 strategy-router shadow stamp (worklog
+    # 20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §4). The archetype the
+    # deterministic router resolved this signal to (momentum / mean_reversion /
+    # stand_by / ...). Measurement-only: R2 scores whether the stamped archetype
+    # predicts outcome better than the uniform engine. Nullable — absent when
+    # router.mode is off or the router errored (fail-open). No live effect.
+    if strategy_archetype is not None:
+        payload["strategy_archetype"] = strategy_archetype
     return payload
 
 
@@ -4553,6 +4563,36 @@ class SweepOrchestrator(HeavySweepMixin):
                         trade_signal["signal"], macro_label, trend_label,
                     )
 
+        # ── 5b-3b. Strategy router (R1, shadow) — 2026-10-10, worklog
+        # 20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §4 ──────────────
+        # Resolve this signal to a strategy archetype from config/
+        # strategy_registry.yaml and STAMP it on nt_signal_sim. SHADOW ONLY —
+        # no geometry/deadline/calibration changes; the whole point is to make
+        # the archetype measurable (R2 scores whether the stamped archetype
+        # predicts outcome better than the uniform engine). Fail-open: router
+        # errors or router.mode=off -> strategy_archetype stays None (column
+        # omitted), never blocks the tick.
+        strategy_archetype: str | None = None
+        if get_router_mode() != "off" and signal_is_qualifiable:
+            try:
+                from regime_platform.sweep_orchestrator.strategy_router import route
+                _routed = route(
+                    symbol=symbol,
+                    signal=trade_signal["signal"],
+                    regime_label=regime_label,
+                    asset_class=asset_class,
+                    macro_label=macro_label,
+                    trend_label=trend_label,
+                )
+                strategy_archetype = _routed.as_stamp()
+                logger.info(
+                    "[strategy:route] %s signal=%s regime=%s -> %s (%s)",
+                    symbol, trade_signal["signal"], regime_label,
+                    _routed.archetype, _routed.reason,
+                )
+            except Exception as _exc:
+                logger.debug("[strategy:route] %s failed: %s", symbol, _exc)
+
         # ── 5b-4. Dynamic/regime-conditional MIN_RR (2026-09-11, worklog
         # 20260910_LONGITUDINAL_CONTEXT_AND_BRICK_GEOMETRY_REVIEW.md Part
         # 11) ────────────────────────────────────────────────────────────
@@ -5516,6 +5556,7 @@ class SweepOrchestrator(HeavySweepMixin):
                     resolution_confidence=_deadline_tier.confidence if _deadline_tier else None,
                     soft_deadline_hours=_deadline_tier.soft_deadline_hours if _deadline_tier else None,
                     hard_deadline_hours=_deadline_tier.hard_deadline_hours if _deadline_tier else None,
+                    strategy_archetype=strategy_archetype,
                     gate_outcome=(
                         "qualified" if published
                         else "suppressed" if _gates_pass

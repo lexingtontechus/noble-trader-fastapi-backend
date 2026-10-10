@@ -300,6 +300,10 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # not predictive — confidence always accompanies the numeric estimate.
     "expected_resolution_hours", "expected_resolution_days",
     "resolution_confidence", "soft_deadline_hours", "hard_deadline_hours",
+    # R1 strategy-router shadow stamp (20261010_KAIROS_STRATEGY_STRUCTURE_
+    # WIDER_LENS.md §4): the archetype the deterministic router resolved the
+    # signal to. Measurement-only for R2; no live effect. Nullable.
+    "strategy_archetype",
     # Fields filled later by the EOD signal resolver. They stay NULL at
     # capture time but are part of the schema so a resolver insert is
     # a plain filtered insert into the same table.
