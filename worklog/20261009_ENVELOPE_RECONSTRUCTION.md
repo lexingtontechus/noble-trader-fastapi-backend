@@ -1,4 +1,35 @@
-# Envelope reconstruction — fixing the geometry chooser's first-passage defect
+# Envelope reconstruction — finding overturned; the real issue is sample thinness
+
+**Date:** 2026-10-09
+**Status:** **DIAGNOSIS OVERTURNED — do not build the reconstruction.** The envelope walk was proven faithful to the live resolver (identical outcomes + pnl across all symbols on an extended tp grid). The monotonic-in-tp signature is **real data**, not a defect. See §0.
+
+---
+
+## 0. OVERTURN — the envelope is correct; the reconstruction would fix nothing
+
+I specced an envelope reconstruction below on the hypothesis that `build_envelopes`' independent `fav`/`adv` manufactured a phantom wide-TP edge. **I tested that hypothesis directly and it was wrong.**
+
+**The test:** for each symbol, score the same era-clean signals two ways across an extended tp grid (sl=1.0) —
+- `walk_envelopes` (independent extremes, the picker), and
+- `resolve_bracket_path` (the live resolver's path walk, bar-by-bar OHLC first-passage).
+
+**The result: identical to the last decimal, every symbol, every tp.** Example (XAGUSD, n=68):
+
+| tp | env e | path e | P(tp) | P(sl) |
+|---|---|---|---|---|
+| 1.5 | +0.862 | +0.862 | 0.76 | 0.24 |
+| 3.0 | +1.891 | +1.891 | 0.74 | 0.26 |
+| 6.0 | +3.685 | +3.685 | 0.68 | 0.32 |
+
+**Why they agree:** `resolve_bracket_path` itself uses the same `hi>=tp → exit at tp` / `lo<=sl → exit at sl` first-passage rule (settlement_contract.py:478). It is *also* discrete pnl. Both exit at the bracket level, never an intermediate price. So there is no "path-consistent intermediate exit" to recover — the reconstruction in §3 would reproduce the exact same numbers. It is busywork.
+
+**What the monotonic-in-tp actually is:** a true property of the expectancy surface. For XAGUSD, P(tp) barely falls (0.76→0.68) as tp goes 1.5→6.0, while the payoff scales 4×. On a 48-bar intrabar window for a trending metal, price reaches +6 ATR nearly as often as +1.5 ATR, and a 1-ATR stop rarely triggers first. The pick at tp=6/sl=1 is **genuinely optimal on this sample** — not a grid-edge artifact.
+
+**The real risk, restated:** the false-signal trap here is **not** a broken walk. It is **thin-sample / single-regime expectancy**: n≈68 per symbol, all from one trending week (post-2026-10-02), with the only robustness check being a ~34/34 time split that itself passes (e1,e2 both climb with tp). A tp=6/sl=1 structure (RR=6) that "wins" on 68 signals from one regime is the classic setup for a pick that collapses out-of-sample. **The fix is walk-forward validation and a min-sample/regime-diversity bar, not an envelope rebuild.**
+
+---
+
+<details><summary>Original (overturned) analysis — kept for the reasoning trail</summary>
 
 **Date:** 2026-10-09
 **Scope:** `tiered_atr.build_envelopes` / `walk_envelopes` (the dynamic-ATR geometry chooser) scores brackets against an envelope that is **not path-consistent**, so a single bar can simultaneously satisfy a wide TP and a deep SL. This manufactures an expectancy that is monotonic in TP width — the exact pattern that previously led the platform down the dynamic-optimization path on a false signal.
@@ -101,3 +132,21 @@ Deferred deliberately. Regime/direction suppression (as done for AAPL) is a *mit
 | `worklog/20261009_ENVELOPE_RECONSTRUCTION.md` | this |
 
 **Open design question for review:** the ordering rule assumes adverse-before-favourable uniformly (the `sl_first` convention). An alternative is to order by the bar's open→close direction (a bar that closed up is assumed to have dipped then risen). The uniform rule is simpler and matches the current policy exactly; the directional rule is more realistic but couples the chooser to a heuristic. Recommendation: **uniform `sl_first`** first (provably conservative, matches the resolver), evaluate the directional variant only if the agreement test shows systematic mismatch on up-close bars.
+
+</details>
+
+---
+
+## 8. The corrected prescription — walk-forward validation, not an envelope rebuild
+
+Since the envelope is faithful, the chooser's picks are *correctly computed* — the open question is whether they **generalize**. Three gates, in order of priority:
+
+1. **Out-of-sample split.** Currently `select_tp_sl`'s only robustness check is the in-sample time split (`e1>0 AND e2>0`). Add a true held-out test: pick the bracket on the first half, *evaluate* it on the second half (and vice versa). A tp=6/sl=1 pick that only earns on the half it was chosen on is overfit; one that earns on both is real. This is the single highest-value check.
+
+2. **Minimum sample per half.** n≈68 total → ~34 per half is too thin to trust a RR=6 structure. Raise `min_signals` (or gate the pick's `n`) so a bracket is only adopted with enough independent episodes in *each* half — the platform's existing calibration min-episode convention (20) is the natural bar.
+
+3. **Regime-diversity.** All current evidence is one trending week. A pick should be required to survive across vol-tiers / trend directions, not just time. If tp=6 only wins in `high_vol`/`med_high_vol`, the pick is regime-conditional and should be scoped as such (this is where the AAPL-style regime/direction suppression *becomes* relevant — after the chooser is trusted, to scope its output, not to hide a defect).
+
+**Relationship to AAPL suppression (revised):** still deferred, but for the *opposite* reason than §6 stated. §6 said "suppress after fixing the broken measurement." The measurement isn't broken — so suppression isn't a mask; it's a legitimate **scoping** tool for gate 3 (restrict a pick to the regimes where it generalizes). It moves from "deferred until sound" to "a real option once gates 1-2 pass."
+
+**Bottom line:** do not rebuild the envelope. Build the walk-forward split + min-sample bar first. If a tp=6/sl=1 pick survives held-out evaluation with n≥20 per half across regimes, it's real and the chooser can adopt it. If it doesn't — which the single-regime, thin-sample evidence suggests is likely — the chooser correctly stays conservative, and that is the honest outcome, not a bug to engineer around.
