@@ -521,6 +521,23 @@ dynamic_atr_consistency_tol: 0.20
 # applies it; off disables. Ships shadow-first — this changes live geometry.
 dynamic_atr_light_mode: "shadow"
 
+# dynamic_atr_walkforward_mode (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md):
+# off | shadow | live. Held-out (walk-forward) gate on the chosen ATR bracket.
+# select_tp_sl's e1>0 AND e2>0 is an in-sample split on the SAME data the
+# bracket was optimised over, so a RR=6 pick (e.g. tp=6/sl=1 on trending
+# metals) passes trivially. This measures the pick on the half it was NOT
+# chosen on. shadow logs is/oos expectancy; live rejects an overfit pick
+# (heavy-sweep geometry kept); off disables. Thin folds (< min_fold_n decided)
+# fail open. See 20261009_ENVELOPE_RECONSTRUCTION.md §8 for why the envelope
+# is faithful and the real risk is thin-sample/single-regime expectancy.
+dynamic_atr_walkforward_mode: "shadow"
+# Min DECIDED signals per fold before the gate trusts the held-out result.
+# 20 mirrors the calibration min-episode convention.
+dynamic_atr_walkforward_min_fold_n: 20
+# Min out-of-sample net expectancy (ATR) to pass. 0.0 = held-out half must be
+# non-negative net of cost.
+dynamic_atr_walkforward_min_oos: 0.0
+
 # brick_params_source (2026-10-09, worklog
 # 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md Part B): yaml | store.
 # "yaml" (default) — the historical read: the light sweep loads geometry from

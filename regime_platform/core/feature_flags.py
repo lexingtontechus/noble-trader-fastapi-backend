@@ -239,6 +239,14 @@ _DEFAULTS: dict[str, Any] = {
     "dynamic_atr_consistency_mode": "shadow",
     "dynamic_atr_consistency_tol": 0.20,
     "dynamic_atr_light_mode": "shadow",
+    # Walk-forward held-out gate (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md):
+    # select_tp_sl's e1>0 AND e2>0 is an in-sample split on the same data the
+    # bracket was optimised over, so a RR=6 pick passes trivially. This measures
+    # the pick on the half it was NOT chosen on. shadow logs; live rejects the
+    # overfit pick (heavy kept); off disables. Thin folds fail open.
+    "dynamic_atr_walkforward_mode": "shadow",
+    "dynamic_atr_walkforward_min_fold_n": 20,
+    "dynamic_atr_walkforward_min_oos": 0.0,
     # Part B single source of truth (2026-10-09, worklog
     # 20261009_DEPENDENCY_MAP_AND_HARMONIZATION_THESIS.md): "yaml" (historical
     # read) | "store" (param_store brick_state tier is the geometry authority;
@@ -745,6 +753,49 @@ def get_dynamic_atr_light_mode() -> str:
         "dynamic_atr_light_mode",
         _DEFAULTS.get("dynamic_atr_light_mode", "shadow"),
     )).lower()
+
+
+def get_dynamic_atr_walkforward_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — walk-forward held-out gate on the pick.
+
+    2026-10-09 (worklog 20261009_WALKFORWARD_SPLIT.md): ``select_tp_sl``'s
+    only robustness check is an in-sample time split on the same data the
+    bracket was optimised over, so a RR=6 pick passes trivially. This measures
+    the chosen bracket on the half it was NOT chosen on. ``shadow`` logs the
+    in/out-of-sample expectancy; ``live`` rejects an overfit pick (heavy kept);
+    ``off`` disables. Thin folds fail open. Unknown values fall back to shadow.
+    """
+    v = str(_load().get(
+        "dynamic_atr_walkforward_mode",
+        _DEFAULTS.get("dynamic_atr_walkforward_mode", "shadow"),
+    )).lower()
+    return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_dynamic_atr_walkforward_min_fold_n() -> int:
+    """Minimum DECIDED signals per fold before the walk-forward gate trusts the
+    held-out result. Below this the gate fails open (insufficient_data). 20
+    mirrors the platform's calibration min-episode convention."""
+    try:
+        return int(_load().get(
+            "dynamic_atr_walkforward_min_fold_n",
+            _DEFAULTS.get("dynamic_atr_walkforward_min_fold_n", 20),
+        ))
+    except (TypeError, ValueError):
+        return 20
+
+
+def get_dynamic_atr_walkforward_min_oos() -> float:
+    """Minimum out-of-sample (held-out fold) net expectancy, in ATR, for a pick
+    to pass the walk-forward gate. 0.0 = the held-out half must be
+    non-negative net of cost."""
+    try:
+        return float(_load().get(
+            "dynamic_atr_walkforward_min_oos",
+            _DEFAULTS.get("dynamic_atr_walkforward_min_oos", 0.0),
+        ))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def get_brick_params_source() -> str:

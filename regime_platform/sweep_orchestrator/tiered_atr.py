@@ -239,6 +239,73 @@ def walk_envelopes(
     return pnl, expired
 
 
+def walk_forward_validate(
+    env: np.ndarray,
+    tp_atr: float,
+    sl_atr: float,
+    *,
+    same_bar_policy: str = LIVE_SAME_BAR_POLICY,
+    cost_atr: float = 0.0,
+    min_fold_n: int = 20,
+    min_oos_expectancy: float = 0.0,
+) -> dict[str, Any]:
+    """Held-out (walk-forward) check that a chosen bracket generalises.
+
+    ``env`` is the chronologically-ordered (n, 48, 2) envelope
+    ``build_envelopes`` produces (it sorts by ``_ts``; ``_load_class_signals``
+    is ``order: ts.asc``), so a half-split is a time split. The bracket is
+    measured on each half independently; the half it was NOT chosen on is the
+    out-of-sample test.
+
+    Worklog 20261009_WALKFORWARD_SPLIT.md: ``select_tp_sl``'s only robustness
+    check is an in-sample time split on the same data the bracket was
+    optimised over, so a RR=6 pick passes trivially. This adds a true held-out
+    fold.
+
+    Returns ``{is_exp, oos_exp, is_n, oos_n, ok, reason}``:
+      * ``is_exp`` / ``oos_exp`` — net expectancy (ATR, net of ``cost_atr``) on
+        the first / second half.
+      * ``ok`` — True when both folds have >= ``min_fold_n`` DECIDED signals
+        AND **both** folds' expectancy >= ``min_oos_expectancy``. The pick was
+        chosen on the FULL sample, so both halves are partly in-sample; the
+        held-out test is that it does not collapse on EITHER half. A pick that
+        earns only because one half carried it is the overfit signature.
+      * Fail-open: if either fold is too thin, ``ok=True`` with
+        ``reason="insufficient_data"`` — a thin sample defers to prior
+        behaviour, it does not silently reject the pick.
+    """
+    n = len(env)
+    if n < 2:
+        return {"is_exp": None, "oos_exp": None, "is_n": 0, "oos_n": 0,
+                "ok": True, "reason": "insufficient_data"}
+    mid = n // 2
+    folds = (env[:mid], env[mid:])
+    exps: list[float | None] = []
+    ns: list[int] = []
+    for fold in folds:
+        if len(fold) == 0:
+            exps.append(None); ns.append(0); continue
+        pnl, expired = walk_envelopes(fold, tp_atr, sl_atr, same_bar_policy=same_bar_policy)
+        decided = int((~expired).sum())
+        ns.append(decided)
+        exps.append(float((pnl - cost_atr).mean()) if decided else None)
+
+    is_exp, oos_exp = exps[0], exps[1]
+    is_n, oos_n = ns[0], ns[1]
+
+    if is_n < min_fold_n or oos_n < min_fold_n:
+        return {"is_exp": is_exp, "oos_exp": oos_exp, "is_n": is_n, "oos_n": oos_n,
+                "ok": True, "reason": "insufficient_data"}
+    # Both folds must clear the floor: the pick was chosen on the full sample,
+    # so a fold that collapses means the pick only earned on the other half.
+    for label, val in (("is", is_exp), ("oos", oos_exp)):
+        if val is None or val < min_oos_expectancy:
+            return {"is_exp": is_exp, "oos_exp": oos_exp, "is_n": is_n, "oos_n": oos_n,
+                    "ok": False, "reason": f"{label}_expectancy_below_floor"}
+    return {"is_exp": is_exp, "oos_exp": oos_exp, "is_n": is_n, "oos_n": oos_n,
+            "ok": True, "reason": "ok"}
+
+
 @dataclass(frozen=True)
 class DynamicAtrPick:
     tp_atr: float
@@ -881,6 +948,53 @@ async def dynamic_atr_pick(
                     )
         except Exception as exc:
             logger.debug("[dynamic:atr] %s consistency check failed: %s", symbol, exc)
+
+    # Stage 6 (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md): held-out
+    # check that the chosen bracket generalises. select_tp_sl's e1>0 AND e2>0
+    # is an in-sample split on the same data the bracket was optimised over, so
+    # a RR=6 pick passes trivially. This measures the pick on the half it was
+    # NOT chosen on. shadow = log; live = reject the overfit pick (heavy kept);
+    # off = skip. Fail-open on thin folds (handled inside walk_forward_validate).
+    if pick is not None and symbol:
+        try:
+            from regime_platform.core.feature_flags import (
+                get_dynamic_atr_walkforward_mode,
+                get_dynamic_atr_walkforward_min_fold_n,
+                get_dynamic_atr_walkforward_min_oos,
+            )
+            _wf_mode = get_dynamic_atr_walkforward_mode()
+            if _wf_mode != "off":
+                _wf = walk_forward_validate(
+                    env, pick.tp_atr, pick.sl_atr,
+                    same_bar_policy=_policy,
+                    cost_atr=float(cfg["cost_atr"]),
+                    min_fold_n=get_dynamic_atr_walkforward_min_fold_n(),
+                    min_oos_expectancy=get_dynamic_atr_walkforward_min_oos(),
+                )
+                if not _wf["ok"]:
+                    logger.warning(
+                        "[dynamic:atr] %s walk-forward %s — pick tp=%.2f sl=%.2f "
+                        "is=%s oos=%s (is_n=%d oos_n=%d)",
+                        symbol, "REJECT" if _wf_mode == "live" else "WOULD-REJECT",
+                        pick.tp_atr, pick.sl_atr,
+                        f"{_wf['is_exp']:+.3f}" if _wf["is_exp"] is not None else "—",
+                        f"{_wf['oos_exp']:+.3f}" if _wf["oos_exp"] is not None else "—",
+                        _wf["is_n"], _wf["oos_n"],
+                    )
+                    if _wf_mode == "live":
+                        _PICK_CACHE[grid_fp] = (time.time(), None)
+                        return None
+                else:
+                    logger.info(
+                        "[dynamic:atr] %s walk-forward ok (%s is=%s oos=%s "
+                        "is_n=%d oos_n=%d)",
+                        symbol, _wf["reason"],
+                        f"{_wf['is_exp']:+.3f}" if _wf["is_exp"] is not None else "—",
+                        f"{_wf['oos_exp']:+.3f}" if _wf["oos_exp"] is not None else "—",
+                        _wf["is_n"], _wf["oos_n"],
+                    )
+        except Exception as exc:
+            logger.debug("[dynamic:atr] %s walk-forward check failed: %s", symbol, exc)
 
     # Persist the pick (single source of truth) so the light path can read the
     # same geometry the heavy path just chose — no re-derivation. Best-effort.
