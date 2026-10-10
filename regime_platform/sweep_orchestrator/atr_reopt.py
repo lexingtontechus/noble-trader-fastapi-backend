@@ -233,10 +233,62 @@ def compare_to_current(symbol: str, sc: dict[str, Any] | None, asset_class: str 
     return out
 
 
+async def _fetch_cutover_ts() -> Optional[float]:
+    """Resolver-basis cutover as a unix ts (nt_calibration_cutover), or None.
+
+    Same marker the calibration/reachability era filters use. Reopt trains on
+    signal ENTRY time, so clamping the window to >= cutover means every signal
+    in the solve was entered (and thus resolved) under the intrabar/sl_first
+    basis — otherwise the pre-cutover close-walk era contaminates the solve
+    (worklog 20261010_REOPT_CLAMP_HARMONIZATION.md Fix B). None → no clamp
+    (fail-open to the full lookback).
+    """
+    try:
+        import httpx
+        from regime_platform.core.settings import settings
+        from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+        if not settings.SUPABASE_URL:
+            return None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _url("nt_calibration_cutover"),
+                headers=_headers(),
+                params={"select": "cutover_at", "limit": "1"},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                return None
+            raw = rows[0].get("cutover_at")
+            if not raw:
+                return None
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[atr:reopt] cutover marker fetch failed: %s", exc)
+        return None
+
+
 async def _load_signals(symbols: list[str], since: datetime, until: datetime) -> list[dict]:
     import httpx
 
     from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+    # Fix B (2026-10-10, worklog 20261010_REOPT_CLAMP_HARMONIZATION.md): clamp
+    # the window to the resolver-basis cutover so the solve only sees signals
+    # entered under intrabar/sl_first. The 45d lookback otherwise spans the
+    # pre-2026-10-02 close-walk era (n was 6506, ~all pre-cutover), which made
+    # the wide 4.52/2.75 solve era-contaminated. Fail-open: no marker → full
+    # lookback (prior behaviour).
+    cutover_ts = await _fetch_cutover_ts()
+    if cutover_ts is not None and cutover_ts > since.timestamp():
+        logger.info(
+            "[atr:reopt] era-clamp: lookback %s → %s (post-cutover only)",
+            since.date(), datetime.fromtimestamp(cutover_ts, tz=timezone.utc).date(),
+        )
+        since = datetime.fromtimestamp(cutover_ts, tz=timezone.utc)
 
     rows: list[dict] = []
     off = 0
