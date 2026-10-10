@@ -1,0 +1,215 @@
+# Strategy Registry — the Kairos alpha library (R0, config only, 2026-10-10)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Scope: docs/scopes/20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §4, R0.
+#
+# This is the CATALOG half of the router+registry split. It declares, as
+# reviewable data, the strategy archetypes Kairos can route a signal to, and
+# for each: the asset-fit predicate (which symbols / directions / regimes it
+# is allowed on) and the entry / exit / risk block that the router will apply
+# to geometry + deadline + calibration.
+#
+# R0 = the file + loader exist; NOTHING consumes it yet. The router (R1) is
+# the first consumer, and it reads this catalog — it does not hardcode these
+# values. Until R1 ships, changing a value here has zero live effect (same
+# fail-safe posture as every other mode flag: a config nobody reads is inert).
+#
+# Archetypes are grounded in Kakushadze & Serur, *151 Trading Strategies*
+# (SSRN 3247865), filtered to Kairos's actual instruments (FX, metals, crypto,
+# equities/index) — options / fixed-income / vol-as-asset / pairs are excluded
+# because Kairos has no options chain, no rates curve, no VIX feed, and no
+# cross-sectional book. Phase-1 set: momentum, mean_reversion, ma_trend,
+# fx_carry. Range-fade / breakout are declared but disabled (no era-clean
+# evidence yet).
+#
+# ── Vocabulary (shared with the rest of the config) ────────────────────────
+#   asset_class_key : crypto | forex | metal | commodity | etf | index | equity
+#                     (tiered_atr.asset_class_key — same normalization)
+#   regime          : the 4x4 HMM label, e.g. "low_vol_bull", "med_high_vol_bear"
+#                     split on "_" into vol tier {low,med_low,med_high,high}_vol
+#                     and trend {strong_bull,bull,bear,strong_bear}
+#   macro_label     : bull | bear | neutral   (macro_filter.py)
+#   trend_label     : trending_up | trending_down | reversal_up | reversal_down
+#   FOREX           : the shared key for major FX pairs (AUDUSD EURUSD GBPUSD
+#                     USDCAD USDCHF USDJPY), same convention as dynamic_atr.by_symbol.FOREX
+#
+# ── Predicate fields (how an archetype declares its fit) ───────────────────
+#   asset_classes : list of asset_class_key this archetype may route on
+#   symbols       : optional explicit allow-list (uppercase); FOREX = the majors
+#   directions    : optional list of "buy"/"sell" this archetype may route on
+#   requires_opposes : if true, the signal direction must OPPOSE both macro and
+#                      trend (the counter-trend / mean-reversion condition — the
+#                      ID45 gold-buy pattern). If false, must be unset/neutral.
+#   requires_aligned  : if true, direction must AGREE with macro and trend.
+#   regime_vol    : optional list of vol tiers the archetype is allowed on
+#   enabled       : master on/off for this archetype (a disabled archetype is
+#                   never routed; stand_by still applies)
+#
+# ── Trade-shape fields (what the router applies when it selects this) ──────
+#   entry  : {tp_atr_mult, sl_atr_mult}   ATR multiples for TP / SL
+#            (tp_atr_mult is RELATIVE to the current default bracket; the router
+#             in R1 maps "tight"/"wide" onto the existing dynamic-ATR grid, so
+#             these are the *intent* the geometry layer resolves, not raw px)
+#   exit   : {target, time_stop_hours}    target = "mean" (return to mean) |
+#            "far" (momentum trailing) ; time_stop caps the hold
+#   risk   : {overshoot_stop_z, max_hold_mult}
+#            overshoot_stop_z: deviation stop — if the move extends beyond this
+#            many sigma PAST entry, the thesis (reversion) is dead = regime
+#            shift, exit. None for momentum (no reversion thesis to invalidate).
+#            max_hold_mult: hold cap as a multiple of the symbol's median
+#            resolution time (ties into dynamic_deadline).
+#
+# These trade-shape values are INTENT, resolved downstream — R0 does not change
+# any live geometry. They exist so R1's router has a declarative contract to
+# read and R2's measurement has a stable axis to score per-archetype.
+
+version: 1
+strategy_registry:
+
+  # ── Momentum / trend-continue (paper 3.1) ────────────────────────────────
+  # The current default, kept where it works: direction ALIGNED with the slow
+  # macro/trend read. Era-clean evidence: XAGUSD buy aligned 46% WR, BTCUSD
+  # momentum-dominant. Far TP, no reversion stop (there is no mean to revert
+  # to; a momentum trade is invalidated by trend break, handled by the
+  # existing settlement path, not an overshoot-Z stop).
+  momentum:
+    enabled: true
+    description: "Trend-continue: ride the aligned macro/trend direction (paper 3.1). The current default; kept for the symbols it fits."
+    requires_aligned: true
+    asset_classes: [crypto, metal, equity, index, etf]
+    directions: [buy, sell]
+    entry:
+      tp_atr_mult: far
+      sl_atr_mult: standard
+    exit:
+      target: far
+      time_stop_hours: null
+    risk:
+      overshoot_stop_z: null
+      max_hold_mult: 2.0
+
+  # ── Mean-reversion / contrarian (paper 3.9, 10.3) ────────────────────────
+  # Fade an extreme back to the mean, but ONLY where the setup is
+  # counter-trend with exhaustion: direction OPPOSES both macro and trend
+  # (the ID45 gold-buy pattern — macro=bear + trend=down + fast-blend buy).
+  # Era-clean evidence: XAUUSD buy counter-trend 38.2% WR vs 6.5% pass-cohort.
+  # Tight TP (the mean is closer than a momentum target), overshoot-Z stop
+  # (if deviation keeps extending, the reversion thesis is dead = regime
+  # shift), short hold. Asset-gated to metal (gold); FX-major whitelist is an
+  # R6 extension pending its own era-clean evidence.
+  mean_reversion:
+    enabled: true
+    description: "Contrarian: fade an exhausted counter-trend extreme back to mean (paper 3.9/10.3). Gated to the gold-buy pattern (macro+trend oppose); tight TP, overshoot-Z stop, short hold."
+    requires_opposes: true
+    asset_classes: [metal]
+    directions: [buy]
+    regime_vol: [low_vol, med_low_vol]
+    entry:
+      tp_atr_mult: tight
+      sl_atr_mult: standard
+    exit:
+      target: mean
+      time_stop_hours: 24
+    risk:
+      overshoot_stop_z: 3.5
+      max_hold_mult: 1.0
+
+  # ── Moving-average trend (paper 3.11-3.13) ───────────────────────────────
+  # MA-cross trend-follow, classic for FX majors and metals. Overlaps
+  # momentum in spirit but is a distinct, lower-frequency rule; declared for
+  # the router to differentiate once R2 shows it predicts differently. Not yet
+  # enabled — no era-clean evidence separating it from momentum.
+  ma_trend:
+    enabled: false
+    description: "Moving-average cross trend-follow (paper 3.11-3.13). Classic FX/metals rule; distinct lower-frequency regime. Disabled pending R2 evidence."
+    requires_aligned: true
+    asset_classes: [forex, metal]
+    directions: [buy, sell]
+    entry:
+      tp_atr_mult: standard
+      sl_atr_mult: standard
+    exit:
+      target: far
+      time_stop_hours: null
+    risk:
+      overshoot_stop_z: null
+      max_hold_mult: 2.0
+
+  # ── FX carry / momentum+carry (paper 8.2, 8.4) ───────────────────────────
+  # A whole FX edge Kairos currently ignores: hold the high-yield leg vs the
+  # low-yield leg (carry), or momentum conditioned on carry. Requires an
+  # interest-rate-differential feed Kairos does not yet ingest — declared now
+  # so the router and the R2 measurement axis exist, but disabled until the
+  # carry input is wired (a separate lever).
+  fx_carry:
+    enabled: false
+    description: "FX carry / momentum+carry combo (paper 8.2/8.4). Requires a rate-differential feed Kairos does not ingest yet; disabled until that input is wired."
+    requires_aligned: true
+    asset_classes: [forex]
+    symbols: [FOREX]
+    directions: [buy, sell]
+    entry:
+      tp_atr_mult: standard
+      sl_atr_mult: tight
+    exit:
+      target: far
+      time_stop_hours: null
+    risk:
+      overshoot_stop_z: null
+      max_hold_mult: 3.0
+
+  # ── Range-fade (declared, disabled) ──────────────────────────────────────
+  # Boundary scalp in confirmed chop (low ADX / Hurst<0.5 equivalent). Needs
+  # its own era-clean evidence before enabling.
+  range_fade:
+    enabled: false
+    description: "Chop-boundary scalp in a confirmed range. Disabled pending era-clean evidence."
+    requires_opposes: false
+    asset_classes: [crypto, forex, metal, equity, index, etf, commodity]
+    directions: [buy, sell]
+    entry:
+      tp_atr_mult: tight
+      sl_atr_mult: tight
+    exit:
+      target: mean
+      time_stop_hours: 12
+    risk:
+      overshoot_stop_z: 2.5
+      max_hold_mult: 0.5
+
+  # ── Breakout (declared, disabled) ────────────────────────────────────────
+  # Vol-expansion with confirmation (Hurst>0.5 transition). Reserved; needs
+  # its own evidence.
+  breakout:
+    enabled: false
+    description: "Volatility-expansion breakout with confirmation. Reserved; disabled pending evidence."
+    requires_aligned: true
+    asset_classes: [crypto, forex, metal, equity, index, etf, commodity]
+    directions: [buy, sell]
+    entry:
+      tp_atr_mult: far
+      sl_atr_mult: standard
+    exit:
+      target: far
+      time_stop_hours: null
+    risk:
+      overshoot_stop_z: null
+      max_hold_mult: 2.0
+
+# ── Router policy (read by R1's strategy_router.py) ────────────────────────
+# How the router resolves the catalog into a single choice per signal.
+router:
+  # off | shadow | live. shadow = the router computes + stamps the archetype on
+  # nt_signal_sim but applies NO live effect (R1 ships shadow-first, like every
+  # other mode here). live = the selected archetype's entry/exit/risk actually
+  # drives geometry/deadline/calibration (R6, one archetype at a time).
+  mode: shadow
+  # When no enabled archetype's predicate matches the signal, route here.
+  # stand_by = no trade (the edge on a negative-base-rate book: the engine
+  # today ALWAYS emits a direction; stand_by is the option to not).
+  # fallback_archetype = route to momentum instead (status-quo behaviour).
+  default_on_no_match: stand_by
+  # Evaluation order: first matching enabled archetype wins. Order matters —
+  # mean_reversion is checked before momentum so a counter-trend gold buy is
+  # not swallowed by the momentum rule.
+  precedence: [mean_reversion, momentum, ma_trend, fx_carry, range_fade, breakout]

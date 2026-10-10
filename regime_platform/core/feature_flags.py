@@ -1838,3 +1838,139 @@ def get_regime_log_retention_days() -> int:
         return _DEFAULTS["regime_log_retention_days"]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Strategy Registry (R0, 2026-10-10)
+# ───────────────────────────────────────────────────────────────────────────
+# docs/scopes/20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §4, R0.
+#
+# A SEPARATE YAML (config/strategy_registry.yaml) with its own mtime-hot-reload
+# loader, mirroring _load()/feature_flags.yaml. Kept separate because it is a
+# catalog of structured archetype blocks (nested dicts), not a bag of scalar
+# mode flags — mixing it into feature_flags.yaml would bloat that file and
+# blur the two concerns (mode flags vs strategy definitions).
+#
+# R0 = the file + this loader exist; NOTHING consumes them yet. The first
+# consumer is strategy_router.py (R1), which reads get_strategy_registry() and
+# get_router_policy() — it does NOT hardcode these values. Until R1 ships,
+# editing the YAML has zero live effect (a config nobody reads is inert, the
+# same fail-safe posture as every other mode here).
+# ═══════════════════════════════════════════════════════════════════════════
+
+_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "config" / "strategy_registry.yaml"
+_registry_cache: dict[str, Any] | None = None
+_registry_mtime: float | None = None
+
+# Fail-open defaults if the YAML is missing/corrupt: an EMPTY registry. An
+# empty catalog means the router (R1) finds no matching archetype and applies
+# router.default_on_no_match — i.e. it cannot invent a strategy from nothing.
+# This is the safe direction: a broken registry degrades to "no routing", never
+# to a wrong routing.
+_REGISTRY_DEFAULTS: dict[str, Any] = {"strategy_registry": {}, "router": {
+    "mode": "shadow",
+    "default_on_no_match": "stand_by",
+    "precedence": [],
+}}
+
+
+def _load_registry() -> dict[str, Any]:
+    """Hot-reload config/strategy_registry.yaml (same mtime pattern as _load).
+
+    Re-parses only when the file's mtime changes; safe to call from a per-tick
+    path (one stat() per call, YAML parsed on change only). On any read/parse
+    failure returns the previous cache, or _REGISTRY_DEFAULTS on cold start —
+    never raises, so a corrupt registry cannot take down the sweep.
+    """
+    global _registry_cache, _registry_mtime
+    try:
+        mtime = _REGISTRY_PATH.stat().st_mtime
+    except OSError:
+        if _registry_cache is None:
+            logger.warning(
+                "strategy_registry: %s not found — using empty defaults (no routing)",
+                _REGISTRY_PATH,
+            )
+            _registry_cache = dict(_REGISTRY_DEFAULTS)
+        return _registry_cache
+
+    if _registry_cache is None or mtime != _registry_mtime:
+        try:
+            import yaml
+            with open(_REGISTRY_PATH, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            # Merge over defaults so a partial file still has a valid router
+            # policy; the strategy_registry block replaces wholesale (a catalog
+            # is not deep-merged — a removed archetype must actually be gone).
+            merged = dict(_REGISTRY_DEFAULTS)
+            if isinstance(loaded, dict):
+                raw_reg = loaded.get("strategy_registry") or {}
+                # Normalize every archetype block so R1's router can read the
+                # predicate fields unconditionally: requires_opposes and
+                # requires_aligned default to False when a block omits them
+                # (an archetype declares only the one that applies to it).
+                # Without this, the router would need a get() default per
+                # field and a typo'd/missing key would silently mean "no
+                # constraint" instead of failing loudly.
+                norm_reg: dict[str, Any] = {}
+                if isinstance(raw_reg, dict):
+                    for aname, ablk in raw_reg.items():
+                        if not isinstance(ablk, dict):
+                            norm_reg[aname] = ablk
+                            continue
+                        b = dict(ablk)
+                        b.setdefault("requires_opposes", False)
+                        b.setdefault("requires_aligned", False)
+                        b.setdefault("enabled", False)
+                        norm_reg[aname] = b
+                merged["strategy_registry"] = norm_reg
+                router = loaded.get("router")
+                if isinstance(router, dict):
+                    merged["router"] = {**merged["router"], **router}
+            _registry_cache = merged
+            _registry_mtime = mtime
+            logger.info("strategy_registry: loaded %s", _REGISTRY_PATH)
+        except Exception as exc:
+            logger.error(
+                "strategy_registry: failed to load %s (%s: %s) — keeping previous values",
+                _REGISTRY_PATH, type(exc).__name__, exc,
+            )
+            if _registry_cache is None:
+                _registry_cache = dict(_REGISTRY_DEFAULTS)
+    return _registry_cache
+
+
+def get_strategy_registry() -> dict[str, Any]:
+    """The archetype catalog: ``{archetype_name: archetype_block}``.
+
+    Each block has the predicate fields (asset_classes, symbols, directions,
+    requires_opposes, requires_aligned, regime_vol, enabled) and trade-shape
+    fields (entry/exit/risk) declared in config/strategy_registry.yaml. R1's
+    router iterates this to resolve a signal's archetype. Empty dict if the
+    YAML is missing (fail-open to "no routing").
+    """
+    return dict(_load_registry().get("strategy_registry") or {})
+
+
+def get_strategy_archetype(name: str) -> dict[str, Any] | None:
+    """One archetype block by name, or None. Convenience for the router and
+    for tests that pin a single archetype's shape."""
+    reg = _load_registry().get("strategy_registry") or {}
+    blk = reg.get(str(name))
+    return dict(blk) if isinstance(blk, dict) else None
+
+
+def get_router_policy() -> dict[str, Any]:
+    """The router policy block: mode (off|shadow|live), default_on_no_match,
+    precedence. Read by R1's strategy_router.py. Ships at mode=shadow.
+    """
+    return dict(_load_registry().get("router") or _REGISTRY_DEFAULTS["router"])
+
+
+def get_router_mode() -> str:
+    """``off`` | ``shadow`` | ``live``. shadow (R1 default): the router
+    computes + stamps the archetype but applies no live effect. live (R6):
+    the selected archetype's entry/exit/risk drives geometry/deadline/
+    calibration, one archetype at a time behind its own flag."""
+    mode = str(_load_registry().get("router", {}).get("mode", "shadow")).lower()
+    return mode if mode in ("off", "shadow", "live") else "shadow"
+
+
