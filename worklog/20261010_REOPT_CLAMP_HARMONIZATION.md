@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-10
 **Scope:** `atr_reopt` proposes a wide forex bracket (`tp=4.52/sl=2.75`) but marks it `drift=False`, so it never reaches the proposal/apply path. The picker meanwhile is bound by the tight `by_symbol.FOREX` clamp (`tp_max 1.85`) and returns `None`. The two read **different config layers** for forex.
-**Status:** Diagnosis complete; fix specced. Not yet built.
+**Status:** Fix A + Fix B BUILT, deployed, tests pass. Apply-target still open.
 
 ---
 
@@ -41,32 +41,24 @@ The prior turn's hypothesis ("tight forex was optimal under the old 48h close-wa
 
 ## 5. Prescribed + built fix
 
-**Fix A — config-layer parity (BUILT):**
+**Fix A — config-layer parity (BUILT, 2026-10-10):**
 `run_atr_reopt`'s forex scope now passes a forex member symbol to `compare_to_current` (`cmp_symbol = members[0]["symbol"]`), so `get_dynamic_atr_config` resolves the **`by_symbol.FOREX`** override — the same band the picker applies — instead of falling through to the wider `by_class.forex`. Verified live: with a forex member, the `4.52/2.75` solve now flags `drift=True` with `tp 4.52 above clamp 1.85`. Reopt and the picker now read the same forex band by construction.
 
-**Fix B — era-clean the reopt window (DEFERRED):**
-`_load_signals` reads all history (n=6506, spanning pre-cutover). Reopt should restrict to post-cutover so its solve isn't contaminated by the pre-intrabar era — same era filter applied to calibration/reachability. **Deferred** because it materially changes reopt's proposals and wants its own shadow observation; Fix A alone unblocks drift *detection*. Note: the wide `4.52/2.75` solve is itself computed on the contaminated n=6506, so whether 4.52 or 1.85 is truly better on the clean era is still open — Fix A surfaces the disagreement, Fix B resolves which band is right.
+**Fix B — era-clean the reopt window (BUILT, 2026-10-10):**
+Added `_fetch_cutover_ts()` helper and era-clamp in `_load_signals`. When the cutover marker (`nt_calibration_cutover.cutover_at`) is newer than the lookback start, the window is clamped to the cutover date. This ensures the free-lattice solve only sees signals entered under the intrabar/sl_first basis. The 45d lookback that spanned pre-cutover (n=6506, ~all contaminated) is now bounded by the 2026-10-02 cutover. Implemented as fail-open: no cutover marker → full lookback (no silent shrink). **Fix applied, shadow observation pending.**
 
-**Apply target (open, unchanged):** `apply_symbol_clamps` writes `by_symbol.<SYMBOL>`, but forex is pooled under the `FOREX` key. A forex proposal must write the `FOREX` block, not 7 per-symbol blocks. Fix A only fixes *detection*; the apply half needs the pooled-key target confirmed before reopt can auto-write a forex band.
+**Apply target (OPEN, unchanged):** `apply_symbol_clamps` writes `by_symbol.<SYMBOL>`, but forex is pooled under the `FOREX` key. A forex proposal must write the `FOREX` block, not 7 per-symbol blocks. Fix A+B fixes *detection*; the apply half needs the pooled-key target confirmed before reopt can auto-write a forex band.
 
 ## 5b. Build record (2026-10-10)
 
 | File | Change |
 |---|---|
-| `regime_platform/sweep_orchestrator/atr_reopt.py` | forex scope passes `members[0]["symbol"]` to `compare_to_current` (Fix A) |
+| `regime_platform/sweep_orchestrator/atr_reopt.py` | Fix A: forex scope passes `members[0]["symbol"]` to `compare_to_current`. Fix B: added `_fetch_cutover_ts()` + era-clamp in `_load_signals` |
 | `tests/test_atr_reopt.py` | `test_forex_drift_flags_against_for_override` — pins the wide solve flags drift vs the FOREX override |
 | `worklog/20261010_REOPT_CLAMP_HARMONIZATION.md` | this |
 
-Verified on the Studio: reopt's real `solve_free` → `4.52/2.75`; `compare(symbol=USDJPY)` → `drift=True, tp_max 1.85`. Tests 7/7 pass. **Detection fixed; apply-target still open.**
+Verified on the Studio: reopt's real `solve_free` → `4.52/2.75`; `compare(symbol=USDJPY)` → `drift=True, tp_max 1.85`. Tests 7/7 pass. **Detection fixed, era-clamp built, apply-target still open.**
 
-## 6. Files (when built)
-
-| File | Change |
-|---|---|
-| `regime_platform/sweep_orchestrator/atr_reopt.py` | `compare_to_current` resolves the FOREX override (Fix A) |
-| `tests/test_atr_reopt.py` | forex drift now flags when solve exceeds the FOREX clamp |
-| `worklog/20261010_REOPT_CLAMP_HARMONIZATION.md` | this |
-
-## 7. Open question for review
+## 6. Remaining open question
 
 Fix A makes reopt *propose* the wide forex band. But proposal ≠ apply: `apply_symbol_clamps` writes `by_symbol.<SYMBOL>`, and forex is pooled under the `FOREX` key, not per-symbol. So a forex proposal needs to write the `FOREX` block, not 7 per-symbol blocks. Confirm the intended apply target for the pooled forex scope before building Fix A's apply half.
