@@ -57,6 +57,7 @@ from regime_platform.core.feature_flags import (
     get_regime_edge_mode,
     get_regime_edge_config,
     get_router_mode,
+    get_clef_flash_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL

@@ -165,3 +165,21 @@ def test_routing_is_deterministic():
     b = route(**kwargs)
     assert a.archetype == b.archetype
     assert a.as_stamp() == b.as_stamp()
+
+
+def test_orchestrator_r4_block_dependencies_are_module_importable():
+    """Regression: the R4 clef-archetype block in _process_symbol calls
+    get_clef_flash_mode() at module scope, but only get_router_mode was added
+    to the top-level feature_flags import — so the block raised NameError,
+    was swallowed by its except, and silently never stamped (R4=0 for a day).
+    Pin that every name the R4 block references resolves at import time."""
+    import regime_platform.sweep_orchestrator.orchestrator as orch
+    for name in ("get_router_mode", "get_clef_flash_mode"):
+        assert hasattr(orch, name), (
+            f"orchestrator must import {name} at module scope — the R4 block "
+            f"references it directly"
+        )
+    # The R4/R5 classifier entry points must be importable too.
+    from regime_platform.services.decision.clef_flash import classify_archetype
+    from regime_platform.sweep_orchestrator.clef_stance import classify_stance
+    assert callable(classify_archetype) and callable(classify_stance)
