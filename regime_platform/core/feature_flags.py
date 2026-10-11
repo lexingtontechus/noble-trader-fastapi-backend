@@ -319,6 +319,14 @@ _DEFAULTS: dict[str, Any] = {
     # kairos_pivot/macro_forecast (does not change the shadow stamp). off: no
     # HTTP call, no stamp.
     "clef_flash_mode": "shadow",
+    # p_win_reachability_mode (2026-10-11, worklog
+    # 20261011_REACHABILITY_PROB_BUILD.md): off | shadow | live.
+    # off (default): no reachability stamp. shadow: compute the
+    # reachability-conditioned probability P_reach and the blend-vs-reach
+    # delta and stamp p_reach / p_reach_delta on nt_signal_sim — MEASUREMENT
+    # ONLY, EV/Kelly still use the existing blend. live: P_reach replaces the
+    # direction-only p_win in EV/Kelly (gated on the walk-forward validation).
+    "p_win_reachability_mode": "off",
     "regime_warm_start_mode": "off",
     "regime_label_debounce_mode": "off",
     "regime_label_debounce_ticks": 3,
@@ -1198,6 +1206,18 @@ def get_clef_flash_mode() -> str:
     HTTP call, no stamp. Unknown values fall back to shadow."""
     v = str(_load().get("clef_flash_mode", _DEFAULTS["clef_flash_mode"])).lower()
     return v if v in ("off", "shadow", "live") else "shadow"
+
+
+def get_p_win_reachability_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` (2026-10-11, worklog
+    20261011_REACHABILITY_PROB_BUILD.md). off (default): no reachability
+    stamp. shadow: compute the reachability-conditioned probability P_reach
+    + the blend-vs-reach delta and stamp p_reach / p_reach_delta on
+    nt_signal_sim — MEASUREMENT ONLY (EV/Kelly unchanged). live: P_reach
+    replaces the direction-only p_win in EV/Kelly (gated on walk-forward).
+    Unknown values fall back to off (fail-safe: never stamp unless asked)."""
+    v = str(_load().get("p_win_reachability_mode", _DEFAULTS["p_win_reachability_mode"])).lower()
+    return v if v in ("off", "shadow", "live") else "off"
 
 
 def get_geometry_incubation_min_resolved() -> int:

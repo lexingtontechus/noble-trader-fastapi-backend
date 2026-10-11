@@ -75,3 +75,35 @@ Encodes era-clean-shaped cells and verifies: base rate reproduces the cell at a 
 ## 6. Next (gated)
 
 Wire P_reach into EV/Kelly behind a `p_win_reachability_mode: off|shadow|live` flag (shadow = stamp `p_reach` + `compare_to_blend` delta on `nt_signal_sim` for measurement first), estimate the `direction_edge` term from era-clean (regime × direction) cells, then validate: does per-symbol bias move toward 0 and expectancy improve, era-clean walk-forward? Only then flip live, one symbol cohort at a time.
+
+---
+
+# Shadow stamp build (2026-10-11)
+
+**Scope:** Wire P_reach into the sweep as a **shadow stamp** so the live-vs-blend delta starts accumulating on `nt_signal_sim` for the walk-forward validation. Gate `p_win_reachability_mode` ships **`off`**; EV/Kelly unchanged until the gated `live` flip.
+**Status:** Built, migration 208 applied, E2E tests green, deploy pending full suite.
+
+## What was wired
+
+- **`get_p_win_reachability_mode()`** (`feature_flags.py`): `off | shadow | live`, default `off`, unknown → `off` (fail-safe).
+- **`lookup_reach_prob()`** (`reachability_prob.py`): async fetch of the matching `(symbol, vol_tier, bucket, signal)` reachability row (incl. `p90_hours` for the expiry factor), computes P_reach. Best-effort — never raises into the sweep tick (same contract as `lookup_bracket_probs`).
+- **Orchestrator stamp block** (`_process_symbol`, before the `nt_signal_sim` payload): when mode ≠ `off` and a bracket bucket exists, calls `lookup_reach_prob`, computes `compare_to_blend(p_reach, ev_result.p_win)`, stamps `p_reach` / `p_reach_delta`. Fail-open on any miss.
+- **Payload** (`_build_signal_sim_payload`): adds `p_reach` / `p_reach_delta` only when a read exists.
+- **Allowlist** (`supabase_client.NT_SIGNAL_SIM_COLUMNS`): `p_reach`, `p_reach_delta`.
+- **Migration 208**: nullable `nt_signal_sim.p_reach`, `nt_signal_sim.p_reach_delta` + partial index. Applied. No backfill.
+
+## Shadow contract (unchanged EV/Kelly)
+
+The stamp is **measurement-only**. `ev_result.p_win` still flows into EV/Kelly/qualified/kelly/SL/TP exactly as before. The shadow stamp adds two columns so the validation can answer, per resolved signal: *does P_reach (and replacing p_win with it) reduce the blend's overpricing bias toward 0 and improve expectancy, era-clean?* Only after that walk-forward passes does `p_win_reachability_mode=live` flip P_reach into EV/Kelly — one symbol cohort at a time.
+
+## E2E + replay (`tests/test_reachability_shadow_stamp.py`, 7 tests)
+
+Mode ships `off`; `lookup_reach_prob` computes from a fetched row and fails open on empty/error; the stamped delta matches the live-replay shape (overpriced cells → +delta, BTCUSD 2-4 → −delta); the payload builder carries `p_reach`/`p_reach_delta` only when present. Plus the 12 base-estimator tests (`test_reachability_prob.py`). 17 reachability tests green.
+
+## Live replay reference (from §3)
+
+17 era-clean cells, leash 48h: **15/17 overpriced**, mean +0.195 / median +0.184; 2 underpriced (BTCUSD 2-4). The shadow stamp now records exactly this delta per live signal.
+
+## Next (gated)
+
+Flip `p_win_reachability_mode=shadow` on the Studio → let P_reach/p_reach_delta accumulate on `nt_signal_sim` → resolve → measure bias→0 + expectancy, era-clean walk-forward → only then `live`, one cohort at a time.

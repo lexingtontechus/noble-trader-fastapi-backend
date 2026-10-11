@@ -292,6 +292,10 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # R4 Clef-Flash archetype classifier stamp (Role A, shadow): the model's
     # setup-type read + agreement with the R1 router. Measurement-only.
     "clef_archetype", "clef_archetype_conf", "clef_archetype_agrees",
+    # R-build reachability-conditioned probability (shadow, 2026-10-11):
+    # p_reach = P(reach TP before SL before expiry | cell); p_reach_delta =
+    # blend - p_reach. Measurement-only; EV/Kelly unchanged.
+    "p_reach", "p_reach_delta",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",

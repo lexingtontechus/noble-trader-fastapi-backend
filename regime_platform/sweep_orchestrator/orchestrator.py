@@ -58,6 +58,7 @@ from regime_platform.core.feature_flags import (
     get_regime_edge_config,
     get_router_mode,
     get_clef_flash_mode,
+    get_p_win_reachability_mode,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
@@ -1032,6 +1033,8 @@ def _build_signal_sim_payload(
     clef_archetype: str | None = None,
     clef_archetype_conf: float | None = None,
     clef_archetype_agrees: bool | None = None,
+    p_reach: float | None = None,
+    p_reach_delta: float | None = None,
     expected_resolution_hours: float | None = None,
     expected_resolution_days: float | None = None,
     resolution_confidence: str | None = None,
@@ -1239,6 +1242,15 @@ def _build_signal_sim_payload(
         payload["clef_archetype"] = clef_archetype
         payload["clef_archetype_conf"] = clef_archetype_conf
         payload["clef_archetype_agrees"] = clef_archetype_agrees
+    # R-build reachability-conditioned probability (shadow, 2026-10-11).
+    # p_reach = P(reach TP before SL before expiry | cell); p_reach_delta =
+    # blend p_win - p_reach (positive = blend overprices vs reachability).
+    # Measurement-only for the walk-forward validation; EV/Kelly unchanged.
+    if p_reach is not None:
+        payload["p_reach"] = round(float(p_reach), 4)
+        payload["p_reach_delta"] = (
+            round(float(p_reach_delta), 4) if p_reach_delta is not None else None
+        )
     return payload
 
 
@@ -5645,6 +5657,49 @@ class SweepOrchestrator(HeavySweepMixin):
                             symbol, _exc,
                         )
 
+                # ── R-build: reachability-conditioned probability (shadow) ──
+                # 2026-10-11, worklog 20261011_REACHABILITY_PROB_BUILD.md. Compute
+                # P_reach for this signal's (symbol, vol_tier, bucket) and the
+                # blend-vs-reach delta, stamp both on nt_signal_sim. MEASUREMENT
+                # ONLY — EV/Kelly still use the existing blend. Fail-open: mode
+                # off, missing bucket, or any error -> None, stamp omitted.
+                _p_reach: float | None = None
+                _p_reach_delta: float | None = None
+                if get_p_win_reachability_mode() != "off" and _bracket_bucket:
+                    try:
+                        from regime_platform.sweep_orchestrator.bracket_reachability import (
+                            _vol_tier as _vol_tier_of,
+                        )
+                        from regime_platform.sweep_orchestrator.reachability_prob import (
+                            compare_to_blend,
+                            lookup_reach_prob,
+                        )
+                        _rp = await lookup_reach_prob(
+                            symbol,
+                            vol_tier=_bracket_vol_tier or _vol_tier_of(regime_label),
+                            distance_bucket=_bracket_bucket,
+                            expiry_hours=(
+                                _deadline_tier.hard_deadline_hours
+                                if _deadline_tier else None
+                            ),
+                            signal=(
+                                "buy" if trade_signal["signal"] == "buy" else "sell"
+                            ),
+                        )
+                        if _rp is not None and _rp.matched:
+                            _p_reach = _rp.p_reach
+                            _cmp = compare_to_blend(_rp.p_reach, ev_result.p_win)
+                            _p_reach_delta = _cmp.get("delta")
+                            logger.info(
+                                "[reach:prob] %s bucket=%s vol=%s -> p_reach=%.3f "
+                                "blend=%.3f delta=%s (%s)",
+                                symbol, _bracket_bucket, _bracket_vol_tier,
+                                _p_reach, ev_result.p_win, _p_reach_delta,
+                                _cmp.get("direction"),
+                            )
+                    except Exception as _exc:
+                        logger.debug("[reach:prob] %s stamp failed: %s", symbol, _exc)
+
                 sim_payload = _build_signal_sim_payload(
                     symbol=symbol,
                     venue=venue_name,
@@ -5707,6 +5762,8 @@ class SweepOrchestrator(HeavySweepMixin):
                     clef_archetype=_clef_archetype,
                     clef_archetype_conf=_clef_archetype_conf,
                     clef_archetype_agrees=_clef_archetype_agrees,
+                    p_reach=_p_reach,
+                    p_reach_delta=_p_reach_delta,
                     expected_resolution_hours=_deadline_tier.median_hours if _deadline_tier else None,
                     expected_resolution_days=round(_deadline_tier.median_hours / 24.0, 1) if _deadline_tier else None,
                     resolution_confidence=_deadline_tier.confidence if _deadline_tier else None,

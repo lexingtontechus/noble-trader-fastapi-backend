@@ -221,3 +221,53 @@ def compare_to_blend(
         "p_reach": p_reach,
         "p_win_blend": p_win_blend,
     }
+
+
+async def lookup_reach_prob(
+    symbol: str,
+    *,
+    vol_tier: str,
+    distance_bucket: str,
+    expiry_hours: float | None = None,
+    direction_edge: float | None = None,
+    signal: str = "all",
+) -> Optional[ReachProbability]:
+    """Fetch the matching reachability cell and compute P_reach. Best-effort —
+    never raises into the sweep tick (same contract as lookup_bracket_probs).
+
+    Shadow-stamp helper: the sweep calls this to stamp p_reach on
+    nt_signal_sim for measurement. Fails open (None) on any miss.
+    """
+    try:
+        import httpx
+        from regime_platform.core.settings import settings
+        from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
+        if not settings.SUPABASE_URL or not symbol or not distance_bucket:
+            return None
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                _url("nt_bracket_reachability"),
+                headers=_headers(),
+                params={
+                    "select": "symbol,vol_tier,distance_atr_bucket,signal,n,"
+                              "pct_hit_tp,pct_hit_sl,pct_expired,p90_hours",
+                    "symbol": f"eq.{symbol}",
+                    "vol_tier": f"eq.{vol_tier}",
+                    "distance_atr_bucket": f"eq.{distance_bucket}",
+                    "signal": f"eq.{signal}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+        if not isinstance(rows, list) or not rows:
+            return None
+        return reachability_conditioned_probability(
+            rows, symbol=symbol, vol_tier=vol_tier,
+            distance_bucket=distance_bucket, expiry_hours=expiry_hours,
+            direction_edge=direction_edge, signal=signal,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[reach:prob] lookup %s failed: %s", symbol, exc)
+        return None
