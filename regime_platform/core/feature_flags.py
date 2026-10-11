@@ -255,6 +255,15 @@ _DEFAULTS: dict[str, Any] = {
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "live",
+    # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
+    # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
+    # probability is on a different scale), so negative-EV signals were
+    # publishing at ev=-40 with kelly=0. This is the missing gate: a signal
+    # whose effective EV is below this floor CANNOT publish, regardless of the
+    # reachability probability. Default 0.0 = EV must be positive to publish
+    # (the honest expectation: a trade you expect to lose money on must not
+    # ship). This is the live fix for "calibrated but large losses".
+    "ev_hard_floor": 0.0,
     "min_p_win_bracket_by_asset_class": {
         "metal": 0.20,
         "forex": 0.30,
@@ -1017,6 +1026,20 @@ def get_min_p_win_bracket() -> float:
         return float(_load().get("min_p_win_bracket", _DEFAULTS["min_p_win_bracket"]))
     except (TypeError, ValueError):
         return _DEFAULTS["min_p_win_bracket"]
+
+
+def get_ev_hard_floor() -> float:
+    """Minimum effective EV required to publish (2026-10-11, worklog
+    20261011_CALIBRATION_REACHABILITY_REFRAME.md). Default 0.0 = a signal
+    must have POSITIVE expected value to ship. When p_win_in_ev_mode=live
+    the directional p_win hard floor is 0.0, so without this gate a
+    reachability probability of 0.08 passes trivially and an ev=-40 signal
+    publishes with kelly=0 — the 'calibrated but large losses' defect. A
+    negative-EV trade you expect to lose money on must never publish."""
+    try:
+        return float(_load().get("ev_hard_floor", _DEFAULTS["ev_hard_floor"]))
+    except (TypeError, ValueError):
+        return _DEFAULTS["ev_hard_floor"]
 
 
 def get_p_win_bracket_unscored_policy() -> str:

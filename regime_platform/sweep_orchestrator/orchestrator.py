@@ -39,6 +39,7 @@ from regime_platform.core.feature_flags import (
     get_p_markov_hold_n_mode,
     get_ev_scale_sizing_mode,
     get_min_ev,
+    get_ev_hard_floor,
     get_min_kelly,
     get_min_p_win,
     get_min_p_win_bracket_for_asset_class,
@@ -4828,6 +4829,16 @@ class SweepOrchestrator(HeavySweepMixin):
             "timesfm_available": p_timesfm is not None,
             "timesfm_confidence_ok": timesfm_confidence_ok,
             "ev_allowed": effective_ev_result.allowed,
+            # ── EV hard floor (2026-10-11, worklog 20261011_CALIBRATION_
+            # REACHABILITY_REFRAME.md) ─────────────────────────────────────
+            # LIVE gate. When p_win_in_ev_mode=live the directional p_win
+            # hard floor is 0.0 (bracket probability is a different scale), so
+            # negative-EV signals were publishing at ev=-40 with kelly=0. This
+            # gate blocks any signal whose effective EV is below the floor
+            # (default 0.0 = must be positive to ship). This is the live fix
+            # for "calibrated but large losses": an honestly-priced -EV trade
+            # must never publish, regardless of reachability probability.
+            "ev_floor_ok": effective_ev_result.ev >= get_ev_hard_floor(),
             # ── p_win soft-gate (v5) ────────────────────────────────────
             # Hard floor at p_win < 0.50 (negative EV, never publish).
             # Soft band 0.50 ≤ p_win < MIN_P_WIN publishes with kelly
