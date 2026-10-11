@@ -106,34 +106,48 @@ def _direction_word(signal: str | None) -> str | None:
     return s if s in ("buy", "sell") else None
 
 
-def _opposes(direction: str, macro_label: str | None, trend_label: str | None) -> bool | None:
-    """Does the trade direction OPPOSE both available slow reads?
+def _alignment(direction: str, macro_label: str | None, trend_label: str | None) -> str | None:
+    """Classify the direction vs the slow reads as 'opposes' | 'aligned' | None.
 
-    Returns True (opposes both), False (agrees with at least one), or None
-    (not enough signal to judge — a missing/neutral read is never treated as
-    evidence either way, same convention as context_alignment.py). An archetype
-    with requires_opposes only matches on True; requires_aligned only on False.
+    Tri-state, both-required for a definite verdict:
+      * 'opposes'  — BOTH macro and trend are directional AND both point against
+                    the trade (the mean-reversion condition).
+      * 'aligned'  — BOTH macro and trend are directional AND both point with
+                    the trade (the momentum condition).
+      * None       — ANY read is neutral/missing (macro not bull/bear, trend
+                    'consolidating'/None). A consolidating trend is neither
+                    opposed nor aligned — it is UNKNOWN, and must route neither
+                    to mean_reversion nor momentum (stand_by).
+
+    This tri-state is what makes the consolidation regime route correctly:
+    era-clean XAUUSD buy consolidating 8.1% vs trending_down 38.2% — the
+    consolidating case has no edge in EITHER direction, so no directional
+    archetype may claim it.
     """
     if not direction:
         return None
     want = "bull" if direction == "buy" else "bear"
 
-    macro_opposes = None
+    macro_dir = None  # 'with' | 'against'
     if macro_label is not None and str(macro_label).lower() in ("bull", "bear"):
-        macro_opposes = str(macro_label).lower() != want
+        macro_dir = "with" if str(macro_label).lower() == want else "against"
 
-    trend_opposes = None
+    trend_dir = None
     if trend_label is not None:
         tl = str(trend_label).lower()
         if tl in _BULLISH_TREND or tl in _BEARISH_TREND:
             trend_is_bull = tl in _BULLISH_TREND
-            trend_opposes = trend_is_bull != (want == "bull")
+            trend_dir = "with" if trend_is_bull == (want == "bull") else "against"
 
-    reads = [r for r in (macro_opposes, trend_opposes) if r is not None]
-    if not reads:
+    # Any neutral/missing read -> unknown (None). Both must be definite.
+    if macro_dir is None or trend_dir is None:
         return None
-    # Opposes only if EVERY available read opposes (both must agree against).
-    return all(reads)
+    if macro_dir == "against" and trend_dir == "against":
+        return "opposes"
+    if macro_dir == "with" and trend_dir == "with":
+        return "aligned"
+    # Mixed (one with, one against) -> no confident verdict either way.
+    return None
 
 
 def _asset_class_allowed(blk: dict[str, Any], asset_class_key: str) -> bool:
@@ -170,14 +184,19 @@ def _regime_vol_allowed(blk: dict[str, Any], vol_tier: str | None) -> bool:
 
 
 def _alignment_allowed(
-    blk: dict[str, Any], opposes: bool | None
+    blk: dict[str, Any], alignment: str | None
 ) -> bool:
-    """Apply requires_opposes / requires_aligned. A None (unknown) read fails
-    both an opposes-required and an aligned-required archetype — the safe
-    direction is to not claim a counter/aligned setup we can't evidence."""
-    if blk.get("requires_opposes") and opposes is not True:
+    """Apply requires_opposes / requires_aligned against the tri-state read.
+
+    requires_opposes matches only on 'opposes'; requires_aligned only on
+    'aligned'. A None (unknown — any neutral/missing read, or a mixed
+    with/against pair) fails BOTH: the safe direction is to not claim a
+    counter-trend or aligned setup we can't confidently evidence, so it
+    falls through to stand_by.
+    """
+    if blk.get("requires_opposes") and alignment != "opposes":
         return False
-    if blk.get("requires_aligned") and opposes is not False:
+    if blk.get("requires_aligned") and alignment != "aligned":
         return False
     return True
 
@@ -230,7 +249,7 @@ def _route_impl(
     ack = asset_class_key(asset_class)
     direction = _direction_word(signal)
     vol_tier = _vol_tier(regime_label)
-    opposes = _opposes(direction, macro_label, trend_label)
+    alignment = _alignment(direction, macro_label, trend_label)
 
     registry = get_strategy_registry()
     policy = get_router_policy()
@@ -256,7 +275,7 @@ def _route_impl(
             continue
         if not _regime_vol_allowed(blk, vol_tier):
             continue
-        if not _alignment_allowed(blk, opposes):
+        if not _alignment_allowed(blk, alignment):
             continue
         # Matched. trade_shape = the archetype's entry/exit/risk block.
         shape = {
@@ -268,12 +287,12 @@ def _route_impl(
             archetype=name, matched=True, trade_shape=shape,
             reason=(
                 f"{name}: ack={ack} dir={direction} vol={vol_tier} "
-                f"opposes={opposes}"
+                f"alignment={alignment}"
             ),
         )
 
     return RoutedStrategy(
         archetype=policy.get("default_on_no_match", "stand_by"),
         matched=False, trade_shape=None,
-        reason=f"no enabled archetype matched (ack={ack} dir={direction} opposes={opposes})",
+        reason=f"no enabled archetype matched (ack={ack} dir={direction} alignment={alignment})",
     )

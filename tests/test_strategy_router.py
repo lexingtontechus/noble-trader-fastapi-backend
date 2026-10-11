@@ -11,8 +11,8 @@ import pytest
 
 from regime_platform.sweep_orchestrator.strategy_router import (
     RoutedStrategy,
+    _alignment,
     _direction_word,
-    _opposes,
     _vol_tier,
     route,
 )
@@ -36,21 +36,31 @@ def test_direction_word():
     assert _direction_word(None) is None
 
 
-def test_opposes_both_required():
-    # Gold-buy-into-downtrend: macro=bear AND trend=down both oppose a buy.
-    assert _opposes("buy", "bear", "trending_down") is True
-    assert _opposes("buy", "bear", "reversal_down") is True
-    # Aligned: macro=bull agrees with a buy.
-    assert _opposes("buy", "bull", "trending_up") is False
-    # Mixed (one opposes, one agrees) -> not "opposes both".
-    assert _opposes("buy", "bear", "trending_up") is False
-    # A missing/neutral read is not evidence: only one read available and it
-    # opposes -> still "opposes" (every available read opposes).
-    assert _opposes("buy", "bear", None) is True
-    assert _opposes("buy", None, "trending_down") is True
-    # No usable read at all -> None (can't judge).
-    assert _opposes("buy", None, None) is None
-    assert _opposes("buy", "neutral", None) is None
+def test_alignment_tri_state_both_required():
+    """Tri-state alignment: 'opposes' / 'aligned' / None. A definite verdict
+    requires BOTH reads directional and agreeing; any neutral/missing read (or
+    a mixed with/against pair) is None (unknown) — which routes neither MR nor
+    momentum, i.e. stand_by. This is what makes the consolidating regime route
+    correctly (era-clean: XAUUSD buy consolidating 8.1% has no edge either way).
+    """
+    # Both oppose -> opposes (the MR condition).
+    assert _alignment("buy", "bear", "trending_down") == "opposes"
+    assert _alignment("buy", "bear", "reversal_down") == "opposes"
+    assert _alignment("sell", "bull", "trending_up") == "opposes"
+    # Both agree -> aligned (the momentum condition).
+    assert _alignment("buy", "bull", "trending_up") == "aligned"
+    assert _alignment("sell", "bear", "trending_down") == "aligned"
+    # Mixed (one with, one against) -> None (no confident verdict).
+    assert _alignment("buy", "bear", "trending_up") is None
+    assert _alignment("buy", "bull", "trending_down") is None
+    # Any neutral/missing read -> None (consolidating trend is UNKNOWN, not
+    # 'aligned' — this is the consolidation fix).
+    assert _alignment("buy", "bear", "consolidating") is None
+    assert _alignment("buy", "bear", None) is None
+    assert _alignment("buy", None, "trending_down") is None
+    assert _alignment("buy", "neutral", "trending_down") is None
+    # No usable read at all -> None.
+    assert _alignment("buy", None, None) is None
 
 
 # ── Routing (against the real R0 catalog) ───────────────────────────────────
