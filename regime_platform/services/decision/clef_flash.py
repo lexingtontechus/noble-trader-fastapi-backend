@@ -293,8 +293,8 @@ async def classify_choice(
     """Generic structured-label classification over a fixed label set.
 
     ``options`` maps each allowed label to its one-line description (the
-    Clef-Flash ``choice`` criteria). Returns ``{label: probability}`` —
-    a proper distribution summing to ~1 — or ``None`` on any failure.
+    Clef-Flash ``choice`` criteria). Returns ``{label: probability}`` — a
+    proper distribution summing to ~1 — or ``None`` on any failure.
 
     This is the primitive that makes Clef-Flash a *categorizer*: unlike the
     free-text chat path (``llm_client``), there is no string to parse and the
@@ -314,7 +314,7 @@ async def classify_choice(
             "type": "choice",
             "instructions": instructions,
             "criteria": dict(options),
-        }
+        },
     }
     answers = await decide(state, questions)
     if answers is None:
@@ -334,3 +334,153 @@ async def classify_choice(
         if f == f:  # reject NaN
             out[str(k)] = f
     return out or None
+
+
+# ─── R4: archetype / routing classifier (Role A) ───────────────────────────
+#
+# 2026-10-10, docs/scopes/20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §5
+# Role A. Clef-Flash classifies the SETUP TYPE (not the direction) from the
+# indicator set the deterministic router (R1) already computes, so R4 can be
+# measured against R1's own choice: does the model's archetype read agree with
+# (or beat) the deterministic router, on era-clean outcomes? This is the
+# "when to apply which strategy" decision, weighing INTERACTION indicators a
+# hand-coded predicate misses (regime×deviation, macro×trend, vol×direction).
+#
+# RESEARCH ONLY — same contract as the direction stamp: never an EV source,
+# never a gate. Shadow-stamped for offline discrimination measurement (AUC /
+# agreement vs the R1 router + realized outcome). Fail-open: None on any
+# failure, so the caller's stamp simply stays NULL.
+
+# The archetype vocab MUST match config/strategy_registry.yaml's archetype
+# names (+ stand_by). Kept as module constants so the classifier and the
+# router speak one vocabulary; a mismatch is a bug caught by the test that
+# pins these against the registry.
+ARCHETYPE_OPTIONS = {
+    "momentum": "Trend-continue: the setup favours riding the aligned "
+                "macro/trend direction (far target, no reversion stop).",
+    "mean_reversion": "Contrarian: an exhausted counter-trend extreme that "
+                      "should fade back to the mean (tight target, "
+                      "overshoot stop).",
+    "ma_trend": "Moving-average cross trend-follow: a lower-frequency trend "
+                "confirmed by moving-average alignment.",
+    "fx_carry": "FX carry / momentum+carry: a currency setup favoured by the "
+                "interest-rate differential (carry), optionally conditioned on "
+                "momentum.",
+    "range_fade": "Chop-boundary: a confirmed range with price at a boundary "
+                  "to be faded toward the middle.",
+    "breakout": "Volatility-expansion breakout with confirmation in the "
+                "direction of the expansion.",
+    "stand_by": "No directional edge: the setup favours neither side, so do "
+                "not trade.",
+}
+
+_ARCHETYPE_INSTRUCTIONS = (
+    "Given this signal's indicator context — momentum, volatility, trend "
+    "reads, deviation from the mean, and how they INTERACT (does the regime "
+    "agree with the trend? is the deviation extreme relative to volatility? "
+    "is the direction with or against the slow reads?) — which trading "
+    "strategy archetype best fits this setup right now? Choose the setup "
+    "type, NOT the trade direction. 'stand_by' when no archetype has an edge."
+)
+
+
+def build_archetype_state(
+    *,
+    symbol: str,
+    signal: str,
+    regime: str | None = None,
+    regime_conf: float | None = None,
+    macro_label: str | None = None,
+    trend_label: str | None = None,
+    momentum_24h: float | None = None,
+    vol_ratio: float | None = None,
+    deviation_z: float | None = None,
+    p_win_dir: float | None = None,
+) -> dict[str, Any]:
+    """The ``state`` block for the archetype classifier.
+
+    Carries the indicator set mapped in the scope doc §5: momentum,
+    volatility (vol_ratio), trend (macro/trend labels), deviation (deviation_z
+    proxy). The model weighs their INTERACTION — it is NOT asked to re-derive
+    anything the deterministic engine already produced. ``None`` fields are
+    dropped so the payload stays small and honest.
+    """
+    raw = {
+        "symbol": symbol,
+        "signal": signal,
+        "regime": regime,
+        "regime_conf": regime_conf,
+        "macro_label": macro_label,
+        "trend_label": trend_label,
+        "momentum_24h": momentum_24h,
+        "vol_ratio": vol_ratio,
+        "deviation_z": deviation_z,
+        "p_win_dir": p_win_dir,
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+@dataclass(frozen=True)
+class ClefArchetype:
+    """Role-A read: the model's archetype distribution for one signal."""
+
+    probabilities: dict[str, float]   # {archetype: prob}, sums ~1
+    top: str                          # argmax label
+    confidence: float                 # max prob
+    model: str
+
+    def agrees_with(self, router_archetype: str | None) -> bool | None:
+        """Does the model's top choice agree with the R1 router's verdict?
+
+        None when the router produced nothing (router off/errored) — agreement
+        is undefined, not False.
+        """
+        if not router_archetype:
+            return None
+        return self.top == router_archetype
+
+    def prob_of(self, archetype: str) -> float:
+        return self.probabilities.get(archetype, 0.0)
+
+
+async def classify_archetype(
+    *,
+    symbol: str,
+    signal: str,
+    regime: str | None = None,
+    regime_conf: float | None = None,
+    macro_label: str | None = None,
+    trend_label: str | None = None,
+    momentum_24h: float | None = None,
+    vol_ratio: float | None = None,
+    deviation_z: float | None = None,
+    p_win_dir: float | None = None,
+    model: str = _MODEL,
+) -> Optional[ClefArchetype]:
+    """One-shot: build the archetype question, call Clef-Flash, parse.
+
+    Returns ``None`` on any failure (fail-open). The caller stamps the
+    distribution + top/confidence on nt_signal_sim for R4's discrimination
+    measurement against the R1 router. Never an EV source, never a gate.
+    """
+    state = build_archetype_state(
+        symbol=symbol, signal=signal, regime=regime, regime_conf=regime_conf,
+        macro_label=macro_label, trend_label=trend_label,
+        momentum_24h=momentum_24h, vol_ratio=vol_ratio,
+        deviation_z=deviation_z, p_win_dir=p_win_dir,
+    )
+    probs = await classify_choice(
+        instructions=_ARCHETYPE_INSTRUCTIONS,
+        options=ARCHETYPE_OPTIONS,
+        state=state,
+        question_id="archetype",
+    )
+    if not probs:
+        return None
+    top = max(probs, key=probs.get)
+    return ClefArchetype(
+        probabilities=probs,
+        top=top,
+        confidence=probs[top],
+        model=model or _MODEL,
+    )

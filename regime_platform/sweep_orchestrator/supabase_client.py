@@ -289,6 +289,9 @@ NT_SIGNAL_SIM_COLUMNS: frozenset[str] = frozenset({
     # never an EV source, never a gate. See docs/scopes/
     # 20261004_P_CLEF_SHADOW_STAMP_REQUIREMENTS.md.
     "p_clef_dir", "p_clef_wait", "p_clef_symbol",
+    # R4 Clef-Flash archetype classifier stamp (Role A, shadow): the model's
+    # setup-type read + agreement with the R1 router. Measurement-only.
+    "clef_archetype", "clef_archetype_conf", "clef_archetype_agrees",
     # Batch C (migration 154): directional vs bracket-outcome probabilities
     "p_win_dir", "p_win_bracket", "p_resolve", "p_win_resolve",
     "bracket_bucket", "bracket_vol_tier", "bracket_gate_shadow",
@@ -1115,6 +1118,33 @@ NT_DYNAMIC_TIER_STATE_COLUMNS: frozenset[str] = frozenset({
     "symbol", "tier_type", "tier_key", "tier_value",
     "n", "computed_at", "source",
 })
+
+
+async def upsert_clef_stance(row: dict[str, Any]) -> None:
+    """Upsert one ``nt_clef_stance`` row (R5 Role B, shadow).
+
+    Keyed on ``symbol`` (the table's PK) — a fresh stance REPLACES the row,
+    same upsert-on-conflict shape as ``upsert_macro_regime``. Written by the
+    orchestrator's clef-stance batch job (clef_stance.py). Best-effort,
+    never raises. Research only — nothing reads this for a live decision.
+    """
+    if not settings.SUPABASE_URL or not row.get("symbol"):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_url('nt_clef_stance')}?on_conflict=symbol",
+                headers={**_headers(), "Content-Type": "application/json",
+                         "Prefer": "resolution=merge-duplicates"},
+                json=row,
+            )
+            if not resp.is_success:
+                logger.error(
+                    "upsert_clef_stance: insert HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
+    except Exception as exc:
+        logger.error("upsert_clef_stance: insert failed: %s", exc)
 
 
 async def upsert_dynamic_tier_state(rows: list[dict[str, Any]]) -> None:

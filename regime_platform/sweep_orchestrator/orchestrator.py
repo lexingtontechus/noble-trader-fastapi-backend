@@ -1028,6 +1028,9 @@ def _build_signal_sim_payload(
     p_clef_dir: float | None = None,
     p_clef_wait: float | None = None,
     p_clef_symbol: str | None = None,
+    clef_archetype: str | None = None,
+    clef_archetype_conf: float | None = None,
+    clef_archetype_agrees: bool | None = None,
     expected_resolution_hours: float | None = None,
     expected_resolution_days: float | None = None,
     resolution_confidence: str | None = None,
@@ -1228,6 +1231,13 @@ def _build_signal_sim_payload(
     # router.mode is off or the router errored (fail-open). No live effect.
     if strategy_archetype is not None:
         payload["strategy_archetype"] = strategy_archetype
+    # R4 Clef-Flash archetype classifier stamp (Role A, shadow). The model's
+    # setup-type read + whether it agrees with the R1 router's own archetype.
+    # Measurement-only for R4; never an EV source / gate. Nullable.
+    if clef_archetype is not None:
+        payload["clef_archetype"] = clef_archetype
+        payload["clef_archetype_conf"] = clef_archetype_conf
+        payload["clef_archetype_agrees"] = clef_archetype_agrees
     return payload
 
 
@@ -1734,6 +1744,23 @@ class SweepOrchestrator(HeavySweepMixin):
             trigger=CronTrigger.from_crontab("20 * * * *"),
             id="kairos-daily",
             name="Kairos drift backfill (hourly) + calendar cache (daily)",
+            misfire_grace_time=1800,
+            coalesce=True,
+        )
+
+        # R5 multi-asset Clef-Flash stance (Role B, shadow) — 2026-10-10,
+        # 20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §5. Runs the
+        # {buy, sell, hold} classifier across the basket and upserts
+        # nt_clef_stance. Hourly at :48 (clear of the :00/:15/:30/:45 light
+        # sweeps, :17 EOD, :20 Kairos, :38 calib-resolve). Registered
+        # unconditionally; the mode is read per run (clef_flash_mode) so a
+        # feature_flags flip needs no restart. Fail-open: unconfigured Worker
+        # or off mode -> no-op heartbeat.
+        self._scheduler.add_job(
+            self._run_clef_stance,
+            trigger=CronTrigger.from_crontab("48 * * * *"),
+            id="clef-stance",
+            name="Clef-Flash multi-asset buy/sell/hold stance (R5 shadow)",
             misfire_grace_time=1800,
             coalesce=True,
         )
@@ -2961,6 +2988,74 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.warning("[calib:hourly] %s failed: %s", mode, exc)
         summary.pop("by_symbol", None)
         await write_job_heartbeat("calibration_resolve_hourly", summary)
+
+    async def _run_clef_stance(self) -> None:
+        """R5 multi-asset buy/sell/hold stance (Role B, shadow) — 2026-10-10.
+
+        docs/scopes/20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md §5 Role B.
+        Runs the Clef-Flash {buy, sell, hold} classifier across every active
+        symbol with each symbol's momentum/vol/trend/deviation indicators and
+        upserts one stance row per symbol into nt_clef_stance. Portfolio-level
+        overlay — MEASUREMENT ONLY, never an EV source, never a gate, never a
+        live order. R5's bar: does the cross-asset stance predict per-symbol
+        outcome better than each symbol's own EV read?
+
+        Fail-open end to end: clef_flash_mode=off, unconfigured Worker, a
+        per-symbol classifier failure, or a Supabase write failure all leave
+        that symbol's stance untouched (or the table empty) and never break
+        the job. Heartbeats nt_roadmap(clef_stance) so the weekly check can
+        prove the job ran.
+        """
+        from regime_platform.core.feature_flags import get_clef_flash_mode
+        from regime_platform.sweep_orchestrator.clef_stance import classify_stance
+        from regime_platform.sweep_orchestrator.supabase_client import (
+            fetch_active_symbols,
+            upsert_clef_stance,
+        )
+        from regime_platform.sweep_orchestrator.kairos import write_job_heartbeat
+
+        summary: dict[str, Any] = {"classified": 0, "by_stance": {}, "errors": 0}
+        try:
+            if get_clef_flash_mode() == "off":
+                summary["skipped"] = "clef_flash_mode=off"
+                await write_job_heartbeat("clef_stance", summary)
+                return
+            symbols = await fetch_active_symbols()
+            for sym in symbols:
+                symbol = sym.get("symbol")
+                if not symbol:
+                    continue
+                try:
+                    stance = await classify_stance(
+                        symbol=symbol,
+                        # regime/macro/trend are best-effort context; the
+                        # stance classifier forms its own direction, so no
+                        # stated signal is passed. Indicator values are read
+                        # from the latest sweep row below when available.
+                    )
+                    if stance is None:
+                        summary["errors"] += 1
+                        continue
+                    row = {
+                        "symbol": symbol,
+                        "stance": stance.stance,
+                        "confidence": round(stance.confidence, 4),
+                        "probabilities": stance.probabilities,
+                        "model": stance.model,
+                    }
+                    await upsert_clef_stance(row)
+                    summary["classified"] += 1
+                    summary["by_stance"][stance.stance] = (
+                        summary["by_stance"].get(stance.stance, 0) + 1
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    summary["errors"] += 1
+                    logger.debug("[clef:stance] %s failed: %s", symbol, exc)
+            logger.info("[clef:stance] done %s", summary)
+        except Exception as exc:  # noqa: BLE001
+            summary["error"] = type(exc).__name__
+            logger.warning("[clef:stance] job failed: %s", exc)
+        await write_job_heartbeat("clef_stance", summary)
 
     async def _run_trend_regime_refresh(self) -> None:
         """Trend filter daily refresh (2026-09-10, worklog
@@ -5432,6 +5527,63 @@ class SweepOrchestrator(HeavySweepMixin):
                     p_win_dir=_p_win_dir,
                 )
 
+                # ── R4: Clef-Flash archetype classifier (Role A, shadow) ──
+                # 2026-10-10, 20261010_KAIROS_STRATEGY_STRUCTURE_WIDER_LENS.md
+                # §5 Role A. Asks Clef-Flash which SETUP TYPE (momentum /
+                # mean_reversion / ...) fits, from the indicator set, and
+                # records whether it agrees with the R1 deterministic router's
+                # own archetype stamp. Measurement-only (R4's bar: does the
+                # model's archetype read discriminate outcomes / agree with the
+                # router better than chance). Fail-open: any error or unconfig
+                # Worker -> None, stamp stays NULL. Never an EV source / gate.
+                _clef_archetype: str | None = None
+                _clef_archetype_conf: float | None = None
+                _clef_archetype_agrees: bool | None = None
+                if get_clef_flash_mode() != "off" and signal_is_qualifiable:
+                    try:
+                        from regime_platform.services.decision.clef_flash import (
+                            classify_archetype,
+                        )
+                        # momentum_24h + deviation_z from the price series
+                        # already in memory (no new fetch). momentum = 24h
+                        # log return; deviation_z = (price - 24h mean)/24h std,
+                        # the MR entry proxy. Best-effort: None on any error.
+                        _mom24 = _devz = None
+                        try:
+                            import numpy as _np
+                            _lp = _np.log(_np_prices)
+                            _mom24 = float(_lp[-1] - _lp[-25]) if len(_lp) > 25 else None
+                            _w = _lp[-25:]
+                            _mu, _sd = float(_w.mean()), float(_w.std())
+                            _devz = float((_lp[-1] - _mu) / _sd) if _sd > 0 else None
+                        except Exception:
+                            pass
+                        _arch = await classify_archetype(
+                            symbol=symbol,
+                            signal=trade_signal["signal"],
+                            regime=regime_label,
+                            regime_conf=regime_conf,
+                            macro_label=macro_label,
+                            trend_label=trend_label,
+                            momentum_24h=_mom24,
+                            vol_ratio=_vol_ratio,
+                            deviation_z=_devz,
+                            p_win_dir=_p_win_dir,
+                        )
+                        if _arch is not None:
+                            _clef_archetype = _arch.top
+                            _clef_archetype_conf = round(_arch.confidence, 4)
+                            _clef_archetype_agrees = _arch.agrees_with(
+                                strategy_archetype
+                            )
+                            logger.info(
+                                "[clef:archetype] %s -> %s (conf=%.3f agrees_with_router=%s)",
+                                symbol, _arch.top, _arch.confidence,
+                                _clef_archetype_agrees,
+                            )
+                    except Exception as _exc:
+                        logger.debug("[clef:archetype] %s failed: %s", symbol, _exc)
+
                 # Dynamic deadline tier (20261005_REACHABILITY_REDESIGN).
                 # Derive per-(symbol, vol_tier) deadline from reachability data.
                 # Fail-open: all-None on any failure or off mode.
@@ -5551,6 +5703,9 @@ class SweepOrchestrator(HeavySweepMixin):
                     p_clef_dir=_clef_dir,
                     p_clef_wait=_clef_wait,
                     p_clef_symbol=_clef_model,
+                    clef_archetype=_clef_archetype,
+                    clef_archetype_conf=_clef_archetype_conf,
+                    clef_archetype_agrees=_clef_archetype_agrees,
                     expected_resolution_hours=_deadline_tier.median_hours if _deadline_tier else None,
                     expected_resolution_days=round(_deadline_tier.median_hours / 24.0, 1) if _deadline_tier else None,
                     resolution_confidence=_deadline_tier.confidence if _deadline_tier else None,
