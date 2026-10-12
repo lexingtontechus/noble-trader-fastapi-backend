@@ -103,3 +103,25 @@ async def test_pooled_pick_inherits_each_symbols_own_band(monkeypatch):
     # BTCUSD has its own band → ONE pooled solve at 8.80. Total 2, not 4.
     assert len(seen) == 2, seen
     assert sorted(v for _, v in seen) == [1.85, 8.80]
+
+
+def test_code_defaults_mirror_yaml_global():
+    """The code `_DEFAULTS["dynamic_atr"]` global must mirror the YAML global
+    — ONE definition of the numbers (the alignment claim, previously
+    CI-unverified because every test runs with the YAML present, shadowing the
+    defaults). Also pins that the removed `by_class` duplicate is gone."""
+    import yaml
+    from pathlib import Path
+
+    from regime_platform.core.feature_flags import _DEFAULTS
+
+    root = Path(__file__).resolve().parents[1]
+    y = yaml.safe_load((root / "config" / "feature_flags.yaml").read_text(encoding="utf-8"))["dynamic_atr"]
+    d = _DEFAULTS["dynamic_atr"]
+    for k, v in y.items():
+        if k in ("by_symbol", "by_class"):
+            continue
+        assert d.get(k) == v, f"code default {k}={d.get(k)!r} != YAML {v!r}"
+    # the removed duplicate must not reappear in code either
+    assert "by_class" not in d
+    assert "by_symbol" not in d

@@ -155,7 +155,6 @@ _DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 4.0,
         "vol_ratio_short": 24,
         "vol_ratio_long": 168,
-        "auto_apply_clamps": True,
     },
     "heavy_publish_geometry_gate": "live",
     "geometry_intraday_scale_mode": "live",

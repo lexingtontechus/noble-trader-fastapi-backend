@@ -16,10 +16,10 @@ grid, no vol split, no OOS. This job is the research clock:
 Cadence: APScheduler monthly, 1st 03:30 UTC (orchestrator).
 Flag: ``atr_reopt_enabled`` (simple on/off, proposal-only).
 """
+
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -29,10 +29,8 @@ import numpy as np
 from regime_platform.sweep_orchestrator.tiered_atr import (
     EXPIRY_BARS,
     build_envelopes,
-    build_paths,
     live_basis,
     live_same_bar_policy,
-    walk,
     walk_envelopes,
 )
 
@@ -116,8 +114,7 @@ def eval_cell(env: np.ndarray, tp: float, sl: float, cost: float = COST) -> Opti
     """
     if env is None or len(env) == 0:
         return None
-    pnl, exp = walk_envelopes(env, float(tp), float(sl),
-                              same_bar_policy=live_same_bar_policy())
+    pnl, exp = walk_envelopes(env, float(tp), float(sl), same_bar_policy=live_same_bar_policy())
     tp_hit = (~exp) & (pnl > 0)
     sl_hit = (~exp) & (pnl <= 0)
     dec = int(tp_hit.sum() + sl_hit.sum())
@@ -169,14 +166,20 @@ def solve_free(env: np.ndarray) -> Optional[dict[str, Any]]:
     best = scan(np.round(np.arange(0.25, 16.01, 0.25), 2), np.round(np.arange(0.25, 10.01, 0.25), 2))
     if best is None:
         return None
-    best = scan(
-        np.round(np.arange(max(0.20, best["tp"] - 0.30), best["tp"] + 0.30, 0.05), 2),
-        np.round(np.arange(max(0.20, best["sl"] - 0.30), best["sl"] + 0.30, 0.05), 2),
-    ) or best
-    best = scan(
-        np.round(np.arange(max(0.15, best["tp"] - 0.08), best["tp"] + 0.08, 0.01), 2),
-        np.round(np.arange(max(0.15, best["sl"] - 0.08), best["sl"] + 0.08, 0.01), 2),
-    ) or best
+    best = (
+        scan(
+            np.round(np.arange(max(0.20, best["tp"] - 0.30), best["tp"] + 0.30, 0.05), 2),
+            np.round(np.arange(max(0.20, best["sl"] - 0.30), best["sl"] + 0.30, 0.05), 2),
+        )
+        or best
+    )
+    best = (
+        scan(
+            np.round(np.arange(max(0.15, best["tp"] - 0.08), best["tp"] + 0.08, 0.01), 2),
+            np.round(np.arange(max(0.15, best["sl"] - 0.08), best["sl"] + 0.08, 0.01), 2),
+        )
+        or best
+    )
     return best
 
 
@@ -213,9 +216,7 @@ def compare_to_current(symbol: str, sc: dict[str, Any] | None, asset_class: str 
     if cur_tp is not None and cur_sl is not None:
         if _rel_drift(sc["tp"], cur_tp) > DRIFT_REL or _rel_drift(sc["sl"], cur_sl) > DRIFT_REL:
             out["drift"] = True
-            out["reasons"].append(
-                f"new {sc['tp']:.2f}/{sc['sl']:.2f} vs current {cur_tp:.2f}/{cur_sl:.2f} (>15%)"
-            )
+            out["reasons"].append(f"new {sc['tp']:.2f}/{sc['sl']:.2f} vs current {cur_tp:.2f}/{cur_sl:.2f} (>15%)")
     tmin, tmax = out["tp_atr_min"], out["tp_atr_max"]
     smin, smax = out["sl_atr_min"], out["sl_atr_max"]
     if tmin is not None and sc["tp"] < float(tmin):
@@ -245,8 +246,10 @@ async def _fetch_cutover_ts() -> Optional[float]:
     """
     try:
         import httpx
+
         from regime_platform.core.settings import settings
         from regime_platform.sweep_orchestrator.supabase_client import _headers, _url
+
         if not settings.SUPABASE_URL:
             return None
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -286,7 +289,8 @@ async def _load_signals(symbols: list[str], since: datetime, until: datetime) ->
     if cutover_ts is not None and cutover_ts > since.timestamp():
         logger.info(
             "[atr:reopt] era-clamp: lookback %s → %s (post-cutover only)",
-            since.date(), datetime.fromtimestamp(cutover_ts, tz=timezone.utc).date(),
+            since.date(),
+            datetime.fromtimestamp(cutover_ts, tz=timezone.utc).date(),
         )
         since = datetime.fromtimestamp(cutover_ts, tz=timezone.utc)
 
@@ -345,10 +349,7 @@ async def _paths_for(symbols: list[str], members: list[dict], since: datetime, u
         interval="1h",
         ohlcv_out=bars,
     )
-    bars = {
-        s: [b for b in rows if b.get("t") is not None and b.get("c") is not None]
-        for s, rows in bars.items()
-    }
+    bars = {s: [b for b in rows if b.get("t") is not None and b.get("c") is not None] for s, rows in bars.items()}
     # 2026-10-08 (worklog 20261008_GEOMETRY_BASIS_DIVERGENCE.md): the reopt
     # proposes the SAME clamps the live picker uses, so it must measure on the
     # SAME basis — the live resolver's intrabar/sl_first rule. Building close
@@ -360,7 +361,7 @@ def _fmt_sc(sc: dict[str, Any] | None) -> str:
     if not sc:
         return "—"
     return (
-        f"{sc['tp']:.2f}/{sc['sl']:.2f} · RR {sc['tp']/sc['sl']:.2f} · "
+        f"{sc['tp']:.2f}/{sc['sl']:.2f} · RR {sc['tp'] / sc['sl']:.2f} · "
         f"wr {sc['wr']:.3f} · EV {sc['ev']:+.3f} · n {sc['n']}"
     )
 
@@ -412,9 +413,7 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
     lines.append("")
     lines.append(f"proposals: {len(proposals)}")
     for p in proposals:
-        lines.append(
-            f"- **{p['scope']}**: propose {_fmt_sc(p['pick'])} — {'; '.join(p['compare']['reasons'])}"
-        )
+        lines.append(f"- **{p['scope']}**: propose {_fmt_sc(p['pick'])} — {'; '.join(p['compare']['reasons'])}")
 
     out_dir = Path(__file__).resolve().parents[2] / "worklog" / "kairos" / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -442,108 +441,17 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
 # ─── Vol-urgency → auto re-opt (market-driven, unattended) ────────────────
 
 
-def _clamp_block(tp: float, sl: float, pad_tp: float = 0.25, pad_sl: float = 0.12) -> dict[str, Any]:
-    """Narrow by_symbol lattice around a free-lattice pick (same style as research)."""
-    tp, sl = float(tp), float(sl)
-    return {
-        "tp_atr": [round(max(0.15, tp - pad_tp), 2), round(tp, 2), round(tp + pad_tp, 2)],
-        "sl_atr": [round(max(0.15, sl - pad_sl), 2), round(sl, 2), round(sl + pad_sl, 2)],
-        "tp_atr_min": round(max(0.15, tp - 2 * pad_tp), 2),
-        "tp_atr_max": round(tp + 2 * pad_tp, 2),
-        "sl_atr_min": round(max(0.15, sl - 2 * pad_sl), 2),
-        "sl_atr_max": round(sl + 2 * pad_sl, 2),
-    }
-
-
-def apply_symbol_clamps(symbol: str, pick: dict[str, Any]) -> bool:
-    """Patch ``dynamic_atr.by_symbol.<SYMBOL>`` clamp lines in feature_flags.yaml.
-
-    Line-level edit so comments/structure survive (no yaml.dump). Only
-    touches tp/sl lattice + clamp keys under that symbol block. Creates the
-    symbol block after ``by_symbol:`` if missing.
-    """
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[2] / "config" / "feature_flags.yaml"
-    text = path.read_text(encoding="utf-8")
-    blk = _clamp_block(pick["tp"], pick["sl"])
-    # Rebuild the key lines for this symbol (4-space indent under by_symbol)
-    new_keys = {
-        "tp_atr": f"      tp_atr: [{', '.join(str(x) for x in blk['tp_atr'])}]",
-        "sl_atr": f"      sl_atr: [{', '.join(str(x) for x in blk['sl_atr'])}]",
-        "tp_atr_min": f"      tp_atr_min: {blk['tp_atr_min']}",
-        "tp_atr_max": f"      tp_atr_max: {blk['tp_atr_max']}",
-        "sl_atr_min": f"      sl_atr_min: {blk['sl_atr_min']}",
-        "sl_atr_max": f"      sl_atr_max: {blk['sl_atr_max']}",
-    }
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    i = 0
-    in_by_symbol = False
-    in_sym = False
-    found = False
-    while i < len(lines):
-        raw = lines[i]
-        stripped = raw.rstrip("\n")
-        if stripped.startswith("  by_symbol:"):
-            in_by_symbol = True
-            out.append(raw)
-            i += 1
-            continue
-        if in_by_symbol and stripped and not stripped.startswith(" ") and not stripped.startswith("\t"):
-            in_by_symbol = False
-            in_sym = False
-        if in_by_symbol and re.match(rf"^    {re.escape(symbol)}:\s*$", stripped):
-            in_sym = True
-            found = True
-            out.append(raw)
-            i += 1
-            # rewrite known keys until next symbol / dedent
-            while i < len(lines):
-                s2 = lines[i].rstrip("\n")
-                if re.match(r"^    \S", s2) or (s2 and not s2.startswith(" ")):
-                    in_sym = False
-                    break
-                m = re.match(r"^      (tp_atr|sl_atr|tp_atr_min|tp_atr_max|sl_atr_min|sl_atr_max):", s2)
-                if m and m.group(1) in new_keys:
-                    out.append(new_keys[m.group(1)] + "\n")
-                    del new_keys[m.group(1)]
-                else:
-                    out.append(lines[i])
-                i += 1
-            for k in ("tp_atr", "sl_atr", "tp_atr_min", "tp_atr_max", "sl_atr_min", "sl_atr_max"):
-                if k in new_keys:
-                    out.append(new_keys[k] + "\n")
-                    del new_keys[k]
-            continue
-        out.append(raw)
-        i += 1
-
-    if not found and in_by_symbol is not False:
-        # append block at end of by_symbol — locate insertion point
-        text2 = "".join(out)
-        m = re.search(r"(?m)^  by_symbol:\n", text2)
-        if not m:
-            return False
-        block = f"    {symbol}:\n" + "\n".join(new_keys.values()) + "\n"
-        # insert after last symbol under by_symbol (before next top-level key)
-        # safer: before the first non-indented line after by_symbol
-        rest = text2[m.end():]
-        cut = re.search(r"(?m)^(?!\s)", rest)
-        insert_at = m.end() + (cut.start() if cut else len(rest))
-        text2 = text2[:insert_at] + block + text2[insert_at:]
-        path.write_text(text2, encoding="utf-8")
-        return True
-
-    path.write_text("".join(out), encoding="utf-8")
-    return True
-
-
-def _symbol_has_vol_gate(symbol: str) -> bool:
-    from regime_platform.core.feature_flags import get_dynamic_atr_config
-
-    cfg = get_dynamic_atr_config(None, symbol)
-    return cfg.get("vol_ratio_max") is not None or cfg.get("vol_ratio_min") is not None
+# 2026-10-12 REMOVED — _clamp_block() + apply_symbol_clamps() + the urgency
+# auto-apply loop. They wrote runtime clamp state into the operator-owned
+# config/feature_flags.yaml, which contradicted (a) this module's own docstring
+# ("propose by_symbol clamps; never auto-write YAML"), (b) the config file's
+# philosophy ("runtime state the app writes automatically -> a gitignored
+# file ... Not this file"), and (c) the monthly path's contract ("PROPOSAL
+# ONLY ... Never mutates dynamic_atr.by_symbol"). It was untested, used a
+# first-`by_symbol:` anchor that corrupted macro.by_symbol.AAPL, and was
+# redundant with the picker's own 15-min solve. Both reopt paths are now
+# PROPOSAL-ONLY: they write a report + heartbeat; an operator applies clamps.
+# See docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_REDESIGN.md.
 
 
 async def check_atr_reopt_urgency() -> dict[str, Any]:
@@ -555,8 +463,9 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
     1. Every 4h: measure ``vol_ratio`` per symbol.
     2. If any ≥ ``elevated_ratio`` and durable ``last_reopt_at`` is older
        than ``min_reopt_hours`` (default **4**), run the free lattice.
-    3. If ``auto_apply_clamps`` and drift, patch ``by_symbol`` — same 4h
-       floor on ``last_apply_at`` so a restart cannot re-write clamps.
+    3. The result is a PROPOSAL (report + heartbeat) — it is NEVER written
+       back to the config. Auto-apply was removed 2026-10-12 (see the
+       REMOVED note above); an operator applies clamps.
     4. Discord is FYI of the action taken.
 
     State lives in ``nt_roadmap(atr_reopt_urgency)`` — survives restarts.
@@ -575,14 +484,12 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
     min_reopt_h = float(cfg.get("min_reopt_hours") or cfg.get("cooldown_hours") or 4.0)
     if min_reopt_h > 24:
         min_reopt_h = 4.0
-    auto_apply = bool(cfg.get("auto_apply_clamps", True))
     vol_short = int(cfg.get("vol_ratio_short") or 24)
     vol_long = int(cfg.get("vol_ratio_long") or 168)
     min_bars = int(vol_long) + 2
 
     state = await _load_urgency_state()
     last_reopt = _ts_or_none(state.get("last_reopt_at"))
-    last_apply = _ts_or_none(state.get("last_apply_at"))
     alerted_at = state.get("last_alerted_at") or {}
     now = _time.time()
 
@@ -635,7 +542,6 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
     applied: list[str] = []
     ran = False
     can_run = last_reopt is None or (now - last_reopt) >= min_reopt_h * 3600.0
-    can_apply = last_apply is None or (now - last_apply) >= min_reopt_h * 3600.0
     if can_run:
         try:
             reopt_result = await run_atr_reopt()
@@ -643,39 +549,23 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
             state["last_reopt_at"] = _iso(now)
         except Exception as exc:  # noqa: BLE001
             logger.error("[atr:urg] auto re-opt failed: %s", exc)
-        if ran and auto_apply and reopt_result and can_apply:
-            for prop in reopt_result.get("proposals") or []:
-                scope = prop.get("scope")
-                pick = prop.get("pick") or {}
-                if not scope or not pick.get("tp"):
-                    continue
-                # Do not clobber a vol-gated cell with a pooled free-lattice
-                # pick (BTC 8.07/1.77 @ vol_ratio≤0.71 vs pooled 6.32/3.17).
-                if scope not in ("forex",) and _symbol_has_vol_gate(scope):
-                    logger.info(
-                        "[atr:urg] skip apply %s — vol_ratio gate present "
-                        "(pooled lattice is not the gated cell)",
-                        scope,
-                    )
-                    continue
-                try:
-                    if apply_symbol_clamps(scope, pick):
-                        applied.append(f"{scope} {pick['tp']:.2f}/{pick['sl']:.2f}")
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[atr:urg] apply %s failed: %s", scope, exc)
-            if applied:
-                state["last_apply_at"] = _iso(now)
-                state["last_applied"] = applied
 
     for sym, vr in spiked:
         alerted_at[sym] = _iso(now)
         try:
             from notifications.discord import discord_notifier
 
-            action = "free lattice + clamps applied" if applied else (
-                "free lattice ran (no drift / no apply)" if ran else (
-                    "re-opt skipped (4h floor — last_run %s)" % state.get("last_reopt_at", "—")
-                    if not can_run else "re-opt floor"
+            action = (
+                "free lattice + clamps applied"
+                if applied
+                else (
+                    "free lattice ran (no drift / no apply)"
+                    if ran
+                    else (
+                        "re-opt skipped (4h floor — last_run %s)" % state.get("last_reopt_at", "—")
+                        if not can_run
+                        else "re-opt floor"
+                    )
                 )
             )
             await discord_notifier.send_risk_alert(
@@ -686,8 +576,7 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
                     f"(+{(vr - 1.0) * 100:.0f}% vs 1-week baseline). "
                     f"AUTO: {action}. "
                     + (f"Applied: {', '.join(applied)}. " if applied else "")
-                    + (f"Proposals={len((reopt_result or {}).get('proposals') or [])}. "
-                       if reopt_result else "")
+                    + (f"Proposals={len((reopt_result or {}).get('proposals') or [])}. " if reopt_result else "")
                     + f"Report: {(reopt_result or {}).get('summary', {}).get('report', '—')}. "
                     "Discord is FYI only — 4h cycle, durable floor in nt_roadmap."
                 ),
@@ -706,7 +595,10 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
     await _save_urgency_state(state)
     logger.warning(
         "[atr:urg] spiked=%s ran_reopt=%s applied=%s floor=%sh",
-        [s for s, _ in spiked], ran, applied, min_reopt_h,
+        [s for s, _ in spiked],
+        ran,
+        applied,
+        min_reopt_h,
     )
     return {
         "enabled": True,

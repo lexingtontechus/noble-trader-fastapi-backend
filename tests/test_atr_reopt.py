@@ -86,7 +86,9 @@ def test_urgency_config_defaults():
     # 4h cycle floor — durable, not a 48h in-memory gate
     assert cfg["min_reopt_hours"] == 4.0
     assert cfg["cooldown_hours"] == 4.0
-    assert cfg["auto_apply_clamps"] is True
+    # 2026-10-12: auto-apply of clamps into the config was REMOVED — the reopt
+    # is proposal-only. Pin the absence so it cannot silently return.
+    assert "auto_apply_clamps" not in cfg
 
 
 def test_ts_or_none_parses_iso():
@@ -98,25 +100,13 @@ def test_ts_or_none_parses_iso():
     assert _ts_or_none("not-a-date") is None
 
 
-def test_clamp_block_narrow_lattice():
-    from regime_platform.sweep_orchestrator.atr_reopt import _clamp_block
-
-    blk = _clamp_block(8.07, 1.77)
-    assert blk["tp_atr"][1] == 8.07
-    assert blk["sl_atr"][1] == 1.77
-    assert blk["tp_atr_min"] < 8.07 < blk["tp_atr_max"]
-    assert blk["sl_atr_min"] < 1.77 < blk["sl_atr_max"]
-
-
 def test_forex_drift_flags_against_for_override():
     """Config-layer parity (worklog 20261010_REOPT_CLAMP_HARMONIZATION.md).
 
     The pooled forex scope's solve must be compared against the SAME
-    dynamic_atr layer the picker applies — by_symbol.FOREX — not by_class.forex
-    (which can be a WIDER band: Studio has by_class.forex tp_max 5.02 vs
-    by_symbol.FOREX 1.85). Passing a forex member resolves the by_symbol.FOREX
-    override the picker uses, so a wide solve (4.52/2.75) flags drift; with
-    symbol=None it can read the wider by_class band and miss it.
+    dynamic_atr layer the picker applies — by_symbol.FOREX. Passing a forex
+    member resolves that override, so a wide solve (4.52/2.75) flags drift.
+    (by_class.forex was removed 2026-10-12 — FOREX is defined once.)
     """
     sc = {"tp": 4.52, "sl": 2.75, "wr": 0.404, "ev": 0.086, "exp": 0.0,
           "n": 6506, "dec": 6506}
