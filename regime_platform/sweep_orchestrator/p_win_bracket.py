@@ -134,7 +134,21 @@ def compute_bracket_probs(
     wins = float(sample_n) * float(pct_hit_tp)
     losses = float(sample_n) * float(pct_hit_sl)
     p_win_resolve = beta_shrunk_win_rate(wins, losses, alpha, beta)
-    p_bracket = p_resolve * p_win_resolve
+
+    # ── p_win_bracket source (2026-10-12, worklog
+    # 20261012_BUCKET_INVERSION_HARMONIZATION.md) ──────────────────────────
+    # all_in (default): the honest all-in TP share from the diagnostic table
+    # (pct_hit_tp). Harmonized with nt_bracket_reachability and reopt — one
+    # number, read the same way everywhere. A 0%-TP narrow bucket prices 0.0.
+    # derived (legacy): p_resolve × beta_shrunk(tp/(tp+sl)) — prior-inflated
+    # for thin resolved cells, which priced dead 0%-TP buckets at ~0.5 and
+    # inverted winnability vs bucket width. Retained for A/B only.
+    from regime_platform.core.feature_flags import get_p_win_bracket_source
+    _src = get_p_win_bracket_source()
+    if _src == "all_in":
+        p_bracket = float(pct_hit_tp)
+    else:
+        p_bracket = p_resolve * p_win_resolve
     return BracketProb(
         p_resolve=round(p_resolve, 4),
         p_win_resolve=round(p_win_resolve, 4),

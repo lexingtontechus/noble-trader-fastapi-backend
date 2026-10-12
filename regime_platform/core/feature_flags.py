@@ -255,6 +255,15 @@ _DEFAULTS: dict[str, Any] = {
     "p_win_bracket_mode": "shadow",
     "min_p_win_bracket": 0.20,
     "p_win_in_ev_mode": "live",
+    # p_win_bracket_source (2026-10-12, worklog
+    # 20261012_BUCKET_INVERSION_HARMONIZATION.md): how p_win_bracket is computed
+    # from the reachability cell. all_in (default): p_win_bracket = the table's
+    # all-in TP share (pct_hit_tp) — the honest number, harmonized with the
+    # diagnostic table and reopt. derived (legacy): p_resolve ×
+    # beta_shrunk(tp/(tp+sl)) — prior-inflated for thin resolved cells, which
+    # priced dead 0%-TP narrow buckets at ~0.5 and inverted winnability vs
+    # bucket width. all_in removes that inversion; derived retained for A/B.
+    "p_win_bracket_source": "all_in",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1026,6 +1035,20 @@ def get_min_p_win_bracket() -> float:
         return float(_load().get("min_p_win_bracket", _DEFAULTS["min_p_win_bracket"]))
     except (TypeError, ValueError):
         return _DEFAULTS["min_p_win_bracket"]
+
+
+def get_p_win_bracket_source() -> str:
+    """``all_in`` | ``derived`` (2026-10-12, worklog
+    20261012_BUCKET_INVERSION_HARMONIZATION.md). all_in (default):
+    p_win_bracket = the reachability table's all-in TP share (pct_hit_tp) —
+    the honest, harmonized number. derived (legacy): p_resolve ×
+    beta_shrunk(tp/(tp+sl)), prior-inflated for thin resolved cells, which
+    priced dead 0%-TP narrow buckets at ~0.5 and inverted winnability vs
+    bucket width. Unknown falls back to all_in (the honest default)."""
+    v = str(_load().get(
+        "p_win_bracket_source", _DEFAULTS["p_win_bracket_source"],
+    )).lower()
+    return v if v in ("all_in", "derived") else "all_in"
 
 
 def get_ev_hard_floor() -> float:

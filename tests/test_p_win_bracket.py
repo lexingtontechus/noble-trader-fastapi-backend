@@ -46,8 +46,28 @@ class TestComputeBracketProbs:
         assert r.p_resolve == pytest.approx(0.60)
         # wins=5, losses=7 → (5+2)/(5+7+4)=7/16=0.4375
         assert r.p_win_resolve == pytest.approx(0.4375)
-        assert r.p_win_bracket == pytest.approx(0.60 * 0.4375)
+        # p_win_bracket_source=all_in (default, 2026-10-12): p_win_bracket IS the
+        # all-in TP share, read straight from the table — not the derived
+        # p_resolve × p_win_resolve product (0.60 × 0.4375 = 0.2625).
+        assert r.p_win_bracket == pytest.approx(0.25)
         assert r.reason is None
+
+    def test_derived_source_still_available(self):
+        """p_win_bracket_source=derived reproduces the legacy product formula
+        (0.60 × 0.4375 = 0.2625) for A/B / rollback."""
+        import regime_platform.core.feature_flags as ff
+        from regime_platform.sweep_orchestrator import p_win_bracket as pwb
+        orig = ff._load
+        try:
+            ff._load = lambda: {**orig(), "p_win_bracket_source": "derived"}
+            r = compute_bracket_probs(
+                entry_price=2500.0, take_profit=2520.0, atr=10.0,
+                regime_label="med_low_vol_bull",
+                n=20, n_stored=20, pct_hit_tp=0.25, pct_hit_sl=0.35, pct_expired=0.40,
+            )
+            assert r.p_win_bracket == pytest.approx(0.60 * 0.4375)
+        finally:
+            ff._load = orig
 
     def test_missing_atr(self):
         r = compute_bracket_probs(
