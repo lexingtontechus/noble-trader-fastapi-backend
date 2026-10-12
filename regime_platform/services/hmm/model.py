@@ -76,6 +76,33 @@ MODEL_PATH: str = "/data/hmm_model.pkl"
 # ─── HMM wrapper ────────────────────────────────────────────────────────────
 
 
+def _clean_startprob(sp: Any) -> "np.ndarray":
+    """Sanitize a persisted ``startprob_`` so hmmlearn's ``predict`` validation
+    (``startprob_.sum() == 1``) passes. NaN/inf → 0, negatives clipped, then
+    renormalized; an all-zero vector falls back to uniform. 2026-10-12, worklog
+    20261012_HMM_STARTPROB_NAN.md — a NaN startprob made every ``predict``
+    throw, silently forcing FLAT regime (18×/24h across 5 symbols)."""
+    arr = np.nan_to_num(np.asarray(sp, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.clip(arr, 0.0, None)
+    total = float(arr.sum())
+    n = len(arr)
+    if total > 0 and n > 0:
+        return arr / total
+    return np.full(n, 1.0 / n) if n > 0 else arr
+
+
+def _clean_transmat(tm: Any) -> "np.ndarray":
+    """Row-normalize a transition matrix, NaN-guarded (same risk as startprob)."""
+    arr = np.nan_to_num(np.asarray(tm, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.clip(arr, 0.0, None)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return arr
+    row_sums = arr.sum(axis=1, keepdims=True)
+    n = arr.shape[1]
+    uniform = np.full_like(arr, 1.0 / n)
+    return np.where(row_sums > 0, arr / np.where(row_sums > 0, row_sums, 1.0), uniform)
+
+
 class HmmModel:
     """Multivariate Gaussian HMM with 3-state emit contract.
 
@@ -305,10 +332,10 @@ class HmmModel:
             with self._global_lock:
                 data = {
                     sym: {
-                        "means_": f.model.means_,
-                        "covars_": f.model.covars_,
-                        "transmat_": f.model.transmat_,
-                        "startprob_": f.model.startprob_,
+                        "means_": np.nan_to_num(np.asarray(f.model.means_, dtype=float), nan=0.0, posinf=0.0, neginf=0.0),
+                        "covars_": np.nan_to_num(np.asarray(f.model.covars_, dtype=float), nan=0.0, posinf=0.0, neginf=0.0),
+                        "transmat_": _clean_transmat(f.model.transmat_),
+                        "startprob_": _clean_startprob(f.model.startprob_),
                         "state_map": f.state_map,
                         "T3": f.T3,
                     }
@@ -341,8 +368,8 @@ class HmmModel:
                 )
                 model.means_ = d["means_"]
                 model.covars_ = d["covars_"]
-                model.transmat_ = d["transmat_"]
-                model.startprob_ = d["startprob_"]
+                model.transmat_ = _clean_transmat(d["transmat_"])
+                model.startprob_ = _clean_startprob(d["startprob_"])
                 fitted = _FittedModel(
                     model=model,
                     state_map=d["state_map"],
