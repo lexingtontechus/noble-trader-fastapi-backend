@@ -4523,31 +4523,57 @@ class SweepOrchestrator(HeavySweepMixin):
                 rank_score=_rank_score,
             )
             if calib_adj and calib_adj.get("applied"):
-                # The agent must see the CORRECTED p_win so its synthesizer
-                # doesn't re-inflate overconfidence from a stale raw value.
-                ev_result.p_win = calib_adj["p_win"]
-                effective_kelly = calib_adj["kelly_f"]
-                # ── Fix #1 (2026-08-22 audit): recompute derived fields ──
-                # ev/ev_per_dollar/rr/allowed/ev_scale/aggression were
-                # previously left stale (computed from the PRE-enforcement
-                # p_win) after this mutation — corrupting the aggression
-                # (execution-style) decision and all EV telemetry persisted
-                # downstream. See worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md.
-                _recomputed = self._ev_engine.recompute_ev_fields(
-                    ev_result.p_win, ev_result.profit, ev_result.stake,
-                )
-                ev_result.ev = _recomputed["ev"]
-                ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
-                ev_result.rr = _recomputed["rr"]
-                ev_result.allowed = _recomputed["allowed"]
-                ev_result.aggression = _recomputed["aggression"]
-                ev_result.ev_scale = _recomputed["ev_scale"]
-                logger.info(
-                    "[sweep:orch] %s: calibration ENFORCED (%s, bias=%s) — "
-                    "p_win→%.4f, kelly→%.6f, ev→%.4f, aggression→%s",
-                    symbol, calib_adj.get("status"), calib_adj.get("bias"),
-                    ev_result.p_win, effective_kelly, ev_result.ev, ev_result.aggression,
-                )
+                # ── Reachability EV is terminal (2026-10-12, worklog
+                # 20261012_ENFORCEMENT_CLOBBERS_REACHABILITY_EV.md) ──────────
+                # When apply_bracket_to_ev() already substituted the
+                # reachability probability (p_win_bracket) into ev_result, that
+                # probability is the honest era-clean base rate — NOT the
+                # overconfident directional number the calibration penalty was
+                # designed to shrink. Repricing here from the directional
+                # p_win would re-inflate a low reachability probability back
+                # toward 0.5 and flip a -EV signal to +EV (the exact circular
+                # failure: XAUAUD reachability 0.056 / ev -1.50 repriced to
+                # p_win 0.5 / ev +0.90 and PUBLISHED). So when the bracket EV
+                # is applied we keep it terminal: record the enforcement
+                # diagnostic (bias/status/kelly) but do NOT overwrite the
+                # reachability p_win/ev. The EV floor + bracket gate judge the
+                # reachability numbers as-is.
+                if _bracket_applied_to_ev:
+                    # Kelly sizing may still be reduced by enforcement, but the
+                    # probability and EV stay the reachability values.
+                    effective_kelly = calib_adj["kelly_f"]
+                    logger.info(
+                        "[sweep:orch] %s: calibration ENFORCED (%s, bias=%s) but "
+                        "bracket EV terminal — p_win=%.4f ev=%.4f kept, kelly→%.6f",
+                        symbol, calib_adj.get("status"), calib_adj.get("bias"),
+                        ev_result.p_win, ev_result.ev, effective_kelly,
+                    )
+                else:
+                    # Directional path (bracket not applied): shrink p_win
+                    # toward 0.5 and recompute derived fields as before.
+                    ev_result.p_win = calib_adj["p_win"]
+                    effective_kelly = calib_adj["kelly_f"]
+                    # ── Fix #1 (2026-08-22 audit): recompute derived fields ──
+                    # ev/ev_per_dollar/rr/allowed/ev_scale/aggression were
+                    # previously left stale (computed from the PRE-enforcement
+                    # p_win) after this mutation — corrupting the aggression
+                    # (execution-style) decision and all EV telemetry persisted
+                    # downstream. See worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md.
+                    _recomputed = self._ev_engine.recompute_ev_fields(
+                        ev_result.p_win, ev_result.profit, ev_result.stake,
+                    )
+                    ev_result.ev = _recomputed["ev"]
+                    ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
+                    ev_result.rr = _recomputed["rr"]
+                    ev_result.allowed = _recomputed["allowed"]
+                    ev_result.aggression = _recomputed["aggression"]
+                    ev_result.ev_scale = _recomputed["ev_scale"]
+                    logger.info(
+                        "[sweep:orch] %s: calibration ENFORCED (%s, bias=%s) — "
+                        "p_win→%.4f, kelly→%.6f, ev→%.4f, aggression→%s",
+                        symbol, calib_adj.get("status"), calib_adj.get("bias"),
+                        ev_result.p_win, effective_kelly, ev_result.ev, ev_result.aggression,
+                    )
 
         # ── 5b1. Macro filter (2026-08-28, worklog
         # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) ──────────────
