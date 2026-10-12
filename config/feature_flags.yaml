@@ -562,26 +562,26 @@ dynamic_atr:
   vol_ratio_long: 168
   by_symbol:
     FOREX:
-      tp_atr: [1.65, 1.71, 1.75, 1.80]
-      sl_atr: [0.30, 0.35, 0.40]
-      tp_atr_min: 1.60
-      tp_atr_max: 1.85
-      sl_atr_min: 0.30
-      sl_atr_max: 0.45
+      tp_atr: [4.27, 4.52, 4.77]
+      sl_atr: [2.63, 2.75, 2.87]
+      tp_atr_min: 4.02
+      tp_atr_max: 5.02
+      sl_atr_min: 2.51
+      sl_atr_max: 2.99
     XAGUSD:
-      tp_atr: [7.80, 7.96, 8.10]
-      sl_atr: [7.60, 7.76, 7.90]
-      tp_atr_min: 7.5
-      tp_atr_max: 8.3
-      sl_atr_min: 7.4
-      sl_atr_max: 8.1
+      tp_atr: [6.14, 6.39, 6.64]
+      sl_atr: [2.57, 2.69, 2.81]
+      tp_atr_min: 5.89
+      tp_atr_max: 6.89
+      sl_atr_min: 2.45
+      sl_atr_max: 2.93
     XAUAUD:
-      tp_atr: [6.20, 6.31, 6.45]
-      sl_atr: [4.80, 4.91, 5.05]
-      tp_atr_min: 6.0
-      tp_atr_max: 6.6
-      sl_atr_min: 4.7
-      sl_atr_max: 5.2
+      tp_atr: [6.32, 6.57, 6.82]
+      sl_atr: [4.19, 4.31, 4.43]
+      tp_atr_min: 6.07
+      tp_atr_max: 7.07
+      sl_atr_min: 4.07
+      sl_atr_max: 4.55
     XAUEUR:
       tp_atr: [4.10, 4.20, 4.35]
       sl_atr: [1.75, 1.82, 1.90]

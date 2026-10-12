@@ -40,13 +40,26 @@ def _pick(tp=2.0, sl=1.0, n=200):
 
 def test_forex_majors_share_one_band():
     """Every forex major resolves to the SAME band — by_symbol.FOREX. The
-    removed by_class.forex grid ([1.65,1.71,1.80]) must not reappear."""
+    removed by_class.forex grid must not reappear.
+
+    Deliberately value-agnostic: the band is operator-owned and replay-tuned
+    (retuned 2026-10-12 from the RR-dead tight grid to the wide class band), so
+    the invariant under test is "all majors share ONE band, and it is
+    by_symbol.FOREX" — not any particular set of numbers.
+    """
     bands = {s: get_dynamic_atr_config("forex", s) for s in FOREX_MAJORS}
     fps = {_band_fp(b) for b in bands.values()}
     assert len(fps) == 1, f"forex majors disagree: { {s: _band_fp(b) for s, b in bands.items()} }"
-    # the surviving definition is by_symbol.FOREX's grid, not the deleted by_class one
-    assert tuple(bands["EURUSD"]["tp_atr"]) == (1.65, 1.71, 1.75, 1.80)
-    assert bands["EURUSD"]["tp_atr_max"] == 1.85
+    # the surviving definition is by_symbol.FOREX — read it, don't pin it
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load((root / "config" / "feature_flags.yaml").read_text(encoding="utf-8"))
+    assert _band_fp(bands["EURUSD"]) == _band_fp(raw["dynamic_atr"]["by_symbol"]["FOREX"])
+    # the deleted duplicate must not come back
+    assert "by_class" not in raw["dynamic_atr"]
 
 
 def test_no_by_class_forex_band_remains():
@@ -66,6 +79,50 @@ def test_symbol_band_wins_and_symbol_none_falls_through():
     assert with_sym["tp_atr_max"] == 8.80
     without = get_dynamic_atr_config("crypto", None)
     assert without["tp_atr_max"] == 20.0
+
+
+def test_no_band_is_rr_dead():
+    """Every configured band must admit at least ONE cell that clears min_rr.
+
+    A band where every cell fails the RR floor can never produce a pick — and
+    because G2's last-resort fallback is the band CENTRE (inside the same dead
+    range), the book would ship a bracket that violates its own RR floor.
+
+    Regression for the 2026-10-12 finding: git's XAGUSD band (RR 0.99-1.07,
+    tp≈7.96 vs sl≈7.76) and XAUAUD (1.23-1.34) were both RR-dead, so two of
+    fourteen symbols could never resolve a valid bracket.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    from regime_platform.core.feature_flags import get_min_rr
+
+    min_rr = get_min_rr()
+    root = Path(__file__).resolve().parents[1]
+    da = yaml.safe_load(
+        (root / "config" / "feature_flags.yaml").read_text(encoding="utf-8")
+    )["dynamic_atr"]
+
+    def valid_cells(b: dict) -> list:
+        tp = [float(x) for x in b["tp_atr"]]
+        sl = [float(x) for x in b["sl_atr"]]
+        tmin, tmax = b.get("tp_atr_min"), b.get("tp_atr_max")
+        smin, smax = b.get("sl_atr_min"), b.get("sl_atr_max")
+        return [
+            (t, s) for t in tp for s in sl
+            if s > 0 and t / s >= min_rr
+            and (tmin is None or t >= tmin) and (tmax is None or t <= tmax)
+            and (smin is None or s >= smin) and (smax is None or s <= smax)
+        ]
+
+    bands = dict(da.get("by_symbol") or {})
+    bands["<GLOBAL>"] = {
+        k: v for k, v in da.items()
+        if k in ("tp_atr", "sl_atr", "tp_atr_min", "tp_atr_max", "sl_atr_min", "sl_atr_max")
+    }
+    dead = sorted(name for name, b in bands.items() if not valid_cells(b))
+    assert not dead, f"RR-dead bands (no cell clears min_rr={min_rr}): {dead}"
 
 
 @pytest.mark.asyncio
@@ -99,10 +156,16 @@ async def test_pooled_pick_inherits_each_symbols_own_band(monkeypatch):
     ]
     picks = await opt._refresh_dynamic_atr(peers)
     assert set(picks) == {"EURUSD", "GBPUSD", "USDJPY", "BTCUSD"}
-    # forex majors share by_symbol.FOREX → ONE pooled solve at tp_atr_max 1.85;
-    # BTCUSD has its own band → ONE pooled solve at 8.80. Total 2, not 4.
+    # forex majors share by_symbol.FOREX → ONE pooled solve at that band's
+    # tp_atr_max; BTCUSD has its own band → ONE more. Total 2, not 4. The
+    # expected ceilings are DERIVED from the config so a band retune doesn't
+    # break the invariant being tested (one solve per distinct band).
     assert len(seen) == 2, seen
-    assert sorted(v for _, v in seen) == [1.85, 8.80]
+    expected = sorted([
+        get_dynamic_atr_config("forex", "EURUSD")["tp_atr_max"],
+        get_dynamic_atr_config("crypto", "BTCUSD")["tp_atr_max"],
+    ])
+    assert sorted(v for _, v in seen) == expected
 
 
 def test_code_defaults_mirror_yaml_global():
@@ -110,8 +173,9 @@ def test_code_defaults_mirror_yaml_global():
     — ONE definition of the numbers (the alignment claim, previously
     CI-unverified because every test runs with the YAML present, shadowing the
     defaults). Also pins that the removed `by_class` duplicate is gone."""
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     from regime_platform.core.feature_flags import _DEFAULTS
 

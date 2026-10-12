@@ -105,16 +105,22 @@ def test_forex_drift_flags_against_for_override():
 
     The pooled forex scope's solve must be compared against the SAME
     dynamic_atr layer the picker applies — by_symbol.FOREX. Passing a forex
-    member resolves that override, so a wide solve (4.52/2.75) flags drift.
-    (by_class.forex was removed 2026-10-12 — FOREX is defined once.)
+    member resolves that override, so a solve WIDER than the override's clamp
+    flags drift. (by_class.forex was removed 2026-10-12 — FOREX is defined
+    once. The band was widened the same day from the RR-dead tight grid to the
+    class-replay band, so the offending solve is now DERIVED from the config
+    rather than pinning 4.52/2.75, which is now inside the band.)
     """
-    sc = {"tp": 4.52, "sl": 2.75, "wr": 0.404, "ev": 0.086, "exp": 0.0,
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    band = get_dynamic_atr_config("forex", "USDJPY")
+    tmax, smax = float(band["tp_atr_max"]), float(band["sl_atr_max"])
+    # a solve strictly outside BOTH clamps must flag drift
+    sc = {"tp": tmax + 2.0, "sl": smax + 1.0, "wr": 0.404, "ev": 0.086, "exp": 0.0,
           "n": 6506, "dec": 6506}
-    # The fix path: a forex member → by_symbol.FOREX override → drift flagged.
     new = compare_to_current("USDJPY", sc, "forex")
-    assert new["drift"] is True, "wide forex solve must drift vs the FOREX override"
+    assert new["drift"] is True, "a solve above the FOREX clamp must drift"
     assert any("above clamp" in r for r in new["reasons"])
-    # The FOREX override must be tight enough to reject 4.52 (this is the band
-    # the picker is actually bound by).
-    assert new["tp_atr_max"] is not None and float(new["tp_atr_max"]) < 4.52
+    # the FOREX override is the band the picker is bound by
+    assert new["tp_atr_max"] is not None and float(new["tp_atr_max"]) < sc["tp"]
 
