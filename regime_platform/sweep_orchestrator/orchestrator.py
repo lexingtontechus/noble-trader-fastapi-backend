@@ -4148,19 +4148,35 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── Dynamic ATR geometry apply (2026-10-09, worklog
         # 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md) ──────────────────────────
-        # Read the SAME persisted ATR pick the heavy sweep chose (tier
-        # "dynamic_atr", key "latest") and override the brick-quantised
-        # bracket with exact ATR price levels — mirroring heavy_sweep.py's
-        # block. shadow = log the would-apply bracket; live = apply.
-        # Fail-open: cold store / no pick → brick geometry untouched.
+        # Override the brick-quantised bracket with exact ATR price levels.
+        # shadow = log the would-apply bracket; live = apply.
+        #
+        # G3 (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_
+        # REDESIGN.md §3.3): resolve through the ONE solve instead of reading
+        # the store directly. ``dynamic_atr_pick`` returns the fresh persisted
+        # pick when one exists and otherwise RECOMPUTES from current data — and
+        # G2 guarantees it always returns geometry. So a store miss can no
+        # longer leave the brick bracket in place (the old fail-open path), and
+        # there is exactly one resolution, not a store-read plus a brick
+        # fallback. Result is cached 6h per (scope, band), so this is not a
+        # per-tick walk.
         try:
-            from regime_platform.core.feature_flags import get_dynamic_atr_light_mode
+            from regime_platform.core.feature_flags import (
+                get_dynamic_atr_config,
+                get_dynamic_atr_light_mode,
+                get_min_rr,
+            )
             _atr_light = get_dynamic_atr_light_mode()
             if _atr_light != "off" and atr and atr > 0:
                 from regime_platform.sweep_orchestrator.tiered_atr import (
-                    read_pick_from_store,
+                    dynamic_atr_pick,
                 )
-                _atr_pick = read_pick_from_store(symbol, max_age_hours=6.0)
+                _atr_pick = await dynamic_atr_pick(
+                    sym.get("asset_class"),
+                    cfg=get_dynamic_atr_config(sym.get("asset_class"), symbol),
+                    min_rr=get_min_rr(),
+                    symbol=symbol,
+                )
                 if _atr_pick is not None:
                     _tp_px, _sl_px = _atr_pick.to_price_levels(
                         trade_signal["entry_price"], atr,

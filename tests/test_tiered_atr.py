@@ -57,18 +57,30 @@ class TestSelect:
         assert pick.exp_h1 > 0 and pick.exp_h2 > 0
 
     def test_none_when_negative(self):
+        """Every bracket loses in both halves. The STRICT contract still
+        declines (allow_best_effort=False); the G2 default returns the best
+        in-band bracket instead of None — 2026-10-12,
+        docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_REDESIGN.md §3.2."""
         rows = [_path([-3.0]) for _ in range(50)]
-        assert select_tp_sl(np.vstack(rows), **GRID) is None
+        assert select_tp_sl(np.vstack(rows), **GRID, allow_best_effort=False) is None
+        pick = select_tp_sl(np.vstack(rows), **GRID)
+        assert pick is not None and pick.exp_atr < 0   # worst case, still geometry
 
     def test_none_when_one_half_loses(self):
         trend = list(np.arange(0.5, 13.01, 0.5))
         good = [_path(trend) if i % 10 < 3 else _path([-1.1]) for i in range(50)]
         bad = [_path([-3.0]) for _ in range(50)]
-        assert select_tp_sl(np.vstack(good + bad), **GRID) is None
+        env = np.vstack(good + bad)
+        assert select_tp_sl(env, **GRID, allow_best_effort=False) is None
+        pick = select_tp_sl(env, **GRID)
+        assert pick is not None                        # G2: geometry, not a both-halves pass
 
     def test_expiry_cap(self):
         rows = [_path([0.2]) for _ in range(50)]   # nothing ever resolves
-        assert select_tp_sl(np.vstack(rows), **GRID) is None
+        assert select_tp_sl(np.vstack(rows), **GRID, allow_best_effort=False) is None
+        pick = select_tp_sl(np.vstack(rows), **GRID)
+        assert pick is not None                        # G2: returned, flagged by .expiry
+        assert pick.expiry > 0.2
 
     def test_min_signals(self):
         rows = [_path([13.0]) for _ in range(5)]

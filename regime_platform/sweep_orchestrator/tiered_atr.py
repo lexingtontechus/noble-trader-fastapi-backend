@@ -476,6 +476,7 @@ def select_tp_sl(
     sl_atr_max: float | None = None,
     envelopes: np.ndarray | None = None,
     same_bar_policy: str = LIVE_SAME_BAR_POLICY,
+    allow_best_effort: bool = True,
 ) -> Optional[DynamicAtrPick]:
     """Best TP/SL by expectancy; must be positive in both halves (rows are time-ordered).
 
@@ -501,7 +502,8 @@ def select_tp_sl(
     if n < min_signals:
         return None
     mid = n // 2
-    best: Optional[DynamicAtrPick] = None
+    best: Optional[DynamicAtrPick] = None          # clears the strict bar
+    best_effort: Optional[DynamicAtrPick] = None   # in-band, max expectancy
     for tp in tp_grid:
         for sl in sl_grid:
             tp_f, sl_f = float(tp), float(sl)
@@ -520,15 +522,20 @@ def select_tp_sl(
                                               same_bar_policy=same_bar_policy)
             else:
                 pnl, expired = walk(paths, tp_f, sl_f)
-            if expired.mean() > max_expiry:
-                continue
             net = pnl - cost_atr
             e1, e2 = float(net[:mid].mean()), float(net[mid:].mean())
-            if e1 <= 0 or e2 <= 0:
-                continue
             e = float(net.mean())
+            exp_m = float(expired.mean())
+            cand = DynamicAtrPick(tp_f, sl_f, e, e1, e2, exp_m, n)
+            # Best-effort track: the in-band bracket with the highest net
+            # expectancy, ignoring the strict bar. Consulted only when nothing
+            # clears it (allow_best_effort below) — G2, see the return comment.
+            if best_effort is None or e > best_effort.exp_atr:
+                best_effort = cand
+            if exp_m > max_expiry or e1 <= 0 or e2 <= 0:
+                continue
             if best is None or e > best.exp_atr:
-                best = DynamicAtrPick(tp_f, sl_f, e, e1, e2, float(expired.mean()), n)
+                best = cand
     # Belt-and-braces: never return a pick outside the published clamps.
     if best is not None:
         if tp_atr_min is not None and best.tp_atr < tp_atr_min:
@@ -539,7 +546,16 @@ def select_tp_sl(
             best = None
         elif sl_atr_max is not None and best.sl_atr > sl_atr_max:
             best = None
-    return best
+    if best is not None:
+        return best
+    # G2 (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_REDESIGN.md
+    # §3.2): the solve ALWAYS returns geometry. When no in-band candidate
+    # clears the strict both-halves bar, return the best-expectancy in-band
+    # bracket computed from the CURRENT window — a real, current, in-band
+    # geometry. Never None, so nothing downstream can fall back to brick. The
+    # caller sees the weak/negative exp_atr and decides; qualification (not
+    # geometry) is the gate.
+    return best_effort if allow_best_effort else None
 
 
 def compute_vol_ratio(
@@ -739,6 +755,26 @@ async def _load_class_signals(symbols: list[str], since: datetime, until: dateti
     return out
 
 
+def _band_center_pick(cfg: dict[str, Any]) -> Optional[DynamicAtrPick]:
+    """The operator's deliberate mid-band bracket — G2's last resort.
+
+    Consulted when the solve has no usable evidence (thin/absent window, symbol
+    not active, or a robustness gate declined the walked pick). It is a CURRENT,
+    in-band, operator-set value — never a stored/stale/brick parameter, which is
+    the whole point of the redesign: on a miss, resolve to something deliberate,
+    not to old params. Returns None only if the band itself is unconfigured.
+    """
+    tps = [float(x) for x in (cfg.get("tp_atr") or [])]
+    sls = [float(x) for x in (cfg.get("sl_atr") or [])]
+    if not tps or not sls:
+        return None
+    tp, sl = tps[len(tps) // 2], sls[len(sls) // 2]
+    logger.info(
+        "[dynamic:atr] band-centre fallback tp=%.2f sl=%.2f (no usable walked evidence)", tp, sl,
+    )
+    return DynamicAtrPick(tp, sl, 0.0, 0.0, 0.0, 0.0, 0)
+
+
 async def dynamic_atr_pick(
     asset_class: str | None,
     *,
@@ -746,6 +782,7 @@ async def dynamic_atr_pick(
     min_rr: float,
     symbol: str | None = None,
     use_store: bool = True,
+    allow_best_effort: bool = True,
 ) -> Optional[DynamicAtrPick]:
     """TP/SL from recent signals. ``symbol`` walks only that symbol (per-symbol
     solve); otherwise the whole asset class. Cached 6h per (symbol|class, grid).
@@ -809,15 +846,17 @@ async def dynamic_atr_pick(
     else:
         members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
     if not members:
-        _PICK_CACHE[grid_fp] = (time.time(), None)
-        return None
+        _fb = _band_center_pick(cfg) if allow_best_effort else None
+        _PICK_CACHE[grid_fp] = (time.time(), _fb)
+        return _fb
     lookback = int(cfg["lookback_days"])
     until = datetime.now(timezone.utc) - timedelta(hours=EXPIRY_BARS + 2)
     since = until - timedelta(days=lookback)
     signals = await _load_class_signals([m["symbol"] for m in members], since, until)
     if len(signals) < int(cfg["min_signals"]):
-        _PICK_CACHE[grid_fp] = (time.time(), None)
-        return None
+        _fb = _band_center_pick(cfg) if allow_best_effort else None
+        _PICK_CACHE[grid_fp] = (time.time(), _fb)
+        return _fb
     bars: dict[str, list[dict]] = {}
     await fetch_tradingview_batch(
         [{"symbol": m["symbol"], "tradingview_symbol": m["tradingview_symbol"]} for m in members],
@@ -847,12 +886,13 @@ async def dynamic_atr_pick(
         )
         if not _in:
             logger.info(
-                "[dynamic:atr] scope=%s vol_ratio=%.4f outside [%s,%s] — no pick "
-                "(heavy kept)",
+                "[dynamic:atr] scope=%s vol_ratio=%.4f outside [%s,%s] — walked "
+                "pick not applicable now (band-centre fallback)",
                 scope, _vr_now, vol_min, vol_max,
             )
-            _PICK_CACHE[grid_fp] = (time.time(), None)
-            return None
+            _fb = _band_center_pick(cfg) if allow_best_effort else None
+            _PICK_CACHE[grid_fp] = (time.time(), _fb)
+            return _fb
         logger.info(
             "[dynamic:atr] scope=%s vol_ratio=%.4f in band [%s,%s]",
             scope, _vr_now, vol_min, vol_max,
@@ -904,6 +944,7 @@ async def dynamic_atr_pick(
         tp_atr_max=cfg.get("tp_atr_max"),
         sl_atr_min=cfg.get("sl_atr_min"),
         sl_atr_max=cfg.get("sl_atr_max"),
+        allow_best_effort=allow_best_effort,
     )
     # Stage 5 (2026-10-08): does the pick's walked TP rate agree with the
     # platform's own measured bucket? shadow = log; live = reject (fall back
@@ -937,8 +978,9 @@ async def dynamic_atr_pick(
                         pick.tp_atr, pick.sl_atr, _reason,
                     )
                     if _cmode == "live":
-                        _PICK_CACHE[grid_fp] = (time.time(), None)
-                        return None
+                        _fb = _band_center_pick(cfg) if allow_best_effort else None
+                        _PICK_CACHE[grid_fp] = (time.time(), _fb)
+                        return _fb
                 else:
                     logger.info(
                         "[dynamic:atr] %s consistency ok (%s walk_tp=%s meas_tp=%s n=%s)",
@@ -982,8 +1024,9 @@ async def dynamic_atr_pick(
                         _wf["is_n"], _wf["oos_n"],
                     )
                     if _wf_mode == "live":
-                        _PICK_CACHE[grid_fp] = (time.time(), None)
-                        return None
+                        _fb = _band_center_pick(cfg) if allow_best_effort else None
+                        _PICK_CACHE[grid_fp] = (time.time(), _fb)
+                        return _fb
                 else:
                     logger.info(
                         "[dynamic:atr] %s walk-forward ok (%s is=%s oos=%s "

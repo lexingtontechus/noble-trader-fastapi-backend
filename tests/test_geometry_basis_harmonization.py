@@ -131,7 +131,20 @@ def test_select_tp_sl_prefers_live_envelope_shape():
                                min_rr=1.5, max_expiry=0.2, cost_atr=0.0,
                                min_signals=60, same_bar_policy=sc.SAME_BAR_SL_FIRST)
     assert pick_close is not None and pick_close.exp_atr > 0
-    assert pick_env is None, "envelope walk should reject the wick-tripped bracket"
+    # G2 (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_REDESIGN.md
+    # §3.2): the envelope walk still REJECTS the wick-tripped bracket — that is
+    # the strict contract, now reached via allow_best_effort=False. The default
+    # hands back the same bracket flagged as a best-effort pick (negative exp),
+    # which is exactly why the basis matters.
+    assert pick_env is None or pick_env.exp_atr < 0, (
+        "envelope walk should reject the wick-tripped bracket"
+    )
+    assert ta.select_tp_sl(envelopes=env, tp_grid=[1.6], sl_grid=[0.35],
+                           min_rr=1.5, max_expiry=0.2, cost_atr=0.0,
+                           min_signals=60, same_bar_policy=sc.SAME_BAR_SL_FIRST,
+                           allow_best_effort=False) is None, (
+        "strict contract must still decline the wick-tripped bracket"
+    )
 
 
 # ── Stage 5: consistency gate ─────────────────────────────────────────────
