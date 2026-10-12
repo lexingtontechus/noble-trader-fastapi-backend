@@ -172,28 +172,48 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
     from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
     pooled_cache: dict[str, Any] = {}
 
-    async def _pooled_pick(asset_class: str | None):
+    async def _pooled_pick(asset_class: str | None, symbol: str):
+        # SINGLE CONFIG (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_
+        # REDESIGN.md §3.1): the pooled pick widens the EVIDENCE window (the
+        # whole class) but is ALWAYS clamped to the INHERITING symbol's own
+        # band (by_symbol -> by_class -> global). Previously this passed
+        # symbol=None, so the pooled pick skipped by_symbol and was clamped
+        # against the class/global band — storing e.g. BTCUSD tp=13.0 against
+        # its own by_symbol max of 8.80.
+        #
+        # Cache key = the resolved BAND fingerprint, not the symbol: symbols
+        # sharing a band (all forex majors share by_symbol.FOREX) share ONE
+        # pooled solve, while symbols with distinct bands (the four metals)
+        # each get their own — so the class walk still runs once per band.
         ac = asset_class_key(asset_class)
-        if ac in pooled_cache:
-            return pooled_cache[ac]
+        cfg = get_dynamic_atr_config(asset_class, symbol)
+        band_fp = (
+            ac,
+            tuple(cfg.get("tp_atr") or ()),
+            tuple(cfg.get("sl_atr") or ()),
+            cfg.get("tp_atr_min"), cfg.get("tp_atr_max"),
+            cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
+        )
+        if band_fp in pooled_cache:
+            return pooled_cache[band_fp]
         try:
             pk = await dynamic_atr_pick(
                 asset_class,
-                cfg=get_dynamic_atr_config(asset_class, None),
+                cfg=cfg,
                 min_rr=get_min_rr(),
-                symbol=None,          # pooled: walk the whole class
+                symbol=None,          # pooled: walk the whole class (evidence)
                 use_store=False,
             )
         except Exception as exc:
             logger.warning(
-                "dynamic_tier_optimizer: pooled atr %s failed: %s", ac, exc,
+                "dynamic_tier_optimizer: pooled atr %s/%s failed: %s", ac, symbol, exc,
             )
             pk = None
-        pooled_cache[ac] = pk
+        pooled_cache[band_fp] = pk
         if pk is not None:
             logger.info(
-                "[dynamic:atr] pooled %s -> %s (inherited by symbols with no "
-                "per-symbol pick)", ac, pk.as_log(),
+                "[dynamic:atr] pooled %s -> %s for %s (inherited; clamped to "
+                "the symbol's own band)", ac, pk.as_log(), symbol,
             )
         return pk
 
@@ -226,7 +246,7 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         # Per-symbol solve returned None (too few paths) -> inherit the pooled
         # class pick so the symbol still ships harmonized ATR geometry.
         if pick is None:
-            pick = await _pooled_pick(p.get("asset_class"))
+            pick = await _pooled_pick(p.get("asset_class"), symbol)
             if pick is not None:
                 # Persist the pooled pick under THIS symbol so the light path
                 # (read_pick_from_store) finds it. Tag the source.

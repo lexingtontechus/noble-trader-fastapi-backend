@@ -117,13 +117,21 @@ _DEFAULTS: dict[str, Any] = {
     #   crypto     TP 3-8  / SL 1-3   wr 0.41  exp 11%  pnl +1.47  (wr short)
     "dynamic_atr_mode": "live",
     "dynamic_atr_risk_cap": 0.35,
+    # SINGLE DEFINITION (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_
+    # REDESIGN.md §1.3): these values MUST mirror config/feature_flags.yaml's
+    # `dynamic_atr` global block — they are only the fallback for a missing
+    # config file, never a second source of truth. The former `by_class` block
+    # (commodity/equity/forex/crypto with DIFFERENT bands, incl. a forex band
+    # whose SL exceeded its TP) was removed: it was shadowed by the YAML's own
+    # by_class and would have silently changed behaviour if that key were ever
+    # dropped. Per-symbol/class bands live ONLY in the YAML.
     "dynamic_atr": {
         "lookback_days": 10,
-        "tp_atr": [2.0, 4.0, 6.0, 8.0],
-        "sl_atr": [1.0, 2.0, 3.0, 4.0],
-        "tp_atr_min": 1.0,
-        "tp_atr_max": 14.0,
-        "sl_atr_min": 1.0,
+        "tp_atr": [1.71, 2.0, 3.0, 5.0, 8.0, 13.0],
+        "sl_atr": [0.35, 1.0, 2.0, 3.5, 5.0, 8.0],
+        "tp_atr_min": 0.20,
+        "tp_atr_max": 20.0,
+        "sl_atr_min": 0.15,
         "sl_atr_max": 12.0,
         "max_expiry": 0.20,
         "cost_atr": 0.1,
@@ -135,40 +143,6 @@ _DEFAULTS: dict[str, Any] = {
         "vol_ratio_max": None,
         "vol_ratio_short": 24,
         "vol_ratio_long": 168,
-        "by_class": {
-            "commodity": {
-                "tp_atr": [1.0, 2.0, 3.0, 4.0],
-                "sl_atr": [2.0, 3.0, 4.0],
-                "tp_atr_min": 1.0,
-                "tp_atr_max": 4.0,
-                "sl_atr_min": 2.0,
-                "sl_atr_max": 4.0,
-            },
-            "equity": {
-                "tp_atr": [8.0, 10.0, 12.0, 14.0],
-                "sl_atr": [6.0, 8.0, 10.0, 12.0],
-                "tp_atr_min": 8.0,
-                "tp_atr_max": 14.0,
-                "sl_atr_min": 6.0,
-                "sl_atr_max": 12.0,
-            },
-            "forex": {
-                "tp_atr": [1.0, 2.0, 3.0, 4.0],
-                "sl_atr": [2.0, 3.0, 4.0],
-                "tp_atr_min": 1.0,
-                "tp_atr_max": 4.0,
-                "sl_atr_min": 2.0,
-                "sl_atr_max": 4.0,
-            },
-            "crypto": {
-                "tp_atr": [3.0, 5.0, 8.0],
-                "sl_atr": [1.0, 2.0, 3.0],
-                "tp_atr_min": 3.0,
-                "tp_atr_max": 8.0,
-                "sl_atr_min": 1.0,
-                "sl_atr_max": 3.0,
-            },
-        },
     },
     "atr_anchored_evidence_mode": "shadow",
     "atr_reopt_enabled": True,
@@ -856,9 +830,18 @@ def get_dynamic_atr_config(
 ) -> dict[str, Any]:
     """Dynamic ATR selector settings (``dynamic_atr`` block).
 
-    Precedence (2026-09-30): ``by_symbol.<SYMBOL>`` → ``by_class.<asset_class_key>``
-    → global. Per-symbol is the default unit (each symbol's own path stats);
-    forex majors share ``by_class.forex``.
+    Precedence: ``by_symbol.<SYMBOL>`` → ``by_class.<asset_class_key>`` → global.
+    Per-symbol is the default unit (each symbol's own path stats); forex majors
+    share ``by_symbol.FOREX`` — a SINGLE definition (the former duplicate
+    ``by_class.forex`` band, which disagreed on the tp grid, was removed
+    2026-10-12).
+
+    SINGLE SOURCE (2026-10-12, docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_
+    REDESIGN.md §3.1): a caller MUST pass ``symbol`` whenever one is known, so
+    the symbol's own band always applies. Passing ``symbol=None`` skips
+    ``by_symbol`` and silently resolves against the class/global band — that
+    divergence stored out-of-band picks (e.g. BTCUSD tp=13.0 vs its own max
+    8.80). A pooled solve widens the EVIDENCE window, never the band.
     """
     cfg = dict(_DEFAULTS["dynamic_atr"])
     raw = _load().get("dynamic_atr")

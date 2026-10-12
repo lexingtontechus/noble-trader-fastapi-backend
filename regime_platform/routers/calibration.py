@@ -88,6 +88,22 @@ class CalibrationLogResponse(BaseModel):
     created_at: str
 
 
+# Single type contract for the tiered DISPLAY vocabulary (README "Status
+# thresholds"). The values themselves come from the one classifier,
+# ``eod_correction._classify_bias_display`` — this Literal only types the
+# API surface, it does not re-define the bands.
+BiasDisplayLabel = Literal[
+    "CALIBRATED",
+    "MILD_OVERCONFIDENT",
+    "OVERCONFIDENT",
+    "SEVERE_OVERCONFIDENT",
+    "MILD_UNDERCONFIDENT",
+    "UNDERCONFIDENT",
+    "SEVERE_UNDERCONFIDENT",
+    "INSUFFICIENT_DATA",
+]
+
+
 class CalibrationBiasResponse(BaseModel):
     """Per-symbol calibration bias.
 
@@ -114,6 +130,12 @@ class CalibrationBiasResponse(BaseModel):
     avg_predicted_p_win_raw: Optional[float] = None
     bias_raw: Optional[float] = None
     status_raw: Literal["CALIBRATED", "OVERCONFIDENT", "UNDERCONFIDENT", "INSUFFICIENT_DATA"] = "INSUFFICIENT_DATA"
+    # ── Tiered DISPLAY view (user-facing; README "Status thresholds") ────
+    # Distinct from `status` (the ±0.10 enforcement band). Seven graded
+    # labels so +0.06 reads differently from +0.25. Computed by the single
+    # `eod_correction._classify_bias_display()` — never re-implemented here.
+    status_display: BiasDisplayLabel = "INSUFFICIENT_DATA"
+    status_raw_display: BiasDisplayLabel = "INSUFFICIENT_DATA"
     # ── Thresholds actually applied (for callers that want to display them) ──
     threshold_enforced: float = 0.10
     threshold_raw_overconfident: float = 0.30
@@ -149,6 +171,7 @@ def _build_bias_response(
     """
     from regime_platform.sweep_orchestrator.eod_correction import (
         _classify_bias,
+        _classify_bias_display,
         _classify_bias_raw,
         _settings_number,
     )
@@ -177,12 +200,14 @@ def _build_bias_response(
             bias=enforced["bias"],
             n_records=enforced["n"],
             status=_classify_bias(enforced["bias"]),
+            status_display=_classify_bias_display(enforced["bias"], enforced["n"]),
         )
     if raw is not None:
         fields.update(
             avg_predicted_p_win_raw=raw.get("avg_pred_raw"),
             bias_raw=raw["bias"],
             status_raw=_classify_bias_raw(raw["bias"]),
+            status_raw_display=_classify_bias_display(raw["bias"], raw["n"]),
         )
         fields.setdefault("n_records", raw["n"])
     return CalibrationBiasResponse(**fields)

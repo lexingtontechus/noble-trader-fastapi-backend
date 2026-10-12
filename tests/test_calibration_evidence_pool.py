@@ -54,10 +54,15 @@ class TestFlags:
         with patch.object(ff, "_load", return_value=cfg):
             assert ff.get_calibration_evidence_tiers() == expected
 
-    def test_yaml_ships_shadow_qs(self):
+    def test_yaml_ships_expected_mode_and_tiers(self):
+        # 2026-10-12 (sanitize): this guard was STALE — it pinned "shadow"
+        # while the YAML has shipped `calibration_evidence_pool_mode: live`
+        # (the tier-filtered bias drives enforcement; the YAML comment
+        # documents live as intended). Pins the ACTUAL shipped value so the
+        # guard is meaningful again — flip the YAML and this test together.
         import yaml
         cfg = yaml.safe_load((ROOT / "config" / "feature_flags.yaml").read_text(encoding="utf-8"))
-        assert cfg["calibration_evidence_pool_mode"] == "shadow"
+        assert cfg["calibration_evidence_pool_mode"] == "live"
         assert cfg["calibration_evidence_tiers"] == ["qualified", "suppressed"]
 
 

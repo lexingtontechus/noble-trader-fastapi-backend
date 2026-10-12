@@ -99,6 +99,20 @@ logger = logging.getLogger("regime.sweep.eod_correction")
 OVERCONFIDENT_BIAS = 0.10
 UNDERCONFIDENT_BIAS = -0.10
 
+# ── Display-bias bands (tiered, user-facing) — 2026-10-12 ────────────────
+# README.md "Status thresholds (tiered — platform calibration vs user
+# information)": the ENFORCEMENT band above (±0.10 → 3 labels) drives the
+# live Kelly/p_win adjustment; these WIDER tiered bands drive the
+# user-facing label, so +0.06 reads differently from +0.25. SINGLE
+# definition — the router and every display surface call
+# ``_classify_bias_display()``; nothing re-implements these numbers.
+# Boundaries follow README.md exactly (at 0.05 → MILD; at 0.15/0.30 → the
+# higher band; strictly beyond ±0.30 → SEVERE).
+DISPLAY_CALIBRATED_BAND = 0.05   # |bias| < this → CALIBRATED
+DISPLAY_MILD_BAND = 0.15         # +0.05..0.15 → MILD_*; at 0.15 → OVER/UNDER
+DISPLAY_SEVERE_BAND = 0.30       # > 0.30 → SEVERE_*; at 0.30 → OVER/UNDER
+DISPLAY_MIN_RECORDS = 20         # fewer records than this → INSUFFICIENT_DATA
+
 # Raw-bias mode thresholds (2026-08-22): the 4h intraday correction pass
 # evaluates model drift from ``predicted_p_win_raw`` (pre-enforcement), so the
 # band is wider — raw model output is naturally more extreme than the
@@ -198,6 +212,37 @@ def _classify_bias(bias: float) -> str:
         return "OVERCONFIDENT"
     if bias < -threshold:
         return "UNDERCONFIDENT"
+    return "CALIBRATED"
+
+
+def _classify_bias_display(bias: float, n_records: int = 0) -> str:
+    """Tiered USER-FACING bias label (README.md "Status thresholds").
+
+    Distinct from ``_classify_bias`` (the ±0.10 ENFORCEMENT classifier):
+    enforcement asks "is the model wrong enough to act on"; this asks "how
+    wrong, for the user" — a +0.06 and a +0.25 must not read the same.
+    Defined ONCE here; every display surface calls this, so the bands can
+    never diverge.
+
+    Labels: CALIBRATED | MILD_OVERCONFIDENT | OVERCONFIDENT |
+    SEVERE_OVERCONFIDENT | MILD_UNDERCONFIDENT | UNDERCONFIDENT |
+    SEVERE_UNDERCONFIDENT | INSUFFICIENT_DATA.
+    """
+    if int(n_records or 0) < DISPLAY_MIN_RECORDS:
+        return "INSUFFICIENT_DATA"
+    b = float(bias)
+    if b > DISPLAY_SEVERE_BAND:
+        return "SEVERE_OVERCONFIDENT"
+    if b >= DISPLAY_MILD_BAND:
+        return "OVERCONFIDENT"
+    if b >= DISPLAY_CALIBRATED_BAND:
+        return "MILD_OVERCONFIDENT"
+    if b < -DISPLAY_SEVERE_BAND:
+        return "SEVERE_UNDERCONFIDENT"
+    if b <= -DISPLAY_MILD_BAND:
+        return "UNDERCONFIDENT"
+    if b <= -DISPLAY_CALIBRATED_BAND:
+        return "MILD_UNDERCONFIDENT"
     return "CALIBRATED"
 
 

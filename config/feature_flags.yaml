@@ -628,14 +628,13 @@ dynamic_atr:
       tp_atr_max: 14.0
       sl_atr_min: 7.5
       sl_atr_max: 8.8
-  by_class:
-    forex:
-      tp_atr: [1.65, 1.71, 1.80]
-      sl_atr: [0.30, 0.35, 0.40]
-      tp_atr_min: 1.60
-      tp_atr_max: 1.85
-      sl_atr_min: 0.30
-      sl_atr_max: 0.45
+  # by_class: REMOVED 2026-10-12 (docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_
+  # REDESIGN.md §1.2). FOREX was defined TWICE — here and as by_symbol.FOREX,
+  # with a different tp grid ([1.65,1.71,1.80] vs [1.65,1.71,1.75,1.80]) — so
+  # the same forex symbol resolved to two different bands depending on whether
+  # the caller passed a symbol (by_symbol wins) or not (by_class wins). FOREX
+  # is now defined ONCE, as by_symbol.FOREX — the alias the resolver already
+  # applies to every major (feature_flags.get_dynamic_atr_config).
 
 # atr_reopt_enabled (2026-09-30): monthly free-lattice ATR re-solve.
 # APScheduler `atr-reopt-monthly` (1st 03:30 UTC) — codebase-owned, not
