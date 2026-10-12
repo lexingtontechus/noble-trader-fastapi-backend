@@ -163,6 +163,40 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
     from regime_platform.core import param_store
 
     picks: dict[str, Any] = {}
+    # Asset-class pooled fallback (2026-10-12, worklog
+    # 20261012_POOLED_ATR_AND_SCORECARD_FILTER.md): the per-symbol solve fails
+    # for 13/14 symbols (2-3 paths each < min_signals 80), so the dynamic-ATR
+    # geometry never ships. Solve the pool ONCE per class (enough paths) and
+    # let each symbol in that class inherit it when its own solve returns None.
+    # Fail-open chain preserved: per-symbol -> pooled -> brick.
+    from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
+    pooled_cache: dict[str, Any] = {}
+
+    async def _pooled_pick(asset_class: str | None):
+        ac = asset_class_key(asset_class)
+        if ac in pooled_cache:
+            return pooled_cache[ac]
+        try:
+            pk = await dynamic_atr_pick(
+                asset_class,
+                cfg=get_dynamic_atr_config(asset_class, None),
+                min_rr=get_min_rr(),
+                symbol=None,          # pooled: walk the whole class
+                use_store=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "dynamic_tier_optimizer: pooled atr %s failed: %s", ac, exc,
+            )
+            pk = None
+        pooled_cache[ac] = pk
+        if pk is not None:
+            logger.info(
+                "[dynamic:atr] pooled %s -> %s (inherited by symbols with no "
+                "per-symbol pick)", ac, pk.as_log(),
+            )
+        return pk
+
     for p in peers:
         symbol = p.get("symbol")
         if not symbol or not p.get("tradingview_symbol"):
@@ -189,6 +223,26 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("dynamic_tier_optimizer: atr refresh %s failed: %s", symbol, exc)
             continue
+        # Per-symbol solve returned None (too few paths) -> inherit the pooled
+        # class pick so the symbol still ships harmonized ATR geometry.
+        if pick is None:
+            pick = await _pooled_pick(p.get("asset_class"))
+            if pick is not None:
+                # Persist the pooled pick under THIS symbol so the light path
+                # (read_pick_from_store) finds it. Tag the source.
+                try:
+                    from regime_platform.sweep_orchestrator.tiered_atr import (
+                        write_pick_to_store,
+                    )
+                    await write_pick_to_store(
+                        symbol, pick,
+                        source=f"pooled:{asset_class_key(p.get('asset_class'))}",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "dynamic_tier_optimizer: pooled store %s failed: %s",
+                        symbol, exc,
+                    )
         if pick is not None:
             picks[symbol] = pick
     return picks

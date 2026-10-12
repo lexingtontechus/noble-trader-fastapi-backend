@@ -51,7 +51,13 @@ def test_cutover_mode_resolves_off(monkeypatch):
 # ─── Read-table selection ─────────────────────────────────────────────────
 
 
-def test_no_tiers_cutover_on_reads_the_cutover_view():
+def test_no_tiers_cutover_on_reads_the_cutover_view(monkeypatch):
+    """published_only=off + cutover on -> the cutover view (the pre-209
+    diagnostic stratifier path). With published_only on (default), the
+    published view supersedes — see test_scorecard_published_filter."""
+    import regime_platform.core.feature_flags as ff
+    # Force the pre-209 path explicitly.
+    monkeypatch.setattr(ff, "get_calibration_bias_published_only", lambda: False)
     assert sc._calibration_read_table(None) == "v_calibration_records_current"
 
 

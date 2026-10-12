@@ -2333,6 +2333,7 @@ def _decay_weighted_episode_stats(
 
 TIERED_CALIBRATION_VIEW = "v_calibration_records_tiered"  # migration 171
 CUTOVER_CALIBRATION_VIEW = "v_calibration_records_current"  # migration 192
+PUBLISHED_CALIBRATION_VIEW = "v_calibration_records_published"  # migration 209
 _EVIDENCE_TIERS = frozenset({"qualified", "suppressed", "gate_fail", "unknown"})
 
 
@@ -2367,6 +2368,10 @@ def _calibration_read_table(tiers: tuple[str, ...] | None = None) -> str:
     """
     if tiers:
         return TIERED_CALIBRATION_VIEW
+    # Cutover rollback (cutover_mode=off) is an explicit operator override and
+    # MUST take precedence over the published-book filter — a rollback restores
+    # the exact base-table read. Only when cutover is on (the normal path) does
+    # the published-book standard apply.
     try:
         from regime_platform.core.feature_flags import get_calibration_cutover_mode
         if get_calibration_cutover_mode() == "off":
@@ -2374,6 +2379,21 @@ def _calibration_read_table(tiers: tuple[str, ...] | None = None) -> str:
     except Exception:
         # Fail closed to the base table: an unreadable flag must not silently
         # start filtering evidence.
+        return "nt_calibration_records"
+    # Published-book standard (2026-10-12, worklog
+    # 20261012_POOLED_ATR_AND_SCORECARD_FILTER.md): the bias/scorecard reads
+    # qualified=true only (what users experience). The full population stays in
+    # the base table as a diagnostic stratifier. Evidence tiers still take
+    # precedence (handled above).
+    try:
+        from regime_platform.core.feature_flags import (
+            get_calibration_bias_published_only,
+        )
+        if get_calibration_bias_published_only():
+            return PUBLISHED_CALIBRATION_VIEW
+    except Exception:
+        # Fail closed to the base table: an unreadable flag must not silently
+        # change the population.
         return "nt_calibration_records"
     return CUTOVER_CALIBRATION_VIEW
 

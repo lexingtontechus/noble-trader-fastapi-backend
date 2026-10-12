@@ -251,6 +251,12 @@ _DEFAULTS: dict[str, Any] = {
     # the pick on the half it was NOT chosen on. shadow logs; live rejects the
     # overfit pick (heavy kept); off disables. Thin folds fail open.
     "dynamic_atr_walkforward_mode": "live",
+    # calibration_bias_published_only (2026-10-12, worklog
+    # 20261012_POOLED_ATR_AND_SCORECARD_FILTER.md): the scorecard/bias STANDARD
+    # is the PUBLISHED book (qualified=true) — what users experience. The full
+    # population stays available as a diagnostic stratifier. When on, bias
+    # readers query v_calibration_records_published (qualified=true only).
+    "calibration_bias_published_only": True,
     "dynamic_atr_walkforward_min_fold_n": 20,
     "dynamic_atr_walkforward_min_oos": 0.0,
     # Part B single source of truth (2026-10-09, worklog
@@ -1055,6 +1061,21 @@ def get_p_win_bracket_source() -> str:
         "p_win_bracket_source", _DEFAULTS["p_win_bracket_source"],
     )).lower()
     return v if v in ("all_in", "derived") else "all_in"
+
+
+def get_calibration_bias_published_only() -> bool:
+    """Scorecard/bias standard = the PUBLISHED book (qualified=true), 2026-10-12
+    worklog 20261012_POOLED_ATR_AND_SCORECARD_FILTER.md. When True, bias readers
+    query v_calibration_records_published (qualified=true only) — what users
+    experience. The full population stays in nt_calibration_records as a
+    diagnostic stratifier. Default True."""
+    val = _load().get(
+        "calibration_bias_published_only",
+        _DEFAULTS.get("calibration_bias_published_only", True),
+    )
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on", "live")
 
 
 def get_ev_hard_floor() -> float:

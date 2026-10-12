@@ -105,15 +105,24 @@ def _call(fn, **kw):
 
 class TestFetchers:
     @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
-    def test_default_reads_cutover_view_without_tier_filter(self, fn):
-        """Updated 2026-10-02 (migration 192): the default now reads the
-        post-cutover view, not the base table. The view passes every row while
-        nt_calibration_cutover is empty, so this is a no-op until the timestamp
-        is set — but the RELATION changed, and asserting the base table here
-        would have hidden that."""
+    def test_default_reads_published_view(self, fn):
+        """Updated 2026-10-12 (migration 209): the scorecard STANDARD is the
+        published book (qualified=true) — what users experience. The default
+        read is now v_calibration_records_published, not the cutover view. The
+        full population stays in the base table as a diagnostic stratifier
+        (see test_published_off_reads_cutover_view)."""
+        _, c = _call(fn)
+        assert c.url.endswith("/v_calibration_records_published")
+        assert "evidence_tier" not in c.params
+
+    @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
+    def test_published_off_reads_cutover_view(self, fn, monkeypatch):
+        """published_only=off restores the pre-209 default: the post-cutover
+        view (the diagnostic stratifier path)."""
+        import regime_platform.core.feature_flags as ff
+        monkeypatch.setattr(ff, "get_calibration_bias_published_only", lambda: False)
         _, c = _call(fn)
         assert c.url.endswith("/v_calibration_records_current")
-        assert "evidence_tier" not in c.params
 
     @pytest.mark.parametrize("fn", [sc.fetch_calibration_bias, sc.fetch_calibration_bias_raw])
     def test_cutover_off_reads_base_table(self, fn, monkeypatch):
