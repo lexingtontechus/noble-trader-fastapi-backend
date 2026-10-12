@@ -4486,6 +4486,18 @@ class SweepOrchestrator(HeavySweepMixin):
                     symbol, ev_result.p_win, p_win_raw, _p_resolve,
                     ev_result.ev, effective_kelly,
                 )
+                # ── ev_allowed must read the BRACKET EV (2026-10-12, worklog
+                # 20261012_EV_ALLOWED_INVERTED_SELECTION.md) ──────────────────
+                # effective_ev_result was bound to adjusted_ev_result at line
+                # 4430; when TimesFM soft-mode ran that is a DIFFERENT object
+                # from ev_result, which apply_bracket_to_ev just mutated. The
+                # gate at line 4857 reads effective_ev_result.allowed — so
+                # without this sync it gates on the stale DIRECTIONAL EV, which
+                # is overconfident (+0.48 bias) and anti-correlated with
+                # outcomes. That inverted selection: ev_allowed rejected 2,558
+                # winners (14.9% WR) and passed losers (8.1% WR). Sync so the
+                # gate reads the reachability-conditioned EV.
+                effective_ev_result = ev_result
         elif p_win_in_ev_mode == "shadow" and _p_win_bracket is not None:
             from regime_platform.sweep_orchestrator.p_win_bracket import (
                 expire_prob,
