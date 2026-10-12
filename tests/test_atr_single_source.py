@@ -167,9 +167,15 @@ def test_delete_keys_keeps_named_keys():
 
 # ── the light path applies only when live ────────────────────────────────
 
-def test_light_apply_flag_defaults_shadow():
+def test_light_apply_flag_defaults_live():
+    """GEOMETRY HARMONY (2026-10-12, worklog 20261012_GEOMETRY_HARMONY.md):
+    the ATR pick is the single source of truth, so the light path defaults
+    live — it applies the pick, not logs-and-discards it. Brick is the
+    fail-open fallback (see test_light_apply_live_overrides_geometry for the
+    apply contract, and the shadow path is retained for A/B via monkeypatch
+    in test_light_apply_shadow_keeps_brick_geometry)."""
     from regime_platform.core import feature_flags as ff
-    assert ff.get_dynamic_atr_light_mode() == "shadow"
+    assert ff.get_dynamic_atr_light_mode() == "live"
 
 
 def test_light_apply_shadow_keeps_brick_geometry(monkeypatch):

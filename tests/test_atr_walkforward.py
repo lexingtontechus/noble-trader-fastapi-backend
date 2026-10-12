@@ -123,12 +123,15 @@ class TestWalkForwardValidate:
 
 
 class TestWalkForwardFlagDefaults:
-    def test_ships_shadow(self):
+    def test_ships_live(self):
+        """GEOMETRY HARMONY (2026-10-12): the held-out gate defaults live so an
+        overfit pick (e.g. the RR=12 intrabar artifact) is REJECTED and fails
+        open to brick, instead of being logged-and-shipped."""
         from regime_platform.core.feature_flags import (
             get_dynamic_atr_walkforward_mode,
             get_dynamic_atr_walkforward_min_fold_n,
             get_dynamic_atr_walkforward_min_oos,
         )
-        assert get_dynamic_atr_walkforward_mode() == "shadow"
+        assert get_dynamic_atr_walkforward_mode() == "live"
         assert get_dynamic_atr_walkforward_min_fold_n() == 20
         assert get_dynamic_atr_walkforward_min_oos() == 0.0

@@ -509,28 +509,25 @@ dynamic_atr_risk_cap: 0.35
 # dynamic_atr_consistency_tol is the optimizer contradicting its own
 # measurements. shadow = log only; live = reject the pick (fall back to the
 # heavy pick); off = disabled. Fail-open when the bucket is cold (< 30 samples).
-dynamic_atr_consistency_mode: "shadow"
+# GEOMETRY HARMONY (2026-10-12, worklog 20261012_GEOMETRY_HARMONY.md): the ATR
+# pick is the SINGLE SOURCE OF TRUTH for TP/SL; brick is the documented
+# fail-open fallback, not a parallel system. The replay proved 40/40 signals
+# shipped brick while reopt optimized a different ATR bracket that never
+# reached the signal. All three gates go live so the solved geometry ships and
+# artifacts (the 12:1 RR on intrabar envelopes) are rejected at the gate.
+dynamic_atr_consistency_mode: "live"
 dynamic_atr_consistency_tol: 0.20
 
-# dynamic_atr_light_mode (2026-10-09, worklog
-# 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): off | shadow | live. The light
-# sweep now reads the SAME persisted ATR pick the heavy path chose (tier
-# "dynamic_atr", key "latest" in config/param_store.sqlite) and applies it
-# to the bracket via exact ATR price levels. shadow (default) computes and
-# logs the would-apply bracket WITHOUT changing the published signal; live
-# applies it; off disables. Ships shadow-first — this changes live geometry.
-dynamic_atr_light_mode: "shadow"
+# dynamic_atr_light_mode (2026-10-09 → live 2026-10-12): the light sweep reads
+# the SAME persisted ATR pick the heavy path chose and applies it via exact ATR
+# price levels. live applies it; the signal's TP/SL, bucket, reachability, and
+# EV all read the SAME geometry. Fail-open: no valid pick → brick fallback.
+dynamic_atr_light_mode: "live"
 
-# dynamic_atr_walkforward_mode (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md):
-# off | shadow | live. Held-out (walk-forward) gate on the chosen ATR bracket.
-# select_tp_sl's e1>0 AND e2>0 is an in-sample split on the SAME data the
-# bracket was optimised over, so a RR=6 pick (e.g. tp=6/sl=1 on trending
-# metals) passes trivially. This measures the pick on the half it was NOT
-# chosen on. shadow logs is/oos expectancy; live rejects an overfit pick
-# (heavy-sweep geometry kept); off disables. Thin folds (< min_fold_n decided)
-# fail open. See 20261009_ENVELOPE_RECONSTRUCTION.md §8 for why the envelope
-# is faithful and the real risk is thin-sample/single-regime expectancy.
-dynamic_atr_walkforward_mode: "shadow"
+# dynamic_atr_walkforward_mode (2026-10-09 → live 2026-10-12): held-out gate
+# rejects an overfit pick (e.g. the RR=12 artifact) so it fails open to brick
+# instead of shipping. Thin folds (< min_fold_n decided) fail open.
+dynamic_atr_walkforward_mode: "live"
 # Min DECIDED signals per fold before the gate trusts the held-out result.
 # 20 mirrors the calibration min-episode convention.
 dynamic_atr_walkforward_min_fold_n: 20

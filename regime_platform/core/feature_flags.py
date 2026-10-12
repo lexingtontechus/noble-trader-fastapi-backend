@@ -236,15 +236,21 @@ _DEFAULTS: dict[str, Any] = {
     # rate disagrees with the platform's measured bucket rate is the optimizer
     # contradicting its own measurements. shadow logs; live falls back to the
     # heavy pick; off disables.
-    "dynamic_atr_consistency_mode": "shadow",
+    # GEOMETRY HARMONY (2026-10-12, worklog 20261012_GEOMETRY_HARMONY.md): the
+    # ATR pick is the SINGLE SOURCE OF TRUTH for TP/SL. Brick is the documented
+    # fail-open fallback, not a parallel system. All three gates live so the
+    # solved geometry actually ships and artifacts are rejected at the gate
+    # (the 12:1 RR the solver produced on intrabar envelopes). Fail-open is
+    # preserved: no valid pick → brick fallback, logged as fallback.
+    "dynamic_atr_consistency_mode": "live",
     "dynamic_atr_consistency_tol": 0.20,
-    "dynamic_atr_light_mode": "shadow",
+    "dynamic_atr_light_mode": "live",
     # Walk-forward held-out gate (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md):
     # select_tp_sl's e1>0 AND e2>0 is an in-sample split on the same data the
     # bracket was optimised over, so a RR=6 pick passes trivially. This measures
     # the pick on the half it was NOT chosen on. shadow logs; live rejects the
     # overfit pick (heavy kept); off disables. Thin folds fail open.
-    "dynamic_atr_walkforward_mode": "shadow",
+    "dynamic_atr_walkforward_mode": "live",
     "dynamic_atr_walkforward_min_fold_n": 20,
     "dynamic_atr_walkforward_min_oos": 0.0,
     # Part B single source of truth (2026-10-09, worklog
