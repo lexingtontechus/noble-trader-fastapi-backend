@@ -116,8 +116,15 @@ def test_optimizer_has_no_parallel_atr_computation():
 # ── the picker returns a stored pick without walking ─────────────────────
 
 def test_picker_serves_from_store_without_walk(monkeypatch):
-    """use_store=True + a fresh stored pick ⇒ no TradingView fetch."""
-    _run(ta.write_pick_to_store("GBPUSD", _pick(tp_atr=1.61, sl_atr=1.5, n=204)))
+    """use_store=True + a fresh stored pick that is IN BAND ⇒ no TradingView fetch.
+
+    The band gate matters here (tiered_atr._pick_in_band): the store is a cache of
+    PAST solves, so a pick fresh by AGE can still carry a bracket from a previous
+    band. Only an in-band pick short-circuits; an out-of-band one is a miss and
+    recomputes (see tests/test_geometry_always_returns.py). The fixture therefore
+    stores a grid cell, not an arbitrary value.
+    """
+    _run(ta.write_pick_to_store("GBPUSD", _pick(tp_atr=1.6, sl_atr=1.5, n=204)))
 
     import regime_platform.sweep_orchestrator.price_fetcher as pf
 
@@ -131,7 +138,7 @@ def test_picker_serves_from_store_without_walk(monkeypatch):
                                                   "sl_atr": [1.5], "min_signals": 60,
                                                   "max_expiry": 0.2, "cost_atr": 0.1},
                                    min_rr=1.5, symbol="GBPUSD", use_store=True))
-    assert got is not None and got.tp_atr == pytest.approx(1.61)
+    assert got is not None and got.tp_atr == pytest.approx(1.6)
 
 
 def test_write_prunes_legacy_bucket_rows():

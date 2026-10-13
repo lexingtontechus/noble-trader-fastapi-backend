@@ -14,10 +14,17 @@ import pytest
 
 from regime_platform.sweep_orchestrator.tiered_atr import (
     EXPIRY_BARS,
+    DynamicAtrPick,
     _band_center_pick,
     dynamic_atr_pick,
     select_tp_sl,
 )
+
+
+def _pick(tp: float, sl: float, n: int = 200) -> DynamicAtrPick:
+    """A walked-looking pick, for exercising the band/store guards."""
+    return DynamicAtrPick(tp_atr=tp, sl_atr=sl, exp_atr=0.1, exp_h1=0.1,
+                          exp_h2=0.1, expiry=0.1, n=n)
 
 GRID_TP = [1.0, 2.0, 5.0]
 GRID_SL = [1.0, 2.0, 5.0]
@@ -189,6 +196,71 @@ async def test_whole_grid_below_min_rr_still_resolves(monkeypatch):
     )
     assert pick is not None, "a configured band must never resolve to None (G2)"
     assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0), "must fall back to the band centre"
+
+
+def test_pick_in_band_rejects_a_previous_bands_bracket():
+    """G1 at the STORE boundary. The store is a cache of PAST solves, so a pick
+    fresh by AGE can still carry a bracket from a previous band. Live examples:
+    BTCUSD was served tp=13ATR against a band capping tp at 8.4/8.8, and US30USD
+    was served tp=8/sl=5 against a 12.5-13.1 / 2.25-2.6 band."""
+    from regime_platform.sweep_orchestrator.tiered_atr import _pick_in_band
+
+    cfg = {"tp_atr": [7.8, 8.07, 8.4], "sl_atr": [1.65, 1.77, 1.95],
+           "tp_atr_min": 7.5, "tp_atr_max": 8.8, "sl_atr_min": 1.55, "sl_atr_max": 2.1}
+    assert _pick_in_band(_pick(tp=8.07, sl=1.77), cfg), "a grid cell is in band"
+    assert not _pick_in_band(_pick(tp=13.0, sl=2.0), cfg), "BTCUSD's real case"
+    assert not _pick_in_band(_pick(tp=8.0, sl=1.77), cfg), "in-clamp but not a grid cell"
+
+    cfg30 = {"tp_atr": [12.5, 12.8, 13.1], "sl_atr": [2.25, 2.41, 2.6],
+             "tp_atr_min": 12.0, "tp_atr_max": 13.5, "sl_atr_min": 2.1, "sl_atr_max": 2.8}
+    assert not _pick_in_band(_pick(tp=8.0, sl=5.0), cfg30), "US30USD's real case"
+    assert _pick_in_band(_pick(tp=12.8, sl=2.41), cfg30)
+
+
+@pytest.mark.asyncio
+async def test_out_of_band_store_hit_is_recomputed_not_applied(monkeypatch):
+    """An out-of-band store hit is a MISS, not a hit — the symbol gets a freshly
+    solved bracket rather than a stale one carried over from a previous band."""
+    from regime_platform.sweep_orchestrator import tiered_atr as t
+
+    # the store holds a bracket from a PREVIOUS band (BTCUSD's real case)
+    monkeypatch.setattr(t, "read_pick_from_store", lambda *a, **k: _pick(tp=13.0, sl=2.0))
+
+    async def _members():
+        return [{"symbol": "XAGUSD", "asset_class": "commodities",
+                 "tradingview_symbol": "OANDA:XAGUSD"}]
+
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols", _members)
+
+    async def _sigs(symbols, since, until):
+        return [{"symbol": "XAGUSD", "signal": "buy", "entry_price": 20.0,
+                 "atr": 0.2, "_ts": float(i)} for i in range(80)]
+
+    monkeypatch.setattr(t, "_load_class_signals", _sigs)
+
+    async def _bars(rows, **kw):
+        out = kw.get("ohlcv_out")
+        if out is not None:
+            out["XAGUSD"] = [{"t": 3600.0 * i, "c": 20.0 + i * 0.01} for i in range(400)]
+        return out
+
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.price_fetcher.fetch_tradingview_batch", _bars)
+    monkeypatch.setattr(t, "build_envelopes",
+                        lambda *a, **k: (np.zeros((80, EXPIRY_BARS, 2)), None))
+    monkeypatch.setattr(t, "select_tp_sl", lambda *a, **k: None)   # recompute → band centre
+
+    async def _no_store(*a, **k):
+        return True
+
+    monkeypatch.setattr(t, "write_pick_to_store", _no_store)
+
+    pick = await t.dynamic_atr_pick(None, cfg=dict(CFG), min_rr=1.5, symbol="XAGUSD")
+    assert pick is not None
+    assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0), (
+        "must recompute within the current band, not apply the stale 13/2"
+    )
 
 
 # ── G3: the light path goes through the one solve ───────────────────────────

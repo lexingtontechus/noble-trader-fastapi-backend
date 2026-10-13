@@ -775,6 +775,40 @@ def _band_center_pick(cfg: dict[str, Any]) -> Optional[DynamicAtrPick]:
     return DynamicAtrPick(tp, sl, 0.0, 0.0, 0.0, 0.0, 0)
 
 
+def _pick_in_band(pick: DynamicAtrPick, cfg: dict[str, Any]) -> bool:
+    """G1 at the STORE boundary — is this persisted pick inside the CURRENT band?
+
+    The store is a cache of *past* solves, and a symbol's band can change
+    (retune, reopt, the 2026-10-12 reconciliation). A pick that is fresh by AGE
+    can still carry a bracket from a *previous* band, and the light path would
+    apply it verbatim. Observed live:
+
+        BTCUSD   band tp=[7.8, 8.07, 8.4] clamps tp<=8.8   served tp=13ATR
+        US30USD  band tp=[12.5,12.8,13.1] clamps sl<=2.8   served tp=8/sl=5
+
+    A pick is always a grid cell of the band it was solved under, so the test is
+    both: inside the clamps AND a member of the current grid.
+    """
+    def _in(v: float, lo, hi) -> bool:
+        if lo is not None and v < float(lo) - 1e-9:
+            return False
+        if hi is not None and v > float(hi) + 1e-9:
+            return False
+        return True
+
+    if not _in(pick.tp_atr, cfg.get("tp_atr_min"), cfg.get("tp_atr_max")):
+        return False
+    if not _in(pick.sl_atr, cfg.get("sl_atr_min"), cfg.get("sl_atr_max")):
+        return False
+    tp_grid = [float(x) for x in (cfg.get("tp_atr") or [])]
+    sl_grid = [float(x) for x in (cfg.get("sl_atr") or [])]
+    if tp_grid and not any(abs(pick.tp_atr - g) < 1e-6 for g in tp_grid):
+        return False
+    if sl_grid and not any(abs(pick.sl_atr - g) < 1e-6 for g in sl_grid):
+        return False
+    return True
+
+
 async def dynamic_atr_pick(
     asset_class: str | None,
     *,
@@ -833,12 +867,23 @@ async def dynamic_atr_pick(
     # ``use_store=False`` (the refresh path) always recomputes.
     if symbol and use_store:
         _stored = read_pick_from_store(symbol, max_age_hours=_PICK_TTL_S / 3600.0)
-        if _stored is not None:
+        if _stored is not None and _pick_in_band(_stored, cfg):
             logger.info(
                 "[dynamic:atr] %s store hit — %s (no walk)", symbol, _stored.as_log(),
             )
             _PICK_CACHE[grid_fp] = (time.time(), _stored)
             return _stored
+        if _stored is not None:
+            # G1 at the store boundary (2026-10-13): a pick fresh by AGE can still
+            # carry a bracket from a PREVIOUS band. Out of band is a miss, not a
+            # hit — fall through and recompute (G3), never apply it verbatim.
+            logger.warning(
+                "[dynamic:atr] %s store hit REJECTED — %s is outside the current band "
+                "tp=%s clamps[%s,%s] sl=%s clamps[%s,%s]; recomputing",
+                symbol, _stored.as_log(),
+                cfg.get("tp_atr"), cfg.get("tp_atr_min"), cfg.get("tp_atr_max"),
+                cfg.get("sl_atr"), cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
+            )
 
     peers = await fetch_active_symbols()
     if symbol:
