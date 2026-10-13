@@ -647,10 +647,8 @@ atr_reopt_enabled: true
 
 # atr_reopt_urgency (2026-10-01): 4h cycle IS the clock. vol_ratio
 # (rv24/rv168 — VOLATILITY, not volume) >= elevated_ratio → AUTO free
-# lattice, PROPOSAL ONLY (2026-10-12: the auto clamp patch was REMOVED —
-# see atr_reopt.py's REMOVED note; the reopt never writes this file).
-# Floors are DURABLE (nt_roadmap) so a Studio restart cannot double-fire.
-# Discord is FYI only.
+# lattice + optional clamp patch. Floors are DURABLE (nt_roadmap) so a
+# Studio restart cannot double-fire. Discord is FYI only.
 # min_reopt_hours: 4 = same as the job cadence (was 48h in-memory).
 atr_reopt_urgency:
   enabled: true
@@ -659,6 +657,7 @@ atr_reopt_urgency:
   cooldown_hours: 4.0    # legacy alias of min_reopt_hours
   vol_ratio_short: 24
   vol_ratio_long: 168
+  auto_apply_clamps: true
 
 # dynamic_deadline (20261005_REACHABILITY_REDESIGN): per-(symbol, vol_tier)
 # resolution deadlines replace the uniform 48h clock. Shadow mode: derive

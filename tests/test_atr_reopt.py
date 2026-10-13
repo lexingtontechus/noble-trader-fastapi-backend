@@ -86,9 +86,7 @@ def test_urgency_config_defaults():
     # 4h cycle floor — durable, not a 48h in-memory gate
     assert cfg["min_reopt_hours"] == 4.0
     assert cfg["cooldown_hours"] == 4.0
-    # 2026-10-12: auto-apply of clamps into the config was REMOVED — the reopt
-    # is proposal-only. Pin the absence so it cannot silently return.
-    assert "auto_apply_clamps" not in cfg
+    assert cfg["auto_apply_clamps"] is True
 
 
 def test_ts_or_none_parses_iso():
@@ -98,6 +96,16 @@ def test_ts_or_none_parses_iso():
     assert abs(_ts_or_none(_iso(ts)) - ts) < 1
     assert _ts_or_none(None) is None
     assert _ts_or_none("not-a-date") is None
+
+
+def test_clamp_block_narrow_lattice():
+    from regime_platform.sweep_orchestrator.atr_reopt import _clamp_block
+
+    blk = _clamp_block(8.07, 1.77)
+    assert blk["tp_atr"][1] == 8.07
+    assert blk["sl_atr"][1] == 1.77
+    assert blk["tp_atr_min"] < 8.07 < blk["tp_atr_max"]
+    assert blk["sl_atr_min"] < 1.77 < blk["sl_atr_max"]
 
 
 def test_forex_drift_flags_against_for_override():
@@ -123,4 +131,47 @@ def test_forex_drift_flags_against_for_override():
     assert any("above clamp" in r for r in new["reasons"])
     # the FOREX override is the band the picker is bound by
     assert new["tp_atr_max"] is not None and float(new["tp_atr_max"]) < sc["tp"]
+
+
+def test_apply_symbol_clamps_targets_dynamic_atr_not_macro(tmp_path):
+    """The writer must land in ``dynamic_atr.by_symbol`` — never ``macro.by_symbol``.
+
+    The config carries FOUR ``  by_symbol:`` blocks (macro, dynamic_atr,
+    dynamic_deadline, geometry_band_urgency) and AAPL also exists in
+    macro.by_symbol. An unscoped anchor matched macro's block first and wrote
+    six ATR keys into ``macro.by_symbol.AAPL`` (found and cleaned 2026-10-12).
+    This pins the scope so it cannot regress.
+    """
+    from regime_platform.sweep_orchestrator.atr_reopt import apply_symbol_clamps
+
+    cfg = tmp_path / "feature_flags.yaml"
+    cfg.write_text(
+        "macro:\n"
+        "  by_symbol:\n"
+        "    AAPL:\n"
+        "      label: tech\n"
+        "dynamic_atr:\n"
+        "  by_symbol:\n"
+        "    AAPL:\n"
+        "      tp_atr: [1.0, 1.1, 1.2]\n"
+        "      sl_atr: [0.5, 0.6, 0.7]\n"
+        "    XAUUSD:\n"
+        "      tp_atr: [4.8, 4.94, 5.1]\n",
+        encoding="utf-8",
+    )
+
+    assert apply_symbol_clamps("AAPL", {"tp": 6.36, "sl": 3.57}, path=cfg) is True
+    out = cfg.read_text(encoding="utf-8")
+    macro_part, atr_part = out.split("dynamic_atr:", 1)
+
+    # macro's AAPL keeps its own key and gains NO ATR keys
+    assert "label: tech" in macro_part
+    assert "tp_atr" not in macro_part
+    assert "sl_atr_max" not in macro_part
+    # dynamic_atr's AAPL is the block that moved
+    assert "tp_atr" in atr_part
+    assert "sl_atr_max" in atr_part
+    assert "1.1" not in atr_part, "the stale lattice should have been replaced"
+    # and a sibling symbol in the same block is untouched
+    assert "4.94" in atr_part
 
