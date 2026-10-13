@@ -37,8 +37,11 @@ GRID_RE = re.compile(
 )
 APPLY_RE = re.compile(r"\[dynamic:atr:light\] (\S+) (APPLIED|would apply)")
 FALLBACK_RE = re.compile(r"\[dynamic:atr\] band-centre fallback")
-# a symbol can be SKIPPED (locked by a concurrent sweep) — not a geometry miss
+# a symbol can be SKIPPED — not a geometry miss: locked by a concurrent sweep,
+# or dropped by the data-freshness guard ("price stale > 1.0h", which trips at
+# the top of the hour for feeds whose latest CLOSED bar is exactly 1h old).
 LOCKED_RE = re.compile(r"(\S+): locked — skipping \(concurrent sweep\)")
+STALE_RE = re.compile(r"Skipping \d+ symbols \(price stale [^)]*\): \[(.*?)\]\s*$")
 SWEEP_RE = re.compile(r"Running sweep group \[\*/15 \* \* \* \*\]")
 ACTIVE_RE = re.compile(r"(\d+) symbols active, \d+ filtered \(market closed\): \[(.*?)\]\s*$")
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})")
@@ -83,6 +86,9 @@ def parse(lines: list[str]):
         m = LOCKED_RE.search(ln)
         if m:
             cur["skipped"].add(m.group(1))
+        m = STALE_RE.search(ln)
+        if m:
+            cur["skipped"] |= set(re.findall(r"\('([A-Z0-9]+)'", m.group(1)))
         m = APPLY_RE.search(ln)
         if m:
             cur["applied"][m.group(1)] = m.group(2)
