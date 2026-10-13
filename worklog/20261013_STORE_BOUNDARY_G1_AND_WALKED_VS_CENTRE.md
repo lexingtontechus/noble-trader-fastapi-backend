@@ -68,25 +68,54 @@ From the same window — per symbol, applied geometry by source:
 | USDJPY, USDCHF, EURUSD, XAUUSD, XAUEUR, USDCAD, GBPUSD, XAGUSD | 7 each | **0** |
 | **total** | **68** | **9** |
 
-**8 of 11 symbols never get a walked pick** — they apply the operator's band
-centre every sweep. The gate log explains it: 50 walk-forward REJECT and 29
-CONSISTENCY REJECT across the window.
+**8 of 11 symbols never get a walked pick** — they trade the operator's band
+centre every sweep. Log: 50 walk-forward declines, 29 consistency declines.
 
-- *Consistency gate* (`dynamic_atr_consistency_mode: live`, tol 0.20): the walked
-  TP-hit rate must agree with the platform's own measured bucket TP rate. A walk
-  saying 55% against a measured 33% is rejected as contradicted.
-- *Walk-forward gate*: the bracket must generalise on a held-out fold, not just
-  the in-sample halves. Negative out-of-sample → rejected as overfit.
+### Terminology: these are candidate filters, not gates
 
-This is **not** a G1/G2/G3 defect — the gates are doing what they were built to
-do, and G2's fallback keeps the flow alive (no brick, one band, always geometry).
-But the practical consequence is that the "dynamic" geometry is, for most of this
-book, the operator's static mid-band default rather than a fitted bracket. The
-gates are reporting the same thing the no-edge analysis did: the walks do not
-generalise on this evidence.
+The design already says it (`docs/scopes/20261012_GEOMETRY_COHERENT_FLOW_REDESIGN.md`
+§3): *"Candidate quality filters (`min_rr`, expiry, both-halves, consistency,
+walk-forward) run **inside** the solve as **candidate filters**: a rejected
+candidate is simply not chosen; the solve moves to the next candidate. **They
+never null the result.**"* §2's table calls them "gates" only to describe the OLD
+behaviour (`on failure → brick`) that the redesign removed. **"Gate" belongs to
+signal qualification** — the single gate. The band does not gate the signal; it
+bounds the *edge space*, and the filters inside select which bracket in that space
+defines the edge that sets TP/SL.
 
-**Open design question, not a bug:** whether those two gates are calibrated
-correctly for the evidence volume the book actually has (per-symbol solves want
-~80 resolvable paths; the book yields 2–3). Rejecting a non-generalisable pick is
-correct; rejecting so many that the default is what trades may mean the bar is
-set for an evidence volume this book does not have.
+### The structural finding this exposes
+
+Only three of the five candidate filters actually run **inside** the solve:
+
+| candidate filter | where it runs | on failure |
+|---|---|---|
+| `min_rr` | inside `select_tp_sl` | candidate skipped, solve moves on ✓ |
+| expiry (`max_expiry`) | inside `select_tp_sl` | candidate skipped ✓ |
+| both-halves (`e1`/`e2`) | inside `select_tp_sl` | candidate skipped ✓ |
+| consistency | **after** — on the single returned pick | `_band_center_pick` |
+| walk-forward | **after** — on the single returned pick | `_band_center_pick` |
+
+`check_pick_reachability_consistency` (`tiered_atr.py:1024`) and
+`walk_forward_validate` (`:1064`) are called in `dynamic_atr_pick` *after*
+`select_tp_sl` has already chosen a winner, and they act on that one pick. So when
+the winner fails there is no "next candidate" to move to — the solve substitutes
+the band centre, which carries **n=0 and exp=0: no evidence at all**.
+
+That is why 68 of 77 applied geometries are the default. Not because the filters
+are too strict, and not because the walks lack an edge — but because **two of the
+five filters sit on the wrong side of the selection.** Per the design they belong
+*inside* the candidate loop, so the solve returns the best bracket that survives
+them and a "next candidate" exists to move to.
+
+The old register also survives in the naming: `tiered_atr.py:614` is headed
+"Stage 5: pick ↔ reachability consistency gate", and the log emits
+`CONSISTENCY REJECT` / `walk-forward REJECT`.
+
+### Consequence, stated plainly
+
+Not a G1/G2/G3 defect: no brick, one band, always geometry, and G2's fallback
+keeps the flow alive. But the "dynamic" geometry is, for most of this book, the
+operator's static mid-band default **carrying no measured evidence**, while the
+design's own contract promises a bracket that passed the filters. Closing that gap
+is a code change — move the two checks inside the candidate loop — not a policy
+change, and it is the next lever.
