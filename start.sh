@@ -136,7 +136,15 @@ echo "  (model load happens in background — will wait for it below)"
 # ── 1b. Local LLM (port 8004) ─────────────────────────────────────────────
 echo ""
 echo "[1b] Starting Local LLM on port 8004..."
-LOCAL_LLM_PORT=8004 python llm_server.py &
+# spark-int8-local is the canonical model. The XHToken/Spark-X2.5-1.7B-INT8
+# HF-hub snapshot is the unpatched INT8 remote-code model — its
+# `_tied_weights_keys` is a list, which transformers 5.x rejects
+# (AttributeError: 'list' object has no attribute 'keys'). Pin to the
+# local tree so the resolver loads it directly; see worklog
+# 20261013_GEOMETRY_REVIEW_VERIFICATION_AND_ERA_CLEAN_REPLAY.
+LOCAL_LLM_PORT=8004 
+    LOCAL_LLM_MODEL=/teamspace/studios/this_studio/hf_cache/spark-int8-local 
+    python llm_server.py &
 LLM_PID=$!
 echo "  PID: $LLM_PID"
 
