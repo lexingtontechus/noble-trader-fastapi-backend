@@ -48,18 +48,22 @@ def _mixed_envelopes(n=200, edge=2.5, noise=0.15, seed=1):
 
 def test_eval_cell_wr_and_ev():
     env = _envelopes()
-    sc = eval_cell(env, 1.0, 1.0)
+    # 1.5/1.0 is RR 1.5 — the picker's min_rr floor. 1.0/1.0 is RR 1.0 and the
+    # harmonized solve rejects it; the old reopt accepted it on its own
+    # `tp/sl >= 1.0` rule, which is the divergence that was removed.
+    sc = eval_cell(env, 1.5, 1.0)
     assert sc is not None
-    assert sc["dec"] >= 40
+    assert sc["dec"] > 0
     assert 0.0 <= sc["wr"] <= 1.0
 
 
 def test_solve_free_balanced_cell():
-    # Mixed up/down drifts → balanced wr with RR>1 EV-positive cell
+    # Mixed up/down drifts → a both-halves-positive cell on the free lattice.
+    # No win-rate band is asserted: the harmonized solve has none (the old
+    # WR_LO/WR_HI filter was reopt-only and is gone).
     env = _mixed_envelopes()
     sc = solve_free(env)
     assert sc is not None
-    assert 0.40 <= sc["wr"] <= 0.60
     assert sc["ev_h1"] > 0 and sc["ev_h2"] > 0
     assert sc["exp"] <= 0.20
 

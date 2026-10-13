@@ -10,7 +10,6 @@ Proves the Stage 1-5 contract:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from regime_platform.sweep_orchestrator import settlement_contract as sc
 from regime_platform.sweep_orchestrator import tiered_atr as ta
@@ -112,7 +111,6 @@ def test_select_tp_sl_prefers_live_envelope_shape():
     """A tight-stop bracket that a close-walk scores as a winner must NOT be
     picked when the envelope carries the wick that trips it."""
     n = 120
-    rng = np.random.default_rng(3)
     # closes drift up (favourable for a buy), but every bar has a deep wick
     # down that trips a tight stop.
     close = 100.0 + np.linspace(0, 2.0, 48)
@@ -173,6 +171,7 @@ def test_atr_reopt_eval_cell_takes_envelope():
     close = 100.0 + rng.normal(0, 0.6, (n, 48)).cumsum(axis=1)
     paths = (close - 100.0)
     env = np.stack([paths, paths], axis=2)
-    sc_ = eval_cell(env, 1.0, 1.0)
+    # RR 1.5 clears the picker's min_rr floor (see test_atr_reopt).
+    sc_ = eval_cell(env, 1.5, 1.0)
     assert sc_ is not None
     assert sc_["n"] == n

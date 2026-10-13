@@ -31,18 +31,20 @@ from regime_platform.sweep_orchestrator.tiered_atr import (
     build_envelopes,
     live_basis,
     live_same_bar_policy,
+    select_tp_sl,
     walk_envelopes,
 )
 
 logger = logging.getLogger("regime.sweep.atr_reopt")
 
 COST = 0.1
-WR_LO, WR_HI = 0.40, 0.60
-EXP_MAX = 0.20
-MIN_PATHS = 80
-MIN_DEC = 40
 LOOKBACK_DAYS = 45
 FOREX = ("AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY")
+# NOTE: this module carries NO acceptance rule of its own. min_rr, the expiry
+# bar, cost, the sample floor and the both-halves gate all come from the same
+# place the live picker gets them (config + tiered_atr.select_tp_sl). The old
+# WR_LO/WR_HI band and MIN_PATHS/MIN_DEC floors were a second, divergent
+# methodology — removed 2026-10-13.
 # Material drift bar: propose when new TP/SL falls outside current clamp
 # or sits >15% away from the published pick.
 DRIFT_REL = 0.15
@@ -106,28 +108,19 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def eval_cell(env: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
-    """Score one (tp, sl) cell on the LIVE basis envelope.
-
-    ``env`` is (n, EXPIRY_BARS, 2) from ``tiered_atr.build_envelopes`` — the
-    intrabar/sl_first shape the resolver settles on (2026-10-08 basis fix).
-    """
-    if env is None or len(env) == 0:
-        return None
+def _cell(env: np.ndarray, tp: float, sl: float, cost: float) -> dict[str, Any]:
+    """Reporting dict for one (tp, sl) cell, measured on the LIVE envelope."""
     pnl, exp = walk_envelopes(env, float(tp), float(sl),
                               same_bar_policy=live_same_bar_policy())
     tp_hit = (~exp) & (pnl > 0)
     sl_hit = (~exp) & (pnl <= 0)
     dec = int(tp_hit.sum() + sl_hit.sum())
-    if dec < MIN_DEC:
-        return None
-    wr = float(tp_hit.sum() / dec)
     net = pnl - cost
     mid = len(env) // 2
     return {
         "tp": float(tp),
         "sl": float(sl),
-        "wr": wr,
+        "wr": float(tp_hit.sum() / dec) if dec else float("nan"),
         "exp": float(exp.mean()),
         "ev": float(net.mean()),
         "ev_h1": float(net[:mid].mean()) if mid else float("nan"),
@@ -137,45 +130,120 @@ def eval_cell(env: np.ndarray, tp: float, sl: float, cost: float = COST) -> Opti
     }
 
 
-def _ok(sc: Optional[dict[str, Any]]) -> bool:
-    if not sc:
-        return False
-    if sc["exp"] > EXP_MAX or not (WR_LO <= sc["wr"] <= WR_HI):
-        return False
-    return bool(sc["ev_h1"] > 0 and sc["ev_h2"] > 0)
+def _select(env, tp_grid, sl_grid, *, cfg, clamps=None, allow_best_effort=False):
+    """The ONE solve: ``tiered_atr.select_tp_sl``.
 
-
-def solve_free(env: np.ndarray) -> Optional[dict[str, Any]]:
-    """Coarse 0.25 → 0.05 → 0.01. Both halves EV>0. Same bar as research.
-
-    ``env`` is the LIVE-basis envelope (intrabar/sl_first) — see ``eval_cell``.
+    The reopt must not carry a second acceptance rule. This passes the caller's
+    grid + clamps straight into the picker's own solve, so min_rr, the
+    both-halves gate, the expiry bar, cost, the sample floor and the
+    best-effort fallback are all identical by construction. Only the grid and
+    the clamps differ between the live picker and the reopt.
     """
-    if env is None or len(env) < MIN_PATHS:
-        return None
+    from regime_platform.core.feature_flags import get_min_rr
 
-    def scan(tps, sls):
-        best = None
-        for tp in tps:
-            for sl in sls:
-                if tp / sl < 1.0:
-                    continue
-                sc = eval_cell(env, tp, sl)
-                if _ok(sc) and (best is None or sc["ev"] > best["ev"]):
-                    best = sc
-        return best
+    c = clamps or {}
+    return select_tp_sl(
+        envelopes=env,
+        tp_grid=[float(x) for x in tp_grid],
+        sl_grid=[float(x) for x in sl_grid],
+        min_rr=get_min_rr(),
+        max_expiry=float(cfg["max_expiry"]),
+        cost_atr=float(cfg["cost_atr"]),
+        min_signals=int(cfg.get("min_signals") or 60),
+        tp_atr_min=c.get("tp_atr_min"),
+        tp_atr_max=c.get("tp_atr_max"),
+        sl_atr_min=c.get("sl_atr_min"),
+        sl_atr_max=c.get("sl_atr_max"),
+        same_bar_policy=live_same_bar_policy(),
+        allow_best_effort=allow_best_effort,
+    )
 
-    best = scan(np.round(np.arange(0.25, 16.01, 0.25), 2), np.round(np.arange(0.25, 10.01, 0.25), 2))
-    if best is None:
+
+def eval_cell(env: np.ndarray, tp: float, sl: float, cost: float = COST) -> Optional[dict[str, Any]]:
+    """Score ONE (tp, sl) cell through the picker's own solve.
+
+    Unit-test entry point. It defers to ``_select`` (a 1x1 grid, no clamps) so a
+    cell can never be judged by a rule the live picker does not apply.
+    """
+    if env is None or len(env) == 0:
         return None
-    best = scan(
-        np.round(np.arange(max(0.20, best["tp"] - 0.30), best["tp"] + 0.30, 0.05), 2),
-        np.round(np.arange(max(0.20, best["sl"] - 0.30), best["sl"] + 0.30, 0.05), 2),
-    ) or best
-    best = scan(
-        np.round(np.arange(max(0.15, best["tp"] - 0.08), best["tp"] + 0.08, 0.01), 2),
-        np.round(np.arange(max(0.15, best["sl"] - 0.08), best["sl"] + 0.08, 0.01), 2),
-    ) or best
-    return best
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    cfg = dict(get_dynamic_atr_config(None, None))
+    cfg["cost_atr"] = cost
+    pick = _select(env, [float(tp)], [float(sl)], cfg=cfg, allow_best_effort=True)
+    return _cell(env, tp, sl, cost) if pick is not None else None
+
+
+# The free lattice — the reopt's SEARCH SPACE, and the only thing that differs
+# from the live picker. The picker is bound by the shipped clamps; the reopt
+# searches freely because proposing new clamps is its job.
+FREE_TP = tuple(float(x) for x in np.round(np.arange(0.25, 16.01, 0.25), 2))
+FREE_SL = tuple(float(x) for x in np.round(np.arange(0.25, 10.01, 0.25), 2))
+
+
+def solve_free(
+    env: np.ndarray,
+    *,
+    symbol: str | None = None,
+    asset_class: str | None = None,
+    allow_best_effort: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Re-solve on the free lattice using the PICKER's solve.
+
+    Identical methodology to ``tiered_atr.select_tp_sl`` as the live picker calls
+    it — same walk, basis, min_rr, cost, expiry bar, both-halves gate, sample
+    floor and fallback. The conditional input is the clamps: ``None`` here
+    (free), the shipped band's there.
+    """
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    cfg = get_dynamic_atr_config(asset_class, symbol)
+    if env is None or len(env) < int(cfg.get("min_signals") or 60):
+        return None
+    pick = _select(env, FREE_TP, FREE_SL, cfg=cfg, allow_best_effort=allow_best_effort)
+    if pick is None:
+        return None
+    # Refine around the coarse optimum — a SEARCH step, not a second rule.
+    for span, step in ((0.30, 0.05), (0.08, 0.01)):
+        tp_g = np.round(np.arange(max(0.15, pick.tp_atr - span), pick.tp_atr + span, step), 2)
+        sl_g = np.round(np.arange(max(0.15, pick.sl_atr - span), pick.sl_atr + span, step), 2)
+        p2 = _select(env, tp_g, sl_g, cfg=cfg, allow_best_effort=allow_best_effort)
+        if p2 is not None and p2.exp_atr > pick.exp_atr:
+            pick = p2
+    return _cell(env, pick.tp_atr, pick.sl_atr, float(cfg["cost_atr"]))
+
+
+def band_health(env: np.ndarray, *, symbol: str | None, asset_class: str | None) -> dict[str, Any]:
+    """Score the SHIPPED band with the picker's own solve — the invalidity path.
+
+    ``solve_free`` can only propose a REPLACEMENT, so a band that fails on the
+    live basis while no better cell exists is invisible to it (that is exactly
+    XAUUSD: 1.0 ATR solved on the retired close-walk basis, EV<=0 on intrabar,
+    nothing qualifying to replace it). Here the shipped band's own grid + clamps
+    go through the SAME solve the live picker runs, so a non-positive expectancy
+    marks the band as broken regardless of whether a replacement exists.
+    """
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    cfg = get_dynamic_atr_config(asset_class, symbol)
+    if env is None or len(env) < int(cfg.get("min_signals") or 60):
+        return {"band_ev": None, "invalid": False, "reason": "insufficient sample"}
+    clamps = {k: cfg.get(k) for k in
+              ("tp_atr_min", "tp_atr_max", "sl_atr_min", "sl_atr_max")}
+    pick = _select(env, cfg["tp_atr"], cfg["sl_atr"], cfg=cfg, clamps=clamps,
+                   allow_best_effort=True)
+    if pick is None:
+        return {"band_ev": None, "invalid": True, "reason": "no in-band cell for the shipped band"}
+    invalid = pick.exp_atr <= 0
+    return {
+        "band_ev": float(pick.exp_atr),
+        "band_tp": float(pick.tp_atr),
+        "band_sl": float(pick.sl_atr),
+        "invalid": invalid,
+        "reason": (f"shipped band EV {pick.exp_atr:+.3f} <= 0 on the live basis"
+                   if invalid else ""),
+    }
 
 
 def _rel_drift(new: float, old: float) -> float:
@@ -184,8 +252,19 @@ def _rel_drift(new: float, old: float) -> float:
     return abs(new - old) / abs(old)
 
 
-def compare_to_current(symbol: str, sc: dict[str, Any] | None, asset_class: str | None) -> dict[str, Any]:
-    """Flag material drift vs dynamic_atr.by_symbol (operator-owned YAML)."""
+def compare_to_current(
+    symbol: str,
+    sc: dict[str, Any] | None,
+    asset_class: str | None,
+    health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Flag material drift vs dynamic_atr.by_symbol (operator-owned YAML).
+
+    ``health`` is ``band_health()``'s verdict on the SHIPPED band, scored by the
+    same solve the live picker runs. Drift alone is a REPLACEMENT signal — it
+    cannot express "this band is broken", which is how a band sits EV-negative on
+    the live basis while every report reads drift=False.
+    """
     from regime_platform.core.feature_flags import get_dynamic_atr_config
 
     cfg = get_dynamic_atr_config(asset_class, symbol)
@@ -203,8 +282,15 @@ def compare_to_current(symbol: str, sc: dict[str, Any] | None, asset_class: str 
         "vol_ratio_max": cfg.get("vol_ratio_max"),
         "vol_ratio_min": cfg.get("vol_ratio_min"),
         "drift": False,
+        "invalid": False,
+        "band_ev": (health or {}).get("band_ev"),
         "reasons": [],
     }
+    # INVALIDITY first: a band that fails on the live basis is a finding whether
+    # or not a replacement exists. This is the path drift cannot express.
+    if health and health.get("invalid") and health.get("reason"):
+        out["invalid"] = True
+        out["reasons"].append(health["reason"])
     if not sc:
         out["reasons"].append("no +EV cell in free lattice")
         return out
@@ -335,7 +421,11 @@ async def _paths_for(symbols: list[str], members: list[dict], since: datetime, u
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
 
     signals = await _load_signals(symbols, since, until)
-    if len(signals) < MIN_PATHS:
+    # Same sample floor the picker uses (config min_signals), not a private one.
+    from regime_platform.core.feature_flags import get_dynamic_atr_config
+
+    floor = int(get_dynamic_atr_config(None, symbols[0] if symbols else None).get("min_signals") or 60)
+    if len(signals) < floor:
         return np.empty((0, EXPIRY_BARS, 2)), []
     bars: dict[str, list[dict]] = {}
     await fetch_tradingview_batch(
@@ -376,10 +466,11 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
     lines = [
         f"# Monthly ATR re-optimum — {since.date()} → {until.date()}",
         "",
-        "Free lattice · wr∈[0.40,0.60] · exp≤0.20 · cost 0.1 · both halves EV>0",
+        "Free lattice · the picker's OWN solve (tiered_atr.select_tp_sl) — only the clamps differ",
         "Proposals only — YAML is operator-owned. Heavy sweep keeps local clamps.\n",
     ]
     proposals: list[dict[str, Any]] = []
+    invalid_bands: list[dict[str, Any]] = []
 
     fx = [p for p in peers if p["symbol"] in FOREX]
     scopes: list[tuple[str, list[dict], list[str]]] = []
@@ -390,8 +481,7 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
             scopes.append((p["symbol"], [p], [p["symbol"]]))
 
     for scope, members, symbols in scopes:
-        paths, _ = await _paths_for(symbols, members, since, until)
-        sc = solve_free(paths)
+        env, _ = await _paths_for(symbols, members, since, until)
         asset = members[0].get("asset_class")
         # Config-layer parity (worklog 20261010_REOPT_CLAMP_HARMONIZATION.md):
         # compare against the SAME dynamic_atr layer the picker applies. For the
@@ -401,10 +491,27 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
         # the wide GLOBAL clamps and reopt's solve never flags drift vs the
         # tight FOREX band the picker is actually bound by.
         cmp_symbol = members[0]["symbol"]  # forex: a major resolves by_symbol.FOREX
-        cmp = compare_to_current(cmp_symbol, sc, asset if scope != "forex" else "forex")
-        row = f"| {scope} | {_fmt_sc(sc)} | drift={cmp['drift']} | {'; '.join(cmp['reasons']) or '—'} |"
+        scope_class = asset if scope != "forex" else "forex"
+        # Same solve the live picker runs; only the clamps differ (free here).
+        # allow_best_effort mirrors the picker's G2 contract: the solve ALWAYS
+        # returns geometry, so drift is always evaluated and a drifted band is
+        # always reconditioned — never left silent behind a None.
+        sc = solve_free(env, symbol=cmp_symbol, asset_class=scope_class,
+                        allow_best_effort=True)
+        # The shipped band scored by that same solve — the invalidity path.
+        health = band_health(env, symbol=cmp_symbol, asset_class=scope_class)
+        cmp = compare_to_current(cmp_symbol, sc, scope_class, health)
+        bev = health.get("band_ev")
+        row = (
+            f"| {scope} | {_fmt_sc(sc)} | drift={cmp['drift']} | "
+            f"band_ev={'—' if bev is None else f'{bev:+.3f}'} | "
+            f"{'INVALID · ' if cmp.get('invalid') else ''}"
+            f"{'; '.join(cmp['reasons']) or '—'} |"
+        )
         print(row, flush=True)
         lines.append(row)
+        if cmp.get("invalid"):
+            invalid_bands.append({"scope": scope, "compare": cmp})
         if sc and cmp["drift"]:
             proposals.append({"scope": scope, "pick": sc, "compare": cmp})
 
@@ -414,6 +521,10 @@ async def run_atr_reopt(*, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]
         lines.append(
             f"- **{p['scope']}**: propose {_fmt_sc(p['pick'])} — {'; '.join(p['compare']['reasons'])}"
         )
+    lines.append("")
+    lines.append(f"invalid bands: {len(invalid_bands)}")
+    for b in invalid_bands:
+        lines.append(f"- **{b['scope']}**: {b['compare']['reasons'][0]}")
 
     out_dir = Path(__file__).resolve().parents[2] / "worklog" / "kairos" / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
