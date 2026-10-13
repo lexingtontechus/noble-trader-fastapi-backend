@@ -34,6 +34,7 @@ set -e
 PUBLIC_PORT="${PORT:-8000}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+mkdir -p logs
 
 # ── Config ─────────────────────────────────────────────────────────────────
 # How long to wait for TimesFM model to load before giving up and starting
@@ -128,7 +129,7 @@ wait_for_timesfm_ready() {
 # the model is loading in parallel while we start the other services.
 echo ""
 echo "[1/4] Starting TimesFM on port 8002..."
-PORT=8002 python server.py &
+PORT=8002 python server.py >> logs/timesfm.log 2>&1 &
 TIMESFM_PID=$!
 echo "  PID: $TIMESFM_PID"
 echo "  (model load happens in background — will wait for it below)"
@@ -144,14 +145,14 @@ echo "[1b] Starting Local LLM on port 8004..."
 # 20261013_GEOMETRY_REVIEW_VERIFICATION_AND_ERA_CLEAN_REPLAY.
 LOCAL_LLM_PORT=8004 
     LOCAL_LLM_MODEL=/teamspace/studios/this_studio/hf_cache/spark-int8-local 
-    python llm_server.py &
+    python llm_server.py >> logs/llm.log 2>&1 &
 LLM_PID=$!
 echo "  PID: $LLM_PID"
 
 # ── 2. Main App (port 8001) ───────────────────────────────────────────────
 echo ""
 echo "[2/4] Starting Main App on port 8001..."
-PORT=8001 python main.py &
+PORT=8001 python main.py >> logs/main.log 2>&1 &
 MAIN_PID=$!
 echo "  PID: $MAIN_PID"
 
@@ -174,14 +175,14 @@ wait_for_timesfm_ready "$TIMESFM_READY_TIMEOUT" || true
 # TimesFM on each sweep cycle (every ~5 minutes per symbol group).
 echo ""
 echo "[4/5] Starting Sweep Orchestrator on port 8003..."
-SWEEP_ORCHESTRATOR_PORT=8003 python -m regime_platform.sweep_orchestrator &
+SWEEP_ORCHESTRATOR_PORT=8003 python -m regime_platform.sweep_orchestrator >> logs/orchestrator.log 2>&1 &
 ORCH_PID=$!
 echo "  PID: $ORCH_PID"
 
 # ── 5. Gateway / Proxy (public port) ──────────────────────────────────────
 echo ""
 echo "[5/5] Starting Gateway on port $PUBLIC_PORT..."
-PORT="$PUBLIC_PORT" python proxy.py &
+PORT="$PUBLIC_PORT" python proxy.py >> logs/gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "  PID: $GATEWAY_PID"
 
