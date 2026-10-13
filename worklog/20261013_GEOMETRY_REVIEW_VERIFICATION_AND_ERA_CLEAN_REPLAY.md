@@ -138,10 +138,25 @@ n ≥ 200 across ≥ 8 symbols with ≥ 40 per archetype, and R2 showing the sta
 archetype predicts outcome better than the uniform engine. Until then the router
 stays a measurement instrument.
 
+### R1 moved to the roadmap
+
+The review's **R1 (fix entry timing — the WR-lever candidate)** is now
+`nt_roadmap.entry_timing_conditioning`, status `pending`, `review_at` 2026-11-10
+(`scripts/update_nt_roadmap_r1_entry_timing.py`; idempotent — verified create then
+patch, one row).
+
+Recorded as **pending a clean measurement, not pending a build**: R1's premise
+("entry timing sits below the random-walk null") rests on the reachability table
+that §1 above shows the review's own D6 distrusts, and on clean rows the current
+process's walk sits *above* the null in the first half of the window. Its
+`review_condition` states the measurement that would settle it. Related rows
+already on the roadmap: `strategy_router_r1`, `strategy_router_r2_measurement`,
+`strategy_live_route_r6`, `mean_reversion_gold_quant`,
+`tier1_context_alignment_gate_scope`, `regime_edge_gate`.
+
 ---
 
 ## 4. Verification performed
-
 - **E2E:** full suite run on the current tree (see §5 for the result line).
 - **Replay:** the reconciliation re-decided on a clean dataset (§2), plus the D3
   expiry sweep across six live bands (§1) and the band-centre/walked split
