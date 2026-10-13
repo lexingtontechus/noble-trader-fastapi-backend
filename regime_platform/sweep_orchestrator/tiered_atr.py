@@ -946,6 +946,16 @@ async def dynamic_atr_pick(
         sl_atr_max=cfg.get("sl_atr_max"),
         allow_best_effort=allow_best_effort,
     )
+    # G2 (2026-10-12): never hand back None while a band is configured.
+    # `select_tp_sl` returns None only when NO cell clears the min_rr
+    # pre-filter — a band whose entire grid sits below the floor (git's XAGUSD
+    # 0.99-1.07 and XAUAUD 1.23-1.34 were exactly that). Fall back to the
+    # operator's deliberate band centre instead, because the light path reads
+    # None as "keep the brick bracket" — the precise fallback G2 exists to
+    # remove. Without this the invariant holds only for bands whose grid
+    # clears the floor.
+    if pick is None and allow_best_effort:
+        pick = _band_center_pick(cfg)
     # Stage 5 (2026-10-08): does the pick's walked TP rate agree with the
     # platform's own measured bucket? shadow = log; live = reject (fall back
     # to the heavy pick). Fail-open on a cold bucket.

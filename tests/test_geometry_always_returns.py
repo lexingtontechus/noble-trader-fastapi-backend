@@ -139,6 +139,58 @@ async def test_dynamic_atr_pick_still_none_when_opt_out(monkeypatch):
     assert pick is None
 
 
+@pytest.mark.asyncio
+async def test_whole_grid_below_min_rr_still_resolves(monkeypatch):
+    """A band whose ENTIRE grid fails the min_rr pre-filter must still resolve to
+    geometry (the band centre) — never None, because the light path reads None as
+    "keep the brick bracket".
+
+    Regression for git's XAGUSD (grid RR 0.99-1.07) and XAUAUD (1.23-1.34) bands:
+    every cell was skipped, `select_tp_sl` returned None, and `dynamic_atr_pick`
+    passed that None straight through — so the ATR geometry never reached those
+    symbols at all. Verified empirically before the fix:
+        select_tp_sl(GIT XAGUSD)       -> None
+        dynamic_atr_pick(GIT XAGUSD)   -> None   (light path keeps BRICK)
+    """
+    from regime_platform.sweep_orchestrator import tiered_atr as t
+
+    async def _members():
+        return [{"symbol": "XAGUSD", "asset_class": "commodities",
+                 "tradingview_symbol": "OANDA:XAGUSD"}]
+
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols", _members)
+
+    async def _sigs(symbols, since, until):
+        return [{"symbol": "XAGUSD", "signal": "buy", "entry_price": 20.0,
+                 "atr": 0.2, "_ts": float(i)} for i in range(80)]
+
+    monkeypatch.setattr(t, "_load_class_signals", _sigs)
+
+    async def _bars(rows, **kw):
+        out = kw.get("ohlcv_out")
+        if out is not None:
+            out["XAGUSD"] = [{"t": 3600.0 * i, "c": 20.0 + i * 0.01} for i in range(400)]
+        return out
+
+    monkeypatch.setattr(
+        "regime_platform.sweep_orchestrator.price_fetcher.fetch_tradingview_batch", _bars)
+    monkeypatch.setattr(t, "build_envelopes",
+                        lambda *a, **k: (np.zeros((80, EXPIRY_BARS, 2)), None))
+    monkeypatch.setattr(t, "select_tp_sl", lambda *a, **k: None)   # the dead band
+
+    async def _no_store(*a, **k):
+        return True
+
+    monkeypatch.setattr(t, "write_pick_to_store", _no_store)
+
+    pick = await t.dynamic_atr_pick(
+        None, cfg=dict(CFG), min_rr=1.5, symbol="XAGUSD", use_store=False,
+    )
+    assert pick is not None, "a configured band must never resolve to None (G2)"
+    assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0), "must fall back to the band centre"
+
+
 # ── G3: the light path goes through the one solve ───────────────────────────
 
 def test_light_path_resolves_through_the_solve_not_the_store():

@@ -56,10 +56,41 @@ clear `min_rr = 1.5`?):
 | **git HEAD** | **XAGUSD** (RR 0.99–1.07 — tp ≈7.96 vs sl ≈7.76, a 1:1 band) and **XAUAUD** (1.23–1.34) |
 | Studio (live) | none |
 
-A band where every cell fails the RR floor **can never produce a pick**. Worse,
-under G2 the last-resort fallback is the band *centre* — which sits inside the
-same dead range, so the book would ship a bracket that violates its own RR floor.
-Two of fourteen symbols were structurally unreachable on git's config.
+A band where every cell fails the RR floor can never produce a *walked*
+candidate. **What actually happened next is not what this worklog first
+claimed** — verified empirically after the fact:
+
+| band | grid RR | cells clearing `min_rr` | `select_tp_sl` | `dynamic_atr_pick` |
+|---|---|---|---|---|
+| git XAGUSD | 0.99–1.07 | **0/9** | `None` | `None` → **light path kept BRICK** |
+| reconciled XAGUSD | 2.19–2.58 | 9/9 | `6.39/2.69`, exp +1.687 | band centre (consistency reject) |
+
+So the consequence was **"the ATR geometry never reached those two symbols — they
+traded brick"**, *not* "the book shipped a bracket below its RR floor". The
+band-centre fallback was never reached, because `dynamic_atr_pick` returned the
+`None` straight through.
+
+That also exposed a real gap in G2 as first implemented: the band-centre
+fallback had been added at the five *early* exits but not after the solve, so the
+"never returns `None`" invariant held only for bands whose grid clears the floor.
+Fixed — `dynamic_atr_pick` now falls back to `_band_center_pick(cfg)` when
+`select_tp_sl` finds nothing, and the same probe returns `7.96/7.76` instead of
+`None`.
+
+## `min_rr` has two uses — only one of them is inert
+
+The 2026-09-20 determination (`worklog/20260925_DYNAMIC_ATR_LIVE_FLIP_ASSESSMENT.md`
+§1.2) that **`min_rr` is inert is correct, and it is about the *gate*:**
+
+| use | site | reads | binding? |
+|---|---|---|---|
+| qualification **gate** | `ev_engine.py:737` `rr >= self.min_rr` | **`tp_bricks / sl_bricks`** (`ev_engine.py:726-728`) — the *brick* counts, never the ATR bracket | **inert**: brick RR sits ≈1.67–2.0, so `>= 1.5` almost never binds; rejects are kelly/regime/p_win |
+| geometry **solver pre-filter** | `tiered_atr.py:510` `if tp_f / sl_f < min_rr: continue` | the **ATR** grid cell `tp_atr / sl_atr` | **not inert** — it is what makes git's XAGUSD/XAUAUD bands yield nothing |
+
+This worklog originally blurred the two. The gate is inert (as documented); the
+solver pre-filter is not, and the defect above lives entirely in the second use.
+Correcting the record matters because "min_rr is inert" is true of the gate and
+would be a wrong reason to ignore a grid whose every cell sits below the floor.
 
 The reopt's values fixed exactly those two. That is why the Studio's bands could
 not simply be discarded.
@@ -113,5 +144,8 @@ so a future band retune doesn't produce a false failure.
 
 ## Standing rule
 
-A band that cannot clear `min_rr` is a config defect, not a preference — the
+A grid whose every cell sits below the solver's `min_rr` pre-filter yields no
+walked candidate, so the ATR geometry never reaches that symbol. That is a config
+**defect**, not a preference — and it is independent of the (genuinely inert)
+qualification gate, which reads brick counts and would not have caught it. The
 replay decides *between usable bands*; it does not excuse an unusable one.
