@@ -121,11 +121,15 @@ def main() -> int:
 
     lines = all_lines
     if args.since:
-        # full "YYYY-MM-DD HH:MM[:SS]" for a cross-midnight window; a bare
-        # "HH:MM[:SS]" anchors to the log's last date.
+        # accepts "YYYY-MM-DD HH:MM[:SS]" (cross-midnight window), the ISO
+        # spelling "YYYY-MM-DDTHH:MM[:SS]", and a bare "HH:MM[:SS]" (anchored to
+        # the log's last date). Normalise 'T' to a space FIRST: an ISO value has
+        # no space, so it used to take the bare-time branch, get prefixed with
+        # the date, and silently report "no sweeps matched".
         last_date = next((TS_RE.match(ln).group(1) for ln in reversed(all_lines)
                           if TS_RE.match(ln)), "")
-        cutoff = (args.since if " " in args.since.strip() else f"{last_date} {args.since}")[:19]
+        raw = args.since.strip().replace("T", " ")
+        cutoff = (raw if " " in raw else f"{last_date} {raw}")[:19]
         lines = [ln for ln in all_lines
                  if (m := TS_RE.match(ln)) and f"{m.group(1)} {m.group(2)}" >= cutoff]
 
