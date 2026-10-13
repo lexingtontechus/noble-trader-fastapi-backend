@@ -25,28 +25,49 @@ replay re-run on a clean dataset.
 ### Refuted — D3
 
 D3 asserts `max_expiry: 0.20` "vetoes everything the widening implies" and "the
-widened bands can never clear the walk gate". **Measured, false:**
+widened bands can never clear the walk gate". **Measured, false.** Full grid per
+band, every in-band cell attributed to the first filter that rejects it:
 
-| band | tp+sl width | max walk expiry | expiry kills |
-|---|---|---|---|
-| US30USD | 15.7 ATR | 0.1250 | **0** of 9 |
-| XAGUSD | 9.4 ATR | 0.0214 | **0** of 9 |
-| BTCUSD | 10.3 ATR | 0.0000 | **0** of 9 |
-| XAUUSD | 6.2 ATR | 0.0000 | **0** of 9 |
-| AUDUSD | 7.6 ATR | 0.0000 | **0** of 9 |
-| FOREX (widened) | 7.6 ATR | **0.0009** | **0** of 9 |
+| band | tp+sl | max walk expiry | min_rr | clamp | **expiry** | both-halves | pass |
+|---|---|---|---|---|---|---|---|
+| FOREX (pooled) | 7.6 ATR | 0.0009 | 1 | 0 | **0** | 8 | 0 |
+| BTCUSD | 10.3 ATR | 0.0000 | 0 | 0 | **0** | 9 | 0 |
+| US30USD | 15.7 ATR | 0.1250 | 0 | 0 | **0** | 9 | 0 |
+| XAGUSD | 9.4 ATR | 0.0212 | 0 | 0 | **0** | 0 | **9** |
+| **XAUAUD** | 11.2 ATR | **0.2299** | 3 | 0 | **3** | 0 | 3 |
+| XAUEUR | 6.2 ATR | 0.0000 | 0 | 0 | **0** | 9 | 0 |
+| XAUUSD | 6.2 ATR | 0.0000 | 0 | 0 | **0** | 9 | 0 |
+| **totals** | | | 4 | 0 | **3** | 44 | 12 |
 
-The widened FOREX band's walk expiry is **0.09%** — three orders of magnitude under
-the cap. What kills those cells is the **both-halves** bar (8 of 9) and `min_rr`
-(1 of 9). Two compounding errors: (a) "the 4+ bucket runs 26% expired" is the
-*reachability bucket's realised* share, not the walk's expiry share — different
-quantities treated as one; (b) the stated conclusion ("the widening reaches the
-book only via `_band_center_pick`") is contradicted — **AUDUSD gets walked picks
-from the widened band** and **XAGUSD's band passes 9/9 walk cells**, knocked out
-later by the consistency filter, which is D5's finding.
+*(AAPL and US500 had n=0 envelopes in this window — market closed — so 7 of the 9
+bands are measurable.)*
+
+**Correction to this review's first pass.** It reported "expiry kills ZERO cells in
+every band" — **wrong**. XAUAUD has **3** cells at expiry **0.2299 > 0.20** (all
+`tp=6.82`); the scope list simply omitted XAUAUD. An independent verifier caught
+it. The 3 are **doubly killed** (`e1 < 0` too), so expiry is never the unique or
+load-bearing killer — re-running `select_tp_sl` with `max_expiry=0.20` vs `1.0`
+returns an identical pick in every band — but the count is not zero, and the
+generalisation from six bands to "every band" was not earned.
+
+Two compounding errors remain in D3 itself: (a) "the 4+ bucket runs 26% expired"
+is the *reachability bucket's realised* share, not the walk's expiry share —
+different quantities treated as one; (b) the stated conclusion ("the widening
+reaches the book only via `_band_center_pick`") is contradicted — **4 of 7
+measurable bands return a STRICT walked pick** that clears expiry *and* both
+halves (XAGUSD 6.39/2.69, XAUAUD 6.57/4.31, BTCUSD, AUDUSD 4.52/2.87), and the
+verifier found those also pass the live walk-forward gate. The three that do fall
+through (XAUUSD, US30USD, FOREX) do so on **negative fold expectancy**, not on
+expiry.
 
 What survives in D3 is the design point underneath: expiry is already priced in
 the 3-outcome EV via `p_expire`, so a walk-side hard reject double-counts it.
+
+**Second correction (to §1's confirmed list).** D1 was recorded as "`e1>0 ∧ e2>0`
+is the only robustness bar". Imprecise: the *same* guard
+(`tiered_atr.py:535`) is `if exp_m > max_expiry or e1 <= 0 or e2 <= 0` — expiry is
+a co-condition in the same expression. Both-halves is the only *fold-consistency*
+bar, not the only condition.
 
 ### Overstated
 
@@ -174,12 +195,56 @@ bands (§1) — expiry kills zero cells everywhere. The band-centre/walked split
 (`20261013_STORE_BOUNDARY_G1_AND_WALKED_VS_CENTRE.md`) — 68/77 applied geometries
 are the zero-evidence default.
 
-**Subagent verification:** two independent verifiers dispatched (one re-derives the
-era-clean counts and the clean replay from the raw tables; one adversarially checks
-the review's D3 and the confirmed defects against the code). Results appended below
-when they land.
+**Subagent verification — two independent verifiers, both completed.**
 
-### The defect this leaves open (not fixed here)
+*Verifier 1 (era-clean claims) — all three VERIFIED.*
+- `_load_class_signals` (`tiered_atr.py:714-756`) has no `contaminated` filter and no
+  cutover fetch; `dynamic_atr_pick` sets `since = until − lookback_days` unclamped.
+- Window `2026-10-01T02:22Z … 2026-10-11T02:22Z`, cutover `2026-10-02T00:00Z`: **4,064
+  raw rows → 450 contaminated (11.1%)**; after the picker's hour-dedupe **1,255
+  signals → 120 contaminated (9.6%)**. Uniform across symbols.
+- **All 450 contaminated rows are POST-cutover** — confirmed independently.
+- Replay: unfiltered **+0.0232 / e1 +0.2670 / e2 −0.2202**; era-clean **−0.0845 /
+  e1 +0.0405 / e2 −0.2093** — matching the figures above to the precision given.
+- **Decisive isolation:** cutover-clamp only, contaminated kept → **+0.0247** (barely
+  moves); removing the 120 contaminated rows flips the sign. The positive expectancy
+  is specifically an artifact of the contaminated rows.
+- **New finding from the verifier:** `atr_reopt` clamps to the cutover but does **not**
+  filter `contaminated=false` either — and since *every* contaminated row is
+  post-cutover, **the reopt's Fix B does not actually clean it.** Both the picker and
+  the reopt need the `contaminated=eq.false` filter; the cutover clamp alone is
+  insufficient. That sharpens §2's defect statement.
+- Two judgment calls noted: shipped `min_rr` is **1.5** (`feature_flags.yaml:759`), not
+  the 2.0 code default — at 2.0 *all nine* FOREX cells fail the pre-filter (max tp/sl
+  = 1.81); and filtering before vs after the dedupe gives identical results.
+
+*Verifier 2 (review claims) — D3 REFUTED, and two of this review's own claims corrected.*
+- **D3 refuted** ✓ (independently), and **more strongly than this review put it**:
+  `max_expiry` is *provably inert* — re-running `select_tp_sl` with `max_expiry=0.20`
+  vs `1.0` returns an identical pick in all 7 measurable bands. The blocker for
+  XAUUSD/US30USD/FOREX is negative fold expectancy, not expiry.
+- **This review's "expiry kills ZERO cells in every band" → REFUTED.** XAUAUD has 3
+  cells at expiry 0.2299 > 0.20 (all `tp=6.82`). Corrected above; the scope list
+  omitted XAUAUD. `scripts/audit_band_filters.py` now covers all 9 bands and reproduces
+  it exactly.
+- **"the widening reaches the book only via `_band_center_pick`" → REFUTED.** 4 of 7
+  bands return a strict walked pick that also passes the live walk-forward gate.
+- **"`e1>0 ∧ e2>0` is the only robustness bar" → imprecise.** The same guard is
+  `if exp_m > max_expiry or e1 <= 0 or e2 <= 0`. Corrected above.
+- Claims B (router: shadow, per-archetype, gate verbatim "≥ 200 ROUTED episodes across
+  ≥ 8 symbols … ≥ 40 in the smallest archetype") and C(ii)/(iii) **VERIFIED**, including
+  the caveat that band-centre substitution only fires when the mode is `live` (both are
+  `live`), and that `cost_atr` has no per-symbol override anywhere.
+
+*One unresolved discrepancy, flagged rather than smoothed over:* for **BTCUSD** the
+verifier measured 260 envelopes → 6 cells passing / 3 both-killed, while
+`scripts/audit_band_filters.py` measures 209 → 9 both-killed. The other six scopes
+match exactly (XAGUSD 189, XAUAUD 187, XAUUSD 190, US30USD 104, FOREX 1167). The
+difference is in the fetched signal set, not the method. **Not load-bearing:** BTCUSD's
+band was not changed by the reconciliation. Worth a re-check before any BTCUSD band
+decision.
+
+**The defect this leaves open (not fixed here)**
 
 `_load_class_signals` should apply the platform's own era-clean standard:
 
@@ -187,9 +252,13 @@ when they land.
 "contaminated": "eq.false",          # + optionally ts >= nt_calibration_cutover
 ```
 
-Everything else in the measurement stack already does — `bracket_reachability`
-(`:209`, `:223-225`) and `dynamic_tier_optimizer._fetch_resolved_rows` (`:89`)
-both filter `contaminated=false`, and `atr_reopt` clamps to the cutover (Fix B).
-The geometry walk is the one consumer that does not, so a replay or a pick taken
-through it can look decisive on artifact rows. One filter; not applied here because
-the verifiers are reading that file.
+**Two consumers need it, not one** (corrected by the verifier): `_load_class_signals`
+applies neither filter, and `atr_reopt`'s Fix B clamps to the cutover but **does not
+filter `contaminated=false`** — which is insufficient, because **every** contaminated
+row is post-cutover. So the reopt's "era-clamp" does not actually clean its window.
+
+The consumers that *are* clean: `bracket_reachability` (`:209`, `:223-225`) and
+`dynamic_tier_optimizer._fetch_resolved_rows` (`:89`) both filter `contaminated=false`.
+The geometry walk and the reopt are the two that do not, so a replay, a pick, or a
+reopt proposal taken through them can look decisive on artifact rows. One filter per
+consumer; not applied here because the verifiers were reading those files.

@@ -35,31 +35,44 @@ from regime_platform.sweep_orchestrator.tiered_atr import (  # noqa: E402
     walk_envelopes,
 )
 
-# the scopes worth checking: the widest bands + the forex book + one metal
-SCOPES = [("US500", "US500"), ("US30USD", "US30USD"), ("XAGUSD", "XAGUSD"),
-          ("XAUUSD", "XAUUSD"), ("BTCUSD", "BTCUSD"), ("AUDUSD", "AUDUSD")]
+FOREX = ["AUDUSD", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY"]
+# EVERY scope the config carries a band for, plus the pooled FOREX book.
+# (The first version omitted XAUAUD — which is exactly where expiry does bite.)
+SCOPES: list[tuple[str, list[str]]] = [
+    ("FOREX(pooled)", FOREX),
+    ("AAPL", ["AAPL"]),
+    ("BTCUSD", ["BTCUSD"]),
+    ("US30USD", ["US30USD"]),
+    ("US500", ["US500"]),
+    ("XAGUSD", ["XAGUSD"]),
+    ("XAUAUD", ["XAUAUD"]),
+    ("XAUEUR", ["XAUEUR"]),
+    ("XAUUSD", ["XAUUSD"]),
+]
 
 
-async def one(sym: str):
-    cfg = get_dynamic_atr_config(None, sym)
+async def one(label: str, syms: list[str]) -> dict[str, int]:
+    # the band the FIRST symbol resolves (the pooled path inherits a member's band)
+    cfg = get_dynamic_atr_config("forex" if label.startswith("FOREX") else None, syms[0])
     until = datetime.now(timezone.utc) - timedelta(hours=EXPIRY_BARS + 2)
     since = until - timedelta(days=10)
-    sig = await _load_class_signals([sym], since, until)
+    sig = await _load_class_signals(syms, since, until)
     bars: dict = {}
     await fetch_tradingview_batch(
-        [{"symbol": sym, "tradingview_symbol": f"OANDA:{sym}"}],
-        hours=24 * 15, interval="1h", ohlcv_out=bars)
+        [{"symbol": s, "tradingview_symbol": f"OANDA:{s}"} for s in syms],
+        hours=24 * 20, interval="1h", ohlcv_out=bars)
     bars = {s: [b for b in v if b.get("t") is not None and b.get("c") is not None]
             for s, v in bars.items()}
     env, _ = build_envelopes(sig, bars, basis=live_basis(), return_vol=True)
     if len(env) < 60:
-        print(f"  {sym:9} n={len(env):>4}  too thin to judge")
-        return
+        print(f"  {label:14} n={len(env):>4}  too thin to judge")
+        return {}
     n = len(env)
     mid = n // 2
     min_rr = get_min_rr()
     kills: dict[str, int] = {}
     max_exp = 0.0
+    expiry_cells: list[tuple[float, float, float]] = []
     for tp in cfg["tp_atr"]:
         for sl in cfg["sl_atr"]:
             tp_f, sl_f = float(tp), float(sl)
@@ -75,21 +88,32 @@ async def one(sym: str):
             max_exp = max(max_exp, em)
             net = pnl - cfg["cost_atr"]
             if em > cfg["max_expiry"]:
-                k = "expiry"
+                kills["expiry"] = kills.get("expiry", 0) + 1
+                expiry_cells.append((tp_f, sl_f, em))
             elif float(net[:mid].mean()) <= 0 or float(net[mid:].mean()) <= 0:
-                k = "both-halves"
+                kills["both"] = kills.get("both", 0) + 1
             else:
-                k = "PASSES"
-            kills[k] = kills.get(k, 0) + 1
+                kills["pass"] = kills.get("pass", 0) + 1
     width = max(cfg["tp_atr"]) + max(cfg["sl_atr"])
-    print(f"  {sym:9} n={len(env):>4}  tp+sl max={width:>5.1f}ATR  "
-          f"max walk expiry={max_exp:.4f}  kills={kills}")
+    print(f"  {label:14} n={n:>4}  tp+sl={width:>5.1f}ATR  max_expiry={max_exp:.4f}  kills={kills}")
+    if expiry_cells:
+        print("                 expiry-killed: "
+              + ", ".join(f"tp={t:g}/sl={s:g}({e:.4f})" for t, s, e in expiry_cells))
+    return kills
 
 
-async def main():
-    print(f"max_expiry cap = {get_dynamic_atr_config(None, 'XAUUSD')['max_expiry']}\n")
-    for label, sym in SCOPES:
-        await one(sym)
+async def main() -> int:
+    print(f"max_expiry cap = {get_dynamic_atr_config(None, 'XAUUSD')['max_expiry']}"
+          f"   min_rr = {get_min_rr()}\n")
+    total: dict[str, int] = {}
+    for label, syms in SCOPES:
+        for key, v in (await one(label, syms)).items():
+            total[key] = total.get(key, 0) + v
+    print(f"\ntotals across {len(SCOPES)} scopes: {total}")
+    print(f"expiry killed {total.get('expiry', 0)} cell(s) — the D3 claim is that "
+          f"max_expiry vetoes the widened bands")
+    return 0
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
