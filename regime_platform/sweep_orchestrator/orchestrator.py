@@ -2580,6 +2580,22 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[bracket-reachability] failed: %s", exc)
 
+        # ── PBM posterior rebuild (2026-10-14, Phase A) ────────────────────
+        # Decay refresh + hierarchical pooling of nt_cell_posterior, riding
+        # the same weekly cadence until Phase C makes re-solve
+        # evidence-triggered (the rebuild itself stays — decay is a property
+        # of time, not of events). Best-effort, pbm_mode-gated.
+        try:
+            from regime_platform.sweep_orchestrator import posterior as _post_mod
+            if _post_mod.pbm_mode() != "off":
+                _pbm_rb = await _post_mod.rebuild_posteriors()
+                logger.info(
+                    "[pbm-posterior] rebuild done: %d cell row(s)",
+                    _pbm_rb.get("rows", 0),
+                )
+        except Exception as exc:
+            logger.error("[pbm-posterior] rebuild failed: %s", exc)
+
         if getattr(settings, "CALIBRATION_BIAS_BY_BUCKET_ENABLED", True):
             from regime_platform.sweep_orchestrator.calibration_bias_bucket import (
                 build_calibration_bias_by_bucket,
@@ -4242,6 +4258,130 @@ class SweepOrchestrator(HeavySweepMixin):
             _bracket_bucket = _bp.bucket
             _bracket_vol_tier = _bp.vol_tier
 
+        # ── PBM: posterior read + Phase A stamp inputs (2026-10-14, worklog
+        # 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_PHASES.md §5) ──────────
+        # The Posterior Barrier Model's per-tick read: one cell posterior
+        # (Dirichlet over W/L/E, anchored on the closed-form barrier null at
+        # THIS signal's geometry), one price (3-outcome EV), one gate (the
+        # EV lower credible bound). Phase A: measurement only — the stamp
+        # lands in nt_pbm_shadow next to the nt_signal_sim row; nothing
+        # downstream consumes it. Phase B (pbm_ev_mode) swaps the EV INPUT
+        # at the apply_bracket_to_ev call below; Phase D (pbm_sizing_mode)
+        # scales Kelly on the bound. Both default off/shadow.
+        _pbm_stamp_kwargs: dict | None = None
+        _pbm_probs: tuple[float, float] | None = None   # (p_win, p_resolve) for Phase B
+        _pbm_ev_lb: tuple[float, float] | None = None   # (ev_mean_atr, ev_lb_atr) for Phase D
+        try:
+            from regime_platform.core.feature_flags import (
+                get_pbm_ev_mode,
+                get_pbm_mode,
+            )
+            _pbm_on = get_pbm_mode() != "off"
+        except Exception:
+            _pbm_on = False
+        if _pbm_on:
+            try:
+                from regime_platform.sweep_orchestrator import posterior as _post
+                from regime_platform.sweep_orchestrator.barrier import (
+                    barrier_null_from_prices,
+                )
+                from regime_platform.sweep_orchestrator.bracket_reachability import (
+                    _bucket_for,
+                    _vol_tier as _vol_tier_of,
+                )
+                _pbm_ts = datetime.now(timezone.utc).isoformat()
+                _pbm_side = trade_signal.get("signal") or "buy"
+                _pbm_vt = _bracket_vol_tier or _vol_tier_of(regime_label)
+                _pbm_e = trade_signal.get("entry_price")
+                _pbm_tp_px = trade_signal.get("take_profit")
+                _pbm_sl_px = trade_signal.get("stop_loss")
+                if (
+                    _pbm_e and _pbm_tp_px and _pbm_sl_px and atr
+                    and float(atr) > 0
+                ):
+                    _pbm_tp_atr = abs(float(_pbm_tp_px) - float(_pbm_e)) / float(atr)
+                    _pbm_sl_atr = abs(float(_pbm_e) - float(_pbm_sl_px)) / float(atr)
+                    _pbm_bucket = _bucket_for(_pbm_tp_atr)
+                    if _pbm_bucket:
+                        # deadline class: same local-tier source the payload's
+                        # soft_deadline_hours stamp (and therefore the resolver's
+                        # cell key) uses.
+                        _pbm_dclass = "standard"
+                        try:
+                            from regime_platform.sweep_orchestrator.dynamic_deadline import (
+                                read_local_deadline_tier,
+                            )
+                            _pbm_tier = read_local_deadline_tier(symbol, _pbm_vt)
+                            if _pbm_tier is not None:
+                                _pbm_dclass = _post.deadline_class_of(
+                                    {"soft_deadline_hours": _pbm_tier.soft_deadline_hours},
+                                )
+                        except Exception:
+                            pass
+                        _pbm_cell = await _post.read_cell(
+                            symbol, _post._side_of(_pbm_side), _pbm_vt, _pbm_bucket,
+                            deadline_class=_pbm_dclass, era="live",
+                        )
+                        _pbm_null = barrier_null_from_prices(
+                            float(_pbm_e), float(_pbm_tp_px), float(_pbm_sl_px),
+                            atr=float(atr), direction=_pbm_side,
+                            sigma=_post.pbm_sigma_atr(),
+                        )
+                        if _pbm_cell is not None:
+                            _pbm_alpha = _pbm_cell.anchor(_pbm_null)
+                            _pbm_m = _pbm_cell.m_mtm
+                        else:
+                            # cold book: prices at physics, k0 pseudo-counts only
+                            _k0 = _post.pbm_k0()
+                            _pbm_alpha = (
+                                _k0 * _pbm_null.p_win,
+                                _k0 * _pbm_null.p_loss,
+                                _k0 * _pbm_null.p_expire,
+                            )
+                            _pbm_m = 0.0
+                        _pbm_means, _ = _post.dirichlet_moments(_pbm_alpha)
+                        _pbm_cost = _post.pbm_cost_atr(symbol, 0.1)
+                        # Phase B inputs: the posterior triple through the SAME
+                        # 3-outcome contract apply_bracket_to_ev already speaks
+                        # (p_win <- p_W, p_resolve <- 1 - p_E).
+                        _pbm_probs = (round(_pbm_means[0], 6), round(1.0 - _pbm_means[2], 6))
+                        # Phase D inputs: posterior EV moments in ATR units
+                        _pbm_ev_mean, _pbm_ev_sd = _post.ev_moments(
+                            _pbm_alpha, _pbm_tp_atr, _pbm_sl_atr,
+                            cost_atr=_pbm_cost, m_mtm=_pbm_m,
+                        )
+                        _pbm_ev_lb = (
+                            _pbm_ev_mean,
+                            _pbm_ev_mean - _post.ev_lower_bound_z(_post.pbm_ev_bound_q()) * _pbm_ev_sd,
+                        )
+                        _pbm_stamp_kwargs = {
+                            "symbol": symbol,
+                            "ts_iso": _pbm_ts,
+                            "signal": _pbm_side,
+                            "source": source,
+                            "null": _pbm_null,
+                            "alpha": _pbm_alpha,
+                            "tp_atr": _pbm_tp_atr,
+                            "sl_atr": _pbm_sl_atr,
+                            "cost_atr": _pbm_cost,
+                            "m_mtm": _pbm_m,
+                            "bucket": _pbm_bucket,
+                            "vol_tier": _pbm_vt,
+                            "deadline_class": _pbm_dclass,
+                            "era": "live",
+                        }
+                        if get_pbm_ev_mode() == "shadow":
+                            logger.info(
+                                "[sweep:orch] %s: PBM shadow p=(%.4f,%.4f,%.4f) "
+                                "null_w=%.4f gap=%+.4f ev=%+.4f lb=%+.4f (%s)",
+                                symbol, _pbm_means[0], _pbm_means[1], _pbm_means[2],
+                                _pbm_null.p_win, _pbm_means[0] - _pbm_null.p_win,
+                                _pbm_ev_mean, _pbm_ev_lb[1],
+                                _pbm_cell.as_log() if _pbm_cell is not None else "cold:null-anchored",
+                            )
+            except Exception as _pbm_exc:
+                logger.debug("[sweep:orch] %s: PBM read failed: %s", symbol, _pbm_exc)
+
         # ── 5. EV Engine (v6 — 3-source logit pool, live) ──
         # p_historical (R3, 2026-08-23) was retired as a live blend input
         # 2026-09-09 (worklog/20260909_CALIBRATION_AND_SCORING_METHODOLOGY_REFRAME.md):
@@ -4492,10 +4632,28 @@ class SweepOrchestrator(HeavySweepMixin):
             from regime_platform.sweep_orchestrator.p_win_bracket import (
                 apply_bracket_to_ev,
             )
+            # ── Phase B (pbm_ev_mode=live): swap the EV INPUT to the
+            # posterior triple (2026-10-14). ONE substitution function, the
+            # SAME 3-outcome contract — p_win <- p_W, p_resolve <- 1 - p_E —
+            # so light and heavy price identically by construction. The
+            # legacy lookup stays the default until the era-clean replay
+            # passes (worklog §5 Phase B acceptance bar).
+            _ev_p_win_src, _ev_p_resolve_src = _p_win_bracket, _p_resolve
+            try:
+                from regime_platform.core.feature_flags import get_pbm_ev_mode
+                if get_pbm_ev_mode() == "live" and _pbm_probs is not None:
+                    _ev_p_win_src, _ev_p_resolve_src = _pbm_probs
+                    logger.info(
+                        "[sweep:orch] %s: PBM EV input p_w=%.4f p_resolve=%.4f "
+                        "(replaces table p_win_bracket=%s)",
+                        symbol, _ev_p_win_src, _ev_p_resolve_src, _p_win_bracket,
+                    )
+            except Exception:
+                pass
             _bracket_applied_to_ev = apply_bracket_to_ev(
                 ev_result,
-                p_win_bracket=_p_win_bracket,
-                p_resolve=_p_resolve,
+                p_win_bracket=_ev_p_win_src,
+                p_resolve=_ev_p_resolve_src,
                 engine=self._ev_engine,
             )
             if _bracket_applied_to_ev:
@@ -4614,6 +4772,36 @@ class SweepOrchestrator(HeavySweepMixin):
                         symbol, calib_adj.get("status"), calib_adj.get("bias"),
                         ev_result.p_win, effective_kelly, ev_result.ev, ev_result.aggression,
                     )
+
+        # ── Phase D (pbm_sizing_mode=conservative, 2026-10-14): size on the
+        # bound, retire the penalty (worklog §5 Phase D) ────────────────────
+        # Kelly scaled by the EV lower credible bound's share of the mean:
+        # thin evidence -> wide interval -> small size -> tends to zero as
+        # evidence -> zero. Replaces the shrink-toward-0.5 machinery's JOB
+        # (sizing honesty) with a property of the interval. Ships legacy;
+        # flip after the Phase C replay (the size must be honest only once
+        # the price it sizes is).
+        if _pbm_ev_lb is not None and _pbm_stamp_kwargs is not None:
+            try:
+                from regime_platform.core.feature_flags import get_pbm_sizing_mode
+                if get_pbm_sizing_mode() == "conservative":
+                    from regime_platform.sweep_orchestrator.posterior import (
+                        conservative_kelly,
+                    )
+                    _kelly_pre_pbm = effective_kelly
+                    effective_kelly = conservative_kelly(
+                        effective_kelly, _pbm_ev_lb[0], _pbm_ev_lb[1],
+                    )
+                    logger.info(
+                        "[sweep:orch] %s: PBM conservative kelly %.6f→%.6f "
+                        "(ev=%+.4f lb=%+.4f)",
+                        symbol, _kelly_pre_pbm, effective_kelly,
+                        _pbm_ev_lb[0], _pbm_ev_lb[1],
+                    )
+            except Exception as _pbm_sz_exc:
+                logger.debug(
+                    "[sweep:orch] %s: PBM sizing failed: %s", symbol, _pbm_sz_exc,
+                )
 
         # ── 5b1. Macro filter (2026-08-28, worklog
         # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md) ──────────────
@@ -5864,6 +6052,23 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
                 else:
                     asyncio.create_task(log_signal_sim(sim_payload))
+                    # ── PBM prediction ledger (Phase A, 2026-10-14) ──────────
+                    # One nt_pbm_shadow row per captured signal: posterior
+                    # triple vs analytic null vs EV-bound. The acceptance
+                    # replay joins it to resolved outcomes (log score/Brier)
+                    # — the bar the Phase B/C flips must clear. Fire-and-
+                    # forget, same population as the sim row itself.
+                    if _pbm_stamp_kwargs is not None:
+                        try:
+                            from regime_platform.sweep_orchestrator.posterior import (
+                                record_pbm_shadow as _record_pbm,
+                            )
+                            asyncio.create_task(_record_pbm(**_pbm_stamp_kwargs))
+                        except Exception as _pbm_exc:
+                            logger.debug(
+                                "[sweep:orch] %s: PBM stamp dispatch failed: %s",
+                                symbol, _pbm_exc,
+                            )
                 # ── 11a2. Signal-stream meta-regime shadow (2026-09-09) ──
                 # Fire-and-forget: append this tick to the local lookback
                 # cache and, once signal_stream_meta_model_mode != off,

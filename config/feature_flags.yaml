@@ -930,6 +930,25 @@ p_win_bracket_unscored_policy: "fail_closed"
 #         p_win_dir (directional logit blend = p_win_raw) is deprecated.
 p_win_in_ev_mode: "live"
 
+# ── Posterior Barrier Model (2026-10-14, worklog
+# 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_PHASES.md) ──────────────────────
+# One probability, one price, one gate. Phase A ships shadow-only: barrier.py
+# (closed-form double-barrier null), posterior.py (Dirichlet on all three
+# outcome classes — expired INCLUDED), migrations 210/211, resolver hook,
+# per-signal prediction-ledger stamps, and the heavy-path EV-clobber guard.
+# Every flip below is a one-line edit gated on its era-clean replay
+# acceptance bar (worklog §5). Do NOT flip on a calendar; flip on evidence.
+pbm_mode: "shadow"            # off|shadow — stamps + posterior writes
+pbm_ev_mode: "off"            # Phase B: off|shadow|live — EV input swap
+pbm_geometry_mode: "grid"     # Phase C: grid|posterior — continuous solve
+pbm_sizing_mode: "legacy"     # Phase D: legacy|conservative — bound-scaled Kelly
+pbm_posterior_k0: 30.0        # prior pseudo-counts (evidence to leave physics)
+pbm_posterior_tau_days: 14.0  # outcome decay half-life basis, days
+pbm_sigma_atr: 1.0            # per-bar log-vol in ATR units (TR-ATR/price by construction)
+pbm_ev_bound_q: 0.05          # the ONE gate: EV lower credible bound mass
+pbm_cost_atr_by_symbol: {}    # per-symbol costs (ATR units); {} = band cost_atr
+pbm_reopt_min_new_outcomes: 25  # Phase C: evidence-triggered reopt threshold
+
 # Per-asset-class min_p_win_bracket thresholds (2026-10-04, worklog
 # 20261004_GEOMETRY_GATE_SHADOW_ANALYSIS.md). The geometry gate's false
 # positive rate varies by asset class: metals 2.6% (ready), forex 11.8%

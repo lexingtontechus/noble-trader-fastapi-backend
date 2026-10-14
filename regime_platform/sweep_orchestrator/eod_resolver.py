@@ -943,6 +943,27 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
     if resolved["outcome"] in ("tp_hit", "sl_hit"):
         await _write_calibration_record(sig, resolved, pnl)
 
+    # ── PBM resolver hook (2026-10-14, worklog
+    # 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_PHASES.md §5 Phase A) ──
+    # ALL outcome classes increment the cell posterior — tp_hit, sl_hit,
+    # AND expired (marked-to-market). This is where survivorship ends:
+    # the third outcome becomes data. Era-clean by construction (pre-cutover
+    # rows are skipped inside update_cell). Best-effort; never breaks a
+    # resolution that already landed.
+    try:
+        # lazy import: module-level would create the cycle
+        # tiered_atr -> geometry_risk -> heavy_sweep -> eod_resolver ->
+        # posterior -> barrier -> tiered_atr
+        from regime_platform.sweep_orchestrator.posterior import (
+            update_cell as _update_cell_posterior,
+        )
+        await _update_cell_posterior(sig, resolved)
+    except Exception as exc:
+        logger.debug(
+            "eod_resolver: posterior update %s failed: %s",
+            sig.get("symbol"), exc,
+        )
+
     return resolved["outcome"]
 
 
@@ -994,6 +1015,23 @@ async def _resolve_one_bars(sig: dict[str, Any], bars: list[dict[str, Any]]) -> 
 
     if resolved["outcome"] in ("tp_hit", "sl_hit"):
         await _write_calibration_record(sig, resolved, pnl)
+
+    # PBM resolver hook — intrabar twin, same contract as _resolve_one:
+    # ALL outcome classes (expired included, MTM) increment the cell
+    # posterior; era-clean by construction; best-effort.
+    try:
+        # lazy import: module-level would create the cycle
+        # tiered_atr -> geometry_risk -> heavy_sweep -> eod_resolver ->
+        # posterior -> barrier -> tiered_atr
+        from regime_platform.sweep_orchestrator.posterior import (
+            update_cell as _update_cell_posterior,
+        )
+        await _update_cell_posterior(sig, resolved)
+    except Exception as exc:
+        logger.debug(
+            "eod_resolver: posterior update %s failed: %s",
+            sig.get("symbol"), exc,
+        )
 
     return resolved["outcome"]
 

@@ -734,6 +734,44 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
 
     checked = 0
     spiked: list[tuple[str, float]] = []
+    # ── Phase C (pbm_geometry_mode=posterior, 2026-10-14): the
+    # EVIDENCE-TRIGGERED re-solve trigger (worklog 20261014_BARRIER_MODEL_
+    # INTEGRATION_MAP_AND_PHASES.md §5). Calendar reopt churns without
+    # information at current volume; the posterior cells count exactly how
+    # many NEW resolved outcomes (all three classes) each symbol has
+    # accumulated since the last re-solve — re-solve when that crosses
+    # pbm_reopt_min_new_outcomes. Inert while geometry is grid; counts are
+    # recorded into the urgency state so the delta resets on each run.
+    _pbm_evidence_triggered: list[str] = []
+    _pbm_counts: dict[str, int] = {}
+    try:
+        from regime_platform.core.feature_flags import (
+            get_pbm_geometry_mode,
+            get_pbm_reopt_min_new_outcomes,
+        )
+        if get_pbm_geometry_mode() == "posterior":
+            from regime_platform.sweep_orchestrator import posterior as _post
+            _pbm_min_new = get_pbm_reopt_min_new_outcomes()
+            _pbm_last_counts = state.get("pbm_outcome_counts") or {}
+            for p in peers:
+                _sym = p["symbol"]
+                _cells = await _post.cells_for_symbol(_sym)
+                _tot = int(sum(c.n_w + c.n_l + c.n_e for c in _cells))
+                _pbm_counts[_sym] = _tot
+                _delta = _tot - int(_pbm_last_counts.get(_sym, 0))
+                if _delta >= _pbm_min_new:
+                    _pbm_evidence_triggered.append(_sym)
+                    if all(sym != _sym for sym, _ in spiked):
+                        spiked.append((_sym, float("nan")))
+            if _pbm_evidence_triggered:
+                logger.info(
+                    "[atr:urg] PBM evidence trigger: %d new outcome(s) for %s "
+                    "(min %d)",
+                    _pbm_min_new, ", ".join(_pbm_evidence_triggered), _pbm_min_new,
+                )
+    except Exception as _pbm_ev_exc:
+        logger.debug("[atr:urg] PBM evidence trigger failed: %s", _pbm_ev_exc)
+
     for p in peers:
         sym = p["symbol"]
         rows = [b for b in (bars.get(sym) or []) if b.get("c") is not None]
@@ -753,6 +791,13 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         spiked.append((sym, vr))
 
     if not spiked:
+        # still persist fresh posterior counts even when nothing triggers
+        if _pbm_counts:
+            try:
+                state["pbm_outcome_counts"] = _pbm_counts
+                await _save_urgency_state(state)
+            except Exception:
+                pass
         return {"enabled": True, "checked": checked, "alerted": [], "reopt": None, "applied": []}
 
     reopt_result: dict[str, Any] | None = None
@@ -765,6 +810,8 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
             reopt_result = await run_atr_reopt()
             ran = True
             state["last_reopt_at"] = _iso(now)
+            if _pbm_counts:
+                state["pbm_outcome_counts"] = _pbm_counts
         except Exception as exc:  # noqa: BLE001
             logger.error("[atr:urg] auto re-opt failed: %s", exc)
         if ran and auto_apply and reopt_result and can_apply:
@@ -796,6 +843,11 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
         try:
             from notifications.discord import discord_notifier
 
+            _vr_txt = (
+                f"{sym}: vol_ratio {vr:.2f} ≥ {threshold:.2f} "
+                f"(+{(vr - 1.0) * 100:.0f}% vs 1-week baseline). "
+                if vr == vr else f"{sym}: posterior evidence trigger (new outcomes ≥ floor). "
+            )
             action = "free lattice + clamps applied" if applied else (
                 "free lattice ran (no drift / no apply)" if ran else (
                     "re-opt skipped (4h floor — last_run %s)" % state.get("last_reopt_at", "—")
@@ -806,9 +858,8 @@ async def check_atr_reopt_urgency() -> dict[str, Any]:
                 symbol=sym,
                 risk_type="atr_reopt_urgency",
                 message=(
-                    f"{sym}: vol_ratio {vr:.2f} ≥ {threshold:.2f} "
-                    f"(+{(vr - 1.0) * 100:.0f}% vs 1-week baseline). "
-                    f"AUTO: {action}. "
+                    _vr_txt
+                    + f"AUTO: {action}. "
                     + (f"Applied: {', '.join(applied)}. " if applied else "")
                     + (f"Proposals={len((reopt_result or {}).get('proposals') or [])}. "
                        if reopt_result else "")

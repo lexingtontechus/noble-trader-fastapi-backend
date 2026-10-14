@@ -885,6 +885,61 @@ async def dynamic_atr_pick(
                 cfg.get("sl_atr"), cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
             )
 
+    # ── Phase C (pbm_geometry_mode=posterior, 2026-10-14, worklog
+    # 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_PHASES.md §5) ─────────────
+    # Continuous in-band argmax of the POSTERIOR EV: the analytic null
+    # carries the fine geometry structure, the pooled cell evidence tilts
+    # it (posterior.bucket_tilt), barrier.solve_geometry_pbm searches the
+    # band domain. No path floor (cold book prices at physics), no grid,
+    # no band-centre cliff — and the consistency/walk-forward gates below
+    # are skipped in this mode: the price IS the test. Ships grid (the
+    # default); flip after the Phase B replay bar.
+    try:
+        from regime_platform.core.feature_flags import get_pbm_geometry_mode
+        _pbm_geo = get_pbm_geometry_mode()
+    except Exception:
+        _pbm_geo = "grid"
+    if _pbm_geo == "posterior":
+        try:
+            from regime_platform.sweep_orchestrator import posterior as _post
+            from regime_platform.sweep_orchestrator.barrier import solve_geometry_pbm
+            _pbm_cells = await _post.cells_for_symbol(symbol) if symbol else []
+            _pbm_tilt = _post.bucket_tilt(_pbm_cells)
+            _tp_lo = float(cfg.get("tp_atr_min") or min(cfg["tp_atr"]))
+            _tp_hi = float(cfg.get("tp_atr_max") or max(cfg["tp_atr"]))
+            _sl_lo = float(cfg.get("sl_atr_min") or min(cfg["sl_atr"]))
+            _sl_hi = float(cfg.get("sl_atr_max") or max(cfg["sl_atr"]))
+            _a, _b, _ev, _p_e = solve_geometry_pbm(
+                tp_lo=_tp_lo, tp_hi=_tp_hi, sl_lo=_sl_lo, sl_hi=_sl_hi,
+                min_rr=min_rr,
+                cost_atr=_post.pbm_cost_atr(symbol, float(cfg["cost_atr"])),
+                t_bars=EXPIRY_BARS,
+                sigma=_post.pbm_sigma_atr(),
+                tilt=_pbm_tilt,
+            )
+            _n_eff = int(sum(c.n_eff for c in _pbm_cells))
+            if _ev > float("-inf"):
+                pick = DynamicAtrPick(_a, _b, _ev, _ev, _ev, _p_e, _n_eff)
+                logger.info(
+                    "[dynamic:atr] %s PBM solve tp=%.2f sl=%.2f ev=%+.3f p_e=%.3f "
+                    "n_eff=%d (cells=%d)",
+                    scope, _a, _b, _ev, _p_e, _n_eff, len(_pbm_cells),
+                )
+                if symbol:
+                    await write_pick_to_store(symbol, pick, source="pbm_posterior")
+                _PICK_CACHE[grid_fp] = (time.time(), pick)
+                return pick
+            # degenerate domain (min_rr prunes everything): band centre,
+            # same G2 contract as the grid path
+            _fb = _band_center_pick(cfg) if allow_best_effort else None
+            _PICK_CACHE[grid_fp] = (time.time(), _fb)
+            return _fb
+        except Exception as _pbm_geo_exc:
+            logger.warning(
+                "[dynamic:atr] %s PBM solve failed (%s) — falling back to grid walk",
+                scope, _pbm_geo_exc,
+            )
+
     peers = await fetch_active_symbols()
     if symbol:
         members = [p for p in peers if p.get("symbol") == symbol and p.get("tradingview_symbol")]

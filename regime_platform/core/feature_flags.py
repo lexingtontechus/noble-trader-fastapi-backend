@@ -250,6 +250,37 @@ _DEFAULTS: dict[str, Any] = {
     # priced dead 0%-TP narrow buckets at ~0.5 and inverted winnability vs
     # bucket width. all_in removes that inversion; derived retained for A/B.
     "p_win_bracket_source": "all_in",
+    # ── Posterior Barrier Model (2026-10-14, worklog
+    # 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_PHASES.md) ──────────────
+    # One probability (analytic barrier null + Dirichlet posterior on all
+    # three outcome classes), one price (3-outcome EV with costs), one gate
+    # (EV lower credible bound > 0). Every mode flag below ships at its
+    # legacy/no-op default: the Phase A build is shadow-only (stamps +
+    # posterior writes); each Phase B/C/D flip is a one-line config edit
+    # gated on its era-clean replay acceptance bar. The flips:
+    #   pbm_mode           off|shadow   — stamps + resolver posterior writes
+    #   pbm_ev_mode        off|shadow|live — Phase B: EV input swap
+    #   pbm_geometry_mode  grid|posterior  — Phase C: continuous solve
+    #   pbm_sizing_mode    legacy|conservative — Phase D: bound-scaled Kelly
+    "pbm_mode": "shadow",
+    "pbm_ev_mode": "off",
+    "pbm_geometry_mode": "grid",
+    "pbm_sizing_mode": "legacy",
+    # prior pseudo-counts: evidence needed to move a cell off physics
+    "pbm_posterior_k0": 30.0,
+    # outcome decay half-life basis, days (exponential 2^(-age/tau))
+    "pbm_posterior_tau_days": 14.0,
+    # per-bar log-vol in ATR units for the analytic anchor; 1.0 is the
+    # proposal's sigma = ATR_true_range/price by construction
+    "pbm_sigma_atr": 1.0,
+    # lower-bound mass for the one gate (0.05 = the "5% credible bound")
+    "pbm_ev_bound_q": 0.05,
+    # per-symbol cost table (ATR units); empty = honest fallback to the
+    # band's flat cost_atr until the operator tunes real spreads
+    "pbm_cost_atr_by_symbol": {},
+    # evidence-triggered reopt: minimum NEW resolved outcomes per symbol
+    # before a re-solve is worth its churn (Phase C)
+    "pbm_reopt_min_new_outcomes": 25,
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1044,6 +1075,42 @@ def get_p_win_bracket_source() -> str:
         "p_win_bracket_source", _DEFAULTS["p_win_bracket_source"],
     )).lower()
     return v if v in ("all_in", "derived") else "all_in"
+
+
+# ── Posterior Barrier Model (2026-10-14) ─────────────────────────────────────
+# Getters mirror posterior.py's lazy reads so non-sweep callers (tests,
+# scripts, routers) can read the same flags without importing the service.
+# Phase A ships everything at its no-op default; see _DEFAULTS comments.
+
+
+def get_pbm_mode() -> str:
+    """``off`` | ``shadow`` — stamps + resolver posterior writes."""
+    return str(_load().get("pbm_mode", _DEFAULTS["pbm_mode"])).lower()
+
+
+def get_pbm_ev_mode() -> str:
+    """Phase B: ``off`` | ``shadow`` | ``live`` — the EV input swap."""
+    return str(_load().get("pbm_ev_mode", _DEFAULTS["pbm_ev_mode"])).lower()
+
+
+def get_pbm_geometry_mode() -> str:
+    """Phase C: ``grid`` | ``posterior`` — continuous solve vs grid walk."""
+    return str(_load().get("pbm_geometry_mode", _DEFAULTS["pbm_geometry_mode"])).lower()
+
+
+def get_pbm_sizing_mode() -> str:
+    """Phase D: ``legacy`` | ``conservative`` — bound-scaled Kelly."""
+    return str(_load().get("pbm_sizing_mode", _DEFAULTS["pbm_sizing_mode"])).lower()
+
+
+def get_pbm_reopt_min_new_outcomes() -> int:
+    try:
+        return max(1, int(_load().get(
+            "pbm_reopt_min_new_outcomes",
+            _DEFAULTS["pbm_reopt_min_new_outcomes"],
+        )))
+    except (TypeError, ValueError):
+        return _DEFAULTS["pbm_reopt_min_new_outcomes"]
 
 
 def get_calibration_bias_published_only() -> bool:

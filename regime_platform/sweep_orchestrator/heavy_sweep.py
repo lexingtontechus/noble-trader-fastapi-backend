@@ -1448,6 +1448,111 @@ class HeavySweepMixin:
                 _bracket_bucket = _bp.bucket
                 _bracket_vol_tier = _bp.vol_tier
 
+            # ── PBM: posterior read + Phase A stamp inputs (2026-10-14,
+            # heavy twin of the orchestrator block — one definition, both
+            # paths; worklog 20261014_BARRIER_MODEL_INTEGRATION_MAP_AND_
+            # PHASES.md §5) ─────────────────────────────────────────────────
+            _pbm_stamp_kwargs: dict | None = None
+            _pbm_probs: tuple[float, float] | None = None
+            _pbm_ev_lb: tuple[float, float] | None = None
+            try:
+                from regime_platform.core.feature_flags import get_pbm_mode
+                _pbm_on = get_pbm_mode() != "off"
+            except Exception:
+                _pbm_on = False
+            if _pbm_on:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    from regime_platform.sweep_orchestrator import posterior as _post
+                    from regime_platform.sweep_orchestrator.barrier import (
+                        barrier_null_from_prices,
+                    )
+                    from regime_platform.sweep_orchestrator.bracket_reachability import (
+                        _bucket_for,
+                        _vol_tier as _vol_tier_of,
+                    )
+                    _pbm_ts = _dt.now(_tz.utc).isoformat()
+                    _pbm_side = trade_signal.get("signal") or "buy"
+                    _pbm_vt = _bracket_vol_tier or _vol_tier_of(result.regime_label)
+                    _pbm_e = trade_signal.get("entry_price")
+                    _pbm_tp_px = trade_signal.get("take_profit")
+                    _pbm_sl_px = trade_signal.get("stop_loss")
+                    if (
+                        _pbm_e and _pbm_tp_px and _pbm_sl_px and atr
+                        and float(atr) > 0
+                    ):
+                        _pbm_tp_atr = abs(float(_pbm_tp_px) - float(_pbm_e)) / float(atr)
+                        _pbm_sl_atr = abs(float(_pbm_e) - float(_pbm_sl_px)) / float(atr)
+                        _pbm_bucket = _bucket_for(_pbm_tp_atr)
+                        if _pbm_bucket:
+                            _pbm_dclass = "standard"
+                            try:
+                                from regime_platform.sweep_orchestrator.dynamic_deadline import (
+                                    read_local_deadline_tier,
+                                )
+                                _pbm_tier = read_local_deadline_tier(symbol, _pbm_vt)
+                                if _pbm_tier is not None:
+                                    _pbm_dclass = _post.deadline_class_of(
+                                        {"soft_deadline_hours": _pbm_tier.soft_deadline_hours},
+                                    )
+                            except Exception:
+                                pass
+                            _pbm_cell = await _post.read_cell(
+                                symbol, _post._side_of(_pbm_side), _pbm_vt, _pbm_bucket,
+                                deadline_class=_pbm_dclass, era="live",
+                            )
+                            _pbm_null = barrier_null_from_prices(
+                                float(_pbm_e), float(_pbm_tp_px), float(_pbm_sl_px),
+                                atr=float(atr), direction=_pbm_side,
+                                sigma=_post.pbm_sigma_atr(),
+                            )
+                            if _pbm_cell is not None:
+                                _pbm_alpha = _pbm_cell.anchor(_pbm_null)
+                                _pbm_m = _pbm_cell.m_mtm
+                            else:
+                                _k0 = _post.pbm_k0()
+                                _pbm_alpha = (
+                                    _k0 * _pbm_null.p_win,
+                                    _k0 * _pbm_null.p_loss,
+                                    _k0 * _pbm_null.p_expire,
+                                )
+                                _pbm_m = 0.0
+                            _pbm_means, _ = _post.dirichlet_moments(_pbm_alpha)
+                            _pbm_cost = _post.pbm_cost_atr(symbol, 0.1)
+                            _pbm_probs = (
+                                round(_pbm_means[0], 6),
+                                round(1.0 - _pbm_means[2], 6),
+                            )
+                            _pbm_ev_mean, _pbm_ev_sd = _post.ev_moments(
+                                _pbm_alpha, _pbm_tp_atr, _pbm_sl_atr,
+                                cost_atr=_pbm_cost, m_mtm=_pbm_m,
+                            )
+                            _pbm_ev_lb = (
+                                _pbm_ev_mean,
+                                _pbm_ev_mean
+                                - _post.ev_lower_bound_z(_post.pbm_ev_bound_q()) * _pbm_ev_sd,
+                            )
+                            _pbm_stamp_kwargs = {
+                                "symbol": symbol,
+                                "ts_iso": _pbm_ts,
+                                "signal": _pbm_side,
+                                "source": "sweep-heavy",
+                                "null": _pbm_null,
+                                "alpha": _pbm_alpha,
+                                "tp_atr": _pbm_tp_atr,
+                                "sl_atr": _pbm_sl_atr,
+                                "cost_atr": _pbm_cost,
+                                "m_mtm": _pbm_m,
+                                "bucket": _pbm_bucket,
+                                "vol_tier": _pbm_vt,
+                                "deadline_class": _pbm_dclass,
+                                "era": "live",
+                            }
+                except Exception as _pbm_exc:
+                    logger.debug(
+                        "[sweep:heavy] %s: PBM read failed: %s", symbol, _pbm_exc,
+                    )
+
             with self._ev_engine.temp_weights(_regime_weight_override):
                 ev_result = self._ev_engine.compute_ev(
                     trend_probs=_trend_probs,
@@ -1475,10 +1580,26 @@ class HeavySweepMixin:
                 from regime_platform.sweep_orchestrator.p_win_bracket import (
                     apply_bracket_to_ev,
                 )
+                # Phase B (pbm_ev_mode=live, 2026-10-14): same input swap as
+                # the light twin — ONE substitution function, identical
+                # contract on both paths, so the heavy/light EV divergence
+                # class of bug becomes structurally impossible.
+                _ev_p_win_src, _ev_p_resolve_src = _p_win_bracket, _p_resolve
+                try:
+                    from regime_platform.core.feature_flags import get_pbm_ev_mode
+                    if get_pbm_ev_mode() == "live" and _pbm_probs is not None:
+                        _ev_p_win_src, _ev_p_resolve_src = _pbm_probs
+                        logger.info(
+                            "[sweep:heavy] %s: PBM EV input p_w=%.4f "
+                            "p_resolve=%.4f (replaces table %s)",
+                            symbol, _ev_p_win_src, _ev_p_resolve_src, _p_win_bracket,
+                        )
+                except Exception:
+                    pass
                 _bracket_applied_to_ev = apply_bracket_to_ev(
                     ev_result,
-                    p_win_bracket=_p_win_bracket,
-                    p_resolve=_p_resolve,
+                    p_win_bracket=_ev_p_win_src,
+                    p_resolve=_ev_p_resolve_src,
                     engine=self._ev_engine,
                 )
                 if _bracket_applied_to_ev:
@@ -1523,21 +1644,78 @@ class HeavySweepMixin:
                         distance_atr_bucket=_bucket_for_combo(best, atr),
                     )
                     if calib_adj and calib_adj.get("applied"):
-                        ev_result.p_win = calib_adj["p_win"]
-                        effective_kelly_pre = calib_adj["kelly_f"]
-                        _recomputed = self._ev_engine.recompute_ev_fields(
-                            ev_result.p_win, ev_result.profit, ev_result.stake,
-                        )
-                        ev_result.ev = _recomputed["ev"]
-                        ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
-                        ev_result.rr = _recomputed["rr"]
-                        ev_result.allowed = _recomputed["allowed"]
-                        ev_result.aggression = _recomputed["aggression"]
-                        ev_result.ev_scale = _recomputed["ev_scale"]
+                        # ── Reachability EV is terminal (2026-10-14, P0 from
+                        # the 2026-10-13 triage; light path guard
+                        # orchestrator.py:4581-4590 applied to the heavy twin)
+                        # ────────────────────────────────────────────────────
+                        # When apply_bracket_to_ev() already substituted the
+                        # reachability probability into ev_result, that
+                        # probability is the honest era-clean base rate — NOT
+                        # the overconfident directional number this penalty
+                        # was designed to shrink. Repricing here would
+                        # re-inflate a low reachability p_win back toward 0.5
+                        # and flip a -EV signal to +EV (the exact circular
+                        # failure the light path already guards against).
+                        # Kelly may still be reduced; the probability and EV
+                        # stay the reachability values.
+                        if _bracket_applied_to_ev:
+                            effective_kelly_pre = calib_adj["kelly_f"]
+                            logger.info(
+                                "[sweep:heavy] %s: calibration ENFORCED (%s, bias=%s) "
+                                "but bracket EV terminal — p_win=%.4f ev=%.4f kept, "
+                                "kelly→%.6f",
+                                symbol, calib_adj.get("status"), calib_adj.get("bias"),
+                                ev_result.p_win, ev_result.ev, effective_kelly_pre,
+                            )
+                        else:
+                            ev_result.p_win = calib_adj["p_win"]
+                            effective_kelly_pre = calib_adj["kelly_f"]
+                            # 3-outcome recompute (P0b): pass p_expire so the
+                            # heavy twin's EV keeps the same expire-not-a-loss
+                            # contract the light path and apply_bracket_to_ev
+                            # use — the previous call dropped the term and the
+                            # heavy EV silently became a binary price.
+                            _recomputed = self._ev_engine.recompute_ev_fields(
+                                ev_result.p_win, ev_result.profit, ev_result.stake,
+                                p_expire=(
+                                    max(0.0, min(1.0, 1.0 - float(_p_resolve)))
+                                    if _p_resolve is not None else 0.0
+                                ),
+                            )
+                            ev_result.ev = _recomputed["ev"]
+                            ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
+                            ev_result.rr = _recomputed["rr"]
+                            ev_result.allowed = _recomputed["allowed"]
+                            ev_result.aggression = _recomputed["aggression"]
+                            ev_result.ev_scale = _recomputed["ev_scale"]
                 except Exception as exc:
                     logger.warning(
                         "[sweep:heavy] %s: calibration enforcement failed (%s) — proceeding raw",
                         symbol, type(exc).__name__,
+                    )
+
+            # ── Phase D (pbm_sizing_mode=conservative, 2026-10-14): heavy
+            # twin of the light-path block — Kelly on the EV lower bound. ──
+            if _pbm_ev_lb is not None and _pbm_stamp_kwargs is not None:
+                try:
+                    from regime_platform.core.feature_flags import get_pbm_sizing_mode
+                    if get_pbm_sizing_mode() == "conservative":
+                        from regime_platform.sweep_orchestrator.posterior import (
+                            conservative_kelly,
+                        )
+                        _kelly_pre_pbm = effective_kelly_pre
+                        effective_kelly_pre = conservative_kelly(
+                            effective_kelly_pre, _pbm_ev_lb[0], _pbm_ev_lb[1],
+                        )
+                        logger.info(
+                            "[sweep:heavy] %s: PBM conservative kelly %.6f→%.6f "
+                            "(ev=%+.4f lb=%+.4f)",
+                            symbol, _kelly_pre_pbm, effective_kelly_pre,
+                            _pbm_ev_lb[0], _pbm_ev_lb[1],
+                        )
+                except Exception as _pbm_sz_exc:
+                    logger.debug(
+                        "[sweep:heavy] %s: PBM sizing failed: %s", symbol, _pbm_sz_exc,
                     )
 
             # ── 9. Build + push qualified signal ──────────────────────
@@ -1845,6 +2023,20 @@ class HeavySweepMixin:
                         )
                     else:
                         asyncio.create_task(log_signal_sim(sim_payload))
+                        # ── PBM prediction ledger (Phase A, 2026-10-14) —
+                        # heavy twin: same stamp, same population as the
+                        # sim row itself. ────────────────────────────────
+                        if _pbm_stamp_kwargs is not None:
+                            try:
+                                from regime_platform.sweep_orchestrator.posterior import (
+                                    record_pbm_shadow as _record_pbm,
+                                )
+                                asyncio.create_task(_record_pbm(**_pbm_stamp_kwargs))
+                            except Exception as _pbm_exc:
+                                logger.debug(
+                                    "[sweep:heavy] %s: PBM stamp dispatch failed: %s",
+                                    symbol, _pbm_exc,
+                                )
                     # Part II paper portfolio: open a kelly-sized paper
                     # position for QUALIFIED heavy signals (fire-and-forget).
                     if qualified:
