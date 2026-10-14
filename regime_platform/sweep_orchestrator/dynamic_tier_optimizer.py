@@ -44,6 +44,7 @@ from typing import Any
 import httpx
 import numpy as np
 
+from regime_platform.core.feature_flags import get_dynamic_deadline_config
 from regime_platform.core.settings import settings
 from regime_platform.sweep_orchestrator.bracket_reachability import (
     _dedupe_episodes,
@@ -58,10 +59,11 @@ logger = logging.getLogger("regime.sweep.dynamic_tier_optimizer")
 
 _PAGE_SIZE = 1000
 _LOOKBACK_DAYS = 10  # Same as dynamic_atr.lookback_days
-_MIN_SIGNALS = 60    # Same as dynamic_atr.min_signals
+_MIN_SIGNALS = 60  # Same as dynamic_atr.min_signals
 
 
 # ─── Data fetch ──────────────────────────────────────────────────────────────
+
 
 async def _fetch_resolved_rows(
     symbols: list[str] | None = None,
@@ -141,6 +143,7 @@ async def _fetch_reachability_rows(
 
 # ─── Tier 1: Dynamic ATR ────────────────────────────────────────────────────
 
+
 async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
     """Refresh the dynamic-ATR tier by calling the ONE picker.
 
@@ -155,12 +158,12 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
     the picker (``write_pick_to_store``). ``use_store=False`` forces a real
     recompute — without it the picker would read back its own previous write.
     """
+    from regime_platform.core import param_store
     from regime_platform.core.feature_flags import (
         get_dynamic_atr_config,
         get_min_rr,
     )
     from regime_platform.sweep_orchestrator.tiered_atr import dynamic_atr_pick
-    from regime_platform.core import param_store
 
     picks: dict[str, Any] = {}
     # Asset-class pooled fallback (2026-10-12, worklog
@@ -170,6 +173,7 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
     # let each symbol in that class inherit it when its own solve returns None.
     # Fail-open chain preserved: per-symbol -> pooled -> brick.
     from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
+
     pooled_cache: dict[str, Any] = {}
 
     async def _pooled_pick(asset_class: str | None, symbol: str):
@@ -191,8 +195,10 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
             ac,
             tuple(cfg.get("tp_atr") or ()),
             tuple(cfg.get("sl_atr") or ()),
-            cfg.get("tp_atr_min"), cfg.get("tp_atr_max"),
-            cfg.get("sl_atr_min"), cfg.get("sl_atr_max"),
+            cfg.get("tp_atr_min"),
+            cfg.get("tp_atr_max"),
+            cfg.get("sl_atr_min"),
+            cfg.get("sl_atr_max"),
         )
         if band_fp in pooled_cache:
             return pooled_cache[band_fp]
@@ -201,19 +207,24 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
                 asset_class,
                 cfg=cfg,
                 min_rr=get_min_rr(),
-                symbol=None,          # pooled: walk the whole class (evidence)
+                symbol=None,  # pooled: walk the whole class (evidence)
                 use_store=False,
             )
         except Exception as exc:
             logger.warning(
-                "dynamic_tier_optimizer: pooled atr %s/%s failed: %s", ac, symbol, exc,
+                "dynamic_tier_optimizer: pooled atr %s/%s failed: %s",
+                ac,
+                symbol,
+                exc,
             )
             pk = None
         pooled_cache[band_fp] = pk
         if pk is not None:
             logger.info(
-                "[dynamic:atr] pooled %s -> %s for %s (inherited; clamped to "
-                "the symbol's own band)", ac, pk.as_log(), symbol,
+                "[dynamic:atr] pooled %s -> %s for %s (inherited; clamped to the symbol's own band)",
+                ac,
+                pk.as_log(),
+                symbol,
             )
         return pk
 
@@ -228,7 +239,9 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         try:
             await asyncio.to_thread(
                 param_store.delete_keys,
-                symbol, param_store.TIER_DYNAMIC_ATR, ("latest",),
+                symbol,
+                param_store.TIER_DYNAMIC_ATR,
+                ("latest",),
             )
         except Exception as exc:
             logger.debug("dynamic_tier_optimizer: atr prune %s failed: %s", symbol, exc)
@@ -254,14 +267,17 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
                     from regime_platform.sweep_orchestrator.tiered_atr import (
                         write_pick_to_store,
                     )
+
                     await write_pick_to_store(
-                        symbol, pick,
+                        symbol,
+                        pick,
                         source=f"pooled:{asset_class_key(p.get('asset_class'))}",
                     )
                 except Exception as exc:
                     logger.debug(
                         "dynamic_tier_optimizer: pooled store %s failed: %s",
-                        symbol, exc,
+                        symbol,
+                        exc,
                     )
         if pick is not None:
             picks[symbol] = pick
@@ -269,6 +285,7 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ─── Tier 2: Dynamic Deadline ────────────────────────────────────────────────
+
 
 def _compute_dynamic_deadline(
     reachability_rows: list[dict[str, Any]],
@@ -312,11 +329,29 @@ def _compute_dynamic_deadline(
         p75 = float(np.percentile(hours_arr, 75))
         p90 = float(np.percentile(hours_arr, 90))
 
+        # Clamp to the floors feature_flags.yaml declares (HARM-02, 2026-10-13).
+        # min_soft_deadline_hours / max_hard_deadline_hours were returned by
+        # get_dynamic_deadline_config_for_symbol() but never applied here, so
+        # a fast-resolving symbol shipped a sub-hour soft deadline (AUDUSD
+        # 0.5h against a 2.62h average settle; 118 of 225 resolved rows
+        # breached their own soft deadline). The same clamp dynamic_deadline's
+        # own derive_deadline_tier applies (:116-117) — one definition, one
+        # place. Sourced from the SAME config so there is a single source of
+        # truth for the numbers.
+        dl_cfg = get_dynamic_deadline_config()
+        min_soft = float(dl_cfg.get("min_soft_deadline_hours", 12.0))
+        max_hard = float(dl_cfg.get("max_hard_deadline_hours", 120.0))
+
+        soft = max(min_soft, min(round(p75, 1), 72.0))
+        # hard must stay above soft or DeadlineTier.decay() divides by a
+        # non-positive span and every trade scores 0.
+        hard = max(soft * 1.5, min(round(p90, 1), max_hard))
+
         tiers[f"{symbol}:{vol_tier}"] = {
             "symbol": symbol,
             "vol_tier": vol_tier,
-            "soft_deadline_hours": round(p75, 1),
-            "hard_deadline_hours": round(p90, 1),
+            "soft_deadline_hours": soft,
+            "hard_deadline_hours": hard,
             "median_hours": round(p50, 1),
             "n": total_n,
             "confidence": "high" if total_n >= 50 else "medium" if total_n >= 20 else "low",
@@ -327,6 +362,7 @@ def _compute_dynamic_deadline(
 
 
 # ─── Tier 3: Regime Edge ────────────────────────────────────────────────────
+
 
 def _compute_regime_edge(
     rows: list[dict[str, Any]],
@@ -392,6 +428,7 @@ def _compute_regime_edge(
 
 # ─── Tier 4: Geometry Incubation ────────────────────────────────────────────
 
+
 async def _refresh_geometry_incubation() -> dict[str, Any]:
     """Stamp the geometry-incubation tier by OBSERVING the real evaluator.
 
@@ -433,7 +470,7 @@ async def _fetch_incubation_rows() -> list[dict[str, Any]]:
                 headers=_headers(),
                 params={
                     "select": "symbol,brick_size,sl_bricks,tp_bricks,status,"
-                              "reason,n_resolved,pct_expired,baseline_pct_expired",
+                    "reason,n_resolved,pct_expired,baseline_pct_expired",
                     "status": "eq.incubating",
                     "order": "started_at.desc",
                     "limit": "100",
@@ -447,6 +484,7 @@ async def _fetch_incubation_rows() -> list[dict[str, Any]]:
 
 
 # ─── Main entry point ────────────────────────────────────────────────────────
+
 
 async def run_dynamic_tier_optimization() -> dict[str, Any]:
     """Run all dynamic tier optimizations and write results to nt_dynamic_tier_state.
@@ -547,50 +585,56 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
         # a second, differently-shaped row for the same key.
 
         for key, tier in deadline_tiers.items():
-            state_rows.append({
-                "symbol": tier["symbol"],
-                "tier_type": "dynamic_deadline",
-                "tier_key": tier["vol_tier"],
-                # JSON object: the sweep needs soft+hard+median+confidence to
-                # build a DeadlineTier without a network round-trip.
-                "tier_value": {
-                    "soft_deadline_hours": tier["soft_deadline_hours"],
-                    "hard_deadline_hours": tier["hard_deadline_hours"],
-                    "median_hours": tier["median_hours"],
-                    "confidence": tier["confidence"],
-                },
-                "n": tier["n"],
-                "computed_at": now_iso,
-                "source": "dynamic_tier_optimizer",
-            })
+            state_rows.append(
+                {
+                    "symbol": tier["symbol"],
+                    "tier_type": "dynamic_deadline",
+                    "tier_key": tier["vol_tier"],
+                    # JSON object: the sweep needs soft+hard+median+confidence to
+                    # build a DeadlineTier without a network round-trip.
+                    "tier_value": {
+                        "soft_deadline_hours": tier["soft_deadline_hours"],
+                        "hard_deadline_hours": tier["hard_deadline_hours"],
+                        "median_hours": tier["median_hours"],
+                        "confidence": tier["confidence"],
+                    },
+                    "n": tier["n"],
+                    "computed_at": now_iso,
+                    "source": "dynamic_tier_optimizer",
+                }
+            )
 
         for key, edge in regime_edges.items():
-            state_rows.append({
-                "symbol": edge["symbol"],
-                "tier_type": "regime_edge",
-                "tier_key": f"{edge['signal']}:{edge['regime']}",
-                # JSON object so the local store carries BOTH win_rate and
-                # expectancy_r — the regime_edge gate needs win_rate, the
-                # ranking path needs expectancy_r. One row, both fields.
-                "tier_value": {
-                    "win_rate": edge.get("win_rate"),
-                    "expectancy_r": edge.get("expectancy_r"),
-                },
-                "n": edge["n"],
-                "computed_at": now_iso,
-                "source": "dynamic_tier_optimizer",
-            })
+            state_rows.append(
+                {
+                    "symbol": edge["symbol"],
+                    "tier_type": "regime_edge",
+                    "tier_key": f"{edge['signal']}:{edge['regime']}",
+                    # JSON object so the local store carries BOTH win_rate and
+                    # expectancy_r — the regime_edge gate needs win_rate, the
+                    # ranking path needs expectancy_r. One row, both fields.
+                    "tier_value": {
+                        "win_rate": edge.get("win_rate"),
+                        "expectancy_r": edge.get("expectancy_r"),
+                    },
+                    "n": edge["n"],
+                    "computed_at": now_iso,
+                    "source": "dynamic_tier_optimizer",
+                }
+            )
 
         for key, verdict in incubation_verdicts.items():
-            state_rows.append({
-                "symbol": key.split(":")[0],
-                "tier_type": "geometry_incubation",
-                "tier_key": key,
-                "tier_value": verdict.get("status", "unknown"),
-                "n": verdict.get("n_forward_resolved", 0),
-                "computed_at": now_iso,
-                "source": "dynamic_tier_optimizer",
-            })
+            state_rows.append(
+                {
+                    "symbol": key.split(":")[0],
+                    "tier_type": "geometry_incubation",
+                    "tier_key": key,
+                    "tier_value": verdict.get("status", "unknown"),
+                    "n": verdict.get("n_forward_resolved", 0),
+                    "computed_at": now_iso,
+                    "source": "dynamic_tier_optimizer",
+                }
+            )
 
         if state_rows:
             from regime_platform.core import param_store
@@ -608,8 +652,10 @@ async def run_dynamic_tier_optimization() -> dict[str, Any]:
     summary["duration_ms"] = round((time.time() - start) * 1000)
     logger.info(
         "dynamic_tier_optimizer: done — atr=%d deadline=%d edge=%d incubation=%d errors=%d",
-        summary["atr_picks"], summary["deadline_tiers"],
-        summary["regime_edges"], summary["incubation_verdicts"],
+        summary["atr_picks"],
+        summary["deadline_tiers"],
+        summary["regime_edges"],
+        summary["incubation_verdicts"],
         len(summary["errors"]),
     )
     return summary

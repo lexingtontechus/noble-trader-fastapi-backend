@@ -7,8 +7,10 @@ full build scope" (2026-08-26/28). Every existing signal source in this
 platform looks at most ~8-12 days of data (the trend HMM's own refit
 window); nothing has multi-month market memory. This is a pure
 price-based daily-bar read — last close vs. its 200-day SMA,
-EMA-smoothed so a single bad print doesn't flip the label — refreshed
-once a day, independent of both sweep paths' own cadence.
+EMA-smoothed so a single bad print doesn't flip the label. Refreshed
+on the pre-sweep grid (5,20,35,50 * * * *) per HARM-04, with a
+freshness guard that skips redundant fetches when no new daily close
+has arrived.
 
 Deliberately does NOT consider win/loss/PnL (that's a separate signal,
 ``calibration_bias_bucket.py`` / ``macro_edge.py`` — the latter reads
@@ -48,6 +50,7 @@ from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_b
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_active_symbols,
     fetch_macro_regime,
+    fetch_max_computed_at,
     upsert_macro_regime,
 )
 
@@ -222,14 +225,20 @@ async def _clef_macro_coherence(
         return None
 
 
-async def refresh_macro_regime(symbols: list[str] | None = None) -> list[dict[str, Any]]:
-    """Daily job: fetch fresh daily bars, recompute, upsert
-    ``nt_macro_regime``. Returns the computed rows. Best-effort: logs and
-    returns an empty list on failure, never raises.
+async def refresh_macro_regime(symbols: list[str] | None = None, force: bool = False) -> list[dict[str, Any]]:
+    """Job: fetch fresh daily bars, recompute, upsert ``nt_macro_regime``.
+    Returns the computed rows. Best-effort: logs and returns an empty
+    list on failure, never raises.
 
     Also computes Clef-Flash macro coherence (shadow) when the narrative
     forecast is available. The coherence stamp is written to
     ``nt_macro_forecast.coherence`` — never read back into a decision.
+
+    ``force=True`` bypasses the freshness guard — used by the startup
+    catch-up when the table is detected as stale. When ``force=False``
+    (the periodic schedule, HARM-04), a lightweight 2-bar probe fetch
+    checks whether any daily bar has closed since the last computation —
+    if not, the expensive 300-bar fetch is skipped entirely.
     """
     try:
         active = await fetch_active_symbols()
@@ -241,6 +250,41 @@ async def refresh_macro_regime(symbols: list[str] | None = None) -> list[dict[st
     if not active:
         logger.info("macro_filter: no active symbols to refresh")
         return []
+
+    # ── HARM-04 freshness guard ────────────────────────────────────────
+    # Skip the expensive full daily-bar fetch when no new daily close has
+    # arrived since the last computation. Uses a 2-bar probe (negligible
+    # bandwidth) to check the latest bar's timestamp against max(computed_at)
+    # in the table. The guard is bypassed with force=True (startup catch-up).
+    if not force:
+        try:
+            last_computed = await fetch_max_computed_at("nt_macro_regime")
+            if last_computed is not None:
+                # Probe 2 daily bars to check for new closes
+                probe_result = await fetch_tradingview_batch(
+                    active, 2, "1D", include_timestamps=True
+                )
+                if isinstance(probe_result, tuple):
+                    _, ts_map = probe_result
+                else:
+                    ts_map = {}
+                computed_epoch = last_computed.timestamp()
+                fresh = True
+                for sym_name, ts_list in ts_map.items():
+                    if ts_list and len(ts_list) >= 1:
+                        latest_ts = ts_list[-1]
+                        if latest_ts is not None and latest_ts > computed_epoch:
+                            fresh = False
+                            break
+                if fresh:
+                    logger.debug(
+                        "macro_filter: freshness guard skipped — daily bars "
+                        "unchanged since %s", last_computed
+                    )
+                    return []
+        except Exception as exc:
+            logger.debug("macro_filter: freshness probe failed (%s) — proceeding", exc)
+            # Fail-open: proceed with full refresh
 
     window = get_macro_sma_window_days()
     n_bars = window + _FETCH_BUFFER_DAYS

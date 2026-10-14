@@ -50,6 +50,7 @@ from regime_platform.services.hmm.model import _compute_rsi
 from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
 from regime_platform.sweep_orchestrator.supabase_client import (
     fetch_active_symbols,
+    fetch_max_computed_at,
     fetch_trend_regime,
     upsert_trend_regime,
 )
@@ -192,16 +193,22 @@ async def get_trend_regime(symbol: str) -> dict[str, Any] | None:
     return await fetch_trend_regime(symbol)
 
 
-async def refresh_trend_regime(symbols: list[str] | None = None) -> list[dict[str, Any]]:
-    """Daily job: fetch fresh daily bars, recompute, upsert
-    ``nt_trend_regime``. Returns the computed rows. Best-effort: logs
-    and returns an empty list on failure, never raises.
+async def refresh_trend_regime(symbols: list[str] | None = None, force: bool = False) -> list[dict[str, Any]]:
+    """Job: fetch fresh daily bars, recompute, upsert ``nt_trend_regime``.
+    Returns the computed rows. Best-effort: logs and returns an empty
+    list on failure, never raises.
 
     Does its own daily-bar batch fetch rather than sharing
     ``macro_filter.refresh_macro_regime``'s — an acceptable second daily
     TradingView batch call at this cadence (once/day/symbol), not a hot
     path; sharing the fetch is a possible future optimization, not a
     build blocker (worklog SS7.5).
+
+    ``force=True`` bypasses the freshness guard — used by the startup
+    catch-up when the table is detected as stale. When ``force=False``
+    (the periodic schedule, HARM-04), a lightweight 2-bar probe fetch
+    checks whether any daily bar has closed since the last computation —
+    if not, the expensive fetch is skipped entirely.
     """
     try:
         active = await fetch_active_symbols()
@@ -213,6 +220,40 @@ async def refresh_trend_regime(symbols: list[str] | None = None) -> list[dict[st
     if not active:
         logger.info("trend_filter: no active symbols to refresh")
         return []
+
+    # ── HARM-04 freshness guard ────────────────────────────────────────
+    # Skip the expensive daily-bar fetch when no new daily close has
+    # arrived since the last computation. Uses a 2-bar probe (negligible
+    # bandwidth) to check the latest bar's timestamp against max(computed_at).
+    # The guard is bypassed with force=True (startup catch-up).
+    if not force:
+        try:
+            last_computed = await fetch_max_computed_at("nt_trend_regime")
+            if last_computed is not None:
+                probe_result = await fetch_tradingview_batch(
+                    active, 2, "1D", include_timestamps=True
+                )
+                if isinstance(probe_result, tuple):
+                    _, ts_map = probe_result
+                else:
+                    ts_map = {}
+                computed_epoch = last_computed.timestamp()
+                fresh = True
+                for sym_name, ts_list in ts_map.items():
+                    if ts_list and len(ts_list) >= 1:
+                        latest_ts = ts_list[-1]
+                        if latest_ts is not None and latest_ts > computed_epoch:
+                            fresh = False
+                            break
+                if fresh:
+                    logger.debug(
+                        "trend_filter: freshness guard skipped — daily bars "
+                        "unchanged since %s", last_computed
+                    )
+                    return []
+        except Exception as exc:
+            logger.debug("trend_filter: freshness probe failed (%s) — proceeding", exc)
+            # Fail-open: proceed with full refresh
 
     sma_long_days = get_trend_sma_long_days()
     freshness = get_trend_crossover_freshness_days()

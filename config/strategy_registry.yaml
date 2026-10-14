@@ -76,7 +76,11 @@ strategy_registry:
     enabled: true
     description: "Trend-continue: ride the aligned macro/trend direction (paper 3.1). The current default; kept for the symbols it fits."
     requires_aligned: true
-    asset_classes: [crypto, metal, equity, index, etf]
+    # 'commodity' is the key nt_symbol.asset_class='commodities' produces via
+    # asset_class_key() — that is what the four golds actually carry. Without
+    # it the metals match no enabled archetype and route stand_by forever
+    # (HARM-01, 2026-10-13: router replay routed 0/225 last-12h rows).
+    asset_classes: [crypto, commodity, metal, equity, index, etf]
     directions: [buy, sell]
     entry:
       tp_atr_mult: far
@@ -101,7 +105,10 @@ strategy_registry:
     enabled: true
     description: "Contrarian: fade an exhausted counter-trend extreme back to mean (paper 3.9/10.3). Gated to the gold-buy pattern (macro+trend oppose); tight TP, overshoot-Z stop, short hold."
     requires_opposes: true
-    asset_classes: [metal]
+    # 'commodity' (from nt_symbol.asset_class='commodities') is the key the
+    # four golds actually produce; 'metal' is kept for a literal 'metal' class.
+    # Both must be listed or the gold MR archetype can never match (HARM-01).
+    asset_classes: [metal, commodity]
     directions: [buy]
     regime_vol: [low_vol, med_low_vol]
     entry:

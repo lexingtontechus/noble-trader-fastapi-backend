@@ -52,8 +52,10 @@ def test_is_stale_defaults_now_to_current_utc_time():
     assert _is_stale(ancient, timedelta(hours=20)) is True
 
 
-def test_macro_regime_stale_after_matches_documented_20_hours():
-    assert MACRO_REGIME_STALE_AFTER == timedelta(hours=20)
+def test_macro_regime_stale_after_matches_documented_90_minutes():
+    # HARM-04 (2026-10-13): changed from 20h to 90min to match the
+    # reduced catch-up window for the pre-sweep grid cadence.
+    assert MACRO_REGIME_STALE_AFTER == timedelta(minutes=90)
 
 
 def test_bracket_reachability_stale_after_matches_documented_6_5_days():

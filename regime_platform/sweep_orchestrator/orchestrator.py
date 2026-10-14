@@ -784,7 +784,12 @@ def _apply_regime_kelly_floor(
 # exists. Deliberately shorter than the full daily/weekly cycle so a
 # legitimately-recent run isn't needlessly re-triggered by a routine
 # restart.
-MACRO_REGIME_STALE_AFTER = timedelta(hours=20)
+# HARM-04 (2026-10-13): macro/trend label refreshes are now on the
+# pre-sweep grid (5,20,35,50 * * * *) with a freshness guard that skips
+# redundant daily-bar fetches — so the catch-up window shrinks from 20h
+# to 90 min (well under the 15-min grid; catches a missed fire within
+# one scheduling cycle).
+MACRO_REGIME_STALE_AFTER = timedelta(minutes=90)
 BRACKET_REACHABILITY_STALE_AFTER = timedelta(hours=6.5 * 24)
 # eod-lookback (2026-09-05, worklog 20260905_EOD_RESOLVER_SCHEDULER_MISS.md)
 # — the only job that calls resolve_pending_signals. Found live: a crash
@@ -1705,43 +1710,38 @@ class SweepOrchestrator(HeavySweepMixin):
                 coalesce=True,
             )
 
-        # Macro filter daily refresh (2026-08-28, worklog/
-        # 20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
-        # full build scope"): 06:00 UTC daily, own cadence (independent
-        # of both sweep paths) — before the light-sweep day starts and
-        # clear of the 07:00 UTC Sunday reachability job. Read-only price
-        # computation; nt_signal_sim capture / live Kelly application are
-        # gated separately by macro_regime_mode (config/feature_flags.yaml).
+        # Macro filter refresh (HARM-04, 2026-10-13): moved from the fixed
+        # daily 06:00 UTC slot to the pre-sweep grid (5,20,35,50 * * * *) so
+        # macro_label/strength are at most ~5 min stale when a signal fires —
+        # vs the 24h lag that froze the router's alignment for days. The
+        # refresh function itself has a freshness guard (skip redundant
+        # daily-bar fetches when no new daily close has arrived), so the
+        # 15-min grid only pays full cost when the daily bars actually change.
+        # Independent of both sweep paths; read-only price computation.
         if getattr(settings, "MACRO_REGIME_ENABLED", True):
             self._scheduler.add_job(
                 self._run_macro_regime_refresh,
-                trigger=CronTrigger.from_crontab("0 6 * * *"),
-                id="macro-regime-daily",
-                name="Macro regime refresh (daily)",
-                misfire_grace_time=3600,
+                trigger=CronTrigger.from_crontab("5,20,35,50 * * * *"),
+                id="macro-regime-refresh",
+                name="Macro regime refresh (pre-sweep grid)",
+                misfire_grace_time=300,
                 coalesce=True,
             )
 
-        # Trend filter daily refresh (2026-09-10, worklog
-        # 20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7):
-        # 06:10 UTC daily — right after macro-regime-daily, own cadence,
-        # inside the same 05:16-09:20 UTC Studio-restart window (see
-        # xauaud_heavy_sweep_stale_4d_force_refresh_not_firing) so it gets
-        # the same restart-safe runway. Registered unconditionally, same
-        # as macro-regime-daily above — NOT gated on trend_regime_mode at
-        # registration time, since feature_flags.yaml is meant to
-        # hot-reload with no restart required (see that module's own
-        # docstring); gating registration on the mode would silently
-        # require a restart to pick up an off->shadow flip, breaking that
-        # guarantee. Read-only price computation; nt_signal_sim capture /
-        # live Kelly application are gated separately by trend_regime_mode
-        # inside _process_symbol.
+        # Trend filter refresh (HARM-04, 2026-10-13): moved from 06:10 UTC
+        # daily to the same pre-sweep grid as macro-regime (5,20,35,50 * * *
+        # *) so both alignment inputs are refreshed in lockstep — same
+        # freshness target, same staleness guard. Registered
+        # unconditionally; the mode is read per-run (trend_regime_mode) so a
+        # feature_flags.yaml flip needs no restart. Read-only price
+        # computation; nt_signal_sim capture / live Kelly application are
+        # gated separately by trend_regime_mode inside _process_symbol.
         self._scheduler.add_job(
             self._run_trend_regime_refresh,
-            trigger=CronTrigger.from_crontab("10 6 * * *"),
-            id="trend-regime-daily",
-            name="Trend regime refresh (daily)",
-            misfire_grace_time=3600,
+            trigger=CronTrigger.from_crontab("5,20,35,50 * * * *"),
+            id="trend-regime-refresh",
+            name="Trend regime refresh (pre-sweep grid)",
+            misfire_grace_time=300,
             coalesce=True,
         )
 
@@ -2714,19 +2714,25 @@ class SweepOrchestrator(HeavySweepMixin):
         except Exception as exc:
             logger.error("[dynamic-tier] failed: %s", exc)
 
-    async def _run_macro_regime_refresh(self) -> None:
-        """Macro filter daily refresh (2026-08-28, worklog/
-        20260825_PIPELINE_OVERVIEW_EV_FEEDBACK_LOOP.md "Macro filter —
-        full build scope"). Recomputes the 200-day-SMA-based macro
-        score/label/strength for every active symbol and upserts
-        nt_macro_regime. Best-effort: failures are logged, never raised.
+    async def _run_macro_regime_refresh(self, force: bool = False) -> None:
+        """Macro filter refresh (HARM-04, 2026-10-13). Recomputes the
+        200-day-SMA-based macro score/label/strength for every active
+        symbol and upserts ``nt_macro_regime``.
+
+        ``force=True`` bypasses the freshness guard — used by the startup
+        catch-up when the table is stale. The periodic schedule passes
+        ``force=False`` (default), and the underlying ``refresh_macro_regime``
+        skips the expensive daily-bar fetch when no new daily close has
+        arrived since the last computation.
+
+        Best-effort: failures are logged, never raised.
         """
         from regime_platform.sweep_orchestrator.macro_filter import (
             refresh_macro_regime,
         )
 
         try:
-            rows = await refresh_macro_regime()
+            rows = await refresh_macro_regime(force=force)
             logger.info("[macro-regime] done: %d symbol(s) refreshed", len(rows))
         except Exception as exc:
             logger.error("[macro-regime] failed: %s", exc)
@@ -3071,19 +3077,25 @@ class SweepOrchestrator(HeavySweepMixin):
             logger.warning("[clef:stance] job failed: %s", exc)
         await write_job_heartbeat("clef_stance", summary)
 
-    async def _run_trend_regime_refresh(self) -> None:
-        """Trend filter daily refresh (2026-09-10, worklog
-        20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md SS7).
-        Recomputes the SMA-10/20/50 crossover + RSI-14 read for every
-        active symbol and upserts nt_trend_regime. Best-effort: failures
-        are logged, never raised.
+    async def _run_trend_regime_refresh(self, force: bool = False) -> None:
+        """Trend filter refresh (HARM-04, 2026-10-13). Recomputes the
+        SMA-10/20/50 crossover + RSI-14 read for every active symbol and
+        upserts ``nt_trend_regime``.
+
+        ``force=True`` bypasses the freshness guard — used by the startup
+        catch-up. The periodic schedule passes ``force=False`` (default);
+        the underlying ``refresh_trend_regime`` skips the expensive
+        daily-bar fetch when no new daily close has arrived since the last
+        computation.
+
+        Best-effort: failures are logged, never raised.
         """
         from regime_platform.sweep_orchestrator.trend_filter import (
             refresh_trend_regime,
         )
 
         try:
-            rows = await refresh_trend_regime()
+            rows = await refresh_trend_regime(force=force)
             logger.info("[trend-regime] done: %d symbol(s) refreshed", len(rows))
         except Exception as exc:
             logger.error("[trend-regime] failed: %s", exc)
@@ -3099,7 +3111,7 @@ class SweepOrchestrator(HeavySweepMixin):
         this-week's fire time already passed if the process wasn't alive
         to see it. Found live: the studio's restart cadence clusters
         right around the 06:00 UTC daily trigger, so
-        ``macro-regime-daily`` and the weekly ``bracket-reachability``
+        ``macro-regime-refresh`` (now on the 5,20,35,50 grid, HARM-04) and the weekly ``bracket-reachability``
         job kept silently rolling forward to "tomorrow"/"next Sunday"
         every cycle (`nt_macro_regime` sat 3.5 days stale, the weekly
         diagnostics 6 days stale).
@@ -3141,10 +3153,10 @@ class SweepOrchestrator(HeavySweepMixin):
                     logger.warning(
                         "[startup-catchup] nt_macro_regime last computed_at=%s — "
                         "stale, running macro regime refresh now instead of "
-                        "waiting for the next 06:00 UTC window",
+                        "waiting for the next grid slot",
                         last,
                     )
-                    asyncio.create_task(self._run_macro_regime_refresh())
+                    asyncio.create_task(self._run_macro_regime_refresh(force=True))
             except Exception as exc:
                 logger.warning(
                     "[startup-catchup] macro regime staleness check failed: %s", exc,
