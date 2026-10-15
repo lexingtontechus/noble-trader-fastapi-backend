@@ -380,9 +380,9 @@ async def section_raw_vs_enforced() -> str:
             if isinstance(enf, (int, float)):
                 by_sym[sym]["enforced_sum"] += enf
             outcome = row.get("outcome", "")
-            if outcome == "tp_hit":
+            if outcome == "win":
                 by_sym[sym]["wins"] += 1
-            elif outcome == "sl_hit":
+            elif outcome == "loss":
                 by_sym[sym]["losses"] += 1
 
     lines = []
@@ -486,12 +486,10 @@ async def section_record_health() -> str:
                 by_sym[sym] = {"n": 0, "wins": 0, "losses": 0, "expired": 0, "oldest": None, "newest": None}
             by_sym[sym]["n"] += 1
             outcome = row.get("outcome", "")
-            if outcome == "tp_hit":
+            if outcome == "win":
                 by_sym[sym]["wins"] += 1
-            elif outcome == "sl_hit":
+            elif outcome == "loss":
                 by_sym[sym]["losses"] += 1
-            elif outcome == "expired":
-                by_sym[sym]["expired"] += 1
             entered = row.get("entered_at", "")
             if entered:
                 if by_sym[sym]["oldest"] is None or entered < by_sym[sym]["oldest"]:
