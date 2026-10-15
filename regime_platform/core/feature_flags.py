@@ -129,7 +129,7 @@ _DEFAULTS: dict[str, Any] = {
         "lookback_days": 10,
         "tp_atr": [1.71, 2.0, 3.0, 5.0, 8.0, 13.0],
         "sl_atr": [0.35, 1.0, 2.0, 3.5, 5.0, 8.0],
-        "tp_atr_min": 0.20,
+        "tp_atr_min": 2.0,
         "tp_atr_max": 20.0,
         "sl_atr_min": 0.15,
         "sl_atr_max": 12.0,

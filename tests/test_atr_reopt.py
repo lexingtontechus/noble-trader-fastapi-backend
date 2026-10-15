@@ -90,7 +90,7 @@ def test_urgency_config_defaults():
     # 4h cycle floor — durable, not a 48h in-memory gate
     assert cfg["min_reopt_hours"] == 4.0
     assert cfg["cooldown_hours"] == 4.0
-    assert cfg["auto_apply_clamps"] is True
+    assert cfg["auto_apply_clamps"] is False
 
 
 def test_ts_or_none_parses_iso():

@@ -550,7 +550,16 @@ dynamic_atr:
   lookback_days: 10
   tp_atr: [1.71, 2.0, 3.0, 5.0, 8.0, 13.0]
   sl_atr: [0.35, 1.0, 2.0, 3.5, 5.0, 8.0]
-  tp_atr_min: 0.20
+  # 2026-10-14 FENCE 0.20 → 2.0 (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_
+  # GAP_SEARCH.md §1). The global floor is the backstop for scopes WITHOUT a
+  # by_symbol block (new symbols, class-level walks, lookup misses); every
+  # covered symbol already floors ≥ 4.0, so covered picks are byte-identical.
+  # Closes the tight-corner degenerate class (the 136→1.57 jump: max_expiry
+  # 0.20 + both-halves squeezed the argmax below TP 2 while the raw walk
+  # preferred wide). The 1.71 grid point is now unreachable at global scope.
+  # A fence cannot manufacture edge — it stops the optimizer pricing the
+  # tight corner as if it could. REVERT: 0.20.
+  tp_atr_min: 2.0
   tp_atr_max: 20.0
   sl_atr_min: 0.15
   sl_atr_max: 12.0
@@ -657,7 +666,16 @@ atr_reopt_urgency:
   cooldown_hours: 4.0    # legacy alias of min_reopt_hours
   vol_ratio_short: 24
   vol_ratio_long: 168
-  auto_apply_clamps: true
+  # 2026-10-14 true → false (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_GAP_
+  # SEARCH.md §2). apply_symbol_clamps line-patches EXACTLY the by_symbol
+  # tp/sl clamp keys (atr_reopt.py:568) on this 4h cycle — and while the
+  # reopt objective is the D1 argmax the review measured broken (tight-corner
+  # picks; INVALID bands by its own solve), auto-apply re-imports the failure
+  # mode and overwrites operator fences written into by_symbol. Until Phase C
+  # (pbm_geometry_mode: posterior) re-points the objective, clamps are
+  # operator-GO again — the monthly job's original contract. Reopts still
+  # run + report. REVERT: true.
+  auto_apply_clamps: false
 
 # dynamic_deadline (20261005_REACHABILITY_REDESIGN): per-(symbol, vol_tier)
 # resolution deadlines replace the uniform 48h clock. Shadow mode: derive
@@ -946,7 +964,33 @@ pbm_posterior_k0: 30.0        # prior pseudo-counts (evidence to leave physics)
 pbm_posterior_tau_days: 14.0  # outcome decay half-life basis, days
 pbm_sigma_atr: 1.0            # per-bar log-vol in ATR units (TR-ATR/price by construction)
 pbm_ev_bound_q: 0.05          # the ONE gate: EV lower credible bound mass
-pbm_cost_atr_by_symbol: {}    # per-symbol costs (ATR units); {} = band cost_atr
+# Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
+# round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
+# 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_
+# GAP_SEARCH.md §3). The flat 0.1 overstates honest costs 3-10× and makes
+# the EV gate deaf: at null EV(4.5/3.0) = −0.0135 − c, flat 0.1 forces
+# −0.113 while honest majors ~0.02 leave a small negative that a measured
+# gap could flip. Values are retail-spread ESTIMATES — replace with your
+# broker's measured round-trip ÷ 1h ATR before trusting any flip. Exact-
+# match lookup (no FOREX alias — majors listed individually); unlisted
+# symbols fall back to the band cost_atr. Mtime hot-reload: takes effect
+# next tick, no restart. Consumed by the PBM paths only
+# (posterior.pbm_cost_atr) — the legacy grid walk ignores it.
+pbm_cost_atr_by_symbol:
+  EURUSD: 0.02
+  GBPUSD: 0.02
+  USDJPY: 0.02
+  AUDUSD: 0.025
+  USDCAD: 0.025
+  USDCHF: 0.02
+  XAUUSD: 0.015
+  XAGUSD: 0.04
+  XAUAUD: 0.03
+  XAUEUR: 0.03
+  BTCUSD: 0.03
+  AAPL: 0.02
+  US30USD: 0.025
+  US500: 0.02
 pbm_reopt_min_new_outcomes: 25  # Phase C: evidence-triggered reopt threshold
 
 # Per-asset-class min_p_win_bracket thresholds (2026-10-04, worklog

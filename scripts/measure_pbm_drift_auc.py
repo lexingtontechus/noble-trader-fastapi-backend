@@ -9,7 +9,10 @@ proposal `20261013_POSTERIOR_PRICING_METHODOLOGY_PROPOSAL.md` §6).
 Promotion bar (pre-registered, deliberately hard):
 
     walk-forward barrier-orientation AUC > 0.5   AND   bootstrap 95% CI
-    lower bound > 0.5,   era-clean.
+    lower bound > 0.5   AND   above the null's own walk-forward AUC,
+    era-clean.  (The third clause is the pre-registration's "promote only
+    above null": a candidate that cannot beat the geometry baseline
+    carries no timing information beyond geometry.)
 
 "Walk-forward" = each symbol's era-clean decided rows split chronologically
 50/50, scored on the LATER half only. The scorers are fixed scores (nothing is
@@ -338,19 +341,37 @@ def scorer_stats(
     }
 
 
-def verdict_for(stat: dict[str, Any]) -> tuple[str, str]:
-    """The pre-registered promotion bar, mechanically applied. No discretion."""
+def verdict_for(stat: dict[str, Any], null_wf: float | None) -> tuple[str, str]:
+    """The pre-registered promotion bar, mechanically applied. No discretion.
+
+    Drift candidate: WF AUC > 0.5 AND CI lower bound > 0.5 AND above the
+    null's own WF AUC (the pre-registration's "promote only above null" —
+    phases doc §5 Phase E; a candidate that cannot beat the geometry
+    baseline carries no timing information). The null scorer is exempt
+    from the third clause (it IS the baseline) and never promotes: its
+    row reads BASELINE with the mechanical detail. ``null_wf`` None (null
+    itself unscoreable) leaves the third clause vacuous — reported as such
+    via the null's own BASELINE/no-rows verdict.
+    """
+    is_null = stat["key"] == "_null"
     if stat["n_wf"] == 0 or stat["auc_wf"] is None:
-        return ("STAY-OFF", "no scorable walk-forward rows")
+        return ("BASELINE" if is_null else "STAY-OFF", "no scorable walk-forward rows")
     reasons: list[str] = []
     if stat["auc_wf"] <= 0.5:
         reasons.append(f"WF AUC {_fmt(stat['auc_wf'], '.3f')} <= 0.5")
     if stat["ci"] is None or stat["ci"][0] <= 0.5:
         lo = stat["ci"][0] if stat["ci"] else float("nan")
         reasons.append(f"CI lower bound {_fmt(lo, '.3f')} <= 0.5")
+    if not is_null and null_wf is not None and stat["auc_wf"] <= null_wf:
+        reasons.append(
+            f"WF AUC {_fmt(stat['auc_wf'], '.3f')} <= null WF AUC "
+            f"{_fmt(null_wf, '.3f')} (pre-registered: above the null)"
+        )
     if reasons:
-        return ("STAY-OFF", "; ".join(reasons))
-    return ("PROMOTE", "WF AUC > 0.5 with CI lower bound > 0.5")
+        return ("BASELINE" if is_null else "STAY-OFF", "; ".join(reasons))
+    if is_null:
+        return ("BASELINE", "cleared the 0.5 bar (geometry baseline, not a candidate)")
+    return ("PROMOTE", "WF AUC > 0.5, CI lower bound > 0.5, above the null")
 
 
 # ─── Selection gap (entry-timing thermometer) ───────────────────────────────
@@ -425,7 +446,7 @@ def measure(
             stat["delta_null"] = stat["auc_wf"] - null_wf
         else:
             stat["delta_null"] = None
-        stat["verdict"], stat["reason"] = verdict_for(stat)
+        stat["verdict"], stat["reason"] = verdict_for(stat, null_wf)
 
     dec_by_sym: Counter[str] = Counter(r["symbol"] for r in decided)
     wf_by_sym: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -512,13 +533,18 @@ def render_report(ctx: dict[str, Any], now: datetime) -> str:
     )
     L.append(
         "2. the **bootstrap 95% CI lower bound on that walk-forward AUC > 0.5** "
-        f"({ctx['n_boot']} row-level resamples)."
+        f"({ctx['n_boot']} row-level resamples), and"
+    )
+    L.append(
+        "3. its walk-forward AUC is **above the null's own walk-forward AUC** — "
+        "the geometry baseline. A candidate that cannot beat the null carries no "
+        "timing information beyond geometry."
     )
     L.append("")
     L.append(
-        "The analytic null is scored as a candidate too: it encodes bracket "
-        "GEOMETRY. A drift candidate that cannot beat the null's own walk-forward "
-        "AUC carries no timing information beyond geometry — μ stays pinned to 0. "
+        "The analytic null is scored on the same bar too: it encodes bracket "
+        "GEOMETRY, and its row reads BASELINE (it is the reference, never a "
+        "candidate). "
         "**Expected honest outcome: everything stays off** (directional blend "
         "AUC 0.499 on ~74k resolved signals; `p_clef_dir` 0.58 = chance)."
     )
@@ -593,6 +619,11 @@ def render_report(ctx: dict[str, Any], now: datetime) -> str:
     for row in ctx["per_symbol"]:
         cells = " | ".join(_fmt(row[name], ".3f") for _k, name, _t, _d in SCORERS)
         L.append(f"| {row['symbol']} | {row['n_dec']} | {row['n_wf']} | {cells} |")
+    L.append(
+        "*— = AUC undefined for that scorer (coverage gap, or the symbol's "
+        "walk-forward half is single-class). Rows with n WF < 30 are noise-grade: "
+        "read extremes there as artifacts, not evidence.*"
+    )
     L.append("")
 
     L.append("## Selection gap — entry-timing thermometer")
