@@ -15,7 +15,8 @@ if env.exists():
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-REF = os.environ.get("SUPABASE_PROJECT_REF") or "pcvscowltlrxzgxjurcr"
+# Ref parsed from SUPABASE_URL (the variable .env.local carries).
+REF = os.environ.get("SUPABASE_URL", "").rstrip("/").split("//")[-1].split(".")[0]
 TOKEN = os.environ.get("SUPABASE_ACCESS_TOKEN")
 
 QUERIES = {

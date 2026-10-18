@@ -20,6 +20,15 @@
 #   RATE_LIMIT_PER_MIN   – TimesFM rate limit per key (default: 60)
 #   PORT                 – Override public port (default: 8000)
 #
+# 2026-10-17 — SECRETS LOADING (container support)
+#   This script previously assumed secrets were already in the environment
+#   (Lightning Studio injects them). Under Docker they are not, so we now
+#   load .env.local / .env into THIS shell before starting any service.
+#   Without this, `docker compose up` starts the stack with no credentials:
+#   the orchestrator cannot reach Supabase and every writer silently no-ops.
+#   The load is fail-safe — a missing file is not an error, so the Studio
+#   path (env already injected) behaves exactly as before.
+#
 # Startup behavior:
 #   TimesFM is started FIRST (model load takes 30-60s, or 2-3 min on first
 #   run when HuggingFace weights need to download). The script waits for
@@ -30,6 +39,42 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
+
+# ── Load secrets from .env.local / .env (container + local dev) ────────────
+# Fail-safe: missing files are not an error.
+#
+# GUARD: only load when SUPABASE_URL is absent. The Studio injects the whole
+# secret set into the environment, so a present SUPABASE_URL means the
+# environment is already complete — and `source` OVERWRITES existing vars,
+# so loading the file unconditionally would clobber injected secrets with the
+# repo's copy. Checking the primary key only is what makes the Studio path
+# behave exactly as it did before this block existed.
+if [ -z "${SUPABASE_URL:-}" ]; then
+    for env_file in .env.local .env; do
+        if [ -f "$env_file" ]; then
+            echo "  Loading secrets from $env_file"
+            set -a
+            # shellcheck disable=SC1090
+            source "$env_file" 2>/dev/null || true
+            set +a
+            break
+        fi
+    done
+fi
+
+# ── Verify the minimum viable credential set ───────────────────────────────
+# A missing SUPABASE_URL/KEY means every durable write silently no-ops. Warn
+# loudly at startup rather than discovering it hours later via a stale
+# heartbeat — the exact failure mode of the 2026-10-16 outage.
+if [ -z "${SUPABASE_URL:-}" ]; then
+    echo "  ⚠ SUPABASE_URL is not set."
+    echo "    Set it in the environment or in .env.local / .env."
+    echo "    Without it the sweep cannot persist results."
+fi
+if [ -z "${SUPABASE_KEY:-}" ] && [ -z "${SUPABASE_SERVICE_ROLE:-}" ]; then
+    echo "  ⚠ SUPABASE_KEY / SUPABASE_SERVICE_ROLE is not set."
+    echo "    Without it the sweep cannot persist results."
+fi
 
 PUBLIC_PORT="${PORT:-8000}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

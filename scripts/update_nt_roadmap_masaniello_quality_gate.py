@@ -77,7 +77,8 @@ def main() -> int:
     import httpx
 
     token = os.environ.get("SUPABASE_ACCESS_TOKEN")
-    ref = os.environ.get("SUPABASE_PROJECT_REF") or "pcvscowltlrxzgxjurcr"
+    # Ref parsed from SUPABASE_URL (the variable .env.local carries).
+    ref = os.environ.get("SUPABASE_URL", "").rstrip("/").split("//")[-1].split(".")[0]
     if not token:
         print(SQL)
         print("Missing SUPABASE_ACCESS_TOKEN — SQL printed above.", file=sys.stderr)

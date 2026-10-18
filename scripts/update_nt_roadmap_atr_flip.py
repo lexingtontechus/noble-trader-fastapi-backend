@@ -103,7 +103,8 @@ async def main() -> int:
 
     # Prefer management API like pulse_check when access token present
     token = os.environ.get("SUPABASE_ACCESS_TOKEN")
-    ref = os.environ.get("SUPABASE_PROJECT_REF") or "pcvscowltlrxzgxjurcr"
+    # Ref parsed from SUPABASE_URL (the variable .env.local carries).
+    ref = os.environ.get("SUPABASE_URL", "").rstrip("/").split("//")[-1].split(".")[0]
     async with httpx.AsyncClient(timeout=45.0) as client:
         if token:
             resp = await client.post(

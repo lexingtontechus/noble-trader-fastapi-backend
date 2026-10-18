@@ -1,0 +1,43 @@
+{
+  "symbol": "USDCHF",
+  "signal": "BUY",
+  "status": "UNDERWATER_BUT_ALIVE",
+  "delta_computed": "-0.00145",
+  "discord_status": "written",
+  "json_file": "docs/signals-health-eod-digests/2026-09-03-USDCHF.json",
+  "summary": "USDCHF BUY evaluated EOD 2026-09-03. Current OANDA price 0.8114 vs entry 0.81285: position down -0.00145 (~-14.5 pips), but 0.004619 above stop (0.806781) — stop not hit. Target 0.829034, +0.017634 to go. Web/TradingView research: FXStreet notes bullish flag intact, RSI bullish flat, break above 0.8150 opens 0.8207→0.8300. DailyForex 09/01 signal was buyer above 0.8140, target 0.8311, aligned with our regime high_vol_strong_bull. SnX/USDCHF on TradingView technicals page shows Strong Buy on moving averages. Fundamentals: Fed expected to hold/potential Sept 15-16 hike (CME FedWatch 57.5% chance), SNB pinned at 0.00% — widening USD-CHF yield differential supports long USDCHF. Swiss Franc still worst-performing G10 currency Q3. Geopolitical/middle-east tensions + Yen intervention speculation drove intra-session volatility to 0.8120 area, now consolidating near 0.8114. Signal Scout + Precision Pro plan holds; skip-and-continue applied per cron protocol.",
+  "discord_embed": {
+    "title": "📊 EOD Signals Health — USDCHF BUY",
+    "color": 16711680,
+    "fields": [
+      {"name": "📋 Signal", "value": "`BUY` USDCHF (OANDA:USDCHF)", "inline": true},
+      {"name": "📍 Entry | Stop | Target", "value": "0.81285 | 0.806781 | 0.829034", "inline": true},
+      {"name": "💹 Current", "value": "0.8114", "inline": true},
+      {"name": "📐 Delta (Close vs Entry)", "value": "-0.00145  (-14.5 pips)", "inline": true},
+      {"name": "🛡️ Stop Buffer", "value": "+0.004619 above stop", "inline": true},
+      {"name": "🎯 To Target", "value": "+0.017634  (2.17% RR from entry)", "inline": true},
+      {"name": "🏷️ Regime", "value": "high_vol_strong_bull", "inline": true},
+      {"name": "🤖 Plan", "value": "Signal Scout + Precision Pro", "inline": true},
+      {"name": "📊 Calibration", "value": "0.7086 — OVERCONFIDENT — avg_predicted_p_win=0.7086, realized_win_rate=0.0", "inline": false},
+      {"name": "🔍 EOD Verdict", "value": "Position underwater (-14.5 pips) but stop intact. FXStreet bullish flag intact above 0.8103; break 0.8150 → 0.8207/0.8300. Fed-SNB yield gap (2.5% vs 0.0%) structural support for long. Skip-and-continue.", "inline": false}
+    ],
+    "footer": {"text": "EOD Signals Health | 2026-09-03 | Channel 1544906978151891084"},
+    "timestamp": "2026-09-03T16:20:53Z"
+  },
+  "research_notes": {
+    "web_sources": [
+      "https://www.fxstreet.com/currencies/usdchf",
+      "https://www.tmgm-asia.com/eng/analysis/market-news/article/usd-chf-price-forecast-bulls-eye-08200-as-rsi-turns-higher-202609022038",
+      "https://www.dailyforex.com/forex-technical-analysis/2026/09/usdchf-forex-signal-1-september-2026/249235",
+      "https://ytvmarketnews.com/why-is-swiss-franc-gaining-despite-potential-snb-intervention-to-limit-currency-upside-fxstreet",
+      "https://newsbreak.com/tradingkey-331884976/4861140726015-usd-chf-usdchf-is-up-0-50-on-sep-1-the-reason-has-emerged"
+    ],
+    "tv_url": "https://www.tradingview.com/symbols/USDCHF/technicals/",
+    "fxstreet_tech": "Bullish flag in play; RSI bullish but flat. Break above 0.8150 opens 0.8207 (July 29 high) → 0.8215 (June 19 high) → 0.8250 → 0.8300. Support LOD 0.8103 → 50-day SMA 0.8079 → July 30 swing low 0.8035.",
+    "dailyforex_signal": "Buyer above 0.8140, SL 0.7969, target 0.8311 — aligned with our BUY thesis. Rationale: Fed likely tight (potential Sep hike), SNB at 0%, massive yield differential favors USD.",
+    "current_px_yahoo": "0.8114 @ 5:20:53 PM GMT+1 (OANDA)",
+    "fundamentals": "FedWatch: 57.5% chance of 25bp Sep hike (up from 35% pre-Jackson Hole). SNB policy rate 0.00% expected to hold. SNB Governor Schlegel (since Oct 2024). USD-CHF yield differential structural bullish for USDCHF. CHF worst-performing G10 Q3.",
+    "catalysts": "FOMC Sep 15-16; US CPI/PPI ahead; Middle East tensions; Yen intervention speculation; geopolitical risk flows.",
+    "tv_summary": "TradingView technicals: Strong Buy on Moving Averages; RSI ~59 (positive momentum); price consolidating near 0.8114-0.8120 after Yen-intervention-driven dip from 0.8156 HOD."
+  }
+}

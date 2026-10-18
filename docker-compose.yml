@@ -1,0 +1,132 @@
+# =============================================================================
+# Noble Trader / Kairos — single-box stack
+#
+#   docker compose up -d
+#
+# Runs the five-process stack (gateway, main, TimesFM, orchestrator, local LLM)
+# in ONE container. That is deliberate: the orchestrator's APScheduler is
+# in-process, and splitting it across containers would require a distributed
+# lock. See docs/scopes/20261016_SCALE_ARCHITECTURE_AND_GPU_DECISION.md §7–§13.
+#
+# Only the gateway port is published. Everything else is localhost-only
+# inside the container.
+#
+# -----------------------------------------------------------------------------
+# BEFORE FIRST RUN — copy secrets and live state onto the host:
+#
+#   cp .env.example .env                     # then fill in real values
+#   mkdir -p config .cache/huggingface
+#
+# config/feature_flags.yaml is LIVE STATE and the runtime authority for every
+# mode flag. The repo ships a copy; the Studio may hold different values.
+# Copy the Studio's version here if it differs — do NOT let the image's
+# baked-in copy win.
+# =============================================================================
+
+services:
+  kairos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kairos:latest
+    container_name: kairos
+
+    # The public port. Override with PUBLIC_PORT in .env if 8000 is taken.
+    ports:
+      - "${PUBLIC_PORT:-8000}:8000"
+
+    environment:
+      # ── Ports (start.sh defaults match these) ──────────────────────────
+      PUBLIC_PORT: "${PUBLIC_PORT:-8000}"
+      # ── Secrets are NOT set here — they come from env_file below ───────
+      # ── Model cache location (matches the Dockerfile's HF_HOME) ────────
+      HF_HOME: /data/hf_cache
+      HF_HUB_CACHE: /data/hf_cache/hub
+      # First-ever run may need longer than the default 180s to download
+      # weights. Subsequent starts are 30–60s.
+      TIMESFM_READY_TIMEOUT: "${TIMESFM_READY_TIMEOUT:-300}"
+      # Keep torch from oversubscribing the box during concurrent sweeps.
+      # The heavy sweep runs each symbol's grid search in asyncio.to_thread;
+      # 4 symbols × N intra-op threads otherwise thrash a 4-vCPU box.
+      OMP_NUM_THREADS: "${OMP_NUM_THREADS:-2}"
+      MKL_NUM_THREADS: "${MKL_NUM_THREADS:-2}"
+      OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-2}"
+
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      # ── Secrets (read-only) ────────────────────────────────────────────
+      # .env.local holds the real credentials. Mounted read-only so a process
+      # cannot rewrite them.
+      - ./.env.local:/app/.env.local:ro
+
+      # ── Live config — MUST be a volume, never baked into the image ─────
+      # feature_flags.yaml is the runtime authority. A stale copy in the image
+      # would silently revert live flags on every redeploy.
+      - ./config:/app/config
+
+      # ── Durable-ish state ──────────────────────────────────────────────
+      # HF model weights (~4 GB) + .cache/kairos/regime_state.json, which the
+      # orchestrator snapshots after every symbol so a restart mid-group
+      # loses at most one tick. Mounting this means a redeploy does not
+      # re-download weights and does not lose regime warm-start state.
+      - ./data:/data
+      - ./.cache:/app/.cache
+
+    restart: unless-stopped
+
+    # ── Resource guidance ────────────────────────────────────────────────
+    # The stack wants 4 vCPU / 8 GiB. These are soft limits, not requests —
+    # Docker does not guarantee CPU. Size the HOST to 4 vCPU / 8 GiB minimum;
+    # see the hosting assessment for the measured duty cycle (~5% light,
+    # 75 s/day heavy).
+    deploy:
+      resources:
+        limits:
+          memory: 7g
+        reservations:
+          memory: 2g
+
+    # ── Logging ──────────────────────────────────────────────────────────
+    # Bounded so a runaway log cannot fill the disk. The orchestrator logs
+    # heavily during sweeps.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 300s
+      retries: 3
+
+    # The stack reaches out to Supabase, TradingView, Alpaca, Discord and
+    # HuggingFace. No inbound ports other than the gateway.
+    networks:
+      - kairos
+
+networks:
+  kairos:
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# NOTES
+#
+# 1. This is a SINGLE box by design. A warm standby would need a
+#    leader-election rule (see the hosting assessment §5.3) — do not run two
+#    of these against the same Supabase without one, or both will sweep.
+#
+# 2. The healthcheck is a PROCESS check, not a LIVENESS check. It returns 200
+#    for as long as the process is alive, so it cannot see a silent stall.
+#    Run scripts/watchdog_liveness.py OFF this box (Cloudflare Worker cron,
+#    a free instance) — that is the check that would have caught the 42-hour
+#    outage on 2026-10-16.
+#
+# 3. config/ and .cache/ are volumes. Never COPY them into the image and
+#    never let the image's baked-in config win over the mounted one.
+# -----------------------------------------------------------------------------

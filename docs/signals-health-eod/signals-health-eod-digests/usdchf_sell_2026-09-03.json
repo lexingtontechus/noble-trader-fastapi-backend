@@ -1,0 +1,98 @@
+{
+  "symbol": "USDCHF",
+  "signal": "SELL",
+  "entry": 0.8087,
+  "stop": 0.814769,
+  "target": 0.792516,
+  "regime": "high_vol_strong_bear",
+  "tv_symbol": "OANDA:USDCHF",
+  "plan": "Signal Scout+Precision Pro",
+  "channel_id": "1544906978151891084",
+  "timestamp": "2026-09-03T00:00:00Z",
+  "price_check": {
+    "source": "Investing.com",
+    "current_price": 0.8082,
+    "delta_vs_entry": -0.0005,
+    "pct_change_on_day": -0.15,
+    "day_range": "0.8069-0.8099",
+    "prev_close": 0.8094
+  },
+  "tradingview_snapshot": {
+    "source": "tradingview.com/symbols/OANDA:USDCHF",
+    "current_rate": 0.80663,
+    "pct_24h": -0.07,
+    "market_status": "closed",
+    "oscillators": "Strong sell"
+  },
+  "web_research": {
+    "query": "USDCHF Swiss Franc news today catalysts",
+    "catalysts": [
+      {
+        "event": "Swiss August CPI",
+        "actual": "0.8% YoY",
+        "expected": "0.5% YoY",
+        "impact": "Hotter-than-expected inflation surged to highest in 2 years; dampens SNB rate-cut expectations, fuels CHF buying",
+        "source_url": "https://www.fxstreet.com/news/swiss-franc-strengthens-on-inflation-surprise-and-broad-us-dollar-weakness-202609031257"
+      },
+      {
+        "event": "Swiss Q2 GDP",
+        "actual": "1.9% YoY",
+        "expected": "1.6%",
+        "impact": "Strongest quarterly growth in 5 years; supports CHF, pressures USD/CHF",
+        "source_url": "https://www.tradingpedia.com/2026/09/03/swiss-franc-gains-as-gdp-inflation-data-pressure-usd-chf/"
+      },
+      {
+        "event": "US Initial Jobless Claims",
+        "actual": "206K",
+        "expected": "205K",
+        "impact": "Modest rise in layoffs ahead of NFP; weighs on USD",
+        "source_url": "https://www.fxstreet.com/news/swiss-franc-strengthens-on-inflation-surprise-and-broad-us-dollar-weakness-202609031257"
+      },
+      {
+        "event": "US Dollar Index (DXY)",
+        "level": "99.26",
+        "impact": "Near one-week low; broad USD weakness supports CHF",
+        "source_url": "https://www.fxstreet.com/news/swiss-franc-strengthens-on-inflation-surprise-and-broad-us-dollar-weakness-202609031257"
+      },
+      {
+        "event": "Fed Governor Waller comments",
+        "impact": "Dovish tone; supports holding rates unchanged in September, weighs on USD",
+        "source_url": "https://www.fxstreet.com/news/swiss-franc-strengthens-on-inflation-surprise-and-broad-us-dollar-weakness-202609031257"
+      },
+      {
+        "event": "Geopolitical / safe-haven flows",
+        "impact": "Middle East tensions and energy volatility drive safe-haven CHF inflows",
+        "source_url": "https://www.tradingkey.com/news/market-movers/262148273-market-movers-usdchf-20260903"
+      }
+    ],
+    "technical_levels": {
+      "support_looking": "0.8040 (50-day SMA break), 0.8039 (July 30 low); further 0.8000, 0.7992 (100-day SMA), 0.7934 (200-day SMA)",
+      "resistance": "0.8100, 0.8130-0.8150 pivot zone, 0.8156 (Sep 2 high), 0.8200"
+    },
+    "snippets": [
+      {
+        "url": "https://www.fxstreet.com/news/swiss-franc-strengthens-on-inflation-surprise-and-broad-us-dollar-weakness-202609031257",
+        "snippet": "USD/CHF comes under selling pressure on Thursday as a sharp rally in the Japanese Yen (JPY) weighs broadly on the US Dollar (USD), while the Swiss Franc (CHF) draws support from stronger-than-expected inflation and growth data. At the time of writing, the pair trades around 0.8070, down 0.75% on the day."
+      },
+      {
+        "url": "https://www.tradingpedia.com/2026/09/03/swiss-franc-gains-as-gdp-inflation-data-pressure-usd-chf/",
+        "snippet": "Switzerland's Q2 GDP expanded by 1.9%, its strongest quarterly growth in five years and above the 1.6% consensus. Swiss CPI rose 0.4% month-over-month in August and 0.8% year-over-year, easing deflation concerns."
+      },
+      {
+        "url": "https://www.tradingkey.com/news/market-movers/262148273-market-movers-usdchf-20260903",
+        "snippet": "The decline in USDCHF was primarily driven by a domestic inflation surprise in Switzerland, which prompted a swift repricing of Swiss National Bank policy expectations and fueled demand for the Swiss franc relative to the U.S. dollar. August CPI data showed headline inflation accelerating to 0.8% year-over-year, comfortably exceeding market expectations for a 0.5% gain."
+      },
+      {
+        "url": "https://www.fxstreet.com/news/usd-chf-price-forecast-50-day-sma-break-exposes-08040-202609031847",
+        "snippet": "USD/CHF drops below the 50-day Simple Moving Average (SMA) of 0.8090... The Relative Strength Index (RSI) turned bearish, an indication that sellers are in charge. Hence, in the short term, further downside is expected."
+      }
+    ]
+  },
+  "calibration": {
+    "bias": 0.496,
+    "bias_label": "OVERCONFIDENT",
+    "avg_predicted_p_win": 0.496,
+    "realized_win_rate": 0.0
+  },
+  "assessment": "SELL signal is well-supported: current price (0.8082) is already below entry (0.8087) by -0.0005; stronger-than-expected Swiss CPI (0.8% YoY) and Q2 GDP (1.9%) are driving CHF strength; broad USD weakness from softening labor data and dovish Fed comments adds pressure; TV oscillators show 'Strong sell'. Entry is marginally in-the-money. Target 0.792516 aligns with projected downside toward 50-day SMA (0.8040) and July 30 low (0.8039). Stop at 0.814769 sits above the 0.8130-0.8150 resistance zone, providing reasonable risk management. Calibration bias of 0.496 (OVERCONFIDENT) with realized win rate 0.0 warrants caution."
+}

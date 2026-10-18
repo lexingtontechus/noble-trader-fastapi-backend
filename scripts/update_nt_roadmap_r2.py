@@ -83,7 +83,8 @@ async def main() -> int:
     # PostgREST cannot run arbitrary SQL. Prefer management API if token present;
     # else print SQL for manual apply (matches 161/162/163 workflow).
     token = os.environ.get("SUPABASE_ACCESS_TOKEN")
-    project_ref = os.environ.get("SUPABASE_PROJECT_REF") or "pcvscowltlrxzgxjurcr"
+    # Ref parsed from SUPABASE_URL (the variable .env.local carries).
+    project_ref = os.environ.get("SUPABASE_URL", "").rstrip("/").split("//")[-1].split(".")[0]
     if token:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

@@ -1,0 +1,73 @@
+# =============================================================================
+# .dockerignore — keep the build context small and the image reproducible
+#
+# Without this, `COPY . .` bakes the local virtualenv, the HuggingFace model
+# cache (multiple GB), git history and every local probe artifact into the
+# image. That makes builds slow, images huge, and — worse — ships a STALE
+# model cache and STALE config that then fight the mounted volumes at runtime.
+# =============================================================================
+
+# ── Secrets — NEVER in the image ─────────────────────────────────────────────
+# Mounted as volumes at runtime (see docker-compose.yml). Baking them in would
+# leak credentials into any pushed image, and would make the running container
+# use a stale copy instead of the live one.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Live state — mounted, not baked ─────────────────────────────────────────
+# config/feature_flags.yaml is the RUNTIME AUTHORITY (repo guide §7). A copy
+# inside the image would silently revert live flags on every redeploy.
+config/feature_flags.yaml
+config/param_store.sqlite
+config/*.sqlite
+.cache/
+data/
+
+# ── Python build artifacts ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Virtualenvs (the big one — torch alone is ~2 GB) ────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Version control ─────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Editor / OS noise ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── Local analysis artifacts — not needed to run the stack ──────────────────
+probe_*.json
+scripts/_tmp_*.py
+*.log
+
+# ── Docs that do not affect the build ────────────────────────────────────────
+docs/
+worklog/
+*.md
+!README.md
+
+# ── Node / frontend artifacts (if any sneak in) ─────────────────────────────
+node_modules/
+.npm/

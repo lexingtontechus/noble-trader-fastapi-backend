@@ -1,0 +1,162 @@
+{
+  "timestamp": "2026-09-03T21:58:00Z",
+  "symbol": "US30USD",
+  "plan": "Signal Scout+Precision Pro",
+  "channel_id": 1544906978151891084,
+  "discord_status": "NOT_CONFIGURED — cron job blocked; embed written to digests instead",
+  "embed": {
+    "title": "US30USD EOD Signal Health — 2026-09-03",
+    "color": 16711680,
+    "fields": [
+      {
+        "name": "Signal",
+        "value": "BUY (Signal Scout + Precision Pro)",
+        "inline": true
+      },
+      {
+        "name": "Regime",
+        "value": "med_low_vol_strong_bull",
+        "inline": true
+      },
+      {
+        "name": "Entry",
+        "value": "53692.5",
+        "inline": true
+      },
+      {
+        "name": "Stop",
+        "value": "53393.862",
+        "inline": true
+      },
+      {
+        "name": "Target",
+        "value": "54289.776",
+        "inline": true
+      },
+      {
+        "name": "R:R",
+        "value": "2.00:1 (risk 298.638 pts | reward 597.276 pts)",
+        "inline": true
+      },
+      {
+        "name": "TV / Current Price",
+        "value": "~53685.52 (Investing.com/Yahoo live close; prev 53061.95, +1.18% on day; day range 53286.15-53746.50) — NOT from real-time OANDA:US30USD TradingView chart (browser remote-debugging approval wall in autonomous cron mode; TV technicals page returned no oscillator/MA data)",
+        "inline": false
+      },
+      {
+        "name": "Δ vs Entry",
+        "value": "-6.98 (current 53685.52 below entry 53692.50; signal entry from earlier sweep now marginally underwater by ~7 pts / -0.013%)",
+        "inline": true
+      },
+      {
+        "name": "Calibration Bias",
+        "value": "0.0815 (CALIBRATED) — avg_predicted_p_win=0.476, realized_win_rate=0.395. Predicted win probability 8.1 percentage points above realized (81bps); signal is mildly over-confident but calibration drag is small and within tolerance.",
+        "inline": false
+      },
+      {
+        "name": "News Highlight",
+        "value": "Dow up +1.18% to 53685.52 after Fed Gov Waller signaled conditional hold bias if inflation cools — Treasury yields ease, USD softens. Wall St opens higher (DJI +1.18%, US500 +1.06%) led by tech (NVDA, MSFT). Oil pulls back from Iran-conflict highs (WTI ~87.77). Key catalysts ahead: Aug Jobs Report Sep 4, CPI Sep 11, FOMC Sep 15-16. Middle East headline risk persists but energy repricing is contained.",
+        "inline": false
+      },
+      {
+        "name": "Key Levels (TV)",
+        "value": "Day range: 53286.15 - 53746.50; 52wk: 45057.28 - 54744.33. Stop 53393.862 sits above prev close 53061.95 and 52803.51 (50-day); target 54289.776 near 54500-54744 resistance zone.",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "Signals Health EOD • Signal Scout+Precision Pro plan"
+    }
+  },
+  "price_data": {
+    "tv_symbol": "OANDA:US30USD",
+    "tv_current_price": 53685.52,
+    "tv_24h_change_pct": 1.18,
+    "tv_market_state": "closed",
+    "close_vs_entry": -6.98,
+    "close_vs_entry_pct": -0.013
+  },
+  "delta_computed": {
+    "entry": 53692.5,
+    "stop": 53393.862,
+    "target": 54289.776,
+    "risk_pts": 298.638,
+    "reward_pts": 597.276,
+    "risk_reward_ratio": "2.00:1",
+    "current_price": 53685.52,
+    "delta_vs_entry": -6.98,
+    "delta_vs_entry_pct": -0.013,
+    "direction": "below_entry"
+  },
+  "calibration": {
+    "bias": 0.0815,
+    "bias_label": "CALIBRATED",
+    "avg_predicted_p_win": 0.476,
+    "realized_win_rate": 0.395,
+    "drag_pct_points": 8.1,
+    "assessment": "Mildly over-confident but within tolerance; 81bps bias is small relative to the 2.0:1 R:R buffer"
+  },
+  "tradingview_analysis": {
+    "status": "skipped",
+    "reason": "browser_exec blocked (remote-debugging approval wall in autonomous cron mode); web_extract on TradingView symbol page returned 403 / no oscillator-MA data. Price and levels sourced from Investing.com/Yahoo Finance live DJI feed instead.",
+    "price_structure_classification": "trending",
+    "note": "Dow trading at 53685.52, up 1.18% on the day to 53746.50 high. Above key moving averages; direction is clearly trending/bullish. BUY signal entry (53692.50) is marginally underwater (-6.98 pts, -0.013%) — within intraday noise of the earlier sweep."
+  },
+  "web_research": {
+    "query": "US30USD Dow Jones news today catalysts",
+    "catalysts": [
+      {
+        "event": "Fed Gov Christopher Waller — conditional rate-hold",
+        "impact": "Dovish tone: open to leaving rates unchanged this month if inflation cools. Supported risk assets, eased Treasury yields, capped USD — bullish for USD30/Dow.",
+        "source_url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043"
+      },
+      {
+        "event": "Wall Street opens higher (risk-on)",
+        "actual": "DJI +1.18%, US500 +1.06%",
+        "impact": "Positive open; yields ease, USD softens. Dow led by tech heavyweights (NVDA +3.12%, MSFT +3.02%) — consistent with the med_low_vol_strong_bull regime.",
+        "source_url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043"
+      },
+      {
+        "event": "Oil prices ease after Iran conflict rally",
+        "impact": "WTI crude pulls back from 3-day high (~$87.77) after Trump says Iran attacks won't last long. Lower energy costs support Dow industrials (input-cost tailwind).",
+        "source_url": "https://www.investing.com/news/economy-news/oil-pulls-back-broadcom-disappoints-whats-moving-markets-4887030"
+      },
+      {
+        "event": "Middle East / Iran geopolitical risk",
+        "impact": "Iran launched strikes at US/Iraq bases; Gulf energy-shipment disruption watch. Near-term headline risk remains but oil retreating limits immediate damage to the index.",
+        "source_url": "https://www.investing.com/news/economy-news/asian-markets-tumble-as-us-iran-fighting-lifts-oil-and-bond-yields-4885230"
+      },
+      {
+        "event": "US labor market data (NFP awaited Friday Sep 4)",
+        "impact": "Initial jobless claims 206K vs 205K expected — modest rise in layoffs ahead of Friday's nonfarm payrolls. A key catalyst for the dollar and rate path; dovish data would extend the bullish risk-on tone.",
+        "source_url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043"
+      },
+      {
+        "event": "Upcoming Sep catalysts",
+        "impact": "Sep 4: August Jobs Report; Sep 11: August CPI; Sep 15-16: FOMC policy decision + press conference. These will force a trend resolution for the final quarter — key risk for the BUY signal.",
+        "source_url": "https://stockmarketwatch.com/indices/dowjones/reports/september-2026"
+      }
+    ],
+    "technical_levels": {
+      "support_under": "53393.862 (signal stop); 53061.95 (prev close); 52803.51 (50-day MA); 52700-52500 zone",
+      "resistance_ahead": "54289.776 (signal target); 54500-54700 zone (52-week high 54744.33)"
+    },
+    "snippets": [
+      {
+        "url": "https://www.investing.com/indices/us-30",
+        "snippet": "Dow Jones live price 53,685.52; day range 53,286.15 - 53,746.50; prev close 53,061.95; 1-year change +18.2141%."
+      },
+      {
+        "url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043",
+        "snippet": "Wall Street's main indexes opened higher on Thursday after Federal Reserve Governor Christopher Waller said he was open to leaving interest rates unchanged this month if data confirms inflation pressures are cooling off."
+      }
+    ]
+  },
+  "discord_delivery": {
+    "status": "not_configured",
+    "reason": "Discord bot token not present in astro profile ~/.hermes/.env; no discord credentials found. hermes send --to discord would fail; skipped per skip-and-continue rule.",
+    "destination": "discord:1544906978151891084",
+    "fallback": "Embed JSON written to docs/signals-health-eod-digests/2026-09-03-US30USD.json"
+  },
+  "verdict": "BUY signal for US30USD (OANDA:US30USD) in med_low_vol_strong_bull regime. Current price ~53685.52 (Investing.com/Yahoo live close) is -6.98 pts (-0.013%) below entry 53692.5 — the entry is marginally underwater and essentially at breakeven within intraday noise, so the signal is 'at-the-money/stale-entry'. Risk/reward is 2.00:1 (298.638-pt stop vs 597.276-pt target). Upside supported by dovish Fed Waller comments (rates-on-hold if inflation cools), positive risk-on open (DJI +1.18%, yields easing), oil retreating from Iran-conflict highs, and tech breadth (NVDA, MSFT up sharply) — all consistent with the med_low_vol_strong_bull regime. Key risk: Middle East escalation and Friday's NFP/CPI/FOMC catalysts (Sep 4/11/15-16). Calibration: bias 0.0815 (CALIBRATED), avg predicted p_win 0.476 vs realized 0.395 — mildly over-confident by 8.1 ppts but within tolerance and small relative to the 2:1 R:R buffer. TradingView chart read skipped (browser blocked in autonomous cron mode); price/levels sourced from Investing.com/Yahoo live DJI feed. Discord delivery skipped (not configured) — embed written to digests file instead."
+}

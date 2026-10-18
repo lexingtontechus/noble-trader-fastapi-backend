@@ -1,0 +1,70 @@
+{
+  "schema": "eod_signal_digest.v1",
+  "timestamp": "2026-09-03",
+  "symbol": "AUDUSD",
+  "signal": {
+    "direction": "BUY",
+    "entry": 0.720445,
+    "stop": 0.715075,
+    "target": 0.731185,
+    "regime": "med_low_vol_strong_bull",
+    "plan": "Signal Scout+Precision Pro",
+    "channel_id": 1544906978151891084
+  },
+  "price_data": {
+    "tv_symbol": "OANDA:AUDUSD",
+    "tv_current_price": 0.7215,
+    "tv_24h_change": 0.45,
+    "tv_market_state": "closed",
+    "close_vs_entry_pips": 10.55,
+    "close_vs_entry_price_delta": 0.001055
+  },
+  "calibration_bias": {
+    "in_latest": false,
+    "data_available": false
+  },
+  "tradingview_analysis": {
+    "status": "skipped",
+    "reason": "browser_exec remote-debugging approval wall in autonomous cron mode; web_extract on TradingView page returned 403 Forbidden (Firecrawl API key not configured). Price sourced from FXStreet real-time web research instead.",
+    "price_structure_classification": "trending",
+    "note": "AUD/USD advanced above 0.7200 (current ~0.7215), up 0.45% on the day, breaking above daily resistance. Direction is clearly trending/breaking rather than stale — price is 10.55 pips above entry, indicating the BUY signal is currently in profit."
+  },
+  "catalysts": {
+    "status": "retrieved",
+    "headline": "Australian Dollar climbs as soft US data lifts AUD/USD above 0.72",
+    "source": "FXStreet (fxstreet.com)",
+    "url": "https://www.fxstreet.com/news/australian-dollar-climbs-as-softer-us-labor-data-weighs-on-us-dollar-202609031250",
+    "published": "2026-09-03",
+    "key_numbers": {
+      "audusd_current": "0.7215 (up 0.45% on day, above 0.72 handle)",
+      "us_adp_private_employment_aug": "+38K (weakest gain in 7 months; expected 47K)",
+      "us_initial_jobless_claims": "206K (expected 205K; prior 204K)",
+      "us_continuing_jobless_claims": "1.779M (up 8K)",
+      "us_dxy": "retreating toward 99.00 (near multi-day lows)",
+      "aus_trade_balance_surplus_jul": "1.923M AUD (narrowed by 418M; exports down 3.3%, imports down 2.5%)",
+      "china_services_pmI_aug": "51.4 (up from 50.4; 4th consecutive month of job creation)"
+    },
+    "primary_catalyst": "Soft US labor data (ADP +38K, Jobless Claims 206K) weighing on USD, lifting AUD/USD above 0.72. DXY retreats toward 99.00 providing tailwind for risk-sensitive AUD.",
+    "secondary_catalysts": [
+      "Australia trade surplus narrowed to 1.923M AUD in July (exports -3.3%, imports -2.5%)",
+      "China services PMI rose to 51.4 in August (from 50.4), supporting regional demand outlook",
+      "Market awaits US NFP report on Friday (expected ~84K jobs, unemployment 4.2%)",
+      "Fed Gov Waller signaled conditional hold bias, capping USD yield expectations"
+    ]
+  },
+  "discord_delivery": {
+    "status": "not_configured",
+    "reason": "Discord bot token not present in astro profile ~/.hermes/.env; no discord credentials found. Per task rules, secrets from repo .env.local were not read. hermes send --to discord would fail; skipped per skip-and-continue rule.",
+    "destination": "discord:1544906978151891084",
+    "fallback": "Embed JSON written to local digests file instead."
+  },
+  "delta_summary": {
+    "today_close": 0.7215,
+    "entry": 0.720445,
+    "delta": 0.001055,
+    "direction": "above_entry",
+    "pip_delta": 10.55,
+    "r_r_from_entry": "risk: 53.7 pips (0.720445-0.715075) | reward: 107.4 pips (0.731185-0.720445) | R:R ~2.0:1"
+  },
+  "verdict": "Signal is currently IN PROFIT and trending — AUD/USD at ~0.7215 (+10.55 pips above entry, +0.45% on day) despite market-closed status on TV. Primary catalyst: soft US labor data (ADP +38K, Jobless Claims 206K) weakening USD. Pattern classified as trending/breaking above 0.7200. R:R is ~2.0:1 (53.7 pip stop vs 107.4 pip target). No calibration bias data available. Discord delivery skipped (not configured). Manual review recommended before next session, especially with US NFP looming Friday."
+}

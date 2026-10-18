@@ -1,0 +1,87 @@
+{
+  "symbol": "US30USD",
+  "signal": "BUY",
+  "entry": 53680.3,
+  "stop": 53381.662,
+  "target": 54277.576,
+  "regime": "low_vol_strong_bull",
+  "tv_symbol": "OANDA:US30USD",
+  "plan": "Signal Scout+Precision Pro",
+  "channel_id": "1544906978151891084",
+  "timestamp": "2026-09-03T00:00:00Z",
+  "price_check": {
+    "source": "tradingview.com/symbols/OANDA:US30USD",
+    "current_price": 53656.3,
+    "delta_vs_entry": -24.0,
+    "pct_change_on_day": 0.67,
+    "market_status": "closed"
+  },
+  "tradingview_snapshot": {
+    "source": "tradingview.com/symbols/OANDA:US30USD",
+    "current_rate": 53656.3,
+    "pct_24h": 0.67,
+    "market_status": "closed",
+    "oscillators": "Pending (low_vol_strong_bull regime)"
+  },
+  "web_research": {
+    "query": "US30 Dow Jones news today catalysts",
+    "catalysts": [
+      {
+        "event": "Fed Governor Christopher Waller comments",
+        "impact": "Dovish tone \u2014 open to leaving interest rates unchanged this month if data confirms inflation cooling. Supports risk assets and the Dow's bullish regime; weighs on USD.",
+        "source_url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043"
+      },
+      {
+        "event": "Wall Street opens higher",
+        "actual": "DJI +1.18%, US500 +1.06%",
+        "impact": "Positive risk-on open; main indexes rise as Treasury yields ease. Dow led by Nvidia (+3.12%), Amex (+1.84%), Disney (+1.74%). Momentum favors the BUY signal.",
+        "source_url": "https://www.investing.com/news/economy-news/oil-pulls-back-broadcom-disappoints-whats-moving-markets-4887030"
+      },
+      {
+        "event": "Oil prices ease after Iran conflict rally",
+        "impact": "WTI crude pulls back from 3-day high after Trump says Iran attacks won't last long. Lower energy prices reduce input-cost pressure on Dow industrials, supporting the index.",
+        "source_url": "https://www.investing.com/news/economy-news/oil-pulls-back-broadcom-disappoints-whats-moving-markets-4887030"
+      },
+      {
+        "event": "Middle East / Iran geopolitical risk",
+        "impact": "Iran launched strikes at US bases in Kuwait; markets watch for Gulf energy-shipment disruption. Near-term headline risk remains, but oil retreating limits immediate damage to the Dow.",
+        "source_url": "https://www.investing.com/news/economy-news/asian-markets-tumble-as-usiran-fighting-lifts-oil-and-bond-yields-4885230"
+      },
+      {
+        "event": "US labor market data (NFP awaited Friday)",
+        "impact": "Initial jobless claims 206K vs 205K expected \u2014 modest rise in layoffs ahead of Friday's nonfarm payrolls. A key catalyst for the dollar and rate path; dovish data would extend the bullish risk-on tone.",
+        "source_url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043"
+      },
+      {
+        "event": "Broadcom revenue outlook shortfall",
+        "impact": "AVGO fiscal Q4 revenue guidance below Street despite strong AI demand (-2.74%). Tech-specific headwind; less material to the price-weighted Dow but indicative of valuation caution across the broader Nasdaq-linked sentiment.",
+        "source_url": "https://www.investing.com/news/economy-news/oil-pulls-back-broadcom-disappoints-whats-moving-markets-4887030"
+      }
+    ],
+    "technical_levels": {
+      "support_under": "53381.662 (signal stop); 53061.95 (prev close); 53000 psychological; 52995 (200-day area)",
+      "resistance_ahead": "54277.576 (signal target); 54744.33 (52-week high); 54500-54700 zone"
+    },
+    "snippets": [
+      {
+        "url": "https://www.investing.com/news/stock-market-news/wall-st-opens-higher-after-feds-wallers-signals-patience-on-rate-policy-4888043",
+        "snippet": "Wall Street's main indexes opened higher on Thursday after Federal Reserve Governor Christopher Waller said he was open to leaving interest rates unchanged this month if data confirms inflation pressures are cooling off."
+      },
+      {
+        "url": "https://www.investing.com/news/economy-news/oil-pulls-back-broadcom-disappoints-whats-moving-markets-4887030",
+        "snippet": "Oil prices edged lower in Asian trading on Thursday after climbing for three straight sessions, as investors assessed the latest developments in the US-Iran conflict. DJI +1.18%, US500 +1.06%."
+      },
+      {
+        "url": "https://www.investing.com/indices/us-30",
+        "snippet": "Dow Jones live price 53,489.96; day range 53,309.17 - 53,534.34; prev close 53,061.95; 1-year change +18.2141%."
+      }
+    ]
+  },
+  "calibration": {
+    "bias": 0.0021,
+    "bias_label": "CALIBRATED",
+    "avg_predicted_p_win": 0.38,
+    "realized_win_rate": 0.378
+  },
+  "assessment": "BUY signal for US30USD (OANDA) in low_vol_strong_bull regime. Current TV price 53656.3 is below entry 53680.3 by -24.0 pts (-0.04%), so entry is marginally out-of-the-money; the -0.56% stop distance (53381.662) and +1.51% target (54277.576) yield ~2.7:1 R:R. Upside supported by dovish Fed Waller comments (rates-on-hold if inflation cools), a positive risk-on open (DJI +1.18%, yields easing), and oil retreating from Iran-conflict highs \u2014 all consistent with the low_vol_strong_bull regime. Key risk: Middle East escalation and Friday's NFP/claims data could shift the dollar-rate path. Calibration bias is 0.0021 (CALIBRATED), with avg predicted p_win 0.380 vs realized 0.378 \u2014 essentially unbiased and well-calibrated, so the signal has no material calibration drag. TV chart read was skipped (browser remote-debugging prompt requires interactive approval unavailable in this autonomous cron context); price_check uses the provided TradingView current price of 53656.3."
+}

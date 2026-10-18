@@ -1,0 +1,99 @@
+{
+  "symbol": "BTCUSD",
+  "signal": "SELL",
+  "entry": 80927.345,
+  "stop": 81667.073165,
+  "target": 79743.779936,
+  "regime": "med_high_vol_strong_bear",
+  "tv_symbol": "COINBASE:BTCUSD",
+  "plan": "Signal Scout + Precision Pro",
+  "channel_id": "1544906978151891084",
+  "calibration": {
+    "bias": 0.0955,
+    "bias_label": "CALIBRATED",
+    "avg_predicted_p_win": 0.470,
+    "realized_win_rate": 0.375
+  },
+  "timestamp": "2026-09-04T00:00:00Z",
+  "price_data": {
+    "source": "tradingview.com/symbols/COINBASE-BTCUSD",
+    "current_price": 77029,
+    "delta_vs_entry": -3898.345,
+    "pct_change_on_day": -0.48,
+    "day_range": "76,518 - 77,398 (approx)",
+    "prev_close": 77398
+  },
+  "tradingview_snapshot": {
+    "source": "tradingview.com/symbols/COINBASE-BTCUSD",
+    "current_rate": 77029,
+    "pct_24h": -0.48,
+    "market_status": "market closed",
+    "1d_change": "-0.46%",
+    "1w_change": "-1.90%",
+    "1mo_change": "21.33%",
+    "ytd_change": "-11.95%",
+    "1y_change": "-29.48%",
+    "market_cap": "1.55 T USD",
+    "oscillators": null
+  },
+  "web_research": {
+    "query": "BTCUSD cryptocurrency news today catalysts",
+    "sources_scraped": [
+      "tradingview.com/symbols/COINBASE-BTCUSD",
+      "tradingview.com/symbols/BTCUSD"
+    ],
+    "research_status": "partial — Firecrawl search/extract backend returned 403 Forbidden (no API key configured in astro profile); TradingView page extract succeeded via standard URL scraping",
+    "catalysts": [
+      {
+        "event": "Spot Bitcoin ETF flows",
+        "actual": "$3.52B net inflows through August; AUM ~$99.6B; monthly volume $58.6B",
+        "impact": "Strong institutional demand has supported price through the summer rally into late August"
+      },
+      {
+        "event": "Early September ETF outflows",
+        "actual": "~$236.5M outflows in early September",
+        "impact": "BTCUSD dipped below $77,000; first notable outflow data since January launch"
+      },
+      {
+        "event": "Institutional adoption metrics",
+        "detail": "BTCUSD made up 30.5% of crypto collateral used by wealthy borrowers in 2026, down from 57.8% a year earlier",
+        "impact": "Declining share of institutional collateral suggests rotation into other assets (ZEC 24.2%, XRP 26.9%, XMR 6.2%)"
+      },
+      {
+        "event": "Options flow — $80K September calls",
+        "detail": "Options flow shows traders targeting ~$80,000 Sept calls on BTCUSD Spot CFD",
+        "impact": "Overall positioning implies holding current levels next two weeks and no expected fall to $65,000"
+      },
+      {
+        "event": "MicroStrategy capital allocation shift",
+        "detail": "Strategy sold ~7,000 BTC at $60–65k, paused buys 10 weeks to raise cash for preferred dividends, then bought 4,603 BTC at $80,318; now holds 845,050 BTC (~$65B)",
+        "impact": "MicroStrategy's $80K entry zone aligns with current SELL entry range (80927)"
+      },
+      {
+        "event": "Long-term valuation model",
+        "detail": "River report models 2%–4% BTCUSD portfolio weights in 20%–40% of portfolios over 3–5 years",
+        "impact": "Implies BTCUSD range of $250,000–$840,000 — far above current levels; long-term bullish"
+      },
+      {
+        "event": "Technical resistance levels",
+        "detail": "All-time high reached Oct 6, 2025 at $126,272; current price ~77K is -39% below ATH",
+        "impact": "Significant drawdown from ATH supports med_high_vol_strong_bear regime classification"
+      }
+    ],
+    "technical_levels": {
+      "all_time_high": "126,272 USD (Oct 6, 2025)",
+      "recent_low_context": "BTC dipped below $77,000 in early September after ETF outflows",
+      "downside_risk": "Traders note further pullbacks toward $70,000 possible before any decisive breakout",
+      "resistance_zones": "~$80,000 (Sept options calls), ~$81,667 (SELL stop), ~$84,000 (River model floor)"
+    }
+  },
+  "trade_metrics": {
+    "risk": 739.728165,
+    "reward": 1183.565064,
+    "reward_to_risk": "1.60:1",
+    "current_pnl": -3898.345,
+    "pct_from_target": "current price 77029 vs target 79743.78 — target not yet hit; -3.4% to target",
+    "pct_from_stop": "current price 77029 vs stop 81667.07 — stop not hit; -5.7% buffer to stop"
+  },
+  "assessment": "SELL signal is well in-the-money: current price (~77,029) is ~$3,898 below entry (80,927.345), representing a -4.82% delta vs entry. The signal sits comfortably between the target (79,743.78, ~3.4% above current) and the stop is far above at 81,667.07 (~5.7% buffer). The med_high_vol_strong_bear regime is supported by: (1) spot Bitcoin ETF early-September outflows (~$236.5M) driving price below $77K, (2) all-time high of $126,272 (Oct 2025) still ~39% above current levels creating significant overhead resistance, (3) 29.48% YoY decline showing sustained bearish momentum, and (4) institutional rotation away from BTC as collateral (30.5% in 2026 vs 57.8% a year earlier). Options flow suggesting $80K Sept calls could cap near-term upside aligns with the SELL stop placement. MicroStrategy's recent $80,318 accumulation zone directly corresponds to the entry range. Technicals show further downside toward $70,000 possible before any decisive breakout. R:R is 1.60:1 — modest reward relative to risk, but current price is already deep in profit territory. Calibration bias of 0.0955 (CALIBRATED) with avg_predicted_p_win=0.470 vs realized_win_rate=0.375 indicates the model is slightly overconfident in win probability but remains calibrated. No critical catalyst risk identified for the sell thesis; macro headwinds persist."
+}

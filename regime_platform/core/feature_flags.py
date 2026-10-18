@@ -109,7 +109,7 @@ _DEFAULTS: dict[str, Any] = {
             "AAPL": {"enabled": False},
         },
     },
-    "heavy_sweep_reachability_mode": "off",
+    "heavy_sweep_reachability_mode": "shadow",
     # 2026-09-29 GOAL: wr>=0.5, exp<=0.2. Settings BY CLASS; one live decision.
     #   commodity  TP 1-4  / SL 2-4   wr 0.54  exp 0%   pnl +1.28  GOAL
     #   equity     TP 8-14 / SL 6-12  wr 0.81  exp 2%   pnl +3.95  GOAL
@@ -144,7 +144,7 @@ _DEFAULTS: dict[str, Any] = {
         "vol_ratio_short": 24,
         "vol_ratio_long": 168,
     },
-    "atr_anchored_evidence_mode": "shadow",
+    "atr_anchored_evidence_mode": "live",
     "atr_reopt_enabled": True,
     "atr_reopt_urgency": {
         "enabled": True,
@@ -193,13 +193,23 @@ _DEFAULTS: dict[str, Any] = {
         "min_win_rate": 0.50,
         "rebuild_interval_hours": 24,
     },
-    "min_rr": 2.0,
+    # 2026-10-17 — aligned to the live config/feature_flags.yaml values.
+    # These keys had drifted: _DEFAULTS said off/2.0 while the shipped YAML
+    # said live/1.5. The YAML always won at runtime (every accessor reads
+    # _load().get(key, _DEFAULTS[key])), so live behaviour was correct — but
+    # the defaults misrepresented it, and a fresh environment with no YAML
+    # would have silently run the NARROW grid (5 bricks, 30 combos) instead
+    # of the live one (8 bricks, 72 combos). Same bug class as the
+    # heavy_sweep_atr_anchored_bricks_mode unquoted-`off` incident
+    # (roadmap id=48). See
+    # docs/scopes/20261017_HEAVY_SWEEP_GRID_AND_COST_NOTE.md.
+    "min_rr": 1.5,
     "heavy_sweep_grid": {
         "max_sharpe": 10.0,
         "min_trades": 10,
     },
-    "heavy_sweep_atr_anchored_bricks_mode": "off",
-    "heavy_sweep_deadline_aware_scoring_mode": "off",
+    "heavy_sweep_atr_anchored_bricks_mode": "live",
+    "heavy_sweep_deadline_aware_scoring_mode": "live",
     "settlement_contract_mode": "live",
     # 2026-10-08: aligned to the live intrabar resolver's actual behaviour
     # (it hardcoded SL-first). See config/feature_flags.yaml + worklog
@@ -217,7 +227,7 @@ _DEFAULTS: dict[str, Any] = {
     # (the 12:1 RR the solver produced on intrabar envelopes). Fail-open is
     # preserved: no valid pick → brick fallback, logged as fallback.
     "dynamic_atr_consistency_mode": "live",
-    "dynamic_atr_consistency_tol": 0.20,
+    "dynamic_atr_consistency_tol": 0.2,
     "dynamic_atr_light_mode": "live",
     # Walk-forward held-out gate (2026-10-09, worklog 20261009_WALKFORWARD_SPLIT.md):
     # select_tp_sl's e1>0 AND e2>0 is an in-sample split on the same data the

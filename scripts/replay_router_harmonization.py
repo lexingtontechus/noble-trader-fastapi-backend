@@ -115,7 +115,7 @@ async def fetch():
     async with httpx.AsyncClient(timeout=90.0) as c:
         r = await c.post(
             f"https://api.supabase.com/v1/projects/"
-            f"{os.environ.get('SUPABASE_PROJECT_REF', 'pcvscowltlrxzgxjurcr')}"
+            f"{os.environ.get('SUPABASE_URL', '').rstrip('/').split('//')[-1].split('.')[0]}"
             f"/database/query",
             headers={
                 "Authorization": f"Bearer {os.environ['SUPABASE_ACCESS_TOKEN']}",

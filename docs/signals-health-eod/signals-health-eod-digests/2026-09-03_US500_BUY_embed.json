@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-09-03T21:58:00Z",
+  "symbol": "US500",
+  "plan": "Signal Scout+Precision Pro",
+  "channel_id": 1544906978151891084,
+  "discord_status": "NOT_CONFIGURED \u2014 cron job blocked; embed written to digests instead",
+  "embed": {
+    "title": "US500 EOD Signal Health \u2014 2026-09-03",
+    "color": 16711680,
+    "fields": [
+      {
+        "name": "Signal",
+        "value": "BUY (Signal Scout + Precision Pro)",
+        "inline": true
+      },
+      {
+        "name": "Regime",
+        "value": "med_high_vol_strong_bull",
+        "inline": true
+      },
+      {
+        "name": "Entry",
+        "value": "7753.55",
+        "inline": true
+      },
+      {
+        "name": "Stop",
+        "value": "7681.667",
+        "inline": true
+      },
+      {
+        "name": "Target",
+        "value": "7926.07",
+        "inline": true
+      },
+      {
+        "name": "TV / Current Price",
+        "value": "~7743.25 (investing.com delayed 11:18 ET, +0.88%) \u2014 NOT from real-time TV chart (browser blocked: remote-debugging approval wall in autonomous mode)",
+        "inline": false
+      },
+      {
+        "name": "\u0394 vs Entry",
+        "value": "-10.30 (current below entry; signal entry appears from earlier sweep \u2014 stale relative to current levels)",
+        "inline": true
+      },
+      {
+        "name": "Calibration Bias",
+        "value": "0.319 (OVERCONFIDENT) \u2014 avg_predicted_p_win=0.319, realized_win_rate=0.0. Signal is over-weighted vs realized performance.",
+        "inline": false
+      },
+      {
+        "name": "News Highlight",
+        "value": "S&P 500 & Nasdaq at record highs; tech (NVDA, MSFT, AMD, MU) leading. Oil prices drop after US-Iran ceasefire-memorandum in development \u2192 Strait of Hormuz to reopen. Earnings season: Alphabet & Tesla reports loom as key catalysts. Fed Gov Bowman speaks at Financial Stability Board event at 7a ET.",
+        "inline": false
+      },
+      {
+        "name": "Key Levels (TV)",
+        "value": "Day range: 7661.25 - 7743.25; 52wk: 6353.25 - 7838.50. TV technicals on ICMARKETS:US500 show Strong Buy across 30m/1h/5H/daily \u2014 aligns with BUY signal but entry is stale.",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "Signals Health EOD \u2022 Signal Scout+Precision Pro plan"
+    }
+  }
+}

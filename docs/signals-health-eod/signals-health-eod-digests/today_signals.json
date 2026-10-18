@@ -1,0 +1,107 @@
+[
+  {
+    "symbol": "AUDUSD",
+    "signal": "BUY",
+    "entry_price": 0.720445,
+    "stop_loss": 0.715075,
+    "take_profit": 0.731185,
+    "aggression": "passive",
+    "regime": "med_low_vol_strong_bull",
+    "sweep_timestamp": "2026-09-03T19:20:10.562943+00:00",
+    "tradingview_symbol": "OANDA:AUDUSD",
+    "exchange": "OANDA",
+    "plan_ids": [
+      "df980ef1-e41f-41db-9d04-2ad09da69626",
+      "1b66e78e-e8d1-46b6-9887-b36e038131c5"
+    ],
+    "calibration_bias": 0.52341724137931,
+    "calibration_status": "OVERCONFIDENT",
+    "avg_predicted_p_win": 0.52341724137931,
+    "realized_win_rate": 0.0,
+    "plan": "Signal Scout + Precision Pro"
+  },
+  {
+    "symbol": "BTCUSD",
+    "signal": "SELL",
+    "entry_price": 80927.345,
+    "stop_loss": 81667.073165,
+    "take_profit": 79743.779936,
+    "aggression": "passive",
+    "regime": "med_high_vol_strong_bear",
+    "sweep_timestamp": "2026-09-04T01:40:18.746962+00:00",
+    "tradingview_symbol": "COINBASE:BTCUSD",
+    "exchange": "COINBASE",
+    "plan_ids": [
+      "df980ef1-e41f-41db-9d04-2ad09da69626",
+      "1b66e78e-e8d1-46b6-9887-b36e038131c5"
+    ],
+    "calibration_bias": 0.0955382513661204,
+    "calibration_status": "CALIBRATED",
+    "avg_predicted_p_win": 0.470245511319282,
+    "realized_win_rate": 0.3747072599531616,
+    "plan": "Signal Scout + Precision Pro"
+  },
+  {
+    "symbol": "US30USD",
+    "signal": "BUY",
+    "entry_price": 53692.5,
+    "stop_loss": 53393.862,
+    "take_profit": 54289.776,
+    "aggression": "passive",
+    "regime": "med_low_vol_strong_bull",
+    "sweep_timestamp": "2026-09-03T19:40:34.388133+00:00",
+    "tradingview_symbol": "OANDA:US30USD",
+    "exchange": "OANDA",
+    "plan_ids": [
+      "df980ef1-e41f-41db-9d04-2ad09da69626",
+      "1b66e78e-e8d1-46b6-9887-b36e038131c5"
+    ],
+    "calibration_bias": 0.0814865,
+    "calibration_status": "CALIBRATED",
+    "avg_predicted_p_win": 0.4764865,
+    "realized_win_rate": 0.395,
+    "plan": "Signal Scout + Precision Pro"
+  },
+  {
+    "symbol": "US500",
+    "signal": "BUY",
+    "entry_price": 7667.775,
+    "stop_loss": 7581.85425,
+    "take_profit": 7954.1775,
+    "aggression": "passive",
+    "regime": "low_vol_strong_bull",
+    "sweep_timestamp": "2026-09-03T00:25:42.461+00:00",
+    "tradingview_symbol": "PEPPERSTONE:US500",
+    "exchange": "PEPPERSTONE",
+    "plan_ids": [
+      "df980ef1-e41f-41db-9d04-2ad09da69626",
+      "1b66e78e-e8d1-46b6-9887-b36e038131c5"
+    ],
+    "calibration_bias": 0.327177142857143,
+    "calibration_status": "OVERCONFIDENT",
+    "avg_predicted_p_win": 0.327177142857143,
+    "realized_win_rate": 0.0,
+    "plan": "Signal Scout + Precision Pro"
+  },
+  {
+    "symbol": "USDCHF",
+    "signal": "BUY",
+    "entry_price": 0.81285,
+    "stop_loss": 0.806781,
+    "take_profit": 0.829034,
+    "aggression": "passive",
+    "regime": "high_vol_strong_bull",
+    "sweep_timestamp": "2026-09-03T00:25:55.242244+00:00",
+    "tradingview_symbol": "OANDA:USDCHF",
+    "exchange": "OANDA",
+    "plan_ids": [
+      "df980ef1-e41f-41db-9d04-2ad09da69626",
+      "1b66e78e-e8d1-46b6-9887-b36e038131c5"
+    ],
+    "calibration_bias": 0.708576576576576,
+    "calibration_status": "OVERCONFIDENT",
+    "avg_predicted_p_win": 0.708576576576576,
+    "realized_win_rate": 0.0,
+    "plan": "Signal Scout + Precision Pro"
+  }
+]
