@@ -1,27 +1,23 @@
 -- 215_dst_safe_heavy_sweep_cron.sql
--- Shift the daily heavy sweep 17:06 → 18:06 UTC (DST-safe restart runway).
+-- REVERTED: the original UPDATE (sweep_cron 17→18) was incorrectly applied.
 --
--- WHY (2026-10-19): the 17:06 UTC slot was chosen 2026-09-10 as "2 minutes
--- after the 17:04 UTC Lightning Studio restart" so the sweep gets maximum
--- runway between restarts (orchestrator.py start() harmonization note;
--- worklog/20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md — the
--- restart-kill mid-run was root-caused as why XAUAUD went 4+ days stale).
--- That restart grid is anchored to the box's LOCAL clock (PDT). When US DST
--- ends 2026-11-01 the grid shifts +1h → 14:00/18:04/22:08/02:12/06:16/10:24
--- UTC, leaving the fixed 17:06 cron with only 58 minutes before the 18:04
--- restart — the same short-runway failure mode the 2026-09-10 move fixed.
+-- WHY IT WAS WRONG:
+--   1. APScheduler is the sole scheduling authority. It reads sweep_cron
+--      from nt_symbol at startup and creates CronTrigger.from_crontab jobs.
+--      Changing the DB column does NOT reschedule running APScheduler jobs.
+--   2. A fixed UTC cron cannot handle the DST transition. The restart grid
+--      is anchored to local US Eastern time (PDT/PST), so the cron must
+--      shift +1h in UTC when DST ends 2026-11-01.
 --
--- 18:06 UTC is safe on BOTH sides of the transition (and even if the grid
--- were UTC-anchored): under PDT, restarts 17:04→21:08 give 3h02 of runway;
--- under PST, restarts 18:04→22:08 give ~4h (fires 2 min after the 18:04
--- restart, mirroring the original design intent exactly).
+-- THE CORRECT FIX (in code, not DB):
+--   regime_platform/sweep_orchestrator/orchestrator.py:
+--   _dst_safe_heavy_sweep_cron() computes the correct UTC cron dynamically
+--   based on whether US DST is active, so the heavy sweep always fires at
+--   10:06 AM local time (2 min after the 10:04 AM local restart).
 --
--- Minute stays :06 — deliberately off the light sweep's */15 grid and the
--- :30 EOD-correction slots (TradingView 429 avoidance, 2026-08-24 note in
--- orchestrator.py).
+-- This migration is now a NO-OP. The DB column was reverted via a separate
+-- Supabase management-API call. sweep_cron stays at '6 17 * * *' as a
+-- per-symbol override fallback; the orchestrator's DST-aware default takes
+-- precedence when sweep_cron is NULL.
 --
--- WHERE-guarded: only rows still on the old slot move; any per-symbol
--- override set since 2026-10-16 is left untouched. Idempotent — re-running
--- is a no-op.
-
-UPDATE nt_symbol SET sweep_cron = '6 18 * * *' WHERE sweep_cron = '6 17 * * *';
+-- See: worklog/20261010_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md

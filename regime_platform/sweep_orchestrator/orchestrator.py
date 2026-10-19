@@ -21,6 +21,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -28,6 +29,51 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from regime_platform.core.settings import settings
+
+
+def _is_us_dst(now: datetime | None = None) -> bool:
+    """Return True if US DST is currently active.
+
+    DST starts the second Sunday of March at 02:00 local and ends the
+    first Sunday of November at 02:00 local (2026 rules). The
+    heavy-sweep cron must shift +1h in UTC when DST ends to keep firing
+    at the same local time relative to the restart grid.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    et = now.astimezone(ZoneInfo("America/New_York"))
+    year = et.year
+
+    # Second Sunday of March at 02:00 local — DST starts
+    mar1 = datetime(year, 3, 1, tzinfo=ZoneInfo("America/New_York"))
+    days_ahead = (6 - mar1.weekday()) % 7  # next Sunday
+    dst_start = mar1 + timedelta(days=days_ahead + 7)  # second Sunday
+    dst_start = dst_start.replace(hour=2, minute=0, second=0, microsecond=0)
+
+    # First Sunday of November at 02:00 local — DST ends
+    nov1 = datetime(year, 11, 1, tzinfo=ZoneInfo("America/New_York"))
+    days_ahead = (6 - nov1.weekday()) % 7  # first Sunday
+    dst_end = nov1 + timedelta(days=days_ahead)
+    dst_end = dst_end.replace(hour=2, minute=0, second=0, microsecond=0)
+
+    return dst_start <= et < dst_end
+
+
+def _dst_safe_heavy_sweep_cron() -> str:
+    """Heavy sweep cron that is safe across US DST transitions.
+
+    The Studio restart grid is anchored to local US Eastern time (PDT
+    in summer, PST in winter). When DST ends 2026-11-01, the restart
+    grid shifts +1h in UTC (from 17:04→18:04). A fixed UTC cron of
+    `6 17 * * *` would then have only 58 minutes before the 18:04
+    restart — the same short-runway failure mode the 2026-09-10 move
+    fixed (XAUAUD 4+ days stale). This function computes the correct
+    UTC cron dynamically so the heavy sweep always fires at 10:06 AM
+    local time (2 minutes after the 10:04 AM local restart).
+    """
+    if _is_us_dst():
+        return "6 17 * * *"   # 17:06 UTC = 10:06 EDT (DST active)
+    return "6 18 * * *"       # 18:06 UTC = 10:06 EST (DST not active)
 from regime_platform.core.regime_engine import RegimeHMM, RegimeLabelDebouncer, RegimeSnapshot
 from regime_platform.core.feature_flags import (
     get_knowledge_index_enabled,
@@ -1885,9 +1931,16 @@ class SweepOrchestrator(HeavySweepMixin):
         # module docstring for the full reasoning and the real-cost
         # measurement (~7 min/day for all 14 symbols) that made daily the
         # obvious choice once the flawed assumption was found.
+        # DST-aware heavy sweep cron: the restart grid is anchored to local
+        # US Eastern time, so the cron must shift +1h in UTC when DST ends
+        # (2026-11-01). A fixed UTC cron would leave only 58 min before the
+        # 18:04 restart — the same short-runway failure mode that caused the
+        # 2026-09-10 XAUAUD 4-day staleness. The database sweep_cron column
+        # is a per-symbol override; the default is computed dynamically.
+        heavy_cron = _dst_safe_heavy_sweep_cron()
         heavy_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for sym in symbols:
-            cron_raw = sym.get("sweep_cron") or "0 20 * * *"
+            cron_raw = sym.get("sweep_cron") or heavy_cron
             for cron in self._split_cron(cron_raw):
                 heavy_groups[cron].append(sym)
         for cron in heavy_groups:
