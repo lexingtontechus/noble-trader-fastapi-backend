@@ -210,6 +210,12 @@ class _ChronosBase(Arm):
             self._model = pipe
 
     def _predict(self, context_df, future_df, horizon):
+        # freq is explicit: Phase 0 data is hourly bars by construction, and
+        # chronos's make_future_df runs even when future_df is given (it
+        # validates the future grid) — pd.infer_freq FAILS on gapped FX/metals
+        # calendars (weekend closure), which silently killed every forecast
+        # for non-24/7 symbols. Bars are treated as consecutive steps, the
+        # same univariate convention as the timesfm25 arm.
         pred = self._model.predict_df(
             context_df,
             future_df=future_df,
@@ -218,6 +224,7 @@ class _ChronosBase(Arm):
             id_column="id",
             timestamp_column="timestamp",
             target="target",
+            freq="h",
         )
         return pred
 
@@ -326,7 +333,10 @@ class Chronos2Covariate(_ChronosBase):
             "log_rv24": log_rv24,
         })
 
-        step = ts[1] - ts[0]
+        # hourly grid by construction (Phase 0 data is 1h bars); must match
+        # the explicit freq="h" in _predict and must not depend on whether
+        # this window's first two bars happen to straddle a session gap
+        step = np.timedelta64(1, "h")
         future_ts = ts[-1] + step * np.arange(1, horizon + 1)
         fh, fhc, fds, fdc = _calendar_features(future_ts)
         fut = _pd.DataFrame({

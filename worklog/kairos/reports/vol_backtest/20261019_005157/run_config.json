@@ -1,0 +1,26 @@
+{
+  "source": "yfinance(hourly)",
+  "symbols": [
+    "BTCUSD",
+    "XAGUSD",
+    "XAUUSD",
+    "USDJPY",
+    "USDCHF"
+  ],
+  "horizons": [
+    6,
+    24,
+    48,
+    72
+  ],
+  "arms": [
+    "naive",
+    "ewma",
+    "har",
+    "har_ewma"
+  ],
+  "spacing": 24,
+  "cutoffs_cap": null,
+  "min_train": 720,
+  "skipped_arms": {}
+}

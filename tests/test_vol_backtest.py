@@ -413,3 +413,77 @@ class TestRunnerSmoke:
         summary = (out / "summary.md").read_text()
         assert "Log-HAR" in summary
         assert "Skipped arms" not in summary  # no model arms requested
+
+
+# ---------------------------------------------------------------------------
+# Chronos arms — gapped-calendar regression (explicit freq)
+# ---------------------------------------------------------------------------
+
+class _StubChronosPipeline:
+    """Records predict_df kwargs; returns a canned quantile frame with the
+    columns _rv_from_pred reads ('0.05'/'0.1'/'0.9'/'0.95')."""
+
+    def __init__(self):
+        self.kwargs = None
+
+    def predict_df(self, df, **kwargs):
+        self.kwargs = kwargs
+        n = int(kwargs.get("prediction_length", 24))
+        rng = np.random.default_rng(11)
+        base = np.abs(rng.normal(1e-3, 5e-4, size=n))
+        import pandas as pd
+
+        return pd.DataFrame({
+            "0.05": 0.5 * base, "0.1": 0.7 * base, "0.5": base,
+            "0.9": 1.4 * base, "0.95": 1.6 * base,
+        })
+
+
+def _gapped_hourly_prices(n=300, seed=5):
+    """Weekday-only hourly bars (weekend gaps) — the FX/metals calendar shape
+    that killed freq inference and silently zeroed every chronos forecast."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2026-01-05", periods=n * 2, freq="h")
+    idx = idx[idx.dayofweek < 5][:n]
+    steps = rng.normal(0.0, 8e-4, size=n)
+    return 100.0 * np.exp(np.cumsum(steps)), idx.to_numpy()
+
+
+class TestChronosGappedCalendar:
+    def test_chronos2_passes_explicit_hourly_freq(self, monkeypatch):
+        import vol_backtest.model_arms as ma
+
+        stub = _StubChronosPipeline()
+        monkeypatch.setattr(ma, "_get_pipeline", lambda mid: (stub, ""))
+        arm = ma.Chronos2()
+        assert arm.available
+
+        prices, ts = _gapped_hourly_prices(300)
+        fc = arm.forecast(prices, ts, 24)
+
+        assert stub.kwargs is not None
+        assert stub.kwargs.get("freq") == "h"  # the regression: no inference
+        assert fc is not None and np.isfinite(fc.rv) and fc.rv > 0
+
+    def test_chronos2_covariate_future_grid_is_hourly(self, monkeypatch):
+        import vol_backtest.model_arms as ma
+
+        stub = _StubChronosPipeline()
+        monkeypatch.setattr(ma, "_get_pipeline", lambda mid: (stub, ""))
+        arm = ma.Chronos2Covariate()
+        assert arm.available
+
+        prices, ts = _gapped_hourly_prices(700)
+        fc = arm.forecast(prices, ts, 24)
+
+        assert stub.kwargs is not None
+        assert stub.kwargs.get("freq") == "h"
+        fut = stub.kwargs.get("future_df")
+        assert fut is not None and len(fut) == 24
+        import pandas as pd
+
+        steps = np.diff(pd.DatetimeIndex(fut["timestamp"]).to_numpy())
+        assert (steps == np.timedelta64(1, "h")).all()  # never ts[1]-ts[0]
+        assert fc is not None and np.isfinite(fc.rv) and fc.rv > 0
