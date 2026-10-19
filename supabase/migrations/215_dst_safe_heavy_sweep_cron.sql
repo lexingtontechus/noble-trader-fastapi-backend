@@ -1,0 +1,27 @@
+-- 215_dst_safe_heavy_sweep_cron.sql
+-- Shift the daily heavy sweep 17:06 → 18:06 UTC (DST-safe restart runway).
+--
+-- WHY (2026-10-19): the 17:06 UTC slot was chosen 2026-09-10 as "2 minutes
+-- after the 17:04 UTC Lightning Studio restart" so the sweep gets maximum
+-- runway between restarts (orchestrator.py start() harmonization note;
+-- worklog/20260910_AAPL_REGIME_STALENESS_AND_SELF_LEARNING_SCOPE.md — the
+-- restart-kill mid-run was root-caused as why XAUAUD went 4+ days stale).
+-- That restart grid is anchored to the box's LOCAL clock (PDT). When US DST
+-- ends 2026-11-01 the grid shifts +1h → 14:00/18:04/22:08/02:12/06:16/10:24
+-- UTC, leaving the fixed 17:06 cron with only 58 minutes before the 18:04
+-- restart — the same short-runway failure mode the 2026-09-10 move fixed.
+--
+-- 18:06 UTC is safe on BOTH sides of the transition (and even if the grid
+-- were UTC-anchored): under PDT, restarts 17:04→21:08 give 3h02 of runway;
+-- under PST, restarts 18:04→22:08 give ~4h (fires 2 min after the 18:04
+-- restart, mirroring the original design intent exactly).
+--
+-- Minute stays :06 — deliberately off the light sweep's */15 grid and the
+-- :30 EOD-correction slots (TradingView 429 avoidance, 2026-08-24 note in
+-- orchestrator.py).
+--
+-- WHERE-guarded: only rows still on the old slot move; any per-symbol
+-- override set since 2026-10-16 is left untouched. Idempotent — re-running
+-- is a no-op.
+
+UPDATE nt_symbol SET sweep_cron = '6 18 * * *' WHERE sweep_cron = '6 17 * * *';

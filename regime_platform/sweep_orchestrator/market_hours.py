@@ -8,7 +8,7 @@ Determines whether a given asset class is currently tradeable.
 Asset class rules
 ─────────────────
   crypto       : 24/7
-  stocks       : Mon–Fri 14:30–21:00 UTC  (9:30am–4:00pm ET)
+  stocks       : Mon–Fri 9:30–16:00 America/New_York (DST-aware)
   commodities  : Sun 22:00 – Fri 22:00 UTC (gold/silver spot via OANDA —
                  trades like forex, NOT stock market hours)
   forex        : Sun 22:00 – Fri 22:00 UTC
@@ -18,6 +18,7 @@ Asset class rules
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
@@ -29,6 +30,7 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
         One of ``crypto``, ``stocks``, ``commodities``, ``forex``.
     now
         Optional timestamp (UTC).  Defaults to ``datetime.now(timezone.utc)``.
+        Naive datetimes are treated as UTC (the pre-2026-10-19 contract).
 
     Returns
     -------
@@ -36,6 +38,8 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
     """
     if now is None:
         now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     day = now.weekday()         # 0=Mon … 6=Sun
     minute_of_day = now.hour * 60 + now.minute
@@ -49,24 +53,28 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
             # Sun 22:00 UTC through Fri 22:00 UTC.
             # Gold spot (XAUUSD) is a forex-like instrument — it trades
             # nearly 24/5, NOT US stock market hours.
+            #
+            # Port fixed 2026-10-19: the TS original (supabase/functions/
+            # _shared/utils.ts:1753-1758, JS getUTCDay 0=Sun) was mis-
+            # ported — its day-6 Saturday-closed branch was dropped and
+            # its day-5 Friday rule was left unrenumbered (Python weekday
+            # 5 = Saturday), so Saturday ran under the Friday rule and
+            # real Fridays fell to the Mon–Thu "always open" fallthrough.
             if day == 6:                        # Sunday
                 return minute_of_day >= 1320     # 22:00
-            if day == 5:                        # Friday
+            if day == 5:                        # Saturday
+                return False
+            if day == 4:                        # Friday
                 return minute_of_day < 1320      # before 22:00
             # Mon–Thu — full days
             return True
 
-        case "stocks":
-            # US market hours: Mon–Fri 14:30–21:00 UTC
-            if day >= 5:                         # Sat–Sun
-                return False
-            return 870 <= minute_of_day <= 1260   # 14:30–21:00
-
-        case "indices":
-            # Same as stocks
-            if day >= 5:
-                return False
-            return 870 <= minute_of_day <= 1260
+        case "stocks" | "indices":
+            # US market hours: Mon–Fri 9:30–16:00 America/New_York.
+            # DST-aware (2026-10-19): the previous 14:30–21:00 UTC hardcode
+            # was the EST mapping — an hour off the entire US summer (EDT).
+            et = now.astimezone(ZoneInfo("America/New_York"))
+            return et.weekday() < 5 and 570 <= et.hour * 60 + et.minute <= 960
 
         case _:
             # Unknown asset class — assume open
