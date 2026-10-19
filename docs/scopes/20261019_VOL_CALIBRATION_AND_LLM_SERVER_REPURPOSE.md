@@ -171,6 +171,77 @@ on QLIKE/DM, the arm does not ship — recalibration repairs stated
 uncertainty, it does not conjure information the forecast lacks. (This is
 the thesis's trichotomy doing its job.)
 
+### 1.7 Dynamic-tier structure — does it support recalibration? (addendum, file-traced)
+
+**Verdict: yes — the substrate is right — with three named caveats and
+one measurement from the Phase 0.5 build itself.**
+
+What the four dynamic tiers get RIGHT for recalibration
+(`dynamic_tier_optimizer.py`, `param_store.py`, all file-traced):
+
+1. **Every tier is fitted on REALIZED outcomes, never forecasts.**
+   dynamic_atr walks real price paths; dynamic_deadline reads
+   reachability percentiles; regime_edge counts resolved `nt_signal_sim`
+   outcomes; geometry_incubation mirrors the reconcile job. No tier
+   parameter anywhere consumes a Chronos/HAR forecast, so the measured
+   forecast-spread overconfidence CANNOT have contaminated the tier
+   substrate. Recalibration adds the missing (forecast → realized) map on
+   the same realized-outcome discipline — the pipeline ordering is
+   correct: tiers condition on state, forecasts get calibrated before
+   any consumption.
+2. **The tier store is calibration-map-ready.** A `param_store` row is
+   `(symbol, tier_type, tier_key, tier_value JSON, n, computed_at)` with
+   local-SQLite authority and Supabase as audit mirror — a future
+   `vol_recalib` tier (`tier_key = "<H>:<arm>"`) rides the existing
+   write/read/mirror machinery with zero schema change. JSON-artifact-
+   first (§1.3 step 4) then table-when-earned is exactly this shape.
+3. **The fail-open ladders match.** cell → pooled → global → identity in
+   `recalib.py` is the same shape as per-symbol → pooled-per-class →
+   brick (ATR) and (symbol, vol_tier) → vol_tier-global → conservative
+   defaults (deadline). One pattern, no new machinery.
+
+The caveats (what to NOT do yet):
+
+- **(a) vol_tier keys are state estimates, not measurements.** Every
+  `vol_tier` in the system is `_vol_tier(regime_label)` — an HMM argmax
+  parse (`bracket_reachability.py:134`) of the debounced combined label.
+  HMM argmax labels are themselves uncalibrated (soft probabilities
+  collapsed to hard labels; nobody has measured P(true state | label)).
+  Recalib cells therefore stay keyed `(symbol, horizon, arm)` — NOT
+  vol_tier — until the labels earn their own reliability table. Per-regime
+  `k` remains the §4 boundary it already was.
+- **(b) The tier multipliers are frozen hand priors.** `_VOL_M`
+  (`variable_kelly.py`, 1.05/1.00/0.98/0.92) and `VOL_RISK_SCALE`
+  (`regime_engine.py`) are hand-set, and the optimizer refreshes tier
+  DATA but never these coefficients — the tiers are dynamic in their
+  inputs, static in their vol response. That is a deliberate
+  measurement-first stance, not a defect, but it means a calibrated
+  spread would feed a sizing gate whose vol-tier response is itself
+  unmeasured. The evidence-backing path already exists in-repo
+  (`regime_edge` computes per-regime win rates; vol_tier can be added as
+  a conditioning key the same way) — Phase 2, after Phase 0.5's maps
+  prove out.
+- **(c) The overconfidence locus is partly the harness's own interval
+  construction — and `k` is deliberately agnostic to it.** The Chronos
+  arms' claimed interval is `half = Z80·rv/√(2H)` (`model_arms.py` /
+  `arms.py`) — a CLT sampling-error band, NOT the model's own quantile
+  spread (q05/q95 are fetched and discarded). EWMA, using the IDENTICAL
+  construction, scores coverage 0.34 pooled (run 005157) — the same
+  defect as Chronos with a different center. `k` standardizes against
+  whatever σ_f the arm CLAIMS, so it repairs an understated CLT band and
+  a mis-spread empirical band (HAR) with the same machinery; measured
+  (Phase 0.5 run `20261019_recalib_phase05`): chronos k ≈ 2.2–2.8,
+  HAR k ≈ 0.97–1.21 (the §1.5 prediction), EWMA k up to 10 at H=72.
+
+One measurement from the Phase 0.5 lockbox that sharpens §1.3 step 3:
+the thesis band [0.80, 0.95] CANNOT be applied as a point-estimate gate
+at lockbox n — a perfectly calibrated cell targets 0.80 nominal, so its
+point estimate lands below 0.80 about half the time by sampling noise
+alone (proven on synthetic ground truth before touching real data).
+`recalib.py` applies the band as a ONE-SIDED Wilson test (reject only
+when the lockbox CI rules the band out) and reports the CI next to every
+verdict; catastrophes (0.19–0.44) still reject hard.
+
 ---
 
 ## 2. Q2 — Repurposing `llm_server.py`
