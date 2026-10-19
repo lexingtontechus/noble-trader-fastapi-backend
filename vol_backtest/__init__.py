@@ -26,9 +26,11 @@ audit 2026-10-13: research code does not belong in the prod package).
 from .arms import EWMARV, GARCH11, HAR_EWMA, Arm, ArmForecast, LogHAR, NaiveRV
 from .harness import BacktestResult, aggregate_metrics, backtest_symbol, dm_family
 from .realized import SymbolSeries, forward_rv, log_returns, rv_trailing
+from .recalib import CalibrationMap, CellCalibration, fit_calibration_map, load_records
 
 __all__ = [
     "Arm", "ArmForecast", "NaiveRV", "EWMARV", "LogHAR", "HAR_EWMA", "GARCH11",
     "SymbolSeries", "log_returns", "rv_trailing", "forward_rv",
     "BacktestResult", "backtest_symbol", "aggregate_metrics", "dm_family",
+    "CalibrationMap", "CellCalibration", "fit_calibration_map", "load_records",
 ]
