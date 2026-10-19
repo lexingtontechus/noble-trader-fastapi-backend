@@ -20,8 +20,8 @@ critical decision layers:
 
 | Layer | AI Technology | Role |
 |---|---|---|
-| **Classification** | 4-state Gaussian HMM + TimesFM 2.5 foundation model | Regime detection and directional forecasting |
-| **Decision Making** | EV Engine v6 — logit-pooled multi-source blend | Probability-of-win and expected value computation |
+| **Classification** | 4-state Gaussian HMM + Times Series Foundation Model | Regime detection and directional forecasting |
+| **Decision Making** | EV Engine — logit-pooled multi-source blend | Probability-of-win and expected value computation |
 | **Weight Optimization** | Dynamic weight renormalization + calibration enforcement | Adaptive source weighting with Bayesian shrinkage |
 
 ### What this means relative to quant hedge funds
@@ -35,6 +35,7 @@ Kairos uses AI to:
 - **Blend multiple probability sources dynamically** — the EV Engine's logit-pool adjusts weights based on which sources are available and their recent calibration
 - **Self-correct through calibration loops** — EOD recalibration and intraday drift monitoring automatically adjust for model drift
 - **Scale across 14 symbols** — the same AI infrastructure handles FX, metals, equities, and crypto without symbol-specific tuning
+- **Classify & Harmonize** - volatility and macro-economic market information
 
 The result is a system that **learns from its own predictions** — every signal is scored against its predicted probability, and the calibration loop adjusts future predictions based on realized outcomes. This is closer to how a machine learning team at a quant fund operates, but automated end-to-end.
 
