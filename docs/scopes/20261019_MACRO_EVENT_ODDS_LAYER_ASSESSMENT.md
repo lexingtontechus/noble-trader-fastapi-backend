@@ -1,6 +1,7 @@
 # Macro Event-Odds Layer — Assessment & Design (TSFM Event Conditioning, Kalshi/Polymarket Feed, Higher-Frequency LLM Additive)
 
-> **Priority**: P2 proposal · **Status**: assessment complete, no code changed ·
+> **Priority**: P2 proposal · **Status**: assessment complete + §9 Clef-Flash
+> integration addendum (same-day operator follow-up); no code changed ·
 > **Date**: 2026-10-19 (pre-Fed / Black-Monday-anniversary session) ·
 > **Roadmap refs**: `macro_regime_mode`, `macro_forecast_agent_enabled`, `clef_flash_mode`, `kairos_mode`, vol-backtest Phase 0 (`d205d42`/`4fe5203`)
 
@@ -368,3 +369,158 @@ helps the vol forecast — do it first; it may make steps 2–6 optional.
   return None → multiplier no-ops — the `macro_regime_mode` contract).
 - Nothing here is a live-path change. This document proposes; the
   evidence tables dispose.
+
+---
+
+## 9. Addendum (2026-10-19, operator follow-up): should the odds layer feed into Clef-Flash?
+
+Operator's follow-up: the LLM-narrative method is static files that are
+inert — a fair description, and §1 already concluded the same (annual
+source docs, shadow-only output, "nothing reads it for a live decision").
+Calendar events and news modulate volatility. The specific question:
+**does/should the odds layer be fed into Clef-Flash?** Answered against
+the code at HEAD `b509865`, every claim file-traced.
+
+### 9.1 What Clef-Flash is (verified)
+
+`regime_platform/services/decision/clef_flash.py` + `cloudflare/worker.js`:
+
+- `@cf/cloudflare/clef-flash` — a **9B structured-decision model** on
+  Cloudflare Workers AI, reached via the deployed Worker `POST /decision`
+  (worker.js:207). Contract (worker.js:230-235, verified live 2026-10-05):
+  `{state, questions}` in; **softmax-normalised probabilities over a fixed
+  option set** out. `choice` → `{choice, probabilities, confidence}`;
+  `noul` → `P(true)`; `score` is rejected by the model.
+- **The Worker does not whitelist `state` fields** — worker.js:226/240
+  destructure and pass `{state, questions}` straight to the model. New
+  state fields are a Python-side change only; **no Worker redeploy**.
+- Four callers exist today — all shadow, all fail-open, never an EV
+  source, never a gate (`clef_flash_mode: shadow`, feature_flags.yaml:1418):
+  1. per-signal **direction stamp** (buy/sell/wait) — `_clef_flash_stamp`
+     (orchestrator.py:2852, called :5794), stamped `p_clef_dir` /
+     `p_clef_wait` / `p_clef_symbol` onto `nt_signal_sim` (:6024-6026);
+  2. per-signal **archetype stamp** (R4) — `classify_archetype`
+     (clef_flash.py:446, orchestrator :5820-5839);
+  3. per-symbol **stance batch** (R5) — `clef_stance.py::classify_stance`,
+     hourly `:48` job (orchestrator :1768, :3028-3094), upserts
+     `nt_clef_stance` (mig. 207);
+  4. **macro coherence** — `macro_filter.py::_clef_macro_coherence`
+     (:154-225): feeds the *narrative text* (thesis/drivers/risks) plus the
+     price label, asks agree/disagree, stamps `nt_macro_forecast.coherence`
+     — never read back into a decision.
+
+### 9.2 Does the odds layer feed Clef-Flash today?
+
+**No.** Every state builder — `build_direction_state` (clef_flash.py:81),
+`build_archetype_state` (:387), `build_stance_state` (clef_stance.py:62),
+and the coherence state (macro_filter.py:185) — carries only slow reads:
+`macro_label` (200d SMA), `trend_label`, `regime`, indicator ratios, or
+the annual narrative text. On the eve of a Fed decision, **every
+Clef-Flash call in the system is blind to the event**. The one existing
+marriage of LLM and macro (the coherence stamp) joins the two slowest
+layers in the pipeline — narrative text against a 200-day SMA.
+
+### 9.3 Should it? Yes — Clef-Flash is the only LLM surface here where odds become measurable value instead of inert text
+
+- **Structured by construction.** A choice question returns a probability
+  distribution over a fixed vocabulary — storable, joinable, scoreable.
+  The exact inversion of the narrative layer's free text: no parsing, no
+  `extract_json`, no inert file.
+- **Already shadow + fail-open + never-EV.** Odds enter with zero
+  live-path risk; the §6.4 consumption ladder is untouched.
+- **Already running at the right cadences.** 15-min light-sweep per-signal
+  stamps + hourly `:48` stance batch — matching §6.1's tiered polling
+  (hourly baseline, 15-min inside T−24 h). The "more frequent macro LLM
+  additive" the operator asked for **already exists as infrastructure;
+  it is blind, not absent**.
+- **The 9B model reads numeric state.** An odds snapshot —
+  `{outcomes: [{label, prob, prob_change_24h}], hours_to_event}` — is
+  small structured context, exactly what a structured-decision model
+  consumes.
+- **`classify_choice` (clef_flash.py:286) was built for this.** It already
+  replaced the fragile chat classification at
+  `macro_forecast_agent.classify_symbol` and `kairos_pivot.label_event`.
+
+### 9.4 Design — two shapes, both inside the existing surface
+
+**Shape 1 — event fields on the existing state blocks (v1, rides the odds
+store, no new flag):** `build_direction_state` / `build_archetype_state` /
+`build_stance_state` gain optional `hours_to_event` and
+`event_surprise_potential` (floats). The **None-drop convention already in
+the builders** (clef_flash.py:117/420, clef_stance.py:88) means payloads
+outside event windows stay byte-identical to today's — the ongoing
+shadow discrimination measurements do not break — while inside T−24 h the
+two fields appear, and the event-aware vs event-blind contrast *becomes
+the measurement*. Call sites (orchestrator :5794/:5839/:3065) read the
+latest odds state, fail-open to None. The fields appear iff
+`event_odds_mode != off` — one flag per layer (§6.3 discipline).
+
+**Shape 2 — the dedicated event digest (the odds-first LLM surface;
+supersedes "run the narrative agent faster"):** one `decide()` call per
+odds trigger with **two questions in the existing questions-object
+contract**: `stance ∈ {risk_on, risk_off, neutral}` and
+`vol_expansion ∈ {low, medium, high}` — both distributions returned in a
+single sub-second call. `state` = the odds snapshot itself (event_key,
+event_ts, hours_to_event, per-outcome probs + 24 h movement, consensus,
+surprise_potential). Trigger = §6.1's events (T−24 h window entry, ≥5 pp
+move in 6 h) — **event-triggered, not schedule-triggered**, ~4-12 calls
+on an event day. Store → `nt_event_digest` (§6.2 schema stands).
+**The code template is already in the file the operator pointed at:**
+`_clef_macro_coherence` (macro_filter.py:154-225) — same module
+placement, same fail-open, same `clef_flash_mode` gate, same
+stamp-not-decide docstring. Copy it; swap the narrative-text state for
+the odds state; swap the `noul` question for the two `choice` questions.
+
+### 9.5 What happens to the narrative layer: demote, don't delete
+
+The nightly agent (02:45 UTC) keeps producing structured labels and
+pivot merges (`kairos_pivot.py:152` writes `pivot_*` onto the same table).
+But its *text's* only programmatic consumer — the coherence stamp —
+measures agreement between the two slowest layers in the pipeline. Once
+Shape 2 ships, retire the narrative-coherence question (or repurpose it:
+odds-stance vs price-macro is the live version of the same question). The
+12-month docs remain an annual research corpus, not a decision input.
+Nothing re-runs the narrative agent faster — §1's conclusion stands:
+frequency over a static corpus is noise. The additive's freshness comes
+from the odds feed; the LLM interprets, it does not originate.
+
+### 9.6 Division of labor — where "calendar events & news modulate volatility" actually lands
+
+| Job | Owner | Form |
+|---|---|---|
+| Numeric vol modulation | Log-HAR `is_event_day` dummy + `hours_to_event` known-future covariate in `chronos2_cov` (§3, build-order step 1) | regressor / covariate — judged by the Phase 0 gate |
+| Categorical compression | Clef-Flash Shapes 1-2 | probability distributions — shadow-stamped, scoreable |
+| Sizing penalty (post-evidence) | `kelly_event_multiplier` (§6.4) | multiplier, clamp [0.25, 1.5] |
+| Never | — | odds or Clef-Flash output into `p_win`/EV (§6.6, one-probability discipline) |
+
+The LLM is not the vol model. Event-day vol is a numeric forecast
+problem with an existing harness; the LLM's comparative advantage is
+compressing messy context into a storable categorical read.
+
+### 9.7 How we'll know it worked
+
+- **Direction stamp:** AUC of `p_clef_dir` vs outcomes, split by
+  event-window × fields-present — accumulates automatically once Shape 1
+  ships; no extra instrumentation.
+- **Digest:** `nt_event_digest.vol_expansion` vs realised RV in the 24 h
+  after `event_ts` (point-in-time clean — `nt_event_odds` is append-only);
+  `stance` vs next-day macro-label movement. The odds themselves score
+  against outcomes (did the 0.94 favourite win) — a macro layer that can
+  be scored is a macro layer this codebase can trust (§5).
+- **The live bar:** n ≥ 20 cells per bucket, per-symbol reliability — the
+  2026-09-14 standard. Until then: stamps only.
+
+### 9.8 Boundaries added by this addendum
+
+- Whether a 9B decision model extracts signal from odds numbers — rather
+  than ignoring them — is an empirical question the shadow stamps answer
+  for the cost of a few hundred sub-second calls. Shape 2's honest value
+  is compression and consistency, not hidden alpha.
+- Both shapes depend on the odds store (build-order step 2); step 1
+  (event dummies in HAR) remains the cheapest falsifiable test and needs
+  no odds at all.
+- Migration numbering, now concrete at HEAD: **212** `nt_event_odds`,
+  **213** `nt_event_digest`, **214** `nt_signal_sim` event stamps
+  (latest is 211 `nt_pbm_shadow`).
+- None of this changes the 10/19 session itself — the layer is built for
+  the next FOMC/CPI/NFP cycle.
