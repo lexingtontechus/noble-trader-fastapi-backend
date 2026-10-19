@@ -78,6 +78,13 @@ PYTHONPATH="$PWD/src" ./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cache
 - **Code on disk is not code running.** After a deploy, compare the process start time to the changed file's mtime: `ps -eo pid,lstart,cmd | grep sweep_orchestrator` vs `ls -la <file>`. A process started before the files changed is still running the old code.
 - **Check the running process's env, not `.env.local`** — Studio Secrets are injected into the process and need not appear in the file: `tr '\0' '\n' < /proc/<pid>/environ | grep -E 'CF_|SUPABASE|API_KEY'`.
 
+## Research Tooling — vol_backtest (Phase 0, OFFLINE)
+- **`vol_backtest/` + `scripts/run_vol_backtest.py` + `tests/test_vol_backtest.py`** — the RV-forecast benchmark that gates the TimesFM/Chronos-2 volatility program (`.hermes/plans/2026-10-18_120000-timesfm-refined-thesis.md`). Bar = **Log-HAR**; loss = QLIKE; DM with HAC + Holm; per-symbol, never pooled. Build record: `worklog/20261018_VOL_BACKTEST_PHASE0_BUILD.md`.
+- **It is NOT wired to the live path.** Nothing in `regime_platform/` imports it; do not let it grow imports back into the orchestrator. Model arms (`timesfm25`, `chronos2`, `chronos2_cov`) are optional and every skip must stay reported-never-silent.
+- Runs standalone on numpy/pandas/scipy (tests need no models): `python scripts/run_vol_backtest.py --synthetic --no-models --horizons 24 --cutoffs 40`. Real data: `--data-dir data/vol_backtest` with one `<SYMBOL>.csv` (timestamp,close) per symbol.
+- Optional deps (commented in `requirements.txt`): `chronos-forecasting>=2.0` (Chronos-2 arms — Apache-2.0, CPU-fine at 120M), `arch` (GARCH arm).
+- **Do not** extract vol from a point-forecast std (measures mean-path slope, not dispersion) — quantile spread only. **Do not** pool raw-scale MAE across symbols (BTC dominates). Annualize per-asset-class, display only.
+
 ## Where the worklogs live
 - `worklog/kairos/README.md` — **the Kairos index** (scopes/, reports/, p1/, backfill/, assets/, 15-min slot cadence rules).
 - `worklog/` — dated changelogs and scope docs, `YYYYMMDD_TOPIC.md`. Browse the directory rather than relying on a curated list here.

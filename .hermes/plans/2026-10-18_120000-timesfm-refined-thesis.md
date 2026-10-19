@@ -481,3 +481,64 @@ If these criteria are not met, the fine-tuning approach is not viable and the th
 | Rolling backtest (proposed) | **Rolling backtest (required first phase)** | Nothing else can be validated without it |
 | p_timesfm in EV blend (5/14) | **Remove from EV blend**; add vol_forecast to Kelly | P(up) from price forecast is a category error; vol forecast belongs in sizing |
 | Score point accuracy and quantiles | **MAE, RMSE, directional accuracy, DM test, quantile coverage** | Specific, measurable acceptance criteria |
+
+---
+
+## Implementation status — 2026-10-18 (post-review build)
+
+**Phase 0 is BUILT** (`vol_backtest/` + `scripts/run_vol_backtest.py` +
+`tests/test_vol_backtest.py`; build record
+`worklog/20261018_VOL_BACKTEST_PHASE0_BUILD.md`; 24/24 tests green; synthetic
+3-symbol × 3-horizon run verified). It implements the **corrected**
+methodology, superseding this plan's Tasks 0.1–0.4 as follows:
+
+| Plan item | As built | Reason |
+|---|---|---|
+| Task 0.2 vol = std of point forecast | **Quantile-spread extraction** (per-step σ from q10/q90; RV = √Σσ²) | Std of a conditional-mean path measures slope, not dispersion — the original extraction was guaranteed to fail regardless of model quality |
+| Task 0.3 baselines naive / GARCH / TimesFM | naive, EWMA, **Log-HAR (the bar)**, har_ewma blend, GARCH (optional) | HAR-RV is the literature's bar (Brini 2026: only TTM beat Log-HAR, 1.3–1.8%; TimesFM/Chronos-Bolt did not) |
+| MAPE metric | **QLIKE** + log-scale MAE/RMSE; raw MAE per-symbol only | Near-zero weekend RV explodes MAPE; pooling lets BTC dominate |
+| "≥55% vs coin flip" | Directional accuracy **with the measured persistence-rule null** | Vol is persistent; the coin-flip null overstates skill |
+| DM test (unspecified) | DM with **Newey-West HAC** (lag = horizon/spacing − 1) + **Holm** | Overlapping forecast windows; multiple comparisons |
+| Annualize √(365·24) | **Per-asset-class** (crypto 8760 vs FX/metals ~6240 h/yr), display only | Single factor overstated FX ~18% |
+
+**Model decisions since this plan was written:**
+
+1. **TimesFM 3.0 is license-blocked** for this use (self-hosted weights are
+   non-commercial; commercial use is Google-Cloud-only, which also blocks
+   fine-tuning). Task 1.1 (upgrade to `timesfm-3.0-200m-pytorch`) is VOID —
+   the ID is also wrong (3.0 is 330M).
+2. **Chronos-2** (Apache-2.0, 120M, native past + known-future covariates,
+   multivariate/cross-learning, first-party LoRA) is the **only candidate that
+   can reach this thesis's endgame** under the license constraint; it runs as
+   `chronos2` and `chronos2_cov` arms. TimesFM 2.5 stays as the incumbent arm
+   (`timesfm25`, via the repo's server.py). The framework is model-agnostic
+   (Open Q5) — an arm is one class in `vol_backtest/model_arms.py`.
+3. Phase 1's covariate construction is retargeted to Chronos-2's
+   `predict_df(context_df, future_df)` surface: past covariates (calendar
+   encodings, lagged |r|, trailing RV) into the context frame; known-future
+   calendar features into the future frame.
+
+**Deferred corrections (binding on Phases 3–4, recorded here so they are not
+lost):**
+
+- **Kelly sign (Tasks 3.2/4.3):** `kelly *= clamp(vol_forecast/current_vol,
+  0.5, 2.0)` sizes UP into forecast vol spikes — backwards in every Kelly
+  formulation. Correct: `kelly *= clamp(current_vol/vol_forecast, lo, hi)`
+  with a no-trade cutoff; the unit tests must assert the inverted direction.
+- **p_timesfm removal (Phase 4a):** at HEAD `p_markov_hold_n_mode: "off"` —
+  removing p_timesfm leaves the blend single-source (p_regime). Do it as a
+  flag-level renormalization (the engine already renormalizes on missing
+  sources), with recalibration — not as `P_WIN_WEIGHTS_FULL` surgery.
+- **Train split bug (Task 2.1):** "1 year of data" with a ≤2025-06-01 cutoff
+  (doc dated 2026-10-18) yields an empty train set — the window must widen or
+  the split move.
+- **Citation:** "Marconi et al., Re(Visiting) TSFMs in Finance" is
+  **Rahimikia, Ni & Wang** (arXiv 2511.18578) — and its finding is stronger
+  than quoted: general TSFMs underperform on finance in zero-shot AND
+  fine-tuning; only from-scratch financial pre-training showed substantial
+  gains. Fine-tuning (Phase 2) stays gated on Phase 0 zero-shot results.
+
+**Decision gate (unchanged in spirit, corrected nulls):** any model arm
+beating **Log-HAR** per-symbol on QLIKE at DM/Holm significance proceeds to
+fine-tuning; if none does, the Brini fallback (equal-weight TSFM+HAR blend)
+is the measured answer and this thesis's own escape clause fires.

@@ -1,0 +1,32 @@
+{
+  "source": "synthetic(seed=7, days=365)",
+  "symbols": [
+    "USDJPY",
+    "BTCUSD",
+    "XAUUSD"
+  ],
+  "horizons": [
+    6,
+    24,
+    48
+  ],
+  "arms": [
+    "naive",
+    "ewma",
+    "har",
+    "har_ewma",
+    "garch",
+    "timesfm25",
+    "chronos2",
+    "chronos2_cov"
+  ],
+  "spacing": 24,
+  "cutoffs_cap": 60,
+  "min_train": 720,
+  "skipped_arms": {
+    "garch": "arch not installed (ModuleNotFoundError)",
+    "chronos2": "chronos-forecasting not usable (ModuleNotFoundError: No module named 'chronos')",
+    "chronos2_cov": "chronos-forecasting not usable (ModuleNotFoundError: No module named 'chronos')",
+    "timesfm25": "unreachable http://localhost:8002 (ConnectError)"
+  }
+}

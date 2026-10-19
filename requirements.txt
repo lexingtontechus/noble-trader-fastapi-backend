@@ -37,3 +37,8 @@ apscheduler>=3.10.0
 # Self-learning local knowledge index (2026-09-10) — reuses the torch/
 # huggingface-hub already installed above for TimesFM.
 sentence-transformers>=3.0.0
+# --- vol_backtest (Phase 0 RV-forecast benchmark) — OPTIONAL research deps ---
+# Chronos-2 arms (chronos2 / chronos2_cov): Apache-2.0, 120M encoder, CPU-fine.
+# chronos-forecasting>=2.0
+# GARCH(1,1) baseline arm (skipped gracefully when absent)
+# arch>=7.0.0

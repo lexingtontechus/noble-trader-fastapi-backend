@@ -164,6 +164,15 @@ noble-trader-fastapi-backend/
 ├── pyproject.toml                    Modern packaging metadata + tool config
 ├── requirements.txt
 │
+├── vol_backtest/                     Phase 0 RV-forecast benchmark (research, offline)
+│   ├── realized.py                   RV, per-asset calendars, synthetic generator
+│   ├── metrics.py                    QLIKE, log-scale MAE/RMSE, persistence-null direction
+│   ├── dm.py                         Diebold-Mariano + Newey-West HAC + Holm
+│   ├── arms.py                       naive / EWMA / Log-HAR (the bar) / blend / GARCH
+│   ├── model_arms.py                 TimesFM 2.5 (HTTP) + Chronos-2 (+covariates) arms
+│   ├── data.py                       CSV / yfinance / synthetic loaders
+│   └── harness.py                    rolling-origin, frozen cutoffs, no-lookahead
+│
 ├── regime_platform/                  Python package
 │   ├── core/
 │   │   ├── regime_engine.py          4-state dual GaussianHMM + _sanitize_model
@@ -448,6 +457,8 @@ Response returns `point_forecast`, `quantile_forecast`, `num_series`, and `elaps
 **Quantiles (v8.2.0):** `quantile_forecast` is a continuous-quantile-head band (`[series][horizon][q]`, typically 9–10 levels covering p10…p90). The sweep orchestrator extracts **q10/q50/q90** at horizon step 0 and persists `timesfm_q_lo/mid/hi`, `timesfm_q_spread`, `timesfm_q_pos` on `nt_signal_sim` (migration 186) for research IC / Brier — never as live gates.
 
 **Covariates (research):** TimesFM 2.5 `forecast_with_covariates` (XReg residual path) accepts dynamic channels (trend z-score, momentum, volatility, cluster-mate returns). Probe: `scripts/timesfm_p1_covariates_probe.py`.
+
+**Volatility extraction (corrected):** for RV forecasting, volatility is read from the model's **predictive quantile spread** (q10/q90 per step), never from the std of the point forecast (which measures the conditional mean's slope, not dispersion). The benchmark that decides whether TimesFM/Chronos-2 or Log-HAR should produce Kairos's volatility forecast is [`vol_backtest/`](#volatility-forecast-backtesting-phase-0--timesfm-thesis-evaluation) — see the [Volatility Forecast Backtesting](#volatility-forecast-backtesting-phase-0--timesfm-thesis-evaluation) section.
 
 ### Multi-Asset
 
@@ -1038,6 +1049,86 @@ Results are persisted to Supabase `ta_backtest_result` table (per-user scoped) f
 ### Export
 
 `POST /backtest/export` streams a saved result as CSV or JSON with section selection (`summary`, `equity_curve`, `drawdown_curve`, `trade_log`).
+
+---
+
+## Volatility Forecast Backtesting (Phase 0 — TimesFM thesis evaluation)
+
+**`vol_backtest/`** is the evaluation framework for the refined TimesFM thesis
+(`.hermes/plans/2026-10-18_120000-timesfm-refined-thesis.md`): a rolling-origin
+benchmark that decides **whether any forecast model should produce the
+volatility forecast** feeding Kelly sizing, brick geometry, and risk gates —
+before anything is wired into the live path. It is research tooling, kept
+**outside** `regime_platform/` on purpose, and nothing in the live orchestrator
+imports it.
+
+**The bar it must clear:** Log-HAR. Brini (2026, arXiv 2607.05291, VOLARE, 50
+assets incl. FX): only TTM (<1M params) beat a well-specified Log-HAR — by
+1.3–1.8%; TimesFM and Chronos-Bolt did not. Any TSFM arm must beat Log-HAR
+per-symbol on QLIKE at Diebold-Mariano significance (HAC + Holm-corrected)
+before fine-tuning is even discussed. If nothing clears the bar, the
+literature-backed fallback is the equal-weight **TSFM + HAR blend** (Brini:
+matches the best single model, enters the Model Confidence Set for 98–100% of
+assets).
+
+### Arms
+
+| arm | always runs? | description |
+|---|---|---|
+| `naive` | yes | last-24h realized vol (persistence level, secondary null) |
+| `ewma` | yes | RiskMetrics EWMA (λ=0.94) |
+| `har` | yes | **Log-HAR (Corsi) on hourly RV — the reference bar** |
+| `har_ewma` | yes | equal-weight variance blend (the Brini-style fallback) |
+| `garch` | if `arch` installed | GARCH(1,1), analytic H-step variance |
+| `timesfm25` | if :8002 up | incumbent TimesFM 2.5 via `server.py` — vol from the **quantile spread** (q10/q90), never the std of the point forecast |
+| `chronos2` | if `chronos-forecasting` installed | Chronos-2 univariate (log-return input, quantile-spread output) |
+| `chronos2_cov` | if `chronos-forecasting` installed | **Chronos-2 + past & known-future covariates** — the universal-forecasting arm (TimesFM 3.0's license blocks this capability class; Chronos-2 is Apache-2.0) |
+
+Model arms degrade gracefully — every skip is **reported in `summary.md`,
+never silent**.
+
+### Methodology (corrected 2026-10-18 — see `worklog/20261018_VOL_BACKTEST_PHASE0_BUILD.md`)
+
+- **Target:** realized volatility over the next H bars, `RV = √Σr²`, metrics on
+  this scale; annualization is display-only and **per-asset-class** (crypto
+  8,760 h/yr vs FX/metals ~6,240 h/yr — a single √(365·24) factor overstates
+  FX by ~18%).
+- **Calendar filter** drops FX/metals weekend bars before returns are computed
+  (zero-return weekend bars poison RV and the naive baseline).
+- **Loss:** QLIKE (robust to near-zero RV); MAE/RMSE reported on log(RV);
+  raw-scale MAE stays per-symbol (never pooled — BTC's ~5× vol scale would
+  dominate).
+- **Directional accuracy vs the persistence rule**, not a coin flip — realized
+  vol is highly persistent, and the honest null is measured on the same sample.
+- **DM tests with Newey–West HAC** (lag = horizon/spacing − 1; overlapping
+  forecast windows) and **Holm** family-wise correction across arms.
+- **No lookahead, enforced:** at cutoff t arms receive only `prices[:t+1]`
+  (sentinel-tested); targets are strictly future windows.
+- 80% central-interval coverage with acceptance band **[0.80, 0.95]** (too
+  narrow or too wide both fail).
+
+### Quick start
+
+```bash
+# CI / methodology smoke — seconds, no models required
+python scripts/run_vol_backtest.py --synthetic --horizons 24 --cutoffs 40 --no-models
+
+# Real data: one <SYMBOL>.csv (columns: timestamp,close) per symbol
+python scripts/run_vol_backtest.py --data-dir data/vol_backtest \
+    --symbols BTCUSD,XAGUSD,XAUUSD,USDJPY,USDCHF --horizons 24,72
+
+# All arms: needs server.py on :8002 and/or chronos-forecasting installed
+TIMESFM_BASE_URL=http://localhost:8002 TIMESFM_API_KEY=... \
+python scripts/run_vol_backtest.py --data-dir data/vol_backtest
+
+# Tests
+python -m pytest tests/test_vol_backtest.py -q
+```
+
+Outputs land in `worklog/kairos/reports/vol_backtest/<runid>/`:
+`results.csv` (per symbol × horizon × arm metrics), `dm_tests.csv` (DM vs har
+and vs naive, Holm-adjusted), `summary.md` (acceptance-criteria check + skipped
+arms + QLIKE winners), `records.csv` (raw per-cutoff forecasts for replay).
 
 ---
 
