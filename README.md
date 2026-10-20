@@ -98,16 +98,29 @@ Read: `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
 |---|---|
 | **Is** | a sweep orchestrator and **signal producer** — regime detection, EV/geometry, qualification, calibration feedback, Discord delivery |
 | **Is not** | a trade executor. `ExecutorFactory.get_executor` raises by design; live trade journaling and order placement live in the Hermes agent (Talaria) |
-| **Cadence** | light sweep every **15 min** × 14 symbols; heavy sweep **daily 17:06 UTC**; EOD recalibration nightly 00:30 + 4h correction passes; **dynamic tier optimization every 15 min** (pre-sweep, `:05/:20/:35/:50`) |
+| **Cadence** | light sweep every **15 min** × 14 symbols; heavy sweep **daily 18:06 UTC** after migration `215` (**apply before 2026-11-01**; rows read 17:06 until then); EOD recalibration nightly 00:30 + 4h correction passes; **dynamic tier optimization every 15 min** (pre-sweep, `:05/:20/:35/:50`) |
 | **Data** | Supabase (Postgres) — signals, calibration records, sweep results, research tables |
 
 ---
 
 ## Version
 
+**v8.3.0** — **definitive weaknesses remediation** (`regime_edge` proof engine: numeric regime VALUES → measured conditional edge; 17 verdicts, 11 PROVEN-FAIL / 6 MEASURED) · **7 corrective fixes LIVE, no shadow** (shipped-bracket EV, heavy fail-closed, cost-aware EV, chop gate, direction stability, barrier floor, calibration cutover predicate) · first-passage physics now constrains every published bracket
+
 **v8.2.0** — **first-passage pivot** (HMM detour retired; `p_markov_hold_n` withdrawn) · **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** · Renko live-grid hygiene · Settlement / calibration measurement honesty
 
 ### Highlights
+
+#### Definitive remediation (2026-10-20)
+
+- **Regime values, measured edge** — `regime_edge/` + `scripts/run_edge_lab.py` assign point-in-time VALUES (trend = signed ER24 ∈ [−1,1], chop = Choppiness/100, vol = ATR percentile; tri-state hysteresis supplies the neutral state the live HMM vocabulary lacks) and MEASURE the edge conditional on them: decile surfaces w/ bootstrap CIs, Spearman + permutation flatness, walk-forward lockbox calibration, 3-book gate backtest (kairos-as-is vs corrected vs driftless null) with DM/HAC/Holm. Verdict: **edge predictability honest-weak (2/25 feature×symbol tests significant)** — a measured-if-thin surface replaces a negative-skill label (HMM 24h direction skill **−0.0444 mean, negative on all 5 symbols**, reproducing the live −0.0404). Artifacts: `worklog/kairos/reports/regime_edge/20261020_055039/` (determinism witness `…_053412`). Dashboard: Kairos Edge Lab (companion Next.js app).
+- **EV prices the SHIPPED bracket** (W-C1) — `apply_bracket_to_ev` builds payoff legs from `tp_dist_price`/`sl_dist_price` via `orchestrator._shipped_bracket_distances` on BOTH paths; the `rr ≥ 1.5` gate tests the real shipped ratio, not brick ratios.
+- **Heavy sweep fails closed** (W-C2) — honours `p_win_bracket_unscored_policy: fail_closed`, the EV hard floor, and per-class `min_p_win_bracket_by_asset_class` floors; no more directional-0.55-passes-with-unscored-bracket.
+- **Cost-aware EV** (W-C4) — per-class round-trip cost (`ev_costs.cost_atr_by_class` × ATR) subtracted ONCE per trade; `cost_price` stamp survives every reprice path.
+- **Chop gate + direction stability LIVE** (W-X3/X4) — `efficiency_24h < 0.30` ⇒ `chop_gate_low_er`; 6h cross-direction cooldown + `shifts_24h ≥ 6` flip-rate breaker. The consolidation window is finally gated.
+- **Barrier floor** (W-G2/G4) — `sweep_orchestrator/barrier_floor.py` stamps first-passage `pi_tp`/`pi_sl`/`pi_e` on EVERY pick (cross-checked vs `barrier.barrier_null` within 0.0034); **π_SL > 0.62 ⇒ in-band adjustment or rejection** — every pre-fix band-centre had EV ≤ −cost under the driftless null (XAUUSD 4.94/1.00 π_SL 0.83, BTCUSD 8.07/1.77 π_SL 0.79 ⇒ those picks now reject → brick fallback).
+- **Calibration book era-clean** (W-C3) — migration `216_calibration_published_cutover_predicate.sql` restores the era/cutover predicate on `v_calibration_records_published` (inert until the marker row exists).
+- Tests: **62 new across 7 files, all passing** (plus 19/19 `regime_edge`); full suite zero regressions vs HEAD. Scope doc: `docs/scopes/20261020_REGIME_EDGE_PROOF_ENGINE_AND_LIVE_FIXES.md`.
 
 > **Geometry / `vol_ratio` — read before touching TP-SL (easy to miss).**
 > **`vol_ratio` is a VOLATILITY ratio, not volume:** `std(Δlog close 24h) /
@@ -122,6 +135,13 @@ Read: `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
 > Full write-up: `worklog/kairos/20260930_VOL_REGIME_ATR_BTC_XAU.md`.
 > **Heavy sweep is not this research:** it re-walks 10d on a fixed grid; the
 > 45d free lattice + vol terciles + OOS live in `scripts/vol_atr_solver.py`.
+>
+> **2026-10-20 — `barrier_floor` is LIVE and bites exactly here:** both band
+> centres quoted above are SL-farms by first-passage physics (XAUUSD 4.94/1.00
+> π_SL = 0.83, BTCUSD 8.07/1.77 π_SL = 0.79 > cap 0.62), so the tiered pick
+> **rejects** and falls back to brick geometry until the bands are re-banded
+> (corrected centres that clear the cap: XAUUSD → 7.00/4.50/96h π_SL 0.60,
+> BTCUSD → 6.25/4.00 π_SL 0.61 — see the scope doc §3).
 
 #### Kairos (beyond `p_win`)
 - **`kairos_rank_score` R-Layer** — opportunity ranking *within* a regime cell (freshness, setup type, recent TP, shrunk cell hit-rate). Walk-forward AUC 0.67–0.78; top/bottom tercile TP-rate Δ +0.29. **Ranks capital priority; `p_win` stays an eligibility/level score** (level IC≈0, overconfident).
