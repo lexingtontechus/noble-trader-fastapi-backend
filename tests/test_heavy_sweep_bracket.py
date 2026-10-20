@@ -12,7 +12,12 @@ from regime_platform.sweep_orchestrator.p_win_bracket import (
 
 
 class _Engine:
-    def recompute_ev_fields(self, p_win, profit, stake, min_rr=None, p_expire=0.0):
+    # W-C4 (2026-10-19): accept the new optional cost_price kwarg the real
+    # engine's recompute_ev_fields now takes — the stub mirrors the production
+    # signature (default None = historical cost-blind recompute).
+    def recompute_ev_fields(
+        self, p_win, profit, stake, min_rr=None, p_expire=0.0, cost_price=None
+    ):
         return {
             "ev": 1.0,
             "ev_per_dollar": 0.5,

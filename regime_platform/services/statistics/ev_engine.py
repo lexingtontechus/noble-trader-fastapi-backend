@@ -159,6 +159,13 @@ class EVFullResult:
     sources_used: Tuple[str, ...] = ()
     weights_used: Dict[str, float] = None
     reason: Optional[str] = None
+    # W-C4 (2026-10-19, cost-aware EV): round-trip cost (spread + slippage
+    # + entry-lag allowance) in the SAME units as profit/stake, subtracted
+    # ONCE per trade. 0.0 (default) = the historical cost-blind EV —
+    # byte-identical for every caller that does not opt in. Stamped here so
+    # post-hoc recomputes (apply_bracket_to_ev / recompute_ev_fields
+    # callers) can carry the cost forward instead of silently dropping it.
+    cost_price: float = 0.0
 
 
 # ── T^N multi-step hold probability ──────────────────────────────────
@@ -613,6 +620,7 @@ class EVEngine:
         p_timesfm: Optional[float] = None,
         n_steps: Optional[int] = None,
         p_markov_override: Optional[float] = None,
+        cost_price: float = 0.0,
     ) -> EVFullResult:
         """Full EV computation with 4-source logit-pooled P_win (v5).
 
@@ -660,6 +668,13 @@ class EVEngine:
                        Still participates in the normal availability/
                        renormalisation logic — pass ``None`` (default) to
                        fall back to the original behaviour unchanged.
+            cost_price: W-C4 (2026-10-19): round-trip transaction cost
+                       (spread + slippage + entry-lag allowance) in the SAME
+                       units as ``profit``/``stake`` (price units per 1
+                       position unit), subtracted ONCE per trade from EV —
+                       not per leg, and not conditional on outcome. Default
+                       0.0 preserves the historical cost-blind EV exactly
+                       (backward compatibility for every existing caller).
         """
         # Step 1: Compute individual P_win sources
         p_regime = self.compute_p_regime(trend_probs or {}, direction)
@@ -723,7 +738,11 @@ class EVEngine:
         # profit/stake in dollars — brick_size * brick_count
         profit = float(tp_bricks) * float(brick_size)
         stake = float(sl_bricks) * float(brick_size)
-        ev = (p_win * profit) - ((1.0 - p_win) * stake)
+        # W-C4 (2026-10-19): cost is charged ONCE per trade, in the same
+        # units as profit/stake — the same convention barrier.py's EV uses
+        # (``net = pnl - cost`` per row). Default 0.0 = cost-blind (legacy).
+        _cost = max(0.0, float(cost_price or 0.0))
+        ev = (p_win * profit) - ((1.0 - p_win) * stake) - _cost
         ev_per_dollar = ev / stake if stake > 0 else 0.0
         rr = profit / stake if stake > 0 else 0.0
 
@@ -760,6 +779,7 @@ class EVEngine:
             sources_used=tuple(available.keys()),
             weights_used={k: round(v, 4) for k, v in weights_used.items()},
             reason=reason,
+            cost_price=round(_cost, 6),
         )
 
     # ── Post-hoc recompute (audit 2026-08-22) ───────────────────────
@@ -776,6 +796,7 @@ class EVEngine:
         self, p_win: float, profit: float, stake: float,
         min_rr: float | None = None,
         p_expire: float = 0.0,
+        cost_price: float | None = None,
     ) -> Dict[str, Any]:
         """Recompute ev/ev_per_dollar/rr/allowed/ev_scale/aggression for a
         p_win that changed after ``compute_ev()`` already ran.
@@ -801,6 +822,15 @@ class EVEngine:
         form ``p_win*profit - (1-p_win-p_expire)*stake`` so expire is not
         charged as a loss. Default 0.0 preserves the binary formula.
 
+        ``cost_price`` (W-C4, 2026-10-19): round-trip cost in the same units
+        as ``profit``/``stake``, subtracted ONCE per trade (after the
+        outcome terms — not per leg). Default ``None`` means 0.0 (the
+        historical cost-blind recompute) so every existing caller is
+        unchanged; callers that priced a cost into the original
+        ``compute_ev()`` result pass it (or read
+        ``EVFullResult.cost_price``) explicitly to keep it after a p_win
+        adjustment.
+
         Callers should overwrite ``EVFullResult.{ev, ev_per_dollar, rr,
         allowed, aggression, ev_scale}`` with this method's return values
         after mutating ``EVFullResult.p_win`` — never mutate ``p_win`` alone.
@@ -809,6 +839,8 @@ class EVEngine:
         p_exp = max(0.0, min(1.0, float(p_expire or 0.0)))
         loss_prob = max(0.0, 1.0 - float(p_win) - p_exp)
         ev = (p_win * profit) - (loss_prob * stake)
+        # W-C4: one charge per trade, never per leg (see docstring).
+        ev -= max(0.0, float(cost_price)) if cost_price is not None else 0.0
         ev_per_dollar = ev / stake if stake > 0 else 0.0
         rr = profit / stake if stake > 0 else 0.0
         allowed = (ev > self.min_ev) and (rr >= effective_min_rr)

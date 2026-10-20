@@ -60,6 +60,12 @@ from regime_platform.core.feature_flags import (
     get_router_mode,
     get_clef_flash_mode,
     get_p_win_reachability_mode,
+    # ── Task 40-b corrective gates (2026-10-19) ──
+    get_chop_gate_mode,
+    get_chop_gate_min_efficiency,
+    get_direction_stability_mode,
+    get_cross_direction_cooldown_h,
+    get_max_shifts_24h,
 )
 from regime_platform.core.position_sizer import PositionSizer, PositionRequest
 from regime_platform.services.statistics.ev_engine import EVEngine, P_WIN_WEIGHTS_FULL
@@ -255,6 +261,94 @@ TIMESFM_GATE_MODE = get_timesfm_gate_mode()
 #
 # Set to 0 to publish every gate-pass (slots still 15 min apart).
 SIGNAL_COOLDOWN_MINUTES = get_signal_cooldown_minutes()
+
+
+# ── Task 40-b helpers (2026-10-19 weaknesses evaluation) ────────────────────
+
+def _ev_cost_price(asset_class: Any, atr: Any) -> float:
+    """W-C4: per-class round-trip cost (spread + slippage + entry-lag
+    allowance) in PRICE units per 1 position unit = cost_atr(class) × ATR.
+
+    0.0 when ``ev_costs.mode`` is not live or ATR is missing/zero — EV then
+    stays exactly the historical cost-blind value (backward compat). Shared
+    by the light (orchestrator) and heavy (heavy_sweep) compute_ev call
+    sites so both paths charge the same cost.
+    """
+    try:
+        from regime_platform.core.feature_flags import (
+            get_ev_cost_atr_for_asset_class,
+            get_ev_cost_mode,
+        )
+        if get_ev_cost_mode() != "live":
+            return 0.0
+        if not atr or float(atr) <= 0:
+            return 0.0
+        return round(
+            float(get_ev_cost_atr_for_asset_class(asset_class)) * float(atr), 6
+        )
+    except Exception:
+        return 0.0
+
+
+def _shipped_bracket_distances(trade_signal: dict[str, Any]) -> tuple[float | None, float | None]:
+    """W-C1: (tp_dist, sl_dist) of the bracket actually being published.
+
+    Reads the FINAL trade_signal TP/SL prices (post dynamic-ATR override or
+    brick fallback) and returns absolute distances from entry in price
+    units per 1 position unit — the payoff legs EV must price. (None, None)
+    whenever entry/TP/SL are missing or degenerate, so callers fall back to
+    the brick geometry exactly as before.
+    """
+    try:
+        entry = trade_signal.get("entry_price")
+        tp = trade_signal.get("take_profit")
+        sl = trade_signal.get("stop_loss")
+        if entry is None or tp is None or sl is None:
+            return None, None
+        tp_dist = abs(float(tp) - float(entry))
+        sl_dist = abs(float(entry) - float(sl))
+        if tp_dist <= 0 or sl_dist <= 0:
+            return None, None
+        return tp_dist, sl_dist
+    except (TypeError, ValueError):
+        return None, None
+
+
+def cross_direction_cooldown_blocked(
+    last_publish: tuple[str, float] | None,
+    direction: str,
+    now: float,
+    cooldown_h: float,
+) -> bool:
+    """W-X3: True when publishing ``direction`` would FLIP the symbol's last
+    PUBLISHED direction within ``cross_direction_h`` hours.
+
+    Pure function — the orchestrator records ``(direction, publish_ts)`` per
+    symbol at publish time (``_last_publish_direction``) and calls this on
+    the suppression path. Same-direction republishes are never blocked (the
+    per-direction wall-clock cooldown owns those); unknown/neutral labels
+    never block (fail-open).
+    """
+    if not last_publish or cooldown_h <= 0:
+        return False
+    try:
+        last_dir, last_ts = str(last_publish[0]).lower(), float(last_publish[1])
+    except (TypeError, ValueError, IndexError):
+        return False
+
+    def _side(label: str) -> str | None:
+        low = label.lower()
+        if any(x in low for x in ("buy", "long", "bull")):
+            return "long"
+        if any(x in low for x in ("sell", "short", "bear")):
+            return "short"
+        return None
+
+    a, b = _side(str(direction)), _side(last_dir)
+    if a is None or b is None or a == b:
+        return False
+    return (now - last_ts) < float(cooldown_h) * 3600.0
+
 
 # ── Minimum p_win threshold ───────────────────────────────────────────────
 # Require the blended p_win (from the EV engine's log-odds pooling) to be
@@ -1370,6 +1464,16 @@ class SweepOrchestrator(HeavySweepMixin):
         # duplication independent of the cooldown timer.
         # Key: (symbol, direction), Value: hash string of last published content.
         self._last_signal_hash: dict[tuple[str, str], str] = {}
+
+        # ── Cross-direction publish tracking (W-X3, 2026-10-19) ──────────
+        # symbol → (direction, publish ts) of the last PUBLISHED signal.
+        # The per-(symbol, direction) cooldown above lets the OPPOSITE
+        # direction publish instantly after a confirmed flip; this map feeds
+        # cross_direction_cooldown_blocked() so the book holds one direction
+        # for direction_stability.cross_direction_cooldown_h hours. Same
+        # in-memory lifecycle as _last_qualified_signal (lost on restart,
+        # naturally re-seeded on the first publish after one).
+        self._last_publish_direction: dict[str, tuple[str, float]] = {}
 
         # ── Regime-shift tracking for the agent heartbeat ─────────────
         # Per-symbol list of epoch-ms timestamps when a regime shift was
@@ -4470,6 +4574,10 @@ class SweepOrchestrator(HeavySweepMixin):
         # R4: apply the non-convergence discount (empty dict = no-op, exact
         # pre-R4 behaviour) around the compute_ev() call itself, not a
         # separately-tracked parallel state.
+        # W-C4 (2026-10-19): cost_price — per-class round-trip cost (spread +
+        # slippage + entry-lag allowance) × current ATR, charged ONCE per
+        # trade. 0.0 when ev_costs.mode is off/shadow → byte-identical to the
+        # historical cost-blind EV.
         with self._ev_engine.temp_weights(_regime_weight_override):
             ev_result = self._ev_engine.compute_ev(
                 trend_probs=_smoothed_trend_probs,
@@ -4482,6 +4590,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 tp_bricks=tp_bricks,
                 n_steps=resolve_markov_n_steps(tp_bricks),
                 p_markov_override=_smoothed_p_markov if _p_markov_hold_n_live else None,
+                cost_price=_ev_cost_price(sym.get("asset_class"), atr),
             )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
@@ -4650,11 +4759,24 @@ class SweepOrchestrator(HeavySweepMixin):
                     )
             except Exception:
                 pass
+            # W-C1: the shipped bracket's actual TP/SL distances from entry.
+            _shipped_tp_dist, _shipped_sl_dist = _shipped_bracket_distances(
+                trade_signal
+            )
             _bracket_applied_to_ev = apply_bracket_to_ev(
                 ev_result,
                 p_win_bracket=_ev_p_win_src,
                 p_resolve=_ev_p_resolve_src,
                 engine=self._ev_engine,
+                # W-C1 (2026-10-19): price the payoff legs on the bracket that
+                # actually SHIPS (post dynamic-ATR override / brick fallback),
+                # not the brick geometry compute_ev was fed. Falls back to the
+                # brick legs when the shipped prices are absent/degenerate —
+                # the pre-W-C1 behaviour, exactly.
+                tp_dist_price=_shipped_tp_dist,
+                sl_dist_price=_shipped_sl_dist,
+                # W-C4: cost read from the result's own stamp (see compute_ev
+                # above) so the post-substitution EV stays cost-aware.
             )
             if _bracket_applied_to_ev:
                 # Honour ev_scale_sizing_mode here too (2026-10-02). This R2 path
@@ -4757,8 +4879,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     # p_win) after this mutation — corrupting the aggression
                     # (execution-style) decision and all EV telemetry persisted
                     # downstream. See worklog/20260822_EV_CALIBRATION_INDEPENDENT_AUDIT.md.
+                    # W-C4: cost_price carried forward from the compute_ev
+                    # stamp so the enforcement reprice stays cost-aware.
                     _recomputed = self._ev_engine.recompute_ev_fields(
                         ev_result.p_win, ev_result.profit, ev_result.stake,
+                        cost_price=getattr(ev_result, "cost_price", 0.0) or 0.0,
                     )
                     ev_result.ev = _recomputed["ev"]
                     ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
@@ -4993,6 +5118,9 @@ class SweepOrchestrator(HeavySweepMixin):
                         _min_rr_recomputed = self._ev_engine.recompute_ev_fields(
                             ev_result.p_win, ev_result.profit, ev_result.stake,
                             min_rr=effective_min_rr,
+                            # W-C4: keep the cost priced into this EV across
+                            # the min-rr reprice.
+                            cost_price=getattr(ev_result, "cost_price", 0.0) or 0.0,
                         )
                         ev_result.ev = _min_rr_recomputed["ev"]
                         ev_result.ev_per_dollar = _min_rr_recomputed["ev_per_dollar"]
@@ -5071,6 +5199,43 @@ class SweepOrchestrator(HeavySweepMixin):
             p_win_ok
             and _p_win_gate_hard_floor <= _p_win_for_gate < _p_win_gate_min
         )
+
+        # ── Chop gate verdict (W-X4, 2026-10-19, LIVE) ──────────────────────
+        # efficiency_24h (Kaufman ER) is computed by kairos.capture_factors
+        # on the same 1h OHLCV the sweep already fetched — computed HERE so
+        # the verdict exists at gate time (the nt_signal_sim stamp at capture
+        # time recomputes it independently; both are pure). Emitted as a
+        # SUPPRESSION (below, bracket_unscored mechanism) so it never
+        # rewrites the quality verdict — suppressors set gate_outcome=
+        # suppressed per the 2026-09-27 publish-path vocabulary.
+        _chop_er: float | None = None
+        _chop_mode = get_chop_gate_mode()
+        if _chop_mode != "off":
+            try:
+                from regime_platform.sweep_orchestrator.kairos import (
+                    capture_factors as _chop_capture_factors,
+                )
+                _chop_facs = _chop_capture_factors(
+                    self._kairos_ohlcv.get(symbol),
+                    atr_now=None, atr_run_start=None, spread_bps=None,
+                    forming_last=True,
+                )
+                _chop_er = (_chop_facs or {}).get("efficiency_24h")
+            except Exception as _chop_exc:
+                logger.debug(
+                    "[sweep:orch] %s: chop gate ER capture failed: %s",
+                    symbol, _chop_exc,
+                )
+                _chop_er = None
+        try:
+            from regime_platform.sweep_orchestrator.kairos import chop_gate_decision
+            _chop_ok, _chop_status = chop_gate_decision(
+                _chop_er,
+                min_efficiency=get_chop_gate_min_efficiency(),
+                mode=_chop_mode,
+            )
+        except Exception:
+            _chop_ok, _chop_status = True, "skip_no_er"
 
         gate_results = {
             "signal_qualifiable": signal_is_qualifiable,
@@ -5157,6 +5322,11 @@ class SweepOrchestrator(HeavySweepMixin):
             "calibration_bias": round(calib_adj["bias"], 4) if calib_adj and calib_adj.get("bias") is not None else None,
             "ev_reason": effective_ev_result.reason,
             "timesfm_gate_mode": TIMESFM_GATE_MODE,
+            # ── Chop gate stamp (W-X4, 2026-10-19) ─────────────────────────
+            # Verdict + the ER it read — the skip case is stamped so a
+            # cold-start fail-open is observable, not silent.
+            "chop_gate_status": _chop_status,
+            "chop_gate_efficiency_24h": _chop_er,
         }
 
         # A signal is qualified only if ALL gates pass.
@@ -5309,6 +5479,12 @@ class SweepOrchestrator(HeavySweepMixin):
 
         # ── 8. Build the enriched signal payload ──
         now_ms = int(time.time() * 1000)
+
+        # ── W-X3 (2026-10-19): compute the trailing-24h shift count ONCE ──
+        # The payload stamp below and the flip-rate breaker (suppression
+        # zone) consume the SAME value — calling _count_shifts_24h twice
+        # would double-append the current shift's timestamp.
+        _shifts_24h_val = self._count_shifts_24h(symbol, now_ms, regime_shift)
 
         # Compute size multiplier based on TimesFM confidence
         size_mult = 1.0
@@ -5464,7 +5640,7 @@ class SweepOrchestrator(HeavySweepMixin):
             # no shift on this signal); shifts_24h = count of shifts in the
             # trailing 24h, tracked per-symbol on this orchestrator instance.
             "shift_at": int(now_ms) if regime_shift else 0,
-            "shifts_24h": self._count_shifts_24h(symbol, now_ms, regime_shift),
+            "shifts_24h": _shifts_24h_val,
             # ── p_imbalance (order-flow imbalance, 0-1) ──────────────────
             # NOTE: the backend deprecated the true L2-derived p_imbalance in
             # favour of p_microstructure (composite of L1/L2). The agent still
@@ -5597,9 +5773,102 @@ class SweepOrchestrator(HeavySweepMixin):
                 else:
                     gate_results["p_win_bracket_ok"] = True
 
+            # ── 10a-2. Chop gate (W-X4, 2026-10-19, LIVE) ──────────────
+            # Same suppression mechanism as bracket_unscored above: the
+            # quality verdict (qualified) stands, delivery is suppressed
+            # with a machine-readable reason. ER below the floor = the
+            # 24h close path is two-sided; the HMM's forced bull/bear
+            # direction is rank noise there (conf held 0.649-0.793 through
+            # the 69.1%-consolidating measured window — regime_conf is not
+            # a chop brake).
+            if _chop_mode != "off" and not _chop_ok:
+                gate_results["chop_gate_ok"] = False
+                if published and _chop_mode == "live":
+                    _suppress_reason = "chop_gate_low_er"
+                    published = False
+                    logger.info(
+                        "[sweep:orch] %s: SUPPRESSED (chop_gate_low_er) "
+                        "efficiency_24h=%s < %.2f",
+                        symbol,
+                        f"{_chop_er:.4f}" if _chop_er is not None else "None",
+                        get_chop_gate_min_efficiency(),
+                    )
+                elif _chop_mode == "shadow":
+                    logger.info(
+                        "[sweep:orch] %s: chop gate SHADOW would suppress "
+                        "(efficiency_24h=%s < %.2f) — live still published=%s",
+                        symbol,
+                        f"{_chop_er:.4f}" if _chop_er is not None else "None",
+                        get_chop_gate_min_efficiency(),
+                        published,
+                    )
+
+            # ── 10a-3. Direction stability (W-X3, 2026-10-19, LIVE) ─────
+            # (a) Cross-direction cooldown: the per-(symbol, direction)
+            #     wall-clock cooldown lets the OPPOSITE direction publish
+            #     INSTANTLY after a confirmed flip — flip-flop at the
+            #     debouncer's 3h granularity. Hold one direction for
+            #     cross_direction_cooldown_h hours.
+            # (b) Flip-rate breaker on the already-stamped shifts_24h —
+            #     6+ shifts in the trailing 24h is the measured whipsaw
+            #     signature (raw flip rate 71.3% in the consolidating
+            #     window); stop publishing through it.
+            # Both are suppressors (same mechanism as 10a-2): qualified
+            # stands, delivery is suppressed with a reason.
+            _dir_stab_mode = get_direction_stability_mode()
+            if _dir_stab_mode != "off":
+                if cross_direction_cooldown_blocked(
+                    self._last_publish_direction.get(symbol),
+                    trade_signal["signal"],
+                    time.time(),
+                    get_cross_direction_cooldown_h(),
+                ):
+                    gate_results["cross_direction_cooldown_ok"] = False
+                    if published and _dir_stab_mode == "live":
+                        _suppress_reason = "cross_direction_cooldown"
+                        published = False
+                        logger.info(
+                            "[sweep:orch] %s: SUPPRESSED "
+                            "(cross_direction_cooldown) — %s within %.1fh of "
+                            "last publish %s",
+                            symbol, trade_signal["signal"],
+                            get_cross_direction_cooldown_h(),
+                            self._last_publish_direction.get(symbol),
+                        )
+                    elif _dir_stab_mode == "shadow":
+                        logger.info(
+                            "[sweep:orch] %s: cross-direction cooldown SHADOW "
+                            "would suppress %s — live still published=%s",
+                            symbol, trade_signal["signal"], published,
+                        )
+                if _shifts_24h_val >= get_max_shifts_24h():
+                    gate_results["flip_rate_breaker_ok"] = False
+                    if published and _dir_stab_mode == "live":
+                        _suppress_reason = "flip_rate_breaker"
+                        published = False
+                        logger.info(
+                            "[sweep:orch] %s: SUPPRESSED (flip_rate_breaker) "
+                            "— shifts_24h=%d >= max_shifts_24h=%d",
+                            symbol, _shifts_24h_val, get_max_shifts_24h(),
+                        )
+                    elif _dir_stab_mode == "shadow":
+                        logger.info(
+                            "[sweep:orch] %s: flip-rate breaker SHADOW would "
+                            "suppress (shifts_24h=%d >= %d) — live still "
+                            "published=%s",
+                            symbol, _shifts_24h_val,
+                            get_max_shifts_24h(), published,
+                        )
+
             if published:
                 # ── Record publish timestamp (wall-clock cooldown) ──────
                 self._last_qualified_signal[(symbol, trade_signal["signal"])] = time.time()
+                # ── W-X3: record the published DIRECTION (not just the
+                # per-direction slot) so the cross-direction cooldown can
+                # hold the book one way after a confirmed flip.
+                self._last_publish_direction[symbol] = (
+                    trade_signal["signal"], time.time()
+                )
                 logger.info(
                     f"[sweep:orch] {symbol}: PUBLISHED {trade_signal['signal']} "
                     f"(gate_pass={_gates_pass}; cooldown={SIGNAL_COOLDOWN_MINUTES}min)"

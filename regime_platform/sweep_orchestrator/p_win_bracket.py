@@ -295,6 +295,9 @@ def apply_bracket_to_ev(
     p_resolve: float | None,
     engine,
     min_rr: float | None = None,
+    tp_dist_price: float | None = None,
+    sl_dist_price: float | None = None,
+    cost_price: float | None = None,
 ) -> bool:
     """R2: substitute directional p_win with p_win_bracket on an EVFullResult.
 
@@ -302,16 +305,48 @@ def apply_bracket_to_ev(
     3-outcome formula (expire is not a loss). Mutates ``ev_result`` in place.
     Returns True when applied; False when ``p_win_bracket`` is unscored
     (fail-open — leave directional EV untouched).
+
+    W-C1 (2026-10-19, weaknesses evaluation P0-1): when ``tp_dist_price`` /
+    ``sl_dist_price`` are supplied — the SHIPPED bracket's actual TP/SL
+    distances from entry, in price units per 1 position unit — the payoff
+    legs are rebuilt from THOSE distances (profit = tp_dist, stake =
+    sl_dist) instead of the brick geometry ``compute_ev`` was originally
+    fed, and ``ev_result.profit``/``stake`` are updated to match. The EV
+    gate (and the ``rr >= min_rr`` test inside ``allowed``) then prices the
+    bracket that actually ships, not a fictional brick bracket. The brick
+    legs remain the explicit fallback when shipped geometry is not passed
+    (backward compatibility for pre-W-C1 callers and the brick-fallback
+    path).
+
+    W-C4 (2026-10-19, cost-aware EV): ``cost_price`` is subtracted once per
+    trade. Default ``None`` reads the result's own stamped
+    ``EVFullResult.cost_price`` (0.0 for pre-W-C4 results), so a cost priced
+    into ``compute_ev`` survives the bracket substitution.
     """
     if p_win_bracket is None:
         return False
     p_exp = expire_prob(p_resolve)
+    have_shipped = (
+        tp_dist_price is not None
+        and sl_dist_price is not None
+        and float(tp_dist_price) > 0
+        and float(sl_dist_price) > 0
+    )
+    if have_shipped:
+        profit = float(tp_dist_price)
+        stake = float(sl_dist_price)
+    else:
+        profit = ev_result.profit
+        stake = ev_result.stake
+    if cost_price is None:
+        cost_price = float(getattr(ev_result, "cost_price", 0.0) or 0.0)
     recomputed = engine.recompute_ev_fields(
         float(p_win_bracket),
-        ev_result.profit,
-        ev_result.stake,
+        profit,
+        stake,
         min_rr=min_rr,
         p_expire=p_exp,
+        cost_price=cost_price,
     )
     ev_result.p_win = round(float(p_win_bracket), 4)
     ev_result.ev = recomputed["ev"]
@@ -320,4 +355,10 @@ def apply_bracket_to_ev(
     ev_result.allowed = recomputed["allowed"]
     ev_result.aggression = recomputed["aggression"]
     ev_result.ev_scale = recomputed["ev_scale"]
+    if have_shipped:
+        # Keep the result's own payoff legs coherent with the shipped
+        # bracket so downstream consumers (payload rr/ev_per_dollar,
+        # enforcement terminal path, dedup) see the real geometry.
+        ev_result.profit = round(profit, 4)
+        ev_result.stake = round(stake, 4)
     return True

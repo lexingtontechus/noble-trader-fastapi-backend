@@ -1427,3 +1427,74 @@ clef_flash_mode: shadow
 # falsified by real measurement even before the migration). Bounding an
 # unjustified decision with a timer was not a substitute for removing the
 # decision -- see heavy_sweep.py's module docstring for the full history.
+
+# ── Task 40-b corrective gates (2026-10-19 weaknesses evaluation) ────────────
+# User mandate: NO MORE SHADOW MODE — every corrective mechanism below ships
+# LIVE with a measured threshold (kairos-review-worklogs/
+# 20261019_KAIROS_WEAKNESSES_EVALUATION.md). Each block keeps the
+# off|shadow|live vocabulary of its sibling flags so an operator can demote
+# one to shadow/off for triage without code changes.
+
+# chop_gate (W-X4, P1): Kaufman efficiency_24h is computed and stamped every
+# light tick (kairos.py::efficiency_ratio) but NO gate consumed it — through
+# the measured 69.1%-consolidating replay window the platform published at
+# conf 0.649-0.793 the whole time. live: efficiency_24h < min_efficiency_24h
+# → suppressed with reason "chop_gate_low_er" (same suppression mechanism as
+# bracket_unscored). Missing ER (cold start, <25 completed bars) fails open
+# with a "chop_gate_skip_no_er" stamp. 0.30 measured: below ~0.3 the 24h
+# close path is dominated by back-and-forth motion — the 4-state HMM's
+# forced bull/bear direction is rank noise there.
+chop_gate:
+  mode: "live"
+  min_efficiency_24h: 0.30
+
+# direction_stability (W-X3, P1): the per-(symbol, direction) cooldown let
+# the OPPOSITE direction publish INSTANTLY after a confirmed flip (flip-flop
+# at the debouncer's 3h granularity), and shifts_24h was stamped into every
+# payload but never gated. live: (a) opposite direction within
+# cross_direction_cooldown_h of the last publish → suppressed with reason
+# "cross_direction_cooldown"; (b) shifts_24h >= max_shifts_24h → suppressed
+# with reason "flip_rate_breaker". 6h / 6 shifts measured: the debounce
+# confirms a flip in ~3h, so 6h holds the book one full confirmation cycle;
+# 6+ shifts in 24h is the measured whipsaw signature (raw flip rate 71.3%
+# in the consolidating window).
+direction_stability:
+  mode: "live"
+  cross_direction_cooldown_h: 6
+  max_shifts_24h: 6
+
+# barrier_floor (W-G2/G4, P2→LIVE): tight-SL bands are SL-farms by physics —
+# computed with the repo's OWN barrier.barrier_null (σ=1 ATR/bar, T=48):
+# XAUUSD band centre 4.94/1.00 → π_L=0.831; BTCUSD 8.07/1.77 → π_L=0.791;
+# every configured band-centre has EV ≤ −cost under the driftless null.
+# NOTHING physics-based constrained the published bracket before this.
+# live: after a pick passes the band checks (tiered_atr), its analytic
+# P(SL first) is computed; over cap → minimally adjusted WITHIN the band
+# (widen sl_atr to band max, then narrow tp_atr) or rejected with reason
+# "barrier_floor_sl_cap" (the existing no-pick fallback path handles
+# absence). π values are ALWAYS stamped on the pick (pi_tp/pi_sl/pi_e).
+# pi_e_cap is stamp+warn ONLY while settlement_expiry is globally fixed at
+# 48h — enforcing it would starve the wide equity bands (US500 π_E=0.70)
+# entirely. 0.62 measured: the FOREX band centre 4.5/2.75 sits at π_L=0.614
+# — the last geometry family that clears a 0.62 cap without starvation.
+barrier_floor:
+  mode: "live"
+  pi_sl_cap: 0.62
+  pi_e_cap: 0.25    # stamp+warn only (expiry globally fixed 48h) — starvation risk documented
+
+# ev_costs (W-C4, HIGH): live EV charged expiry as zero PnL and included NO
+# spread/slippage/entry-lag cost anywhere (only the shadow PBM charged
+# cost_atr). live: compute_ev + apply_bracket_to_ev subtract the per-class
+# round-trip cost (cost_atr × current ATR, price units) ONCE per trade —
+# the same net=pnl−cost convention barrier.py's EV uses. off: cost-blind
+# (historical). Values are retail round-trip ESTIMATES in ATR units
+# (spread + slippage + entry-lag allowance); "metals" aliases the canonical
+# "metal" asset-class key; unknown classes fall back to 0.05.
+ev_costs:
+  mode: "live"
+  cost_atr_by_class:
+    forex: 0.04
+    metals: 0.06
+    crypto: 0.10
+    equity: 0.06
+    index: 0.05

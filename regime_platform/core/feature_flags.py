@@ -434,6 +434,54 @@ _DEFAULTS: dict[str, Any] = {
         "boost_scale": 0.3,
         "penalty_scale": 0.5,
     },
+    # ── Task 40-b corrective gates (2026-10-19 weaknesses evaluation) ──────
+    # User mandate: NO MORE SHADOW MODE — every corrective mechanism below
+    # ships LIVE with a measured threshold. Each block still honours the
+    # off|shadow|live mode vocabulary of its sibling flags so an operator
+    # can demote one to shadow/off for triage without new code.
+    #
+    # W-X4 chop gate: Kaufman efficiency_24h is computed and stamped every
+    # light tick (kairos.py) but nothing consumed it — in the measured
+    # 69.1%-consolidating window the platform published at conf 0.649-0.793
+    # the whole time. 0.30 floor: ER below ~0.3 is a two-sided market where
+    # the 4-state HMM's forced bull/bear direction is rank noise.
+    "chop_gate": {
+        "mode": "live",
+        "min_efficiency_24h": 0.30,
+    },
+    # W-X3 direction stability: the per-direction cooldown let the OPPOSITE
+    # direction publish instantly after a confirmed flip (flip-flop at 3h
+    # granularity), and shifts_24h was stamped but never gated.
+    "direction_stability": {
+        "mode": "live",
+        "cross_direction_cooldown_h": 6,
+        "max_shifts_24h": 6,
+    },
+    # W-G2/G4 barrier floor: tight-SL bands are SL-farms by physics (repo's
+    # own barrier_null, sigma=1 ATR/bar, T=48: XAUUSD 4.94/1.00 -> pi_L
+    # 0.831; BTCUSD 8.07/1.77 -> pi_L 0.791). pi_e_cap is stamp+warn only
+    # while expiry is globally fixed at 48h — enforcing it would starve the
+    # wide equity bands (US500 pi_E=0.70) entirely.
+    "barrier_floor": {
+        "mode": "live",
+        "pi_sl_cap": 0.62,
+        "pi_e_cap": 0.25,
+    },
+    # W-C4 cost-aware EV: live EV charged expiry as zero PnL and included NO
+    # spread/slippage anywhere (only the shadow PBM charged cost_atr).
+    # Round-trip (spread + slippage + entry-lag allowance) in ATR units,
+    # multiplied by the current ATR at the compute_ev call sites. "metals"
+    # is accepted as an alias of the canonical "metal" asset-class key.
+    "ev_costs": {
+        "mode": "live",
+        "cost_atr_by_class": {
+            "forex": 0.04,
+            "metals": 0.06,
+            "crypto": 0.10,
+            "equity": 0.06,
+            "index": 0.05,
+        },
+    },
 }
 
 _cache: dict[str, Any] | None = None
@@ -1205,6 +1253,128 @@ def get_min_p_win_bracket_for_asset_class(asset_class: str | None) -> float:
         except (TypeError, ValueError):
             pass
     return get_min_p_win_bracket()
+
+
+# ── Task 40-b corrective gates (2026-10-19 weaknesses evaluation) ─────────
+# Four LIVE flag blocks: chop_gate (W-X4), direction_stability (W-X3),
+# barrier_floor (W-G2/G4), ev_costs (W-C4). All ship live per the user's
+# no-more-shadow mandate; each getter keeps the off|shadow|live vocabulary.
+
+
+def _block(key: str) -> dict[str, Any]:
+    """Merged view of a nested flag block (YAML wins per-key over _DEFAULTS)."""
+    cfg = dict(_DEFAULTS.get(key, {}))
+    raw = _load().get(key)
+    if isinstance(raw, dict):
+        cfg.update({k: v for k, v in raw.items() if v is not None})
+    return cfg
+
+
+def get_chop_gate_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — W-X4 chop gate on efficiency_24h.
+
+    live: a light-path signal whose trailing-24h Kaufman efficiency ratio is
+    below ``min_efficiency_24h`` is suppressed with reason
+    ``chop_gate_low_er``. shadow: compute + log only. off: no gate.
+    """
+    return str(_block("chop_gate").get("mode", "live")).lower()
+
+
+def get_chop_gate_min_efficiency() -> float:
+    """Minimum trailing-24h Kaufman ER required to publish (default 0.30)."""
+    try:
+        return float(_block("chop_gate").get("min_efficiency_24h", 0.30))
+    except (TypeError, ValueError):
+        return 0.30
+
+
+def get_direction_stability_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — W-X3 direction-stability gates.
+
+    live: (a) the OPPOSITE direction cannot publish within
+    ``cross_direction_cooldown_h`` hours of the last publish (suppress
+    reason ``cross_direction_cooldown``); (b) ``shifts_24h`` at or above
+    ``max_shifts_24h`` trips the flip-rate breaker (suppress reason
+    ``flip_rate_breaker``).
+    """
+    return str(_block("direction_stability").get("mode", "live")).lower()
+
+
+def get_cross_direction_cooldown_h() -> float:
+    """Hours the book must keep one direction before flipping (default 6)."""
+    try:
+        return float(_block("direction_stability").get("cross_direction_cooldown_h", 6))
+    except (TypeError, ValueError):
+        return 6.0
+
+
+def get_max_shifts_24h() -> int:
+    """Max regime shifts in the trailing 24h before the breaker trips (6)."""
+    try:
+        return int(_block("direction_stability").get("max_shifts_24h", 6))
+    except (TypeError, ValueError):
+        return 6
+
+
+def get_barrier_floor_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — W-G2/G4 barrier-physics floor.
+
+    live: a geometry pick whose analytic P(SL first) exceeds ``pi_sl_cap``
+    is adjusted within the symbol's band or rejected (reason
+    ``barrier_floor_sl_cap``). Stamps pi_tp/pi_sl/pi_e either way.
+    """
+    return str(_block("barrier_floor").get("mode", "live")).lower()
+
+
+def get_barrier_floor_pi_sl_cap() -> float:
+    """Cap on analytic P(SL first) for a published bracket (default 0.62)."""
+    try:
+        return float(_block("barrier_floor").get("pi_sl_cap", 0.62))
+    except (TypeError, ValueError):
+        return 0.62
+
+
+def get_barrier_floor_pi_e_cap() -> float:
+    """Warn-only cap on P(expired) (default 0.25) — stamp+warn while the
+    deadline is globally fixed at 48h; enforcing it would starve the wide
+    equity bands (US500 pi_E = 0.70) outright."""
+    try:
+        return float(_block("barrier_floor").get("pi_e_cap", 0.25))
+    except (TypeError, ValueError):
+        return 0.25
+
+
+def get_ev_cost_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — W-C4 cost-aware EV.
+
+    live: compute_ev / apply_bracket_to_ev subtract the per-class round-trip
+    cost (cost_atr x current ATR) once per trade. shadow: log the would-be
+    cost only. off: cost-blind (historical).
+    """
+    return str(_block("ev_costs").get("mode", "live")).lower()
+
+
+def get_ev_cost_atr_for_asset_class(asset_class: str | None) -> float:
+    """Round-trip cost in ATR units for an asset class (default 0.05).
+
+    Lookup normalizes the class key via ``tiered_atr.asset_class_key`` and
+    accepts the ``metals`` alias for the canonical ``metal`` key; unknown
+    classes fall back to the flat default.
+    """
+    try:
+        from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
+        key = asset_class_key(asset_class)
+    except Exception:
+        key = str(asset_class or "default").strip().lower() or "default"
+    table = _block("ev_costs").get("cost_atr_by_class", {})
+    if isinstance(table, dict):
+        for k in (key, {"metals": "metal", "metal": "metals"}.get(key, key)):
+            if k in table:
+                try:
+                    return float(table[k])
+                except (TypeError, ValueError):
+                    break
+    return 0.05
 
 
 def get_rank_score_calibration_mode() -> str:
