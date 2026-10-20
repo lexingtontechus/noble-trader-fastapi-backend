@@ -1553,6 +1553,14 @@ class HeavySweepMixin:
                         "[sweep:heavy] %s: PBM read failed: %s", symbol, _pbm_exc,
                     )
 
+            # W-C4 (2026-10-19): cost_price — same per-class round-trip cost
+            # (spread + slippage + entry-lag allowance) × ATR the light path
+            # charges (orchestrator._ev_cost_price is the single shared
+            # helper), so heavy and light price identically. 0.0 when
+            # ev_costs.mode is off/shadow → byte-identical historical EV.
+            from regime_platform.sweep_orchestrator.orchestrator import (
+                _ev_cost_price as _heavy_ev_cost_price,
+            )
             with self._ev_engine.temp_weights(_regime_weight_override):
                 ev_result = self._ev_engine.compute_ev(
                     trend_probs=_trend_probs,
@@ -1564,6 +1572,7 @@ class HeavySweepMixin:
                     sl_bricks=best.sl_bricks,
                     tp_bricks=best.tp_bricks,
                     n_steps=resolve_markov_n_steps(best.tp_bricks),
+                    cost_price=_heavy_ev_cost_price(sym.get("asset_class"), atr),
                 )
 
             # ── Batch D 4.1: enforce BEFORE gates (parity with light sweep) ──
@@ -1596,11 +1605,22 @@ class HeavySweepMixin:
                         )
                 except Exception:
                     pass
+                # W-C1 (2026-10-19): the shipped bracket's actual TP/SL
+                # distances from entry (post dynamic-ATR override / brick
+                # fallback) — the payoff legs the EV gate must price.
+                from regime_platform.sweep_orchestrator.orchestrator import (
+                    _shipped_bracket_distances as _heavy_shipped_distances,
+                )
+                _shipped_tp_dist, _shipped_sl_dist = _heavy_shipped_distances(
+                    trade_signal
+                )
                 _bracket_applied_to_ev = apply_bracket_to_ev(
                     ev_result,
                     p_win_bracket=_ev_p_win_src,
                     p_resolve=_ev_p_resolve_src,
                     engine=self._ev_engine,
+                    tp_dist_price=_shipped_tp_dist,
+                    sl_dist_price=_shipped_sl_dist,
                 )
                 if _bracket_applied_to_ev:
                     effective_kelly_pre = result.kelly_f * ev_result.ev_scale
@@ -1675,12 +1695,15 @@ class HeavySweepMixin:
                             # contract the light path and apply_bracket_to_ev
                             # use — the previous call dropped the term and the
                             # heavy EV silently became a binary price.
+                            # W-C4 (2026-10-19): cost carried forward from the
+                            # compute_ev stamp so the reprice stays cost-aware.
                             _recomputed = self._ev_engine.recompute_ev_fields(
                                 ev_result.p_win, ev_result.profit, ev_result.stake,
                                 p_expire=(
                                     max(0.0, min(1.0, 1.0 - float(_p_resolve)))
                                     if _p_resolve is not None else 0.0
                                 ),
+                                cost_price=getattr(ev_result, "cost_price", 0.0) or 0.0,
                             )
                             ev_result.ev = _recomputed["ev"]
                             ev_result.ev_per_dollar = _recomputed["ev_per_dollar"]
@@ -1719,9 +1742,19 @@ class HeavySweepMixin:
                     )
 
             # ── 9. Build + push qualified signal ──────────────────────
+            # W-C2 (2026-10-19): the qualification function now receives the
+            # bracket evidence + asset class so it can honour the SAME
+            # unscored fail-closed policy, EV floor and per-class p_win
+            # minimums the light path enforces — the daily sweep can no
+            # longer publish what the 15-min path would suppress.
             qualified = self._evaluate_heavy_qualification(
                 ev_result, trade_signal, result.regime_conf, effective_kelly_pre,
                 p_timesfm,
+                p_win_bracket=_p_win_bracket,
+                p_resolve=_p_resolve,
+                bracket_applied_to_ev=_bracket_applied_to_ev,
+                asset_class=sym.get("asset_class"),
+                symbol=symbol,
             )
             result.qualified = qualified
 
@@ -2362,6 +2395,12 @@ class HeavySweepMixin:
         regime_conf: float,
         kelly_f: float,
         p_timesfm: Optional[float],
+        *,
+        p_win_bracket: Optional[float] = None,
+        p_resolve: Optional[float] = None,
+        bracket_applied_to_ev: bool = False,
+        asset_class: Optional[str] = None,
+        symbol: Optional[str] = None,
     ) -> bool:
         """Evaluate whether a heavy-sweep signal is qualified for push.
 
@@ -2370,9 +2409,32 @@ class HeavySweepMixin:
         signals. We push only if:
           • signal is buy/sell (not neutral)
           • ev_result.allowed is True
-          • p_win >= MIN_P_WIN
+          • p_win >= MIN_P_WIN (or the per-class bracket floor — W-C2)
           • regime_conf >= MIN_REGIME_CONF
           • kelly_f >= MIN_KELLY
+
+        W-C2 (2026-10-19, weaknesses evaluation P0-2 — heavy fails open on
+        unscored brackets): the heavy path used to score the DIRECTIONAL
+        p_win (≈0.55+) against the global ``min_p_win_bracket`` 0.20 when
+        the bucket was unscored (``apply_bracket_to_ev`` returns False →
+        EV stays the directional blend) — trivially passing, publishing
+        exactly what the light path suppresses. Three gates added, all
+        mirroring the light path's live equivalents:
+
+          1. Unscored bracket → honour the SAME
+             ``p_win_bracket_unscored_policy`` flag the light path reads
+             (fail_closed ⇒ NOT qualified; reason
+             ``bracket_unscored_fail_closed``). fail_open keeps the legacy
+             research behaviour.
+          2. EV floor: post-substitution EV below ``ev_hard_floor``
+             (the light path's live gate) ⇒ NOT qualified.
+          3. Per-class p_win minimums: ``min_p_win_bracket_by_asset_class``
+             instead of the global 0.20.
+
+        The new keyword arguments all default to the pre-W-C2 behaviour,
+        so existing callers (and tests) that do not pass them are
+        unchanged — except under the shipped fail_closed policy, which is
+        the deliberate fix.
         """
         from regime_platform.sweep_orchestrator.orchestrator import (
             MIN_KELLY,
@@ -2380,21 +2442,46 @@ class HeavySweepMixin:
             MIN_P_WIN,
         )
         from regime_platform.core.feature_flags import (
-            get_min_p_win_bracket,
+            get_ev_hard_floor,
+            get_min_p_win_bracket_for_asset_class,
+            get_p_win_bracket_unscored_policy,
             get_p_win_in_ev_mode,
         )
         if trade_signal["signal"] in ("neutral", "unknown"):
             return False
+        # W-C2 gate 1: unscored bracket → same fail-closed policy as light.
+        if get_p_win_in_ev_mode() == "live" and p_win_bracket is None:
+            if get_p_win_bracket_unscored_policy() == "fail_closed":
+                logger.info(
+                    "[sweep:heavy] %s: NOT QUALIFIED (bracket_unscored_fail_"
+                    "closed) — directional p_win=%.4f/EV=%.4f cannot stand in "
+                    "for a scored bracket probability on the heavy book",
+                    symbol or trade_signal.get("symbol") or "?",
+                    ev_result.p_win, ev_result.ev,
+                )
+                return False
+            # fail_open (research only): legacy behaviour below.
         if not ev_result.allowed:
             return False
         # When p_win_in_ev_mode=live, ev_result.p_win is the bracket probability
-        # (renamed p_win_dir). Score it against min_p_win_bracket, not MIN_P_WIN.
+        # (renamed p_win_dir). Score it against the PER-CLASS floor (W-C2),
+        # not the global 0.20 the light path retired.
         if get_p_win_in_ev_mode() == "live":
-            if ev_result.p_win < get_min_p_win_bracket():
+            if ev_result.p_win < get_min_p_win_bracket_for_asset_class(asset_class):
                 return False
         else:
             if ev_result.p_win < MIN_P_WIN:
                 return False
+        # W-C2 gate 2: the light path's live EV hard floor — an honestly
+        # priced -EV trade must never publish from the daily sweep either.
+        if ev_result.ev < get_ev_hard_floor():
+            logger.info(
+                "[sweep:heavy] %s: NOT QUALIFIED (heavy_ev_floor) — ev=%.4f < "
+                "ev_hard_floor=%.4f (bracket_applied=%s)",
+                symbol or trade_signal.get("symbol") or "?",
+                ev_result.ev, get_ev_hard_floor(), bracket_applied_to_ev,
+            )
+            return False
         if regime_conf < MIN_REGIME_CONF:
             return False
         if kelly_f < MIN_KELLY:

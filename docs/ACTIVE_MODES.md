@@ -5,14 +5,16 @@
 > `config/feature_flags.yaml` (hot-reload on mtime). Do not duplicate
 > incident essays here — link worklogs instead.
 
-Last verified against `config/feature_flags.yaml` + code: 2026-09-22.
+Last verified against `config/feature_flags.yaml` + code: 2026-10-20 (HEAD of the
+v8.3.0 definitive-remediation commits; see
+`docs/scopes/20261020_REGIME_EDGE_PROOF_ENGINE_AND_LIVE_FIXES.md`).
 
 ## Cadence (live)
 
 | Job | When |
 |---|---|
 | Light sweep | **every 15 min** (`*/15`, two symbol batches per slot) |
-| Heavy sweep | Sunday 20:00 UTC |
+| Heavy sweep | **daily 18:06 UTC** after migration `215_dst_safe_heavy_sweep_cron.sql` (**apply to prod before 2026-11-01**; rows still say 17:06 until then — the `'0 20 * * *'` older docs quote is stale) |
 | EOD resolve + reachability rebuild | daily 01:17 UTC |
 | Intraday calibration correction | every 4h |
 
@@ -30,7 +32,7 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `settlement_contract_mode` | **live** | EOD resolver uses `settlement_contract.py` for outcome+PnL |
 | `settlement_same_bar_policy` | **tp_first** | Historical same-bar TP priority (flip after A/B replay) |
 | `heavy_sweep_deadline_aware_scoring_mode` | **live** | Grid Sharpe zeros trades held > 48h |
-| `dynamic_atr_mode` | **shadow** | Tiered ATR risk-capped pick logged; live pick unchanged |
+| `dynamic_atr_mode` | **live** | Tiered ATR risk-capped pick (0.35 cap) feeds the live bracket; `dynamic_atr_light_mode: live` (2026-10-12) puts the tiered pick on the light path too; `dynamic_atr_consistency_mode: live` (tol 0.20) |
 | `timesfm_gate_mode` | **soft** | Low TimesFM confidence shrinks blend weight, does not veto |
 | `trend_probs_gate_mode` | **live** (2026-09-22) | Gated p_regime feeds EV (Brier beat raw 14/14) |
 | `regime_label_debounce_mode` | **live** (2026-09-22) | 3-tick debounced label drives direction; reduces flip-flop |
@@ -42,14 +44,18 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 | `calibration_bias_min_episodes` | 2 | Min independent episodes for bias verdict |
 | `NOBLE_TRADER_SIM_CAPTURE_P_WIN_RAW` | **True** (settings) | Raw p_win always captured when present |
 | `NOBLE_TRADER_CALIBRATION_RAW_REQUIRED` | **True** (settings) | No enforced fallback for Brier/raw-bias |
+| `p_win_in_ev_mode` | **live** | EV/Kelly consumes `p_win_bracket` (3-outcome, expire not a loss); `p_win_ok` keeps gating `p_win_raw`. Was shadow 2026-09-22 R2, flipped live after the `nt_live_expectancy_daily` bar |
+| `chop_gate` | **live** (2026-10-20, W-X4) | `efficiency_24h < 0.30` (sweep's own 1h OHLCV) ⇒ suppress with reason `chop_gate_low_er`; fail-open with `skip_no_er` stamp on cold start. The neutral state the HMM vocabulary lacks |
+| `direction_stability` | **live** (2026-10-20, W-X3) | opposite direction within 6h of last publish ⇒ `cross_direction_cooldown`; `shifts_24h ≥ 6` ⇒ `flip_rate_breaker` |
+| `barrier_floor` | **live** (2026-10-20, W-G2/G4) | first-passage π stamped on EVERY pick (`pi_tp`/`pi_sl`/`pi_e`); π_SL > 0.62 ⇒ minimal in-band adjustment else reject `barrier_floor_sl_cap`; π_E > 0.25 warn-only. XAUUSD/BTCUSD band centres reject outright (SL-farms) ⇒ brick fallback |
+| `ev_costs` | **live** (2026-10-20, W-C4) | per-class round-trip cost (forex 0.04 / metals 0.06 / crypto 0.10 / equity 0.06 / index 0.05 × ATR) subtracted ONCE per trade in EV, stamp `cost_price` survives all reprice paths |
 
 ## Shadow (compute + persist; no live gate change)
 
 | Flag | Effect |
 |---|---|
-| `p_win_bracket_mode` | Persists `p_win_bracket` + would-reject log; gates still use directional `p_win`. Gate thr `min_p_win_bracket: 0.20` (2026-09-22). Flip **after** `p_win_in_ev_mode: live`. |
-| `p_win_bracket_unscored_policy` | **fail_closed** (2026-09-24): unscored `p_win_bracket` ⇒ `qualified=false`, `suppress_reason=bracket_unscored` on `nt_signal_sim` (G2). Research capture keeps the row. `fail_open` is research-only legacy. |
-| `p_win_in_ev_mode` | **shadow** (2026-09-22 R2) — EV/Kelly still directional `p_win`; logs would-be bracket EV. `live` substitutes `p_win_bracket` (3-outcome, expire not a loss); `p_win_ok` keeps gating `p_win_raw`. Flip after `nt_live_expectancy_daily` bar (see `worklog/20260922_R2_ADDENDUM_LIVE_DIST_AND_NEXT.md` + `20260923_L1_STATUS_AND_NT_ROADMAP.md`). |
+| `p_win_bracket_mode` | Persists `p_win_bracket` + would-reject log. Gate thr `min_p_win_bracket: 0.20` (2026-09-22); heavy qualification now uses per-class `min_p_win_bracket_by_asset_class` floors (W-C2, 2026-10-20). `p_win_in_ev_mode` is live (see above) |
+| `p_win_bracket_unscored_policy` | **fail_closed** (2026-09-24 light; 2026-10-20 heavy too, W-C2): unscored `p_win_bracket` ⇒ `qualified=false`, `suppress_reason=bracket_unscored_fail_closed` on BOTH paths; heavy qualification also honours the EV hard floor + per-class `min_p_win_bracket_by_asset_class` floors instead of the global 0.20. Research capture keeps the row |
 | `heavy_sweep_reachability_mode` | Reachability-aware pick comparison only |
 | `heavy_sweep_atr_anchored_bricks_mode` | Extra ATR brick candidates in grid (shadow scoring) |
 | `atr_anchored_evidence_mode` | **live** (2026-09-25 hybrid) — ATR candidates enter deadline pool when evidence rule promotes (pick changed + long-lag/Sharpe). Full ATR grid still shadow (P0.4). |
@@ -82,4 +88,5 @@ change `sl_bricks`/`tp_bricks` (those stay `brick_params.yaml`). Use
 
 - Pipeline: `docs/SIGNAL_PIPELINE.md`
 - Quant audit: `docs/QUANT_AUDIT_SIGNAL_CALIBRATION_REACHABILITY_PNL.md`
+- Definitive remediation (regime-edge proof engine + the 7 live fixes above): `docs/scopes/20261020_REGIME_EDGE_PROOF_ENGINE_AND_LIVE_FIXES.md`
 - Program worklog: `worklog/20260916_STREAMLINE_AND_CALIBRATION_REACHABILITY_SCOPE.md`

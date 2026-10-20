@@ -104,8 +104,10 @@ def test_apply_bracket_to_ev_is_terminal_3_outcome():
         min_ev = 0.0
         min_rr = 0.0
 
+        # W-C4 (2026-10-19): mirrors the production signature's new optional
+        # cost_price kwarg (default None = historical cost-blind recompute).
         def recompute_ev_fields(self, p_win, profit, stake,
-                                min_rr=None, p_expire=0.0):
+                                min_rr=None, p_expire=0.0, cost_price=None):
             p_exp = max(0.0, min(1.0, float(p_expire or 0.0)))
             loss = max(0.0, 1.0 - float(p_win) - p_exp)
             ev = p_win * profit - loss * stake

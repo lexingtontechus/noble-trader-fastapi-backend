@@ -315,6 +315,15 @@ class DynamicAtrPick:
     exp_h2: float
     expiry: float           # share of signals expired at 48 bars
     n: int
+    # ── W-G2/G4 barrier-floor stamps (2026-10-19, barrier_floor.py) ──────
+    # Analytic null probabilities for THIS geometry (P(TP first), P(SL
+    # first), P(expired) under barrier.barrier_null, σ=1 ATR/bar, T=48).
+    # Stamped whenever the barrier floor runs (live or shadow); None when
+    # it hasn't (pre-40b picks, off mode). Persisted through to_json so the
+    # param-store pick carries its own physics audit trail.
+    pi_tp: float | None = None
+    pi_sl: float | None = None
+    pi_e: float | None = None
 
     def to_bricks(self, atr: float, sl_bricks: int) -> tuple[float, int, int]:
         """Renko display bricks (integer counts). Lossy vs exact ATR."""
@@ -341,8 +350,12 @@ class DynamicAtrPick:
         return e + tp_d, e - sl_d
 
     def as_log(self) -> str:
-        return (f"tp={self.tp_atr:g}ATR sl={self.sl_atr:g}ATR exp={self.exp_atr:+.3f} "
+        base = (f"tp={self.tp_atr:g}ATR sl={self.sl_atr:g}ATR exp={self.exp_atr:+.3f} "
                 f"(h1 {self.exp_h1:+.3f} h2 {self.exp_h2:+.3f}) expiry={self.expiry:.0%} n={self.n}")
+        if self.pi_sl is not None:
+            base += (f" pi_tp={self.pi_tp:.3f} pi_sl={self.pi_sl:.3f} "
+                     f"pi_e={self.pi_e:.3f}")
+        return base
 
     def to_json(self) -> dict[str, Any]:
         """The pick as the param_store tier value (JSON object).
@@ -350,8 +363,10 @@ class DynamicAtrPick:
         2026-10-09 (worklog 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the
         ``dynamic_atr`` tier carries the USABLE geometry, not a bucket
         label — so both sweeps can build a bracket from one stored value.
+        2026-10-19 (W-G2/G4): the barrier-floor π stamps ride along when
+        present (``from_json`` tolerates their absence — pre-40b rows).
         """
-        return {
+        out = {
             "tp_atr": float(self.tp_atr),
             "sl_atr": float(self.sl_atr),
             "exp_atr": float(self.exp_atr),
@@ -360,6 +375,11 @@ class DynamicAtrPick:
             "expiry": float(self.expiry),
             "n": int(self.n),
         }
+        if self.pi_tp is not None and self.pi_sl is not None and self.pi_e is not None:
+            out["pi_tp"] = float(self.pi_tp)
+            out["pi_sl"] = float(self.pi_sl)
+            out["pi_e"] = float(self.pi_e)
+        return out
 
     @classmethod
     def from_json(cls, d: dict[str, Any] | None) -> "DynamicAtrPick | None":
@@ -375,6 +395,9 @@ class DynamicAtrPick:
                 exp_h2=float(d.get("exp_h2", 0.0)),
                 expiry=float(d.get("expiry", 0.0)),
                 n=int(d.get("n", 0) or 0),
+                pi_tp=float(d["pi_tp"]) if d.get("pi_tp") is not None else None,
+                pi_sl=float(d["pi_sl"]) if d.get("pi_sl") is not None else None,
+                pi_e=float(d["pi_e"]) if d.get("pi_e") is not None else None,
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -860,6 +883,22 @@ async def dynamic_atr_pick(
     if hit and time.time() - hit[0] < _PICK_TTL_S and use_store:
         return hit[1]
 
+    # ── W-G2/G4 (2026-10-19): the barrier-physics floor — LAZY import (a
+    # module-level import would close the cycle tiered_atr → barrier_floor
+    # → barrier → tiered_atr; same discipline as the eod_resolver/posterior
+    # pair). Applied to every pick this function hands back: the store hit
+    # below, the walked pick at the end, and the band-centre fallbacks in
+    # between — so nothing ships with π_SL over the cap (stamps π either
+    # way; live mode enforces, see barrier_floor.py).
+    def _floored(p):
+        try:
+            from regime_platform.sweep_orchestrator.barrier_floor import (
+                apply_barrier_floor as _apply_barrier_floor,
+            )
+            return _apply_barrier_floor(p, cfg, symbol=scope)
+        except Exception:
+            return p
+
     # Single source of truth (2026-10-09, worklog
     # 20261009_ATR_GEOMETRY_SINGLE_SOURCE.md): the optimizer refreshes this
     # store every 15 min, so a fresh persisted pick is authoritative and we
@@ -868,12 +907,22 @@ async def dynamic_atr_pick(
     if symbol and use_store:
         _stored = read_pick_from_store(symbol, max_age_hours=_PICK_TTL_S / 3600.0)
         if _stored is not None and _pick_in_band(_stored, cfg):
+            # W-G2/G4: the read-side clamp — a pick that passes the band
+            # checks can still be an SL-farm by physics (π_SL over cap).
+            # Live mode adjusts-within-band or rejects (None → miss, fall
+            # through and recompute — never ship as-is); π stamps always.
+            _floored_stored = _floored(_stored)
+            if _floored_stored is not None:
+                logger.info(
+                    "[dynamic:atr] %s store hit — %s (no walk)", symbol, _floored_stored.as_log(),
+                )
+                _PICK_CACHE[grid_fp] = (time.time(), _floored_stored)
+                return _floored_stored
             logger.info(
-                "[dynamic:atr] %s store hit — %s (no walk)", symbol, _stored.as_log(),
+                "[dynamic:atr] %s store hit REJECTED by barrier floor "
+                "(barrier_floor_sl_cap) — recomputing", symbol,
             )
-            _PICK_CACHE[grid_fp] = (time.time(), _stored)
-            return _stored
-        if _stored is not None:
+        elif _stored is not None:
             # G1 at the store boundary (2026-10-13): a pick fresh by AGE can still
             # carry a bracket from a PREVIOUS band. Out of band is a miss, not a
             # hit — fall through and recompute (G3), never apply it verbatim.
@@ -931,7 +980,7 @@ async def dynamic_atr_pick(
                 return pick
             # degenerate domain (min_rr prunes everything): band centre,
             # same G2 contract as the grid path
-            _fb = _band_center_pick(cfg) if allow_best_effort else None
+            _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
             _PICK_CACHE[grid_fp] = (time.time(), _fb)
             return _fb
         except Exception as _pbm_geo_exc:
@@ -946,7 +995,7 @@ async def dynamic_atr_pick(
     else:
         members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
     if not members:
-        _fb = _band_center_pick(cfg) if allow_best_effort else None
+        _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
         _PICK_CACHE[grid_fp] = (time.time(), _fb)
         return _fb
     lookback = int(cfg["lookback_days"])
@@ -954,7 +1003,7 @@ async def dynamic_atr_pick(
     since = until - timedelta(days=lookback)
     signals = await _load_class_signals([m["symbol"] for m in members], since, until)
     if len(signals) < int(cfg["min_signals"]):
-        _fb = _band_center_pick(cfg) if allow_best_effort else None
+        _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
         _PICK_CACHE[grid_fp] = (time.time(), _fb)
         return _fb
     bars: dict[str, list[dict]] = {}
@@ -990,7 +1039,7 @@ async def dynamic_atr_pick(
                 "pick not applicable now (band-centre fallback)",
                 scope, _vr_now, vol_min, vol_max,
             )
-            _fb = _band_center_pick(cfg) if allow_best_effort else None
+            _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
             _PICK_CACHE[grid_fp] = (time.time(), _fb)
             return _fb
         logger.info(
@@ -1088,7 +1137,7 @@ async def dynamic_atr_pick(
                         pick.tp_atr, pick.sl_atr, _reason,
                     )
                     if _cmode == "live":
-                        _fb = _band_center_pick(cfg) if allow_best_effort else None
+                        _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
                         _PICK_CACHE[grid_fp] = (time.time(), _fb)
                         return _fb
                 else:
@@ -1134,7 +1183,7 @@ async def dynamic_atr_pick(
                         _wf["is_n"], _wf["oos_n"],
                     )
                     if _wf_mode == "live":
-                        _fb = _band_center_pick(cfg) if allow_best_effort else None
+                        _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
                         _PICK_CACHE[grid_fp] = (time.time(), _fb)
                         return _fb
                 else:
@@ -1148,6 +1197,14 @@ async def dynamic_atr_pick(
                     )
         except Exception as exc:
             logger.debug("[dynamic:atr] %s walk-forward check failed: %s", symbol, exc)
+
+    # ── W-G2/G4 (2026-10-19): barrier floor on the WALKED pick too, before
+    # persist + return — the geometry being published must clear the physics
+    # cap (live adjusts-within-band or rejects; π stamps either way). A
+    # rejection returns None: the existing no-pick fallback path handles
+    # absence (light keeps the brick bracket, heavy keeps its own pick).
+    if pick is not None:
+        pick = _floored(pick)
 
     # Persist the pick (single source of truth) so the light path can read the
     # same geometry the heavy path just chose — no re-derivation. Best-effort.

@@ -128,7 +128,12 @@ async def test_dynamic_atr_pick_returns_band_centre_when_no_members(monkeypatch)
         "forex", cfg=dict(CFG), min_rr=1.5, symbol="EURUSD", use_store=False,
     )
     assert pick is not None, "G2: must not return None"
-    assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0)
+    # W-G2/G4 (2026-10-19): the band centre (4.0, 2.0) is an SL-farm by
+    # physics (π_SL ≈ 0.65 > 0.62 cap) — the barrier floor widens SL to the
+    # band max (4.0, 3.0), so the always-returns contract now hands back the
+    # FLOORED band centre with its π stamps. Still in band, still non-None.
+    assert (pick.tp_atr, pick.sl_atr) == (4.0, 3.0)
+    assert pick.pi_sl is not None and pick.pi_sl <= 0.62
 
 
 @pytest.mark.asyncio
@@ -195,7 +200,13 @@ async def test_whole_grid_below_min_rr_still_resolves(monkeypatch):
         None, cfg=dict(CFG), min_rr=1.5, symbol="XAGUSD", use_store=False,
     )
     assert pick is not None, "a configured band must never resolve to None (G2)"
-    assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0), "must fall back to the band centre"
+    # W-G2/G4 (2026-10-19): the band-centre fallback is barrier-floored —
+    # (4.0, 2.0) has π_SL ≈ 0.65 > 0.62, so SL widens to the band max and
+    # the returned geometry is (4.0, 3.0). In-band, non-None, stamped.
+    assert (pick.tp_atr, pick.sl_atr) == (4.0, 3.0), (
+        "must fall back to the (floored) band centre"
+    )
+    assert pick.pi_sl is not None and pick.pi_sl <= 0.62
 
 
 def test_pick_in_band_rejects_a_previous_bands_bracket():
@@ -258,7 +269,10 @@ async def test_out_of_band_store_hit_is_recomputed_not_applied(monkeypatch):
 
     pick = await t.dynamic_atr_pick(None, cfg=dict(CFG), min_rr=1.5, symbol="XAGUSD")
     assert pick is not None
-    assert (pick.tp_atr, pick.sl_atr) == (4.0, 2.0), (
+    # W-G2/G4 (2026-10-19): recomputed via the barrier-floored band centre —
+    # (4.0, 2.0) is over the π_SL cap, so the floor widens SL to the band
+    # max: (4.0, 3.0), never the stale out-of-band 13/2.
+    assert (pick.tp_atr, pick.sl_atr) == (4.0, 3.0), (
         "must recompute within the current band, not apply the stale 13/2"
     )
 

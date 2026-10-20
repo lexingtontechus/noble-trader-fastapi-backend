@@ -92,6 +92,49 @@ def efficiency_ratio(closes: Sequence[float], n: int = 24) -> float | None:
     return abs(w[-1] - w[0]) / path
 
 
+def chop_gate_decision(
+    efficiency_24h: float | None,
+    *,
+    min_efficiency: float,
+    mode: str = "live",
+) -> tuple[bool, str]:
+    """W-X4 (2026-10-19): the LIVE chop gate on the one number that directly
+    measures "up-and-down quickly" — the trailing-24h Kaufman ER that
+    kairos.py already computes and stamps on every light tick.
+
+    Returns ``(ok, status)``:
+
+      * ``(True, "pass")``          — ER at/above the floor (trending enough).
+      * ``(False, "suppressed_low_er")`` — live mode and ER below the floor:
+        consolidation; the 4-state HMM's forced bull/bear direction is rank
+        noise there (measured: conf 0.649-0.793 through a 69.1%-consolidating
+        window, direction skill −0.04).
+      * ``(True, "skip_no_er")``     — ER missing (cold start, <25 completed
+        bars, capture failure): FAIL-OPEN with a stamp — a missing input must
+        not brick the sweep; the stamp makes the skip observable.
+      * ``(True, "off")``           — gate disabled.
+
+    Pure — the orchestrator reads the stamped efficiency_24h from
+    capture_factors and calls this in the qualification chain; the
+    suppression itself follows the bracket_unscored fail-closed mechanism.
+    """
+    m = str(mode or "off").lower()
+    if m == "off":
+        return True, "off"
+    if efficiency_24h is None:
+        return True, "skip_no_er"
+    try:
+        er = float(efficiency_24h)
+    except (TypeError, ValueError):
+        return True, "skip_no_er"
+    if m == "live" and er < float(min_efficiency):
+        return False, "suppressed_low_er"
+    if m == "shadow" and er < float(min_efficiency):
+        # shadow: computed and reported, never enforced
+        return True, "would_suppress_low_er"
+    return True, "pass"
+
+
 def relative_volume(bars: Sequence[dict[str, Any]], min_samples: int = 3) -> float | None:
     """Last bar's volume ÷ median volume of earlier bars at the same UTC hour."""
     if len(bars) < 2:
