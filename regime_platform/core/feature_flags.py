@@ -931,6 +931,11 @@ def get_dynamic_atr_config(
     ``by_symbol`` and silently resolves against the class/global band — that
     divergence stored out-of-band picks (e.g. BTCUSD tp=13.0 vs its own max
     8.80). A pooled solve widens the EVIDENCE window, never the band.
+
+    2026-10-21 registry-drift correction: the by_class fallback key is
+    resolved symbol-aware (``asset_class_key(asset_class, symbol)``), so a
+    class override for the TRUE class (index/metal) applies to US500/US30USD
+    and XAU*/XAG* even while the registry still carries its catch-all values.
     """
     cfg = dict(_DEFAULTS["dynamic_atr"])
     raw = _load().get("dynamic_atr")
@@ -965,7 +970,7 @@ def get_dynamic_atr_config(
     if asset_class:
         from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
 
-        ov = by_class.get(asset_class_key(asset_class))
+        ov = by_class.get(asset_class_key(asset_class, symbol))
         if isinstance(ov, dict):
             cfg.update({k: v for k, v in ov.items() if v is not None})
     return cfg
@@ -1234,16 +1239,24 @@ def get_p_win_in_ev_mode() -> str:
     )).lower()
 
 
-def get_min_p_win_bracket_for_asset_class(asset_class: str | None) -> float:
+def get_min_p_win_bracket_for_asset_class(
+    asset_class: str | None, symbol: str | None = None
+) -> float:
     """Per-asset-class ``min_p_win_bracket`` threshold (2026-10-04).
 
     Falls back to the global ``min_p_win_bracket`` when the class is not
     found in the per-class map. Used by the ``p_win_ok`` gate when
     ``p_win_in_ev_mode=live``.
+
+    2026-10-21 registry-drift correction: pass ``symbol`` so the TRUE class
+    key resolves (US500/US30USD → index 0.40 — unchanged from their legacy
+    equity value; XAU*/XAG* → metal 0.20 — was the commodity 0.30 catch-
+    all; pin ``min_p_win_bracket_by_asset_class.metal`` in the YAML to keep
+    the old 0.30 bar if that is the calibrated intent).
     """
     try:
         from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
-        key = asset_class_key(asset_class)
+        key = asset_class_key(asset_class, symbol)
     except Exception:
         key = "default"
     overrides = _load().get("min_p_win_bracket_by_asset_class", {})
@@ -1354,16 +1367,24 @@ def get_ev_cost_mode() -> str:
     return str(_block("ev_costs").get("mode", "live")).lower()
 
 
-def get_ev_cost_atr_for_asset_class(asset_class: str | None) -> float:
+def get_ev_cost_atr_for_asset_class(
+    asset_class: str | None, symbol: str | None = None
+) -> float:
     """Round-trip cost in ATR units for an asset class (default 0.05).
 
     Lookup normalizes the class key via ``tiered_atr.asset_class_key`` and
     accepts the ``metals`` alias for the canonical ``metal`` key; unknown
     classes fall back to the flat default.
+
+    2026-10-21 registry-drift correction: pass ``symbol`` so the TRUE class
+    key resolves — US500/US30USD charge index 0.05 (were overcharged the
+    equity 0.06) and XAU*/XAG* charge metal 0.06 (were silently taking the
+    0.05 default fall-through, UNDERcharged). Value-only calls keep the
+    historical resolution for research replays.
     """
     try:
         from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
-        key = asset_class_key(asset_class)
+        key = asset_class_key(asset_class, symbol)
     except Exception:
         key = str(asset_class or "default").strip().lower() or "default"
     table = _block("ev_costs").get("cost_atr_by_class", {})

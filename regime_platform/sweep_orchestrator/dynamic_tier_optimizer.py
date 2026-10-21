@@ -189,7 +189,9 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         # sharing a band (all forex majors share by_symbol.FOREX) share ONE
         # pooled solve, while symbols with distinct bands (the four metals)
         # each get their own — so the class walk still runs once per band.
-        ac = asset_class_key(asset_class)
+        # 2026-10-21 registry-drift correction: symbol-aware — US500/US30USD
+        # fingerprint as their TRUE class (index), AAPL as equity.
+        ac = asset_class_key(asset_class, symbol)
         cfg = get_dynamic_atr_config(asset_class, symbol)
         band_fp = (
             ac,
@@ -203,8 +205,14 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
         if band_fp in pooled_cache:
             return pooled_cache[band_fp]
         try:
+            # 2026-10-21 registry-drift correction: walk the TRUE class pool.
+            # The resolved canonical key self-normalizes through
+            # asset_class_key ("index" → "index"), so the walk's ac and the
+            # symbol-aware peers filter agree — US500/US30USD pool together
+            # as indices and AAPL pools as equity, even while the registry
+            # still carries its "stocks" catch-all.
             pk = await dynamic_atr_pick(
-                asset_class,
+                ac,
                 cfg=cfg,
                 min_rr=get_min_rr(),
                 symbol=None,  # pooled: walk the whole class (evidence)
@@ -271,7 +279,7 @@ async def _refresh_dynamic_atr(peers: list[dict[str, Any]]) -> dict[str, Any]:
                     await write_pick_to_store(
                         symbol,
                         pick,
-                        source=f"pooled:{asset_class_key(p.get('asset_class'))}",
+                        source=f"pooled:{asset_class_key(p.get('asset_class'), p.get('symbol'))}",
                     )
                 except Exception as exc:
                     logger.debug(

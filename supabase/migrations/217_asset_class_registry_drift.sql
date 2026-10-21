@@ -1,0 +1,89 @@
+-- 217_asset_class_registry_drift.sql
+--
+-- 2026-10-21 — correct the nt_symbol.asset_class registry drift so the class
+-- column speaks the engine's own class vocabulary (worklog/kairos/
+-- 20261021_ASSET_CLASS_REGISTRY_DRIFT_FIX.md; traced in the 2026-10-21 session
+-- Task 46).
+--
+-- WHY
+-- ---
+-- Two registry catch-alls disagree with every class-keyed consumer in the
+-- engine (ev_costs.cost_atr_by_class, min_p_win_bracket_by_asset_class,
+-- strategy_registry.yaml archetype asset_classes allowlists):
+--
+--  1. INDEX CFDs registered as 'stocks'. US500/US30USD (plus the inactive
+--     UK100/RUSS2000) are basket index CFDs — one line covering 500/30
+--     names, trading a ~23h futures calendar (13,703 / 13,695 hourly bars
+--     over 730d vs AAPL's 5,073). The engine's own classifier
+--     (tiered_atr.asset_class_key) special-cases the values "us30"/"us500"/
+--     "ndx" → index — intent encoded, never fired, because the registry
+--     delivers the 'stocks' catch-all and "stock" in "stocks" wins →
+--     'equity'. Result: the live EV charge takes equity 0.06 ATR/trade
+--     instead of index 0.05 — a 0.01 ATR/trade OVERCHARGE on every index
+--     trade, and the config's index keys (cost, min_p_win bracket,
+--     archetype allowlists) are unreachable dead vocabulary.
+--
+--  2. SPOT METALS registered as 'commodities'. XAUUSD/XAGUSD/XAUEUR/XAUAUD
+--     normalize to 'commodity', which is NOT in cost_atr_by_class (the table
+--     has the 'metals' alias for the canonical 'metal' key) — so the
+--     flagship metals silently take the 0.05 default fall-through instead
+--     of the canonical 0.06 (UNDERcharged), and the p_win_ok gate reads the
+--     commodity 0.30 bracket instead of the authored metal 0.20.
+--
+-- The same session ships the code-side correction (symbol-aware
+-- asset_class_key — US500/US30USD/UK100/RUSS2000/NDX → index, XAU*/XAG* →
+-- metal — threaded through the cost/min_p_win/router/band-resolution call
+-- sites), so the engine resolves the TRUE classes even BEFORE this migration
+-- is applied. This migration makes the registry itself honest, so raw-value
+-- matchers (market_hours' session arms — which now also accept 'indices'/
+-- 'index' and 'metals' — and any future consumer) see the same truth.
+--
+-- WHAT THIS DOES
+-- ──────────────
+--  1. US500, US30USD, UK100, RUSS2000: 'stocks' → 'indices' (the plural
+--     form matches market_hours' existing "stocks" | "indices" session arm
+--     and normalizes to the canonical 'index' key; the singular 'index'
+--     would also work post-2026-10-21 but the plural is the matcher's
+--     historical spelling).
+--  2. XAUUSD, XAGUSD, XAUEUR, XAUAUD: 'commodities' → 'metals' (normalizes
+--     to the canonical 'metal' key; market_hours' forex-like Sun 22:00 –
+--     Fri 22:00 UTC session arm accepts 'metals' — same session the
+--     'commodities' value gave them, so no hours change).
+--
+-- BEHAVIOR DELTAS (all in the direction of the config's authored intent)
+-- ──────────────────────────────────────────────────────────────────────
+--  * Live EV round-trip cost: US500/US30USD 0.06 → 0.05 ATR/trade;
+--    XAU*/XAG* 0.05 (silent default) → 0.06.
+--  * p_win_ok bracket gate: XAU*/XAG* 0.30 (commodity) → 0.20 (metal) —
+--    a LOWER qualification bar for the flagship metals. If 0.30 is the
+--    calibrated intent, pin min_p_win_bracket_by_asset_class.metal: 0.30
+--    in config/feature_flags.yaml instead of reverting the registry.
+--  * Pooled dynamic-ATR evidence grouping (via the shipped symbol-aware
+--    normalization): the former 'stocks' pool splits — AAPL pools as equity
+--    alone, US500/US30USD pool together as indices.
+--  * Sessions, ATR bands (by_symbol only), Kelly annualisation, heavy-sweep
+--    cadence: UNCHANGED.
+--
+-- Left as-is (documented, inactive bench): SI (COMEX silver future — kept
+-- 'commodities'; it duplicates XAGUSD per the specialist-books review and is
+-- inactive), VGT (an ETF sitting in 'commodities' — a further registry
+-- oddity for the operator's next audit), JX (semantics unverified).
+--
+-- VERIFY AFTER APPLYING
+-- ─────────────────────
+-- SELECT symbol, asset_class, active FROM nt_symbol
+-- WHERE symbol IN ('US500','US30USD','UK100','RUSS2000',
+--                  'XAUUSD','XAGUSD','XAUEUR','XAUAUD')
+-- ORDER BY asset_class, symbol;
+-- -- expect: four 'indices' rows, four 'metals' rows.
+--
+-- Idempotent: the WHERE clauses include the old value, so re-running is a
+-- no-op.
+
+UPDATE nt_symbol SET asset_class = 'indices'
+WHERE symbol IN ('US500', 'US30USD', 'UK100', 'RUSS2000')
+  AND asset_class = 'stocks';
+
+UPDATE nt_symbol SET asset_class = 'metals'
+WHERE symbol IN ('XAUUSD', 'XAGUSD', 'XAUEUR', 'XAUAUD')
+  AND asset_class = 'commodities';

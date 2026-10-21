@@ -48,7 +48,33 @@ EXPIRY_BARS = 48
 DEFAULT_RISK_CAP = GEOMETRY_RISK_CAP
 
 
-def asset_class_key(asset_class: str | None) -> str:
+def asset_class_key(asset_class: str | None, symbol: str | None = None) -> str:
+    """Normalize a raw asset-class string (and, when known, the SYMBOL) to
+    the engine's canonical class key.
+
+    2026-10-21 registry-drift correction (worklog/kairos/
+    20261021_ASSET_CLASS_REGISTRY_DRIFT_FIX.md): the nt_symbol class column
+    is a broad catch-all — "stocks" holds the index CFDs US500/US30USD/
+    UK100/RUSS2000 alongside AAPL, and "commodities" holds the spot metals
+    XAU*/XAG*. The engine's class vocabulary (ev_costs.cost_atr_by_class,
+    min_p_win_bracket_by_asset_class, archetype asset_classes allowlists)
+    expects ``index``/``metal`` keys for those instruments — the value-based
+    special-cases below ("us30"/"us500"/"ndx", "gold"/"silver"/"xau"/"xag")
+    test the asset_class VALUE and so never fire on the registry's catch-all
+    values. The symbol map lives HERE, ahead of the value arms, so every
+    consumer routed through this single source resolves the true class.
+
+    Callers that know the symbol MUST pass it (same rule as
+    get_dynamic_atr_config, 2026-10-12). Value-only calls keep the
+    historical mapping byte-for-byte — including the drifts — so research
+    replay scripts stay faithful to history.
+    """
+    if symbol:
+        s = str(symbol).strip().upper()
+        if s in ("US500", "US30USD", "UK100", "RUSS2000", "NDX"):
+            return "index"
+        if s.startswith(("XAU", "XAG")):
+            return "metal"
     if not asset_class:
         return "default"
     a = str(asset_class).strip().lower()
@@ -62,7 +88,10 @@ def asset_class_key(asset_class: str | None) -> str:
         return "commodity"
     if "etf" in a:
         return "etf"
-    if "index" in a or a in ("us30", "us500", "ndx"):
+    if "index" in a or a.startswith("indic") or a in ("us30", "us500", "ndx"):
+        # "indic" catches the PLURAL "indices" — the value the registry and
+        # market_hours' session arm both use — which contains no "index"
+        # substring and previously fell through to "default" (2026-10-21).
         return "index"
     if "equity" in a or "stock" in a or "share" in a:
         return "equity"
@@ -851,7 +880,7 @@ async def dynamic_atr_pick(
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_tradingview_batch
     from regime_platform.sweep_orchestrator.supabase_client import fetch_active_symbols
 
-    ac = asset_class_key(asset_class)
+    ac = asset_class_key(asset_class, symbol)
     scope = symbol or ac
     logger.info(
         "[dynamic:atr] scope=%s class=%s grid tp=%s sl=%s clamps tp=[%s,%s] sl=[%s,%s] max_exp=%s",
@@ -993,7 +1022,7 @@ async def dynamic_atr_pick(
     if symbol:
         members = [p for p in peers if p.get("symbol") == symbol and p.get("tradingview_symbol")]
     else:
-        members = [p for p in peers if asset_class_key(p.get("asset_class")) == ac and p.get("tradingview_symbol")]
+        members = [p for p in peers if asset_class_key(p.get("asset_class"), p.get("symbol")) == ac and p.get("tradingview_symbol")]
     if not members:
         _fb = _floored(_band_center_pick(cfg)) if allow_best_effort else None
         _PICK_CACHE[grid_fp] = (time.time(), _fb)

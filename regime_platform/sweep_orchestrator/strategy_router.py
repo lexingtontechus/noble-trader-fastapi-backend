@@ -245,8 +245,11 @@ def _route_impl(
 ) -> RoutedStrategy:
     # Normalize asset_class via the shared key (imported lazily to avoid a
     # module-level sweep_orchestrator dependency in core-facing code).
+    # 2026-10-21 registry-drift correction: symbol-aware — US500/US30USD
+    # route on the TRUE class key ("index"), not the registry's "stocks"
+    # catch-all, so the archetype allowlists' index vocabulary is reachable.
     from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key
-    ack = asset_class_key(asset_class)
+    ack = asset_class_key(asset_class, symbol)
     direction = _direction_word(signal)
     vol_tier = _vol_tier(regime_label)
     alignment = _alignment(direction, macro_label, trend_label)
