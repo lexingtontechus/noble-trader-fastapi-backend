@@ -80,6 +80,18 @@
 -- Idempotent: the WHERE clauses include the old value, so re-running is a
 -- no-op.
 
+-- ── PREREQUISITE: relax the asset_class CHECK (added 2026-10-20) ────────────
+-- 001_sim_tables.sql:9 defined the column with
+--   CHECK (asset_class IN ('crypto','forex','stocks','commodities'))
+-- The corrected values below ('indices','metals') are NOT in that list, so the
+-- UPDATEs fail on the live schema (verified 2026-10-20 against production):
+--   ERROR 23514: new row for relation "nt_symbol" violates check constraint
+--   "sim_symbols_asset_class_check"
+-- Relax the constraint first. Idempotent (DROP IF EXISTS + ADD).
+ALTER TABLE nt_symbol DROP CONSTRAINT IF EXISTS sim_symbols_asset_class_check;
+ALTER TABLE nt_symbol ADD CONSTRAINT sim_symbols_asset_class_check
+  CHECK (asset_class IN ('crypto','forex','stocks','commodities','indices','metals'));
+
 UPDATE nt_symbol SET asset_class = 'indices'
 WHERE symbol IN ('US500', 'US30USD', 'UK100', 'RUSS2000')
   AND asset_class = 'stocks';
