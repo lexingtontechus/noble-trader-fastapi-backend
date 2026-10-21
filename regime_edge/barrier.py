@@ -46,13 +46,35 @@ REPORT_SUB = 64          # reporting-grade monitoring density (~0.005 of analyti
 EXPIRY_CHOICES = (24, 48, 72, 96)
 CONSTRAINTS = {"max_pi_sl": 0.62, "max_pi_e": 0.25, "rr_lo": 1.5, "rr_hi": 4.0}
 SOLVER_PI_SL_MARGIN = 0.01   # sub=16 overshoot bias head-room vs REPORT_SUB
-COST_BY_CLASS = {"crypto": 0.10, "metals": 0.06, "forex": 0.04}
+COST_BY_CLASS = {"crypto": 0.10, "metals": 0.06, "forex": 0.04,
+                 "equity": 0.06, "index": 0.05}
+# Costs mirror the repo's own live table config/feature_flags.yaml ev_costs.
+# cost_atr_by_class (forex 0.04 / metals 0.06 / crypto 0.10 / equity 0.06 /
+# index 0.05, unknown 0.05) — the same net=pnl−cost convention EV uses.
 SYMBOL_CLASS = {
-    "BTCUSD": "crypto", "XAUUSD": "metals", "XAGUSD": "metals",
-    "USDJPY": "forex", "USDCHF": "forex",
+    "BTCUSD": "crypto",
+    "XAUUSD": "metals", "XAGUSD": "metals", "XAUEUR": "metals", "XAUAUD": "metals",
+    "USDJPY": "forex", "USDCHF": "forex", "EURUSD": "forex", "GBPUSD": "forex",
+    "USDCAD": "forex", "AUDUSD": "forex",
+    "AAPL": "equity",
+    "US500": "index", "US30USD": "index",
 }
+# NOTE (20261021, symbol-table CSV): the live registry lists US500/US30USD
+# as asset_class=stocks (equity cost 0.06); the repo's own ev_costs table
+# carries a distinct index class at 0.05.  This engine prices them as INDEX
+# (their economic class per ev_costs' design) — the registry misclassification
+# is recorded in 20261021_REOPT_SETTLEMENT_DEADLINE_COHERENCE_AND_SPECIALIST_
+# BOOKS.md Part C and costs 0.01 ATR/trade of overcharge live.
 FOREX_ALIAS = {"USDJPY": "FOREX", "USDCHF": "FOREX", "EURUSD": "FOREX",
                "GBPUSD": "FOREX", "AUDUSD": "FOREX", "USDCAD": "FOREX"}
+
+# The full ACTIVE symbol set (Supabase symbol table 2026-10-21: 14 active of
+# 34) — the 5-symbol v1 run was the test subset.
+ACTIVE_SYMBOLS = [
+    "BTCUSD", "XAUUSD", "XAGUSD", "XAUEUR", "XAUAUD",
+    "USDJPY", "EURUSD", "GBPUSD", "USDCAD", "USDCHF", "AUDUSD",
+    "AAPL", "US500", "US30USD",
+]
 
 
 # ── 1. closed form ─────────────────────────────────────────────────────────

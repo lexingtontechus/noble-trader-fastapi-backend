@@ -73,6 +73,7 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
     pass rates are all quoted from S/pooled."""
     syms = list(S.keys())
     mean_skill = float(np.mean([S[s]["hmm"]["skill"] for s in syms]))
+    n_skill_neg = sum(1 for s in syms if S[s]["hmm"]["skill"] < 0)
     conf_low = [S[s]["hmm"]["conf_low_er"] for s in syms]
     conf_low_ok = all(_fin(c) >= 0.60 for c in conf_low)
     decided_frac = float(np.mean([S[s]["hmm"]["n_decided"] / max(1, S[s]["n_labeled"]) for s in syms]))
@@ -84,8 +85,12 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
     ev_trend_rate = float(np.mean(ev_pass_trend))
     ev_neutral_rate = float(np.mean(ev_pass_neutral))
     bucket_auc = float(np.mean([S[s]["bucket_calibration"]["auc"] for s in syms]))
+    bucket_auc_lo = float(np.min([S[s]["bucket_calibration"]["auc"] for s in syms]))
+    bucket_auc_hi = float(np.max([S[s]["bucket_calibration"]["auc"] for s in syms]))
     regime_auc = float(np.mean([S[s]["calibration"]["regime_conditional"]["auc"] for s in syms]))
     base_auc = float(np.mean([S[s]["calibration"]["base_rate"]["auc"] for s in syms]))
+    base_auc_lo = float(np.min([S[s]["calibration"]["base_rate"]["auc"] for s in syms]))
+    base_auc_hi = float(np.max([S[s]["calibration"]["base_rate"]["auc"] for s in syms]))
     ev_null_cur = {s: S[s]["barrier"]["current"]["ev_null"] for s in syms}
     pi_sl_cur = {s: S[s]["barrier"]["current"]["pi_sl"] for s in syms}
     pi_sl_cor = {s: S[s]["barrier"]["corrected"]["pi_sl"] for s in syms}
@@ -98,6 +103,24 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
             if v["p"] < 0.05:
                 n_spearman_sig += 1
     starved = [s for s in syms if S[s]["books"]["kairos"]["n"] == 0]
+    # worst physics violator among CURRENT band centres (W-G4 evidence text)
+    viol = [(s, S[s]["barrier"]["current"]["pi_sl"], S[s]["barrier"]["current"]["pi_e"]) for s in syms]
+    worst_viol = max(viol, key=lambda t: max(t[1] / 0.62, t[2] / 0.25))
+    worst_viol_metric = "pi_SL" if worst_viol[1] / 0.62 >= worst_viol[2] / 0.25 else "pi_E"
+    worst_viol_val = worst_viol[1] if worst_viol_metric == "pi_SL" else worst_viol[2]
+    worst_viol_cap = 0.62 if worst_viol_metric == "pi_SL" else 0.25
+    # a starved-symbol example for W-C1 (RR vs base rate), else the widest-RR symbol
+    if starved:
+        ex_sym = starved[0]
+    else:
+        ex_sym = max(syms, key=lambda s: S[s]["gate"]["rr_current"])
+    ex_rr = S[ex_sym]["gate"]["rr_current"]
+    ex_pwin = S[ex_sym]["gate"]["base"]["p_win"]
+    rr_cur_all = [S[s]["gate"]["rr_current"] for s in syms]
+    rr_lo, rr_hi = float(np.min(rr_cur_all)), float(np.max(rr_cur_all))
+    ev_null_lo = float(np.min([S[s]["barrier"]["current"]["ev_null"] for s in syms]))
+    ev_null_hi = float(np.max([S[s]["barrier"]["current"]["ev_null"] for s in syms]))
+    corr_take = float(np.mean([S[s]["books"]["corrected"]["n"] / max(1, len(S[s]["slots"])) for s in syms]))
     us500 = next((c for c in crosscheck if "US500" in c["case"]), None)
     dm_cn_sig = pooled["cn_p"] < 0.05
     # DM direction text (kairos-vs-corrected pooled)
@@ -126,10 +149,10 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
                  f"(symbol, geometry) — driven by the shipped RR and the flat base table, never by "
                  f"regime state. Measured consequence: wide-RR symbols trade wholesale while "
                  f"{('symbols ' + ', '.join(starved)) if starved else 'no symbol'} starve to ZERO trades "
-                 f"over 2 years (RR vs base rate: e.g. XAGUSD 2.38 with p_win 0.18 -> EV<0 on every "
-                 f"slot) — geometry starvation, W-G3's prediction, measured. The LIVE gate is weaker "
-                 f"still (it prices the fictional brick payoff, ev_engine.py:723-728 vs "
-                 f"orchestrator.py:4202-4219).",
+                 f"over the sampled window (RR vs base rate: e.g. {ex_sym} {ex_rr:.2f} with p_win "
+                 f"{ex_pwin:.2f} -> EV<0 on every slot) — geometry starvation, W-G3's prediction, "
+                 f"measured. The LIVE gate is weaker still (it prices the fictional brick payoff, "
+                 f"ev_engine.py:723-728 vs orchestrator.py:4202-4219).",
         numbers={"ev_gate_pass_rate_of_conf_pass": _r4(ev_pass_frac),
                  "kairos_n_trades": {s: S[s]["books"]["kairos"]["n"] for s in syms},
                  "rr_current": {s: S[s]["gate"]["rr_current"] for s in syms},
@@ -151,8 +174,8 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
         verdict="MEASURED",
         evidence=f"The repo's flat (symbol, vol_tier, bucket) table is LEVEL-ONLY for the trade being "
                  f"placed: the distance bucket is fixed per symbol, so its p_win varies only through "
-                 f"the vol tier. Measured in-sample AUC {bucket_auc:.4f} (per-symbol 0.55-0.64) is "
-                 f"entirely vol-state information — it discriminates market state, never the bracket "
+                 f"the vol tier. Measured in-sample AUC {bucket_auc:.4f} (per-symbol {bucket_auc_lo:.2f}-"
+                 f"{bucket_auc_hi:.2f}) is entirely vol-state information — it discriminates market state, never the bracket "
                  f"or direction being shipped; the repo's own LIVE-measured AUC on its HMM-tier table "
                  f"was 0.4869. {cal_txt}. The live loop's expired-excluded population is a code-audit "
                  f"finding (eod_resolver.py:943-944).",
@@ -195,9 +218,9 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
         id="W-X2", title="Direction source has measured negative skill yet is the sole direction decision",
         verdict="PROVEN-FAIL" if mean_skill < 0 else "PROVEN-OK",
         evidence=f"24h-ahead accuracy vs majority baseline per symbol on the repro HMM: skill negative "
-                 f"on all 5 (mean {mean_skill:+.4f}). The regime-value alternative is measured, not "
+                 f"on {n_skill_neg} of {len(syms)} (mean {mean_skill:+.4f}). The regime-value alternative is measured, not "
                  f"assumed: Spearman rho(feature, bracket R) is THIN on this sample — "
-                 f"{n_spearman_sig}/{n_spearman_tests} feature x symbol tests at p<0.05 (~1.3 "
+                 f"{n_spearman_sig}/{n_spearman_tests} feature x symbol tests at p<0.05 (~{0.05 * n_spearman_tests:.1f} "
                  f"expected by chance); best |rho| {abs(best_rho[0]):.4f} (p={S[best_rho[1]]['best_spearman']['p']:.4f}, "
                  f"{best_rho[1]}-{S[best_rho[1]]['best_spearman']['feature']}). Honest verdict on 'do "
                  f"regime values predict the edge': weakly, not decisively — a measured-if-thin edge "
@@ -279,9 +302,10 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
     out.append(dict(
         id="W-G4", title="Nothing physics- or reachability-based constrains the published bracket",
         verdict="PROVEN-FAIL",
-        evidence=f"Current band centres violate the physics constraints outright (XAUUSD pi_SL 0.83 > 0.62; "
-                 f"every current EV_null <= -cost); the corrected solver enforces (pi_SL, pi_E, RR) "
-                 f"constraints UNDER THE NULL with measured drift on top.",
+        evidence=f"Current band centres violate the physics constraints outright (worst: {worst_viol[0]} "
+                 f"{worst_viol_metric} {worst_viol_val:.2f} > {worst_viol_cap}; every current EV_null "
+                 f"≤ −cost, range {ev_null_lo:+.3f}…{ev_null_hi:+.3f}); the corrected solver enforces "
+                 f"(pi_SL, pi_E, RR) constraints UNDER THE NULL with measured drift on top.",
         numbers={"violations_current": {s: int(S[s]["barrier"]["current"]["pi_sl"] > 0.62 or
                                                S[s]["barrier"]["current"]["pi_e"] > 0.25) for s in syms},
                  "corrected_ev_drift": {s: _r4(S[s]["barrier"]["corrected"]["ev_drift"]) for s in syms}},
@@ -411,10 +435,15 @@ def build_summary(doc) -> str:
     ap("ρ(feature at entry, bracket R) with 2000-permutation p-values. Decile edge surfaces with "
        "bootstrap 95% CIs are in `edge_lab.json` → `edge_surface`.")
     ap("")
-    ap("Read honestly: the conditional-edge signal is THIN — only 2 of 25 feature×symbol tests clear "
-       "p<0.05 (~1.3 expected by chance), and er_abs itself is nowhere significant. The measured answer "
-       "to *“do regime values predict the edge?”* on 2y hourly data is: **weakly, not decisively** — "
-       "still strictly better than the HMM label's negative skill, and now a number, not a guess.")
+    # data-driven honesty paragraph (was hardcoded for the 5-symbol run)
+    v_x2 = next(v for v in S["verdicts"] if v["id"] == "W-X2")
+    n_sig_txt = v_x2["numbers"]["spearman_sig_of_tests"]
+    n_tests = int(n_sig_txt.split("/")[1])
+    n_sig = int(n_sig_txt.split("/")[0])
+    ap(f"Read honestly: the conditional-edge signal is THIN — only {n_sig} of {n_tests} feature×symbol "
+       f"tests clear p<0.05 (~{0.05 * n_tests:.1f} expected by chance). The measured answer to "
+       f"*“do regime values predict the edge?”* on this sample is: **weakly, not decisively** — "
+       f"still strictly better than the HMM label's negative skill, and now a number, not a guess.")
     ap("")
     ap("## 3 · The decisive gate backtest — kairos vs corrected vs null (mean R per trade)")
     ap("")
@@ -434,15 +463,41 @@ def build_summary(doc) -> str:
     ap("")
     ap("DM sign convention: for `kairos-vs-corrected`, p < 0.05 with negative kairos mean-loss-diff "
        "favors kairos; for `corrected-vs-null`, p < 0.05 with negative corrected mean-loss-diff favors "
-       "the corrected book. Holm family = the 10 per-symbol tests.")
+       "the corrected book. Holm family = the " + str(2 * len(S["gate_backtest"]["per_symbol"])) +
+       " per-symbol tests.")
     ap("")
-    ap("Read honestly: pooled kairos-vs-corrected p=0.0163 favors kairos **in this drift window** — "
-       "but the kairos book's mean R rides the wide-TP/tight-SL payoff (RR 1.6-5.0) on realized "
-       "2024-26 drift with NEGATIVE direction skill (acc < majority on all 5 symbols), i.e. the W-G2 "
-       "trend-following-risk inheritance measured, not HMM direction edge; under the driftless null its "
-       "geometry is EV −0.03…−0.17 per trade (§5). The corrected book takes ~10% of slots and its "
-       "corrected-vs-null DM is not significant (p=0.43) — no decisive out-of-sample edge on this sample "
-       "either way. Also note the EV-gate starvation: XAGUSD/USDCHF kairos n=0 trades in 2 years (W-C1).")
+    # data-driven read-honestly paragraph (was hardcoded for the 5-symbol run)
+    n_sym = len(S["gate_backtest"]["per_symbol"])
+    skill_neg = sum(1 for r in S["hmm"]["per_symbol"] if r["skill"] < 0)
+    starved_syms = [r["symbol"] for r in S["gate_backtest"]["per_symbol"]
+                    if r["books"]["kairos"]["n"] == 0]
+    ev_nulls = [r["current"]["ev_null"] for r in S["barrier"]["per_symbol"]]
+    rrs = [r["current"]["tp_atr"] / max(1e-9, r["current"]["sl_atr"])
+           for r in S["barrier"]["per_symbol"]]
+    corr_n = p["corrected"]["n"]
+    null_n = max(1, p["null"]["n"])  # null takes every no-overlap opportunity
+    take_pct = round(100 * corr_n / null_n)
+    kc_p, kc_mld = p["kc_p"], p["kc_mean_loss_diff"]
+    cn_p = p["cn_p"]
+    if kc_p < 0.05:
+        kc_sent = (f"pooled kairos-vs-corrected p={kc_p:.4f} "
+                   + ("favors kairos" if kc_mld < 0 else "favors corrected")
+                   + " **in this drift window**")
+    else:
+        kc_sent = f"pooled kairos-vs-corrected p={kc_p:.4f} (not significant)"
+    starve_sent = (" — EV-gate starvation: " + ", ".join(starved_syms)
+                   + " kairos n=0 trades over the window (W-C1)"
+                   if starved_syms else "")
+    ap(f"Read honestly: {kc_sent} — "
+       f"but the kairos book's mean R rides the wide-TP/tight-SL payoff (RR {min(rrs):.1f}-{max(rrs):.1f}) "
+       f"on realized drift with NEGATIVE direction skill "
+       f"(acc < majority on {skill_neg} of {n_sym} symbols), i.e. the W-G2 trend-following-risk "
+       f"inheritance measured, not HMM direction edge; under the driftless null its geometry is EV "
+       f"{min(ev_nulls):+.3f}…{max(ev_nulls):+.3f} per trade (§5). The corrected book takes "
+       f"~{take_pct}% of the no-overlap trade count ({corr_n} vs null {null_n}) and its "
+       f"corrected-vs-null DM is {'significant' if cn_p < 0.05 else 'not significant'} (p={cn_p:.4f}) — "
+       f"{'a decisive out-of-sample edge' if cn_p < 0.05 else 'no decisive out-of-sample edge'} on this sample "
+       f"either way.{starve_sent}")
     ap("")
     ap("## 4 · Calibration — flat base rate vs regime-conditional (walk-forward lockbox)")
     ap("")
@@ -456,11 +511,16 @@ def build_summary(doc) -> str:
     ap("")
     ap("The repo's flat (symbol, vol_tier, bucket) base rate is level-only for the trade being placed: "
        "the distance bucket is fixed per symbol, so its p_win varies only through the vol tier — the "
-       "0.55-0.64 in-sample AUC of that column is vol-state information (market state), never bracket "
+       f"{_r4(min(r['repo_bucket_auc'] for r in S['calibration']['per_symbol'])):.2f}-"
+       f"{_r4(max(r['repo_bucket_auc'] for r in S['calibration']['per_symbol'])):.2f} in-sample AUC of that column is vol-state information (market state), never bracket "
        "or direction selection (the repo's own live-measured AUC on its HMM-tier table: 0.4869). The "
-       "trailing base rate (walk-forward, no cells) shows AUC 0.43-0.49 — its only variation is the "
-       "slowly-refit rate. The trend-quintile × vol-tercile regime-conditional model is scored strictly "
-       "out-of-sample (lockbox): mean AUC 0.533 — weak but real per-trade discrimination.")
+       f"trailing base rate (walk-forward, no cells) shows AUC "
+       f"{_r4(min(r['base_rate']['auc'] for r in S['calibration']['per_symbol'])):.2f}-"
+       f"{_r4(max(r['base_rate']['auc'] for r in S['calibration']['per_symbol'])):.2f} — its only variation is the "
+       f"slowly-refit rate. The trend-quintile × vol-tercile regime-conditional model is scored strictly "
+       f"out-of-sample (lockbox): mean AUC "
+       f"{_r4(float(np.mean([r['regime_conditional']['auc'] for r in S['calibration']['per_symbol']]))):.3f} — "
+       "weak but real per-trade discrimination.")
     ap("")
     ap("## 5 · Barrier physics — current band centre vs corrected geometry")
     ap("")

@@ -9,8 +9,15 @@ Asset class rules
 ─────────────────
   crypto       : 24/7
   stocks       : Mon–Fri 9:30–16:00 America/New_York (DST-aware)
+  indices      : same US cash-equity session as stocks (index CFDs publish
+                 during cash hours; the ~23h futures tape is data-only)
   commodities  : Sun 22:00 – Fri 22:00 UTC (gold/silver spot via OANDA —
                  trades like forex, NOT stock market hours)
+  metals       : same forex-like session as commodities (2026-10-21 registry-
+                 drift correction: post-migration nt_symbol rows for XAU*/
+                 XAG* carry "metals"; spot metals trade Sun 22:00 – Fri
+                 22:00 UTC, so they must hit THIS arm, not the unknown-class
+                 "always open" fall-through)
   forex        : Sun 22:00 – Fri 22:00 UTC
   default      : always True
 """
@@ -48,11 +55,14 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
         case "crypto":
             return True
 
-        case "forex" | "commodities":
+        case "forex" | "commodities" | "metals":
             # Forex AND commodities (gold/silver spot via OANDA) trade
             # Sun 22:00 UTC through Fri 22:00 UTC.
             # Gold spot (XAUUSD) is a forex-like instrument — it trades
             # nearly 24/5, NOT US stock market hours.
+            # "metals" (2026-10-21): the post-migration registry value for
+            # the XAU*/XAG* rows — same session, and critically NOT the
+            # unknown-class "always open" fall-through.
             #
             # Port fixed 2026-10-19: the TS original (supabase/functions/
             # _shared/utils.ts:1753-1758, JS getUTCDay 0=Sun) was mis-
@@ -69,10 +79,12 @@ def is_market_open(asset_class: str, now: datetime | None = None) -> bool:
             # Mon–Thu — full days
             return True
 
-        case "stocks" | "indices":
+        case "stocks" | "indices" | "index":
             # US market hours: Mon–Fri 9:30–16:00 America/New_York.
             # DST-aware (2026-10-19): the previous 14:30–21:00 UTC hardcode
             # was the EST mapping — an hour off the entire US summer (EDT).
+            # "index" (2026-10-21): canonical-key safety alias so a singular
+            # registry value cannot fall through to "always open".
             et = now.astimezone(ZoneInfo("America/New_York"))
             return et.weekday() < 5 and 570 <= et.hour * 60 + et.minute <= 960
 

@@ -311,7 +311,7 @@ SIGNAL_COOLDOWN_MINUTES = get_signal_cooldown_minutes()
 
 # ── Task 40-b helpers (2026-10-19 weaknesses evaluation) ────────────────────
 
-def _ev_cost_price(asset_class: Any, atr: Any) -> float:
+def _ev_cost_price(asset_class: Any, atr: Any, symbol: Any = None) -> float:
     """W-C4: per-class round-trip cost (spread + slippage + entry-lag
     allowance) in PRICE units per 1 position unit = cost_atr(class) × ATR.
 
@@ -319,6 +319,12 @@ def _ev_cost_price(asset_class: Any, atr: Any) -> float:
     stays exactly the historical cost-blind value (backward compat). Shared
     by the light (orchestrator) and heavy (heavy_sweep) compute_ev call
     sites so both paths charge the same cost.
+
+    2026-10-21 registry-drift correction: ``symbol`` routes the lookup
+    through the symbol-aware ``asset_class_key`` — US500/US30USD charge the
+    index 0.05 (not the equity 0.06) and XAU*/XAG* the metal 0.06 (not the
+    0.05 default fall-through). Omitting it keeps the historical value-only
+    resolution.
     """
     try:
         from regime_platform.core.feature_flags import (
@@ -330,7 +336,7 @@ def _ev_cost_price(asset_class: Any, atr: Any) -> float:
         if not atr or float(atr) <= 0:
             return 0.0
         return round(
-            float(get_ev_cost_atr_for_asset_class(asset_class)) * float(atr), 6
+            float(get_ev_cost_atr_for_asset_class(asset_class, symbol)) * float(atr), 6
         )
     except Exception:
         return 0.0
@@ -4643,7 +4649,7 @@ class SweepOrchestrator(HeavySweepMixin):
                 tp_bricks=tp_bricks,
                 n_steps=resolve_markov_n_steps(tp_bricks),
                 p_markov_override=_smoothed_p_markov if _p_markov_hold_n_live else None,
-                cost_price=_ev_cost_price(sym.get("asset_class"), atr),
+                cost_price=_ev_cost_price(sym.get("asset_class"), atr, sym.get("symbol")),
             )
         # EVFullResult is a dataclass — use attribute access.
         # In v5, markov_multiplier is always 1.0 (Markov is in the blend).
@@ -5221,7 +5227,8 @@ class SweepOrchestrator(HeavySweepMixin):
         if p_win_in_ev_mode == "live" and _p_win_bracket is not None:
             _p_win_for_gate = _p_win_bracket
             _p_win_gate_min = get_min_p_win_bracket_for_asset_class(
-                sym.get("asset_class") if isinstance(sym, dict) else None
+                sym.get("asset_class") if isinstance(sym, dict) else None,
+                sym.get("symbol") if isinstance(sym, dict) else None,
             )
             _p_win_gate_hard_floor = 0.0
         else:

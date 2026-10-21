@@ -8,7 +8,15 @@ Usage (from the repo root):
 
 Creates <out-dir>/<UTC runid>/ with edge_lab.json (THE artifact, <= 3MB, all
 numbers finite), summary.md (headline verdicts), records.csv (per-slot audit
-trail).  Everything seeded (default 7); runtime ~10-15 min for the 5 symbols.
+trail).  Everything seeded (default 7); runtime ~10-15 min for the 5-symbol
+test subset, ~30-40 min for the full 14-symbol ACTIVE set (2026-10-21:
+DEFAULT_SYMBOLS extended 5 → 14 per the Supabase symbol table; the 5-symbol
+run 20261020_055039 remains the comparability baseline).
+
+Long runs survive host restarts: pass --checkpoint-dir <dir> and every
+computed symbol is pickled there; re-running the SAME command resumes from
+the checkpoints (per-symbol compute is pure + seeded, so a resumed run is
+byte-identical to an uninterrupted one).
 """
 from __future__ import annotations
 
@@ -36,7 +44,11 @@ from regime_edge import values as rvalues  # noqa: E402
 from regime_edge.brackets import slot_grid  # noqa: E402
 from regime_edge.data import load_all  # noqa: E402
 
-DEFAULT_SYMBOLS = ["BTCUSD", "XAUUSD", "XAGUSD", "USDJPY", "USDCHF"]
+# Full ACTIVE set (14) from the Supabase symbol table (2026-10-21) — the
+# original 5 were the test subset.  Cost per symbol via barrier.SYMBOL_CLASS
+# → the repo's own ev_costs.cost_atr_by_class table (equity 0.06 / index 0.05
+# added for the new names).
+DEFAULT_SYMBOLS = list(rbar.ACTIVE_SYMBOLS)
 HMM_NOTE = (
     "Cadence approximation: the live orchestrator refits both HMMs from scratch on every "
     "15-minute tick (rolling 200x1h bars); this repro treats one hourly bar as one tick and "
@@ -78,6 +90,138 @@ def run_symbol(sym, bars, geo_cur, seed):
             "timings": {"features": t_feat, "hmm": t_hmm, "edge": t_edge}}
 
 
+def compute_symbol(sym, bars, geo_cur, cost, seed):
+    """The full per-symbol pipeline (pure: same inputs -> same outputs, seeded).
+    Returns (S_sym, records, sym_notes) — everything downstream needs, so a
+    run can be checkpointed/resumed per symbol (2026-10-21: the 14-symbol
+    ACTIVE set needs ~30 min wall; hosts that kill long sessions resume it)."""
+    sym_notes = []
+    res = run_symbol(sym, bars, geo_cur, seed)
+    feats, vals = res["feats"], res["vals"]
+    hmm_m = res["hmm_m"]
+    print(f"[edge-lab] {sym}: features {res['timings']['features']:.1f}s, "
+          f"HMM {res['timings']['hmm']:.1f}s ({res['hmm_out']['n_fits']} refits), "
+          f"edge {res['timings']['edge']:.1f}s")
+    print(f"[edge-lab] {sym}: HMM acc={hmm_m['acc']:.4f} majority={hmm_m['majority']:.4f} "
+          f"skill={hmm_m['skill']:+.4f} (n={hmm_m['n_decided']})")
+
+    # ── corrected geometry (physics solver, train-only drift)
+    slots = res["slots"]
+    split = max(1, int(0.70 * len(slots)))
+    train_slots = slots[:split]
+    regime = vals["regime"]
+    er_s = feats["er_signed"]
+    tr_slots, tr_dirs = [], []
+    for i in train_slots:
+        if regime[i] in ("trend_up", "trend_down") and np.isfinite(er_s[i]) and er_s[i] != 0:
+            tr_slots.append(i)
+            tr_dirs.append(1 if er_s[i] > 0 else -1)
+    mu_hat, n_trend = rbar.shrunk_trend_drift(bars["close"], feats["atr"], tr_slots, tr_dirs)
+    print(f"[edge-lab] {sym}: mu_hat={mu_hat:.5f} ATR/bar (n_trend={n_trend} train TREND slots)")
+    t0 = time.time()
+    solved = rbar.solve_corrected_geometry(mu_hat, cost, seed=seed)
+    geo_cor = {"tp_atr": solved["tp_atr"], "sl_atr": solved["sl_atr"], "expiry": solved["expiry"]}
+    print(f"[edge-lab] {sym}: corrected geometry tp={geo_cor['tp_atr']} sl={geo_cor['sl_atr']} "
+          f"exp={geo_cor['expiry']} (feasible cells={solved['n_feasible']}, "
+          f"ev={solved['ev']:+.3f}) [{time.time() - t0:.1f}s]")
+
+    # barrier report: current & corrected under mu=0 and mu_hat
+    cur_null = rbar.geometry_probs(geo_cur["tp_atr"], geo_cur["sl_atr"], geo_cur["expiry"], 0.0, seed=seed)
+    cur_drift = rbar.geometry_probs(geo_cur["tp_atr"], geo_cur["sl_atr"], geo_cur["expiry"], mu_hat, seed=seed)
+    cor_null = rbar.geometry_probs(geo_cor["tp_atr"], geo_cor["sl_atr"], geo_cor["expiry"], 0.0, seed=seed)
+    cor_drift = rbar.geometry_probs(geo_cor["tp_atr"], geo_cor["sl_atr"], geo_cor["expiry"], mu_hat, seed=seed)
+    barrier_sym = {
+        "current": {"tp_atr": geo_cur["tp_atr"], "sl_atr": geo_cur["sl_atr"], "expiry": geo_cur["expiry"],
+                    "pi_tp": round(cur_null[0], 4), "pi_sl": round(cur_null[1], 4),
+                    "pi_e": round(cur_null[2], 4),
+                    "ev_null": round(rbar.ev_r(cur_null[0], cur_null[1], geo_cur["tp_atr"], geo_cur["sl_atr"], cost), 4),
+                    "ev_drift": round(rbar.ev_r(cur_drift[0], cur_drift[1], geo_cur["tp_atr"], geo_cur["sl_atr"], cost), 4)},
+        "corrected": {"tp_atr": geo_cor["tp_atr"], "sl_atr": geo_cor["sl_atr"], "expiry": geo_cor["expiry"],
+                      "pi_tp": round(cor_null[0], 4), "pi_sl": round(cor_null[1], 4),
+                      "pi_e": round(cor_null[2], 4),
+                      "ev_null": round(rbar.ev_r(cor_null[0], cor_null[1], geo_cor["tp_atr"], geo_cor["sl_atr"], cost), 4),
+                      "ev_drift": round(rbar.ev_r(cor_drift[0], cor_drift[1], geo_cor["tp_atr"], geo_cor["sl_atr"], cost), 4)},
+    }
+    print(f"[edge-lab] {sym}: barrier current pi_sl={barrier_sym['current']['pi_sl']:.3f} "
+          f"ev_null={barrier_sym['current']['ev_null']:+.3f} | corrected pi_sl={barrier_sym['corrected']['pi_sl']:.3f} "
+          f"pi_e={barrier_sym['corrected']['pi_e']:.3f} ev_null={barrier_sym['corrected']['ev_null']:+.3f} "
+          f"ev_drift={barrier_sym['corrected']['ev_drift']:+.3f}")
+
+    # ── walk-forward cells under corrected geometry (publish gate)
+    trades_cor = redge.build_trades(slots, feats, vals, geo_cor, bars["high"], bars["low"],
+                                    bars["close"], feats["atr"])
+    wf_cor = redge.walkforward_cells(trades_cor, bars["n"], first_fit=3000, step=1000)
+    if wf_cor["adaptive_note"]:
+        sym_notes.append(f"{sym}: {wf_cor['adaptive_note']}")
+
+    # ── books
+    t0 = time.time()
+    books_res = rbooks.run_books(sym, {"high": bars["high"], "low": bars["low"],
+                                       "close": bars["close"], "atr": feats["atr"], "n": bars["n"]},
+                                 feats, vals, res["hmm_out"], geo_cur, geo_cor,
+                                 wf_cor["preds"], cost, seed=seed)
+    print(f"[edge-lab] {sym}: books [{time.time() - t0:.1f}s] kairos "
+          f"n={books_res['books']['kairos']['n']} meanR={books_res['books']['kairos']['mean_r']:+.4f} | "
+          f"corrected n={books_res['books']['corrected']['n']} "
+          f"meanR={books_res['books']['corrected']['mean_r']:+.4f} (tau*={books_res['tau_star']}) | "
+          f"null n={books_res['books']['null']['n']} meanR={books_res['books']['null']['mean_r']:+.4f}")
+    gp = books_res["gate_stats"]
+    print(f"[edge-lab] {sym}: kairos gates conf_pass={gp['kairos']['conf_pass']}/"
+          f"{gp['kairos']['n_slots']} ev_pass={gp['kairos']['ev_pass']} "
+          f"(base p_win={gp['base']['p_win']}, RR={gp['rr_current']})")
+
+    # extra numbers for verdicts/summary
+    regime_tail = []
+    ts = bars["ts"]
+    n = bars["n"]
+    for i in range(max(0, n - 1500), n):
+        regime_tail.append({
+            "t": pd.Timestamp(ts[i]).isoformat(),
+            "close": round(float(bars["close"][i]), 4),
+            "trend": round(float(er_s[i]) if np.isfinite(er_s[i]) else 0.0, 4),
+            "chop": round(float(feats["chop"][i]) if np.isfinite(feats["chop"][i]) else 0.0, 4),
+            "vol": round(float(feats["vol_pct"][i]) if np.isfinite(feats["vol_pct"][i]) else 0.0, 4),
+            "regime": regime[i],
+        })
+    ready = np.arange(720, n)
+    abstain_rate = float(np.mean([regime[i] == "neutral" for i in ready]))
+    hmm_decided_frac = float(np.mean([res["hmm_out"]["direction"][i] != 0 for i in ready]))
+    best_sp = max(res["spearman"].items(), key=lambda kv: abs(kv[1]["rho"]))
+    chop_buckets = res["surface"]["chop"]
+    chop_spread = (chop_buckets[-1]["mean_r"] - chop_buckets[0]["mean_r"]) if chop_buckets else 0.0
+
+    S_sym = {
+        "n": n,
+        "n_labeled": int(n - 199),
+        "slots": slots,
+        "hmm": hmm_m,
+        "hmm_note": HMM_NOTE,
+        "hmm_decided_frac": hmm_decided_frac,
+        "abstain_rate_neutral": abstain_rate,
+        "regime_tail": regime_tail,
+        "surface": res["surface"],
+        "spearman": res["spearman"],
+        "best_spearman": {"feature": best_sp[0], "rho": best_sp[1]["rho"], "p": best_sp[1]["p"]},
+        "chop_spread": chop_spread,
+        "bucket_calibration": res["bucket_cal"],
+        "calibration": res["calib"],
+        "barrier": barrier_sym,
+        "mu_hat": mu_hat,
+        "cost_atr": cost,
+        "books": books_res["books"],
+        "gate": books_res["gate_stats"],
+        "dm": books_res["dm"],
+        "tau_star": books_res["tau_star"],
+        "_series": books_res["_series"],
+        "_trades": books_res["_trades"],
+        # checkpoint-only fields (not consumed by report.py; kept so a resumed
+        # run rebuilds records.csv / meta notes byte-identically)
+        "records": books_res["records"],
+        "_notes": sym_notes,
+    }
+    return S_sym, books_res["records"], sym_notes
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="regime_edge proof engine")
     p.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
@@ -85,6 +229,12 @@ def main(argv=None):
     p.add_argument("--out-dir", default=os.path.join(REPO_ROOT, "worklog", "kairos", "reports", "regime_edge"))
     p.add_argument("--bars-limit", type=int, default=None, help="smoke mode: first N bars")
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="per-symbol pickle checkpoints: computed symbols are saved and "
+                        "re-used across invocations (deterministic, seeded). Re-run the "
+                        "same command to resume an interrupted 14-symbol run.")
+    p.add_argument("--recompute", action="store_true",
+                   help="ignore existing checkpoints for the listed symbols")
     args = p.parse_args(argv)
 
     t_start = time.time()
@@ -114,6 +264,22 @@ def main(argv=None):
     all_records = []
     notes = [
         HMM_NOTE,
+        "Symbol set 2026-10-21: the FULL ACTIVE list (14 of 34 per the Supabase "
+        "symbol table) — extends the 5-symbol test run 20261020_055039; per-symbol "
+        "costs come from the repo's own ev_costs.cost_atr_by_class (forex 0.04 / "
+        "metals 0.06 / crypto 0.10 / equity 0.06 / index 0.05), with US500/US30USD "
+        "priced as INDEX while the live registry carries asset_class=stocks "
+        "(0.01 ATR/trade overcharge live, recorded in the Part-C worklog).",
+        "Data basis (data/regime_edge/*.csv, 1h x 730d yfinance proxies): BTCUSD=BTC-USD, "
+        "XAUUSD=GC=F, XAGUSD=SI=F, USDJPY=JPY=X, USDCHF=CHF=X, EURUSD=EURUSD=X, "
+        "GBPUSD=GBPUSD=X, USDCAD=USDCAD=X, AUDUSD=AUDUSD=X, AAPL=AAPL, US500=ES=F, "
+        "US30USD=YM=F; XAUEUR/XAUAUD are CONSTRUCTED as GC=F / EURUSD=X and "
+        "GC=F / AUDUSD=X on inner-joined hourly timestamps (same metal basis as the "
+        "XAUUSD proxy — isolates exactly the quote-currency difference; wick extremes "
+        "carry the quote-bar-close approximation, documented in "
+        "scripts/export_edge_lab_data.py). AAPL trades ~6.5h/day → ~3.8k bars vs "
+        "~13-17k for 24h symbols; short series get the engine's adaptive walk-forward "
+        "schedule (first_fit=max(1200, n//2), step=500) with a per-symbol note.",
         "kairos book: EV gate priced on the shipped ATR bracket in R units (the live gate prices "
         "the brick payoff x ATR probability — W-C1); p_win is the full-sample measured-table "
         "approximation (repo behavior).",
@@ -135,132 +301,34 @@ def main(argv=None):
     ]
     for sym in args.symbols:
         bars = data[sym]
-        n = bars["n"]
         geo_cur = geo["geometry"][sym]
         cost = rbar.COST_BY_CLASS[rbar.SYMBOL_CLASS[sym]]
-        print(f"\n[edge-lab] === {sym} ({n} bars) ===")
-        t0 = time.time()
-        res = run_symbol(sym, bars, geo_cur, args.seed)
-        feats, vals = res["feats"], res["vals"]
-        hmm_m = res["hmm_m"]
-        print(f"[edge-lab] {sym}: features {res['timings']['features']:.1f}s, "
-              f"HMM {res['timings']['hmm']:.1f}s ({res['hmm_out']['n_fits']} refits), "
-              f"edge {res['timings']['edge']:.1f}s")
-        print(f"[edge-lab] {sym}: HMM acc={hmm_m['acc']:.4f} majority={hmm_m['majority']:.4f} "
-              f"skill={hmm_m['skill']:+.4f} (n={hmm_m['n_decided']})")
+        ckpt = None
+        if args.checkpoint_dir:
+            os.makedirs(args.checkpoint_dir, exist_ok=True)
+            ckpt = os.path.join(args.checkpoint_dir, f"{sym}.pkl")
+        if ckpt and os.path.exists(ckpt) and not args.recompute:
+            import pickle
+            with open(ckpt, "rb") as fh:
+                S[sym] = pickle.load(fh)
+            all_records.extend(S[sym].get("records", []))
+            notes.extend(S[sym].get("_notes", []))
+            print(f"\n[edge-lab] === {sym} ({S[sym]['n']} bars) — loaded from checkpoint ===")
+            print(f"[edge-lab] {sym}: HMM skill={S[sym]['hmm']['skill']:+.4f}, "
+                  f"kairos n={S[sym]['books']['kairos']['n']} "
+                  f"meanR={S[sym]['books']['kairos']['mean_r']:+.4f}")
+            continue
+        print(f"\n[edge-lab] === {sym} ({bars['n']} bars) ===")
+        S[sym], recs, sym_notes = compute_symbol(sym, bars, geo_cur, cost, args.seed)
+        all_records.extend(recs)
+        notes.extend(sym_notes)
+        if ckpt:
+            import pickle
+            with open(ckpt, "wb") as fh:
+                pickle.dump(S[sym], fh, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[edge-lab] {sym}: checkpointed -> {ckpt}")
 
-        # ── corrected geometry (physics solver, train-only drift)
-        slots = res["slots"]
-        split = max(1, int(0.70 * len(slots)))
-        train_slots = slots[:split]
-        regime = vals["regime"]
-        er_s = feats["er_signed"]
-        tr_slots, tr_dirs = [], []
-        for i in train_slots:
-            if regime[i] in ("trend_up", "trend_down") and np.isfinite(er_s[i]) and er_s[i] != 0:
-                tr_slots.append(i)
-                tr_dirs.append(1 if er_s[i] > 0 else -1)
-        mu_hat, n_trend = rbar.shrunk_trend_drift(bars["close"], feats["atr"], tr_slots, tr_dirs)
-        print(f"[edge-lab] {sym}: mu_hat={mu_hat:.5f} ATR/bar (n_trend={n_trend} train TREND slots)")
-        t0 = time.time()
-        solved = rbar.solve_corrected_geometry(mu_hat, cost, seed=args.seed)
-        geo_cor = {"tp_atr": solved["tp_atr"], "sl_atr": solved["sl_atr"], "expiry": solved["expiry"]}
-        print(f"[edge-lab] {sym}: corrected geometry tp={geo_cor['tp_atr']} sl={geo_cor['sl_atr']} "
-              f"exp={geo_cor['expiry']} (feasible cells={solved['n_feasible']}, "
-              f"ev={solved['ev']:+.3f}) [{time.time() - t0:.1f}s]")
-
-        # barrier report: current & corrected under mu=0 and mu_hat
-        cur_null = rbar.geometry_probs(geo_cur["tp_atr"], geo_cur["sl_atr"], geo_cur["expiry"], 0.0, seed=args.seed)
-        cur_drift = rbar.geometry_probs(geo_cur["tp_atr"], geo_cur["sl_atr"], geo_cur["expiry"], mu_hat, seed=args.seed)
-        cor_null = rbar.geometry_probs(geo_cor["tp_atr"], geo_cor["sl_atr"], geo_cor["expiry"], 0.0, seed=args.seed)
-        cor_drift = rbar.geometry_probs(geo_cor["tp_atr"], geo_cor["sl_atr"], geo_cor["expiry"], mu_hat, seed=args.seed)
-        barrier_sym = {
-            "current": {"tp_atr": geo_cur["tp_atr"], "sl_atr": geo_cur["sl_atr"], "expiry": geo_cur["expiry"],
-                        "pi_tp": round(cur_null[0], 4), "pi_sl": round(cur_null[1], 4),
-                        "pi_e": round(cur_null[2], 4),
-                        "ev_null": round(rbar.ev_r(cur_null[0], cur_null[1], geo_cur["tp_atr"], geo_cur["sl_atr"], cost), 4),
-                        "ev_drift": round(rbar.ev_r(cur_drift[0], cur_drift[1], geo_cur["tp_atr"], geo_cur["sl_atr"], cost), 4)},
-            "corrected": {"tp_atr": geo_cor["tp_atr"], "sl_atr": geo_cor["sl_atr"], "expiry": geo_cor["expiry"],
-                          "pi_tp": round(cor_null[0], 4), "pi_sl": round(cor_null[1], 4),
-                          "pi_e": round(cor_null[2], 4),
-                          "ev_null": round(rbar.ev_r(cor_null[0], cor_null[1], geo_cor["tp_atr"], geo_cor["sl_atr"], cost), 4),
-                          "ev_drift": round(rbar.ev_r(cor_drift[0], cor_drift[1], geo_cor["tp_atr"], geo_cor["sl_atr"], cost), 4)},
-        }
-        print(f"[edge-lab] {sym}: barrier current pi_sl={barrier_sym['current']['pi_sl']:.3f} "
-              f"ev_null={barrier_sym['current']['ev_null']:+.3f} | corrected pi_sl={barrier_sym['corrected']['pi_sl']:.3f} "
-              f"pi_e={barrier_sym['corrected']['pi_e']:.3f} ev_null={barrier_sym['corrected']['ev_null']:+.3f} "
-              f"ev_drift={barrier_sym['corrected']['ev_drift']:+.3f}")
-
-        # ── walk-forward cells under corrected geometry (publish gate)
-        trades_cor = redge.build_trades(slots, feats, vals, geo_cor, bars["high"], bars["low"],
-                                        bars["close"], feats["atr"])
-        wf_cor = redge.walkforward_cells(trades_cor, n, first_fit=3000, step=1000)
-        if wf_cor["adaptive_note"]:
-            notes.append(f"{sym}: {wf_cor['adaptive_note']}")
-
-        # ── books
-        t0 = time.time()
-        books_res = rbooks.run_books(sym, {"high": bars["high"], "low": bars["low"],
-                                           "close": bars["close"], "atr": feats["atr"], "n": n},
-                                     feats, vals, res["hmm_out"], geo_cur, geo_cor,
-                                     wf_cor["preds"], cost, seed=args.seed)
-        print(f"[edge-lab] {sym}: books [{time.time() - t0:.1f}s] kairos "
-              f"n={books_res['books']['kairos']['n']} meanR={books_res['books']['kairos']['mean_r']:+.4f} | "
-              f"corrected n={books_res['books']['corrected']['n']} "
-              f"meanR={books_res['books']['corrected']['mean_r']:+.4f} (tau*={books_res['tau_star']}) | "
-              f"null n={books_res['books']['null']['n']} meanR={books_res['books']['null']['mean_r']:+.4f}")
-        gp = books_res["gate_stats"]
-        print(f"[edge-lab] {sym}: kairos gates conf_pass={gp['kairos']['conf_pass']}/"
-              f"{gp['kairos']['n_slots']} ev_pass={gp['kairos']['ev_pass']} "
-              f"(base p_win={gp['base']['p_win']}, RR={gp['rr_current']})")
-        all_records.extend(books_res["records"])
-
-        # extra numbers for verdicts/summary
-        regime_tail = []
-        ts = bars["ts"]
-        for i in range(max(0, n - 1500), n):
-            regime_tail.append({
-                "t": pd.Timestamp(ts[i]).isoformat(),
-                "close": round(float(bars["close"][i]), 4),
-                "trend": round(float(er_s[i]) if np.isfinite(er_s[i]) else 0.0, 4),
-                "chop": round(float(feats["chop"][i]) if np.isfinite(feats["chop"][i]) else 0.0, 4),
-                "vol": round(float(feats["vol_pct"][i]) if np.isfinite(feats["vol_pct"][i]) else 0.0, 4),
-                "regime": regime[i],
-            })
-        ready = np.arange(720, n)
-        abstain_rate = float(np.mean([regime[i] == "neutral" for i in ready]))
-        hmm_decided_frac = float(np.mean([res["hmm_out"]["direction"][i] != 0 for i in ready]))
-        best_sp = max(res["spearman"].items(), key=lambda kv: abs(kv[1]["rho"]))
-        chop_buckets = res["surface"]["chop"]
-        chop_spread = (chop_buckets[-1]["mean_r"] - chop_buckets[0]["mean_r"]) if chop_buckets else 0.0
-
-        S[sym] = {
-            "n": n,
-            "n_labeled": int(n - 199),
-            "slots": slots,
-            "hmm": hmm_m,
-            "hmm_note": HMM_NOTE,
-            "hmm_decided_frac": hmm_decided_frac,
-            "abstain_rate_neutral": abstain_rate,
-            "regime_tail": regime_tail,
-            "surface": res["surface"],
-            "spearman": res["spearman"],
-            "best_spearman": {"feature": best_sp[0], "rho": best_sp[1]["rho"], "p": best_sp[1]["p"]},
-            "chop_spread": chop_spread,
-            "bucket_calibration": res["bucket_cal"],
-            "calibration": res["calib"],
-            "barrier": barrier_sym,
-            "mu_hat": mu_hat,
-            "cost_atr": cost,
-            "books": books_res["books"],
-            "gate": books_res["gate_stats"],
-            "dm": books_res["dm"],
-            "tau_star": books_res["tau_star"],
-            "_series": books_res["_series"],
-            "_trades": books_res["_trades"],
-        }
-
-    # ── pooled books + DM, then Holm across the 10 per-symbol tests
+    # ── pooled books + DM, then Holm across the 2×n_symbols per-symbol tests
     pooled = rbooks.pooled_books([S[s] for s in args.symbols])
     raw_ps = []
     for s in args.symbols:

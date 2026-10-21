@@ -1572,7 +1572,7 @@ class HeavySweepMixin:
                     sl_bricks=best.sl_bricks,
                     tp_bricks=best.tp_bricks,
                     n_steps=resolve_markov_n_steps(best.tp_bricks),
-                    cost_price=_heavy_ev_cost_price(sym.get("asset_class"), atr),
+                    cost_price=_heavy_ev_cost_price(sym.get("asset_class"), atr, sym.get("symbol")),
                 )
 
             # ── Batch D 4.1: enforce BEFORE gates (parity with light sweep) ──
@@ -2467,7 +2467,9 @@ class HeavySweepMixin:
         # (renamed p_win_dir). Score it against the PER-CLASS floor (W-C2),
         # not the global 0.20 the light path retired.
         if get_p_win_in_ev_mode() == "live":
-            if ev_result.p_win < get_min_p_win_bracket_for_asset_class(asset_class):
+            if ev_result.p_win < get_min_p_win_bracket_for_asset_class(
+                asset_class, symbol or trade_signal.get("symbol")
+            ):
                 return False
         else:
             if ev_result.p_win < MIN_P_WIN:
