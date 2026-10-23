@@ -756,15 +756,24 @@ The backend requires two Supabase environment variables on Render for full funct
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `SUPABASE_URL` | Supabase project URL | `https://pcvscowltlrxzgxjurcr.supabase.co` |
-| `SUPABASE_KEY` | Supabase **service_role** key (NOT the anon/publishable key) | `eyJhbG...` |
+| `SUPABASE_SECRET_KEY` | Supabase **secret** key (the post-2026-10 Supabase name for the service_role key — NOT the anon/publishable key) | `eyJhbG...` |
 
-> **IMPORTANT**: There is no `SUPABASE_PUBLISHABLE_KEY` variable. The backend uses `SUPABASE_KEY`
-> which must be the **service role** key because it needs full database access for:
+> **IMPORTANT**: There is no `SUPABASE_PUBLISHABLE_KEY` variable **on the backend**. The backend uses
+> `SUPABASE_SECRET_KEY`, which must be the **secret** (service_role) key because it needs full database
+> access for:
 > - Reading/writing `nt_system_config` table (runtime config)
 > - Reading/writing `ta_renko_snapshot` table (pipeline persistence)
 > - Looking up `api_keys` table (SaaS API key authentication)
 > - Writing to `nt_system_config_audit` table (config change logs)
 > - Writing to `rate_limit_violations` table
+>
+> The publishable/anon key (`SUPABASE_PUBLISHABLE_KEY` /
+> `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) is for the **frontend only** and does NOT have sufficient
+> permissions for backend operations.
+>
+> **2026-10-20 rotation:** `SUPABASE_SECRET_KEY` replaces the pre-rotation `SUPABASE_KEY` /
+> `SUPABASE_SERVICE_ROLE`. Both old names still resolve (deprecated aliases) but new deployments
+> should set only `SUPABASE_SECRET_KEY`.
 >
 > The anon/publishable key is for frontend use only (`NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
 > and does NOT have sufficient permissions for backend operations.
@@ -774,10 +783,11 @@ When these variables are not configured, the `/renko/health` endpoint will repor
 - `supabase_snapshot.ok: false, note: "SUPABASE_URL/KEY not configured"`
 - The pipeline still works with hardcoded defaults, but runtime config changes are not persisted
 
-> **Render Deployment Note**: Missing or misconfigured `SUPABASE_URL` / `SUPABASE_KEY` on Render
+> **Render Deployment Note**: Missing or misconfigured `SUPABASE_URL` / `SUPABASE_SECRET_KEY` on Render
 > causes HTTP 500 on all `/renko/*` GET endpoints because `runtime_config.get_str()` cannot connect
 > to Supabase to resolve config values. Ensure both variables are set in Render Environment settings.
 > The `/renko/health` endpoint (no auth required) can be used to verify connectivity.
+> (`SUPABASE_SECRET_KEY` is the 2026-10-20 post-rotation name; `SUPABASE_KEY` still works as an alias.)
 
 ## Bug Fix History
 

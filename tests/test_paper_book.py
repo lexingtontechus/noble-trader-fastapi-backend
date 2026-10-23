@@ -104,7 +104,7 @@ class TestClosePassFetch:
     def _fake_settings(self, monkeypatch):
         class FakeSettings:
             SUPABASE_URL = "https://test.supabase.co"
-            SUPABASE_KEY = "test-key"
+            SUPABASE_SECRET_KEY = "test-key"
         import regime_platform.core.settings as settings_mod
         monkeypatch.setattr(settings_mod, "settings", FakeSettings())
 

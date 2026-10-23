@@ -27,7 +27,7 @@ load_dotenv(ROOT / ".env.local")
 from regime_platform.sweep_orchestrator.tiered_atr import asset_class_key  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260929_dynamic_atr_class_replay.md"
 

@@ -64,8 +64,9 @@ TIER_D_PILOT_PARAMS: tuple[str, ...] = (
 EVAL_EPSILON = 0.01
 
 # Minimum per-symbol calibration records for that symbol's bias to count
-# toward the health metric — mirrors settings.EOD_BIAS_MIN_RECORDS so the
-# tuner isn't reacting to noise from thinly-traded symbols.
+# toward the health metric — mirrors eod_bias.min_records in
+# config/feature_flags.yaml so the tuner isn't reacting to noise from
+# thinly-traded symbols.
 _MIN_RECORDS_FOR_METRIC = 20
 
 _BASELINE_RE = re.compile(r"baseline_metric=([-0-9.eE]+)")

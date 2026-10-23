@@ -56,7 +56,7 @@ sys.path.insert(0, str(ROOT))
 from vol_backtest.arms import NaiveRV, EWMARV, LogHAR, HAR_EWMA, GARCH11  # noqa: E402
 from vol_backtest.model_arms import TimesFM25HTTP, Chronos2, Chronos2Covariate  # noqa: E402
 from vol_backtest.harness import backtest_symbol, aggregate_metrics, dm_family  # noqa: E402
-from vol_backtest.data import THESIS_SYMBOLS, load_data_dir, load_synthetic, load_yfinance  # noqa: E402
+from vol_backtest.data import THESIS_SYMBOLS, load_data_dir, load_synthetic, load_tdva  # noqa: E402
 from vol_backtest.realized import annualize_horizon  # noqa: E402
 
 
@@ -242,7 +242,10 @@ def main() -> None:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--synthetic", action="store_true", help="deterministic synthetic series")
     src.add_argument("--data-dir", type=Path, help="dir with <SYMBOL>.csv files")
-    src.add_argument("--yfinance", action="store_true", help="hourly bars via yfinance")
+    src.add_argument("--tdva", action="store_true",
+                     help="hourly bars from TDVA (TradingView) — the live path's own feed")
+    src.add_argument("--yfinance", action="store_true",
+                     help="DEPRECATED (2026-10-21): Yahoo proxies; use --tdva")
     ap.add_argument("--symbols", default=",".join(THESIS_SYMBOLS),
                     help="comma-separated symbol list")
     ap.add_argument("--horizons", default="6,24,48,72", help="comma-separated horizons (bars)")
@@ -273,11 +276,19 @@ def main() -> None:
     elif args.data_dir is not None:
         series_list = load_data_dir(args.data_dir, symbols)
         source = f"csv:{args.data_dir}"
+    elif args.tdva:
+        series_list = load_tdva(symbols)
+        source = "tdva(hourly, tradingview)"
     else:
+        # DEPRECATED (2026-10-21): Yahoo proxies — a different feed than the
+        # live path.  Retained only so a stale command line still runs; new
+        # runs should pass --tdva.
+        from vol_backtest.data import load_yfinance
+
         series_list = load_yfinance(symbols)
-        source = "yfinance(hourly)"
+        source = "yfinance(hourly, DEPRECATED)"
     if not series_list:
-        raise SystemExit("no series loaded — check --symbols / --data-dir / --yfinance")
+        raise SystemExit("no series loaded — check --symbols / --data-dir / --tdva")
 
     # ---- arms ----
     arms = build_arms(arm_names)

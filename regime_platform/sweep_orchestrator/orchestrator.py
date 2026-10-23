@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import os
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,7 @@ from regime_platform.core.feature_flags import (
     get_dynamic_deadline_mode,
     get_regime_edge_mode,
     get_regime_edge_config,
+    get_edge_lab_run_mode,
     get_router_mode,
     get_clef_flash_mode,
     get_p_win_reachability_mode,
@@ -540,11 +542,14 @@ async def _fetch_timesfm_cached(
         # Direct fallback: bypass the gateway, hit TimesFM server.py on
         # port 8002. Only used if the primary URL returns a connection
         # error or 502/503 (gateway down or model still loading).
-        # Can be disabled by setting TIMESFM_DISABLE_FALLBACK=1.
+        # Disabled by config/feature_flags.yaml's
+        # timesfm_service.disable_fallback (was env TIMESFM_DISABLE_FALLBACK).
         fallback_url = os.getenv(
             "TIMESFM_DIRECT_URL", "http://127.0.0.1:8002/forecast"
         )
-        use_fallback = os.getenv("TIMESFM_DISABLE_FALLBACK", "0") != "1"
+        from regime_platform.core.feature_flags import get_timesfm_disable_fallback
+
+        use_fallback = not get_timesfm_disable_fallback()
 
         # API key is REQUIRED by server.py's /forecast endpoint
         # (verify_api_key dependency). The previous request omitted the
@@ -1662,8 +1667,13 @@ class SweepOrchestrator(HeavySweepMixin):
         # UTC so a mid-day regime shift moves the bias in hours, not 24h. No
         # resolver/retention (the nightly owns those); emergency heavy sweeps
         # run only for newly-flagged symbols subject to the cooldown.
-        if settings.EOD_CORRECTION_INTRADAY_ENABLED:
-            interval = max(1, int(getattr(settings, "EOD_CORRECTION_INTERVAL_HOURS", 4) or 4))
+        from regime_platform.core.feature_flags import (
+            get_eod_correction_intraday_enabled,
+            get_eod_correction_interval_hours,
+        )
+
+        if get_eod_correction_intraday_enabled():
+            interval = get_eod_correction_interval_hours()
             for k in range(1, 24 // interval):
                 hour = (0 + k * interval) % 24
                 self._scheduler.add_job(
@@ -1951,8 +1961,36 @@ class SweepOrchestrator(HeavySweepMixin):
             coalesce=True,
         )
 
+
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")
+
+        # Edge Lab (daily run, 18:30 UTC) ─────────────────────────────────────
+        # Runs the regime_edge proof engine on TDVA data and (mode "live")
+        # publishes the artifact (edge_lab.json) to nt_edge_lab_run for the
+        # nobletradingapp edge-lab page.
+        # Gated by FEATURE: edge_lab_run_mode must not be "off".  DELIBERATELY
+        # NOT regime_edge_mode — that flag is the qualification GATE; gating the
+        # audit run on it would make the gate's own evidence unobservable exactly
+        # when it is needed.
+        # Runs 24 minutes after the heavy sweep (06:18/17:18 local) to avoid
+        # any TradingView batch collision.
+        if get_edge_lab_run_mode() != "off":
+            self._scheduler.add_job(
+                self._run_edge_lab,
+                trigger=CronTrigger.from_crontab("30 18 * * *"),
+                id="edge-lab-daily",
+                name="Edge Lab — regime_edge proof engine (daily)",
+                misfire_grace_time=7200,
+                coalesce=True,
+            )
+            logger.info("Edge-lab job scheduled daily 18:30 UTC (mode=%s)",
+                        get_edge_lab_run_mode())
+        else:
+            logger.info(
+                "Edge-lab run mode is '%s' — edge-lab job NOT scheduled",
+                get_edge_lab_run_mode(),
+            )
 
         # Startup catch-up for fixed-time jobs that can silently skip
         # across restarts (2026-09-01) — see
@@ -3188,6 +3226,138 @@ class SweepOrchestrator(HeavySweepMixin):
         summary.pop("by_symbol", None)
         await write_job_heartbeat("calibration_resolve_hourly", summary)
 
+    async def _run_edge_lab(self) -> None:
+        """Daily regime_edge proof-engine run (2026-10-21).
+
+        Runs the audit pipeline as subprocesses so the ~30 min engine never
+        blocks the event loop, then (mode ``live``) publishes the artifact to
+        ``nt_edge_lab_run`` for the nobletradingapp edge-lab page.
+
+        ``edge_lab_run_mode`` (off | shadow | live, default shadow) is a
+        SEPARATE lever from ``regime_edge_mode``.  That one decides whether the
+        regime_edge qualification GATE is live; this one decides whether the
+        daily PROOF RUN executes.  The run is the evidence that would justify a
+        gate flip, so keying the run to the gate's own mode makes the evidence
+        unobservable exactly when it is needed.
+
+          off    — no job registered.
+          shadow — refresh TDVA data, run the engine, write the artifact to
+                   worklog/, heartbeat nt_roadmap(edge_lab_run).  No Supabase
+                   write.
+          live   — shadow + publish edge_lab.json to nt_edge_lab_run.
+
+        Fail-closed but never raises out of the scheduler tick: a failed run is
+        heartbeated with the error, not retried in-place — the next day's tick
+        is the retry.
+        """
+        from regime_platform.core.feature_flags import (
+            get_edge_lab_run_config,
+            get_edge_lab_run_mode,
+        )
+        from regime_platform.sweep_orchestrator.kairos import write_job_heartbeat
+
+        mode = get_edge_lab_run_mode()
+        if mode == "off":
+            return
+        cfg = get_edge_lab_run_config()
+        source = str(cfg.get("data_source", "tdva"))
+        hours = int(cfg.get("hours", 2160))
+        summary: dict[str, Any] = {"mode": mode, "source": source}
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        try:
+            # 1. Refresh the TDVA OHLCV cache — the live path's own feed.
+            export = os.path.join(repo_root, "scripts", "export_edge_lab_data.py")
+            rc, out = await self._run_script(
+                export, ["--source", source, "--hours", str(hours)]
+            )
+            summary["export_rc"] = rc
+            if rc != 0:
+                raise RuntimeError(f"export rc={rc}: {out[-600:]}")
+
+            # 2. Run the engine (resumable checkpoints: a killed run resumes).
+            ckpt = os.path.join(
+                repo_root, "worklog", "kairos", "reports", "regime_edge", "_ckpt"
+            )
+            runner = os.path.join(repo_root, "scripts", "run_edge_lab.py")
+            rc, out = await self._run_script(runner, ["--checkpoint-dir", ckpt])
+            summary["run_rc"] = rc
+            if rc != 0:
+                raise RuntimeError(f"run_edge_lab rc={rc}: {out[-600:]}")
+
+            # 3. Locate the artifact and record the headline numbers.
+            report_dir = os.path.join(
+                repo_root, "worklog", "kairos", "reports", "regime_edge"
+            )
+            run_ids = sorted(
+                d for d in os.listdir(report_dir)
+                if os.path.isdir(os.path.join(report_dir, d))
+            )
+            if not run_ids:
+                raise RuntimeError("no run directory produced")
+            run_id = run_ids[-1]
+            summary["run_id"] = run_id
+            json_path = os.path.join(report_dir, run_id, "edge_lab.json")
+            with open(json_path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            meta = doc.get("meta", {})
+            summary["symbols"] = len(meta.get("symbols", []))
+            summary["bars_total"] = sum(meta.get("bars_per_symbol", {}).values())
+            summary["size_mb"] = round(os.path.getsize(json_path) / 1e6, 2)
+
+            # 4. Publish (live only) — the dashboard reads v_edge_lab_run.
+            if mode == "live":
+                publisher = os.path.join(repo_root, "scripts", "publish_edge_lab.py")
+                rc, out = await self._run_script(
+                    publisher, [json_path, "--note", f"edge-lab {run_id}"]
+                )
+                summary["publish_rc"] = rc
+                if rc != 0:
+                    raise RuntimeError(f"publish rc={rc}: {out[-600:]}")
+                logger.info("[edge-lab] published run %s to nt_edge_lab_run", run_id)
+
+            logger.info(
+                "[edge-lab] mode=%s source=%s run=%s symbols=%s bars=%s (%.2f MB)",
+                mode, source, run_id, summary["symbols"], summary["bars_total"],
+                summary["size_mb"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary["error"] = type(exc).__name__
+            summary["error_detail"] = str(exc)[-400:]
+            logger.warning("[edge-lab] mode=%s failed: %s", mode, exc)
+        await write_job_heartbeat("edge_lab_run", summary)
+
+    @staticmethod
+    async def _run_script(script: str, args: list[str]) -> tuple[int, str]:
+        """Run a repo script as a subprocess; return ``(rc, tail of output)``.
+
+        Uses ``create_subprocess_exec`` (awaitable) so a ~30 min engine run never
+        blocks the event loop, and emits a progress line every 25 output lines so
+        a long run is observable while it runs.
+        """
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=repo_root,
+        )
+        assert proc.stdout is not None
+        chunks: list[str] = []
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip()
+            chunks.append(text)
+            if len(chunks) % 25 == 0:
+                logger.info("[edge-lab] %s", text)
+        rc = await proc.wait()
+        return rc, "\n".join(chunks[-40:])
+
     async def _run_clef_stance(self) -> None:
         """R5 multi-asset buy/sell/hold stance (Role B, shadow) — 2026-10-10.
 
@@ -3384,7 +3554,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # anomaly) — so its max(computed_at) is a reliable "did a correction
         # pass run recently" signal regardless of which of the two callers
         # produced it.
-        if settings.EOD_CORRECTION_INTRADAY_ENABLED:
+        from regime_platform.core.feature_flags import get_eod_correction_intraday_enabled
+
+        if get_eod_correction_intraday_enabled():
             try:
                 last = await fetch_max_computed_at("nt_symbol_calibration_state")
                 if _is_stale(last, EOD_CORRECTION_INTRADAY_STALE_AFTER, now):
@@ -5197,7 +5369,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # for qualifiable signals to avoid a Supabase round-trip on every
         # neutral tick; self-guarded (min sample + fresh-action skip) so it
         # never churns actions every 5 minutes.
-        if signal_is_qualifiable and settings.EOD_DRIFT_MONITOR_ENABLED:
+        from regime_platform.core.feature_flags import get_eod_drift_monitor_enabled
+
+        if signal_is_qualifiable and get_eod_drift_monitor_enabled():
             from regime_platform.sweep_orchestrator.drift_monitor import check_drift
             drift_row = await check_drift(symbol)
             if drift_row:

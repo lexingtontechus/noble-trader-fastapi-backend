@@ -27,8 +27,8 @@ async def main() -> int:
         print("SUPABASE_URL not set")
         return 1
     headers = {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
     }
     base = settings.SUPABASE_URL.rstrip("/")
     async with httpx.AsyncClient(timeout=40.0) as c:

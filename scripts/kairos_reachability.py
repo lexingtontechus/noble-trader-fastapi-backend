@@ -13,7 +13,7 @@ sys.path.insert(0, '.')
 from dotenv import load_dotenv
 load_dotenv('../../.env.local')
 from regime_platform.core.settings import Settings
-s = Settings(); u = s.SUPABASE_URL.rstrip('/'); k = s.SUPABASE_KEY
+s = Settings(); u = s.SUPABASE_URL.rstrip('/'); k = s.SUPABASE_SECRET_KEY
 h = {"apikey": k, "Authorization": f"Bearer {k}"}
 
 # (a) live

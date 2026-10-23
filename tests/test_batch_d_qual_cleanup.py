@@ -55,7 +55,7 @@ async def _run_enforce(status: str, p_win: float = 0.70, kelly: float = 0.20, bi
         "regime_platform.sweep_orchestrator.calibration_enforcement.settings"
     ) as mock_settings:
         mock_settings.SUPABASE_URL = "https://x.supabase.co"
-        mock_settings.SUPABASE_KEY = "k"
+        mock_settings.SUPABASE_SECRET_KEY = "k"
         mock_settings.EOD_CALIBRATION_ENFORCE = True
         with patch(
             "regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",

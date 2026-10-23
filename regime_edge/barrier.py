@@ -59,12 +59,14 @@ SYMBOL_CLASS = {
     "AAPL": "equity",
     "US500": "index", "US30USD": "index",
 }
-# NOTE (20261021, symbol-table CSV): the live registry lists US500/US30USD
-# as asset_class=stocks (equity cost 0.06); the repo's own ev_costs table
-# carries a distinct index class at 0.05.  This engine prices them as INDEX
-# (their economic class per ev_costs' design) — the registry misclassification
-# is recorded in 20261021_REOPT_SETTLEMENT_DEADLINE_COHERENCE_AND_SPECIALIST_
-# BOOKS.md Part C and costs 0.01 ATR/trade of overcharge live.
+# NOTE (2026-10-21, updated 2026-10-21): this engine prices US500/US30USD as
+# INDEX (their economic class per ev_costs' design).  The live registry
+# originally listed them as asset_class=stocks (equity cost 0.06) — a 0.01
+# ATR/trade overcharge recorded in 20261021_REOPT_SETTLEMENT_DEADLINE_COHERENCE_
+# AND_SPECIALIST_BOOKS.md Part C.  Migration 217
+# (supabase/migrations/217_asset_class_registry_drift.sql) has since corrected
+# the registry to 'indices', so the registry and this table now agree; the
+# NOTE is retained because the code-side symbol-aware normalization predates it.
 FOREX_ALIAS = {"USDJPY": "FOREX", "USDCHF": "FOREX", "EURUSD": "FOREX",
                "GBPUSD": "FOREX", "AUDUSD": "FOREX", "USDCAD": "FOREX"}
 

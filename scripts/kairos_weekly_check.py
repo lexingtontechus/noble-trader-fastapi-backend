@@ -127,7 +127,7 @@ def _get(view: str, select: str, extra: dict | None = None) -> list[dict]:
 
     from regime_platform.core.settings import settings as s
 
-    h = {"apikey": s.SUPABASE_KEY, "Authorization": f"Bearer {s.SUPABASE_KEY}"}
+    h = {"apikey": s.SUPABASE_SECRET_KEY, "Authorization": f"Bearer {s.SUPABASE_SECRET_KEY}"}
     url = f"{s.SUPABASE_URL}/rest/v1/{view}"
     rows, off = [], 0
     with httpx.Client(timeout=120) as c:

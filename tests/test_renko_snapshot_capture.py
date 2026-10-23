@@ -47,7 +47,7 @@ async def test_log_renko_bricks_empty_list_skips(monkeypatch):
         "https://test.supabase.co",
     )
     monkeypatch.setattr(
-        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_SECRET_KEY",
         "test-key",
     )
     result = await log_renko_bricks("XAUUSD", [], brick_size=1.0)
@@ -127,7 +127,7 @@ async def test_log_renko_bricks_uses_on_conflict(monkeypatch):
         "https://test.supabase.co",
     )
     monkeypatch.setattr(
-        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_SECRET_KEY",
         "test-key",
     )
 
@@ -192,7 +192,7 @@ def _fake_post_capture(monkeypatch):
         "https://test.supabase.co",
     )
     monkeypatch.setattr(
-        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_SECRET_KEY",
         "test-key",
     )
     return captured
@@ -400,7 +400,7 @@ async def test_orphan_purge_skipped_when_insert_fails(monkeypatch):
         "https://test.supabase.co",
     )
     monkeypatch.setattr(
-        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_KEY",
+        "regime_platform.sweep_orchestrator.supabase_client.settings.SUPABASE_SECRET_KEY",
         "test-key",
     )
 

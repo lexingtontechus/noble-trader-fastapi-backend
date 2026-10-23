@@ -14,11 +14,16 @@
 #
 # Environment variables (set in Lightning Studio → Secrets):
 #   TIMESFM_API_KEYS     – Comma-separated API keys for /forecast (required)
-#   TIMESFM_MODEL_ID     – HF model ID (default: google/timesfm-2.5-200m-pytorch)
-#   TIMESFM_MAX_CONTEXT  – Max input length (default: 1024)
-#   TIMESFM_MAX_HORIZON  – Max forecast horizon (default: 256)
+#   TIMESFM_READY_TIMEOUT – Seconds to wait for the model to load (infra:
+#                           read by this script + the Dockerfile, not a knob)
 #   RATE_LIMIT_PER_MIN   – TimesFM rate limit per key (default: 60)
 #   PORT                 – Override public port (default: 8000)
+#
+# 2026-10-20: TIMESFM_MODEL_ID / TIMESFM_MAX_CONTEXT / TIMESFM_MAX_HORIZON /
+# TIMESFM_DISABLE_FALLBACK were REMOVED from this list — they now come from
+# config/feature_flags.yaml's timesfm_service block (server.py and
+# orchestrator.py read it). TIMESFM_READY_TIMEOUT is the one TimesFM value
+# that stays an env var, because this shell script reads it.
 #
 # 2026-10-17 — SECRETS LOADING (container support)
 #   This script previously assumed secrets were already in the environment
@@ -63,16 +68,18 @@ if [ -z "${SUPABASE_URL:-}" ]; then
 fi
 
 # ── Verify the minimum viable credential set ───────────────────────────────
-# A missing SUPABASE_URL/KEY means every durable write silently no-ops. Warn
+# A missing SUPABASE_URL/SECRET_KEY means every durable write silently no-ops. Warn
 # loudly at startup rather than discovering it hours later via a stale
 # heartbeat — the exact failure mode of the 2026-10-16 outage.
+# 2026-10-20 rotation: SUPABASE_SECRET_KEY is the canonical name (was
+# SUPABASE_KEY / SUPABASE_SERVICE_ROLE — both still accepted as aliases).
 if [ -z "${SUPABASE_URL:-}" ]; then
     echo "  ⚠ SUPABASE_URL is not set."
     echo "    Set it in the environment or in .env.local / .env."
     echo "    Without it the sweep cannot persist results."
 fi
-if [ -z "${SUPABASE_KEY:-}" ] && [ -z "${SUPABASE_SERVICE_ROLE:-}" ]; then
-    echo "  ⚠ SUPABASE_KEY / SUPABASE_SERVICE_ROLE is not set."
+if [ -z "${SUPABASE_SECRET_KEY:-}" ] && [ -z "${SUPABASE_KEY:-}" ] && [ -z "${SUPABASE_SERVICE_ROLE:-}" ]; then
+    echo "  ⚠ SUPABASE_SECRET_KEY is not set."
     echo "    Without it the sweep cannot persist results."
 fi
 

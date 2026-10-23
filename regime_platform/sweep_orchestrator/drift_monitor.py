@@ -49,7 +49,9 @@ async def check_drift(symbol: str) -> dict[str, Any] | None:
     raises — failures are logged and swallowed so a monitor hiccup cannot
     break the sweep tick.
     """
-    if not settings.EOD_DRIFT_MONITOR_ENABLED:
+    from regime_platform.core.feature_flags import get_eod_drift_monitor_enabled
+
+    if not get_eod_drift_monitor_enabled():
         return None
 
     try:

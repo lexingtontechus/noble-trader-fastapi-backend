@@ -329,8 +329,8 @@ async def _attach_asset_class(rows: list[dict[str, Any]]) -> list[dict[str, Any]
             resp = await client.get(
                 f"{settings.SUPABASE_URL.rstrip('/')}/rest/v1/nt_symbol",
                 headers={
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 },
                 params={"select": "symbol,asset_class"},
             )
@@ -358,7 +358,7 @@ async def _attach_market_structure(rows: list[dict[str, Any]]) -> list[dict[str,
     if not settings.SUPABASE_URL:
         return rows
     out = []
-    headers = {"apikey": settings.SUPABASE_KEY, "Authorization": f"Bearer {settings.SUPABASE_KEY}"}
+    headers = {"apikey": settings.SUPABASE_SECRET_KEY, "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}"}
     async with httpx.AsyncClient(timeout=10.0) as client:
         for r in rows:
             sym = r.get("symbol")

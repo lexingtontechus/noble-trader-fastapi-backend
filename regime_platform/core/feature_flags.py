@@ -193,6 +193,23 @@ _DEFAULTS: dict[str, Any] = {
         "min_win_rate": 0.50,
         "rebuild_interval_hours": 24,
     },
+    # Edge-lab proof-engine CADENCE (2026-10-21).  Deliberately a SEPARATE lever
+    # from ``regime_edge_mode``: that flag decides whether the regime_edge
+    # QUALIFICATION GATE is live; this one decides whether the daily regime_edge
+    # PROOF RUN executes.  The run is the evidence that would justify a gate flip,
+    # so keying the run to the gate's own mode makes the evidence unobservable
+    # exactly when it is needed — the same conflation the repo guide warns about
+    # for parameter-vs-gate flags.
+    #   off    — no job registered.
+    #   shadow — refresh TDVA data, run the engine, write the artifact to the
+    #            worklog, heartbeat nt_roadmap(edge_lab_run).  No Supabase write.
+    #   live   — shadow + publish edge_lab.json to nt_edge_lab_run (the
+    #            nobletradingapp edge-lab page reads v_edge_lab_run).
+    "edge_lab_run_mode": "shadow",
+    "edge_lab_run": {
+        "data_source": "tdva",
+        "hours": 2160,
+    },
     # 2026-10-17 — aligned to the live config/feature_flags.yaml values.
     # These keys had drifted: _DEFAULTS said off/2.0 while the shipped YAML
     # said live/1.5. The YAML always won at runtime (every accessor reads
@@ -481,6 +498,31 @@ _DEFAULTS: dict[str, Any] = {
             "equity": 0.06,
             "index": 0.05,
         },
+    },
+    # ── EOD recalibration knobs (2026-10-20) ──────────────────────────────
+    # Migrated out of settings.py, which read them as env-overridable Settings
+    # fields. The values below are the code defaults that were live (no
+    # `.env.local` entry, no Studio Secret) — see config/feature_flags.yaml's
+    # own comment for the rationale and the MIN_RR precedent.
+    "eod_correction": {
+        "intraday_enabled": True,
+        "interval_hours": 4,
+    },
+    "eod_bias": {
+        "window_days": 7,
+        "min_records": 20,
+    },
+    "eod_drift_monitor": {
+        "enabled": True,
+    },
+    # TimesFM service knobs (model config + fallback toggle). Separate block
+    # from `timesfm` above — _load() shallow-merges, so folding these into it
+    # would replace that dict and drop sigmoid_k/clamp_min/clamp_max.
+    "timesfm_service": {
+        "model_id": "google/timesfm-2.5-200m-pytorch",
+        "max_context": 1024,
+        "max_horizon": 256,
+        "disable_fallback": False,
     },
 }
 
@@ -2135,6 +2177,29 @@ def get_regime_edge_config() -> dict[str, Any]:
     return defaults
 
 
+def get_edge_lab_run_mode() -> str:
+    """Edge-lab proof-run cadence: off | shadow | live (default shadow).
+
+    NOT ``regime_edge_mode``.  That decides the qualification gate; this decides
+    whether the daily audit run executes.  ``shadow`` writes the artifact to the
+    worklog only; ``live`` also publishes it to ``nt_edge_lab_run``.
+    """
+    return str(_load().get(
+        "edge_lab_run_mode", _DEFAULTS.get("edge_lab_run_mode", "shadow"),
+    )).lower()
+
+
+def get_edge_lab_run_config() -> dict[str, Any]:
+    """Edge-lab run config (data_source, hours)."""
+    defaults = dict(_DEFAULTS.get("edge_lab_run", {}))
+    cfg = _load().get("edge_lab_run", {})
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return defaults
+
+
 def get_renko_brick_retention_days() -> int:
     """Days of ``nt_renko_bricks`` ``session_date`` history to keep in the
     nightly retention pass (``renko_retention.run_renko_brick_retention``,
@@ -2316,5 +2381,97 @@ def get_router_mode() -> str:
     calibration, one archetype at a time behind its own flag."""
     mode = str(_load_registry().get("router", {}).get("mode", "shadow")).lower()
     return mode if mode in ("off", "shadow", "live") else "shadow"
+
+
+# ── EOD recalibration knobs (2026-10-20) ─────────────────────────────────────
+# Migrated out of settings.py, where they were env-overridable Settings fields
+# — a leftover Studio Secret with a matching name silently overrode the code
+# default (the MIN_RR shape). Env is no longer consulted; these read the YAML
+# block and fall back to _DEFAULTS, so a missing/unreadable config file cannot
+# change behaviour. See config/feature_flags.yaml's own comment for rationale.
+
+
+def get_eod_correction_intraday_enabled() -> bool:
+    """Master toggle for the 04:30/08:30/12:30/16:30/20:30 UTC correction-only
+    passes. off = nightly-only (the pre-2026-08-13 behaviour)."""
+    val = _block("eod_correction").get("intraday_enabled", True)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_eod_correction_interval_hours() -> int:
+    """Cadence (hours) of the intraday correction passes. Floored at 1 so a
+    bad YAML value cannot produce a zero/negative range in the job loop."""
+    try:
+        return max(1, int(_block("eod_correction").get("interval_hours", 4)))
+    except (TypeError, ValueError):
+        return 4
+
+
+def get_eod_bias_window_days() -> int:
+    """Rolling bias window, in days (``fetch_calibration_bias``/``_raw``)."""
+    try:
+        return int(_block("eod_bias").get("window_days", 7))
+    except (TypeError, ValueError):
+        return 7
+
+
+def get_eod_bias_min_records() -> int:
+    """Minimum raw records before a bias verdict is returned at all; below
+    this the readers return None (INSUFFICIENT_DATA)."""
+    try:
+        return int(_block("eod_bias").get("min_records", 20))
+    except (TypeError, ValueError):
+        return 20
+
+
+def get_eod_drift_monitor_enabled() -> bool:
+    """Whether ``drift_monitor.check_drift`` runs its between-passes fast path
+    on each light sweep."""
+    val = _block("eod_drift_monitor").get("enabled", True)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ── TimesFM service knobs (2026-10-20) ───────────────────────────────────────
+# model_id / max_context / max_horizon were read from env at server.py import
+# time; disable_fallback from env in the orchestrator's fetch path. All four
+# are now YAML-only. TIMESFM_READY_TIMEOUT is deliberately NOT here — it is
+# read by start.sh / on_start.sh / the Dockerfile (shell has no YAML parser).
+
+
+def get_timesfm_model_id() -> str:
+    """HF model id loaded by ``server.py`` (the GPU inference process). An
+    empty/blank value falls back to the default rather than loading nothing."""
+    default = str(_DEFAULTS["timesfm_service"]["model_id"])
+    val = _block("timesfm_service").get("model_id", default)
+    return str(val).strip() or default
+
+
+def get_timesfm_max_context() -> int:
+    """Max input context length for the TimesFM forecast call."""
+    try:
+        return int(_block("timesfm_service").get("max_context", 1024))
+    except (TypeError, ValueError):
+        return 1024
+
+
+def get_timesfm_max_horizon() -> int:
+    """Max forecast horizon for the TimesFM forecast call."""
+    try:
+        return int(_block("timesfm_service").get("max_horizon", 256))
+    except (TypeError, ValueError):
+        return 256
+
+
+def get_timesfm_disable_fallback() -> bool:
+    """True = gateway URL only; the orchestrator's direct-to-:8002 fallback is
+    disabled. False (default) keeps the historical fallback behaviour."""
+    val = _block("timesfm_service").get("disable_fallback", False)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 

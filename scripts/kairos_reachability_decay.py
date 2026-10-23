@@ -36,7 +36,7 @@ from regime_platform.sweep_orchestrator import cell_conditioning as cc  # noqa: 
 from regime_platform.sweep_orchestrator import reachability_decay as rd  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 LOOKBACK_DAYS = int(os.environ.get("RD_LOOKBACK_DAYS", "120"))
 N_FOLDS = int(os.environ.get("RD_FOLDS", "5"))

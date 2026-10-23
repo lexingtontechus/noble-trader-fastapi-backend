@@ -387,8 +387,10 @@ Create a `.env.local` file:
 NEXT_PUBLIC_NOBLE_TRADER_URL=https://8000-&lt;studio>.cloudspaces.litng.ai
 
 # Supabase
+# 2026-10-20 rotation: SUPABASE_SECRET_KEY is the post-rename name for the
+# service_role key. SUPABASE_KEY / SUPABASE_SERVICE_ROLE are deprecated aliases.
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE=your-service-role-key
+SUPABASE_SECRET_KEY=your-secret-key
 
 # Upstash Redis
 UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io

@@ -36,7 +36,7 @@ from regime_platform.sweep_orchestrator import cell_conditioning as cc  # noqa: 
 from regime_platform.sweep_orchestrator import common_factor as cf  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 LOOKBACK_DAYS = int(os.environ.get("CF_LOOKBACK_DAYS", "60"))
 WINDOW_DAYS = float(os.environ.get("CF_WINDOW_DAYS", "3"))

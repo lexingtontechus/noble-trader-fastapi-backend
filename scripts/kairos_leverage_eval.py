@@ -31,7 +31,7 @@ load_dotenv(ROOT / ".env.local")
 from regime_platform.sweep_orchestrator import leverage_eval as le  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 LOOKBACK_DAYS = int(os.environ.get("LEV_LOOKBACK_DAYS", "45"))
 JOIN_TOL_SEC = 600          # ±10 min between a sim row and its sweep_result row

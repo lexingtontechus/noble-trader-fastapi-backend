@@ -99,7 +99,7 @@ _TOTAL_TIMEOUT = 12.0
 
 def _broadcast_enabled() -> bool:
     """Gate on Supabase config + env toggle (NOBLE_REALTIME_BROADCAST)."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return False
     return settings.NOBLE_REALTIME_BROADCAST == "1"
 
@@ -115,7 +115,7 @@ def _realtime_ws_url() -> str:
     scheme = "wss" if parts.scheme in ("https", "wss") else "ws"
     netloc = parts.netloc or (parts.hostname or "")
     base = urlunsplit((scheme, netloc, "/realtime/v1/websocket", "", ""))
-    query = urlencode({"apikey": settings.SUPABASE_KEY, "vsn": "1.0.0"})
+    query = urlencode({"apikey": settings.SUPABASE_SECRET_KEY, "vsn": "1.0.0"})
     return f"{base}?{query}"
 
 

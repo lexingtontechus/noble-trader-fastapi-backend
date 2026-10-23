@@ -747,12 +747,12 @@ if FASTAPI_AVAILABLE:
         # 4. Test Supabase snapshot table
         try:
             from regime_platform.core.settings import settings
-            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+            if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY:
                 import httpx
                 url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot?select=symbol&limit=1"
                 headers = {
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 }
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(url, headers=headers)
@@ -1638,15 +1638,15 @@ if FASTAPI_AVAILABLE:
         # to get the "snapshot_restore" fast path with age info.
         try:
             from regime_platform.core.settings import settings
-            if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+            if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY:
                 import httpx
                 url = (
                     f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
                     f"?symbol=eq.{symbol}&select=updated_at,stats&order=updated_at.desc&limit=1"
                 )
                 headers = {
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 }
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(url, headers=headers)
@@ -2258,15 +2258,15 @@ async def _save_snapshot(
         brick_size = snap["config"].get("brick_size", 0.50)
 
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return False
 
         import httpx
 
         url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates",
         }
@@ -2341,15 +2341,15 @@ async def _restore_pipeline_snapshot(symbol: str, user_id: Optional[str] = None)
     """
     try:
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return None
 
         import httpx
 
         url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
 
         # Session Key Stability: try user-scoped snapshot first, then admin namespace
@@ -2483,7 +2483,7 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
     """
     try:
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return 0
 
         import httpx
@@ -2494,8 +2494,8 @@ async def _prune_stale_snapshots(symbol: str, max_age_hours: float = 24.0) -> in
 
         url = f"{settings.SUPABASE_URL}/rest/v1/nt_renko_snapshot"
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         params = {
             "symbol": f"eq.{symbol}",

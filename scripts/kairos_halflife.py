@@ -34,7 +34,7 @@ from regime_platform.sweep_orchestrator.kairos_rank import (  # noqa: E402
 )
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260927_halflife_t2.md"
 

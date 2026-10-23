@@ -25,8 +25,8 @@ from ..core.settings import settings
 def _supabase_headers() -> dict[str, str]:
     """Build headers for Supabase PostgREST API calls."""
     return {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -52,7 +52,7 @@ async def save_backtest_result(
 
     Returns (record_id, created_at) on success, (None, None) on failure.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         # Supabase not configured - skip persistence silently
         return None, None
 
@@ -147,7 +147,7 @@ async def get_backtest_history(
 
     Returns {"results": [...], "total": int, "offset": int, "limit": int}.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return {"results": [], "total": 0, "offset": offset, "limit": limit}
 
     try:
@@ -190,7 +190,7 @@ async def get_backtest_detail(backtest_id: str, user_id: str) -> Optional[dict]:
 
     Returns the full result dict or None.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return None
 
     try:
@@ -231,7 +231,7 @@ async def delete_backtest(backtest_id: str, user_id: str) -> bool:
 
     Returns True if deleted, False otherwise.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return False
 
     try:

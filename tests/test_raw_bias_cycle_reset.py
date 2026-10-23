@@ -501,7 +501,7 @@ class TestUpsertCalibrationState:
         client = FakeAsyncClient()
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -534,7 +534,7 @@ class TestUpsertCalibrationState:
         client.post = AsyncMock(return_value=FakeResp([], status=500))
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -562,7 +562,7 @@ class TestFetchCalibrationState:
         client = FakeAsyncClient(get_rows=[{"symbol": "EURUSD", "action": "bayesian_penalty"}])
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -585,7 +585,7 @@ class TestFetchCalibrationState:
         client = FakeAsyncClient(get_rows=[])
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -610,7 +610,7 @@ class TestClearStagnationHistory:
         client = FakeAsyncClient()
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -637,7 +637,7 @@ class TestClearStagnationHistory:
         client.delete = AsyncMock(return_value=_FakeDeleteResp(status=500))
         mock_s = AsyncMock()
         mock_s.SUPABASE_URL = "https://x.supabase.co"
-        mock_s.SUPABASE_KEY = "k"
+        mock_s.SUPABASE_SECRET_KEY = "k"
         with (
             patch(
                 "regime_platform.sweep_orchestrator.supabase_client._url",
@@ -671,7 +671,7 @@ class TestFetchRecentActionBiasSourceFilter:
             patch("regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
                   return_value=client),
             patch.object(settings, "SUPABASE_URL", "https://x.supabase.co"),
-            patch.object(settings, "SUPABASE_KEY", "k"),
+            patch.object(settings, "SUPABASE_SECRET_KEY", "k"),
         ):
             asyncio.run(fetch_recent_action_bias("EURUSD", action="bayesian_penalty"))
         params = client.get_calls[0]["params"]
@@ -687,7 +687,7 @@ class TestFetchRecentActionBiasSourceFilter:
             patch("regime_platform.sweep_orchestrator.supabase_client.httpx.AsyncClient",
                   return_value=client),
             patch.object(settings, "SUPABASE_URL", "https://x.supabase.co"),
-            patch.object(settings, "SUPABASE_KEY", "k"),
+            patch.object(settings, "SUPABASE_SECRET_KEY", "k"),
         ):
             asyncio.run(fetch_recent_action_bias(
                 "EURUSD", action="bayesian_penalty", source="eod_correction",

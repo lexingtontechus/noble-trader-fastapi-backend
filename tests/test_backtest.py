@@ -188,7 +188,7 @@ class TestBacktestStore:
         from regime_platform.services.backtest_store import save_backtest_result
         with patch("regime_platform.services.backtest_store.settings") as mock_settings:
             mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_KEY = ""
+            mock_settings.SUPABASE_SECRET_KEY = ""
             result = await save_backtest_result(
                 user_id="test-user",
                 result_dict={"n_trades": 5, "sharpe_ratio": 1.5},
@@ -203,7 +203,7 @@ class TestBacktestStore:
         from regime_platform.services.backtest_store import get_backtest_history
         with patch("regime_platform.services.backtest_store.settings") as mock_settings:
             mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_KEY = ""
+            mock_settings.SUPABASE_SECRET_KEY = ""
             result = await get_backtest_history(user_id="test-user")
             assert result["results"] == []
             assert result["total"] == 0
@@ -214,7 +214,7 @@ class TestBacktestStore:
         from regime_platform.services.backtest_store import get_backtest_detail
         with patch("regime_platform.services.backtest_store.settings") as mock_settings:
             mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_KEY = ""
+            mock_settings.SUPABASE_SECRET_KEY = ""
             result = await get_backtest_detail(backtest_id="test-id", user_id="test-user")
             assert result is None
 
@@ -224,7 +224,7 @@ class TestBacktestStore:
         from regime_platform.services.backtest_store import delete_backtest
         with patch("regime_platform.services.backtest_store.settings") as mock_settings:
             mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_KEY = ""
+            mock_settings.SUPABASE_SECRET_KEY = ""
             result = await delete_backtest(backtest_id="test-id", user_id="test-user")
             assert result is False
 

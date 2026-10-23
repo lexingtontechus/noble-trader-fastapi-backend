@@ -149,8 +149,8 @@ def main() -> int:
 
         async def fetch():
             headers = {
-                "apikey": settings.SUPABASE_KEY,
-                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                "apikey": settings.SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
             }
             async with httpx.AsyncClient(timeout=30.0) as c:
                 r = await c.get(

@@ -180,7 +180,7 @@ async def fetch_latest_eod_action(
     the incident that motivated moving both callers off this
     reconstruction entirely rather than adding a third special case.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         log.debug("Supabase not configured — no EOD action for %s", symbol)
         return None
     url = _url("nt_eod_actions")

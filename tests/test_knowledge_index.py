@@ -220,7 +220,7 @@ class TestBuildIndexAndSearch:
 
 class TestFetchRoadmapChunks:
     def test_best_effort_returns_empty_on_failure(self, monkeypatch):
-        mock_settings = type("S", (), {"SUPABASE_URL": "", "SUPABASE_KEY": ""})()
+        mock_settings = type("S", (), {"SUPABASE_URL": "", "SUPABASE_SECRET_KEY": ""})()
         monkeypatch.setattr(
             "regime_platform.core.settings.settings", mock_settings,
         )
@@ -251,7 +251,7 @@ class TestFetchRoadmapChunks:
                 return _FakeResp()
 
         mock_settings = type("S", (), {
-            "SUPABASE_URL": "https://x.supabase.co", "SUPABASE_KEY": "k",
+            "SUPABASE_URL": "https://x.supabase.co", "SUPABASE_SECRET_KEY": "k",
         })()
         with (
             patch("regime_platform.core.settings.settings", mock_settings),

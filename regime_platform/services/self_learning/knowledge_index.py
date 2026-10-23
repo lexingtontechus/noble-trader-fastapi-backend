@@ -281,13 +281,13 @@ async def _fetch_roadmap_chunks() -> list[Chunk]:
         from regime_platform.core.settings import settings
         import httpx
 
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
             return []
         url = f"{settings.SUPABASE_URL}/rest/v1/nt_roadmap"
         params = {"select": "mechanism,status,current_state,notes"}
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)

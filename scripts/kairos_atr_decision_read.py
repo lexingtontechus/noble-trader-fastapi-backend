@@ -25,7 +25,7 @@ load_dotenv(ROOT / ".env.local")
 from regime_platform.sweep_orchestrator.tiered_atr import should_promote_atr_candidates  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260929_atr_decision_read.md"
 # Hybrid promote live 2026-09-25; first live heavy 09-26 17:06 UTC

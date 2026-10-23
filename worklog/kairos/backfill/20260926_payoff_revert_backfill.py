@@ -46,7 +46,7 @@ from regime_platform.core.settings import settings  # noqa: E402
 from regime_platform.services.statistics.ev_engine import EVEngine  # noqa: E402
 
 U = settings.SUPABASE_URL.rstrip("/") + "/rest/v1/"
-H = {"apikey": settings.SUPABASE_KEY, "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+H = {"apikey": settings.SUPABASE_SECRET_KEY, "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
      "Content-Type": "application/json", "Prefer": "return=minimal"}
 ENGINE = EVEngine(min_ev=get_min_ev(), min_rr=get_min_rr())
 

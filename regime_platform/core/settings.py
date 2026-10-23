@@ -19,7 +19,10 @@ from __future__ import annotations
 import logging
 import os
 
-from pydantic_settings import BaseSettings
+import datetime as _dt
+from typing import ClassVar
+from pydantic import AliasChoices, Field  # noqa: E402
+from pydantic_settings import BaseSettings  # noqa: E402
 
 log = logging.getLogger("regime.settings")
 
@@ -31,6 +34,11 @@ class Settings(BaseSettings):
     All values can be overridden via environment variables or a .env file.
     Grouped into logical sections for clarity.
     """
+
+    # Expose the datetime module so scripts (e.g. publish_edge_lab.py) can read
+    # settings.datetime.datetime.now(...) / settings.datetime.timezone.utc.
+    # ClassVar so pydantic treats it as a class member, not a model field.
+    datetime: ClassVar[_dt] = _dt
 
     model_config = {
         "env_file": [".env", ".env.local"],
@@ -156,8 +164,27 @@ class Settings(BaseSettings):
     RATE_LIMIT_WRITE: str = "20/minute"
 
     # ── Supabase ─────────────────────────────────────────────────────────────
+    # 2026-10-20 key rotation (Studio compromise): Supabase renamed its key
+    # pair — the service_role key is now the **secret** key and the anon key
+    # is now the **publishable** key. This backend needs the SECRET key
+    # (full DB access for nt_system_config, nt_renko_snapshot,
+    # nt_system_config_audit, nt_calibration_records, rate_limit_violations,
+    # api_keys). The publishable/anon key is frontend-only and does NOT have
+    # sufficient permissions here.
+    #
+    # Canonical env var: SUPABASE_SECRET_KEY. The two pre-rotation names are
+    # accepted as deprecated aliases so an existing Studio Secret / .env.local
+    # / agent-profile entry does not break on the day of the rotation — but
+    # they are aliases of ONE field, not a second source of truth.
     SUPABASE_URL: str = ""
-    SUPABASE_KEY: str = ""
+    SUPABASE_SECRET_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_SECRET_KEY",    # canonical (2026-10-20 rotation)
+            "SUPABASE_KEY",           # deprecated pre-rotation name
+            "SUPABASE_SERVICE_ROLE",  # deprecated pre-rotation name
+        ),
+    )
 
     # ── Supabase Realtime broadcast (Talaria dashboard) ─────────────────────
     # NOBLE_REALTIME_BROADCAST=1 (default) enables fire-and-forget broadcast
@@ -222,14 +249,15 @@ class Settings(BaseSettings):
     EOD_RETENTION_STALE_DAYS: int = 7
 
     # ── Intraday recalibration cadence (2026-08-13 plan, user-approved) ─────
-    # Bias is recomputed + nt_eod_actions rewritten every EOD_CORRECTION_INTERVAL_HOURS
-    # (4h) via correction-only passes at 04:30/08:30/12:30/16:30/20:30 UTC in
-    # addition to the nightly 00:30 full lookback. A 24h-only cadence left
-    # un-flagged symbols trading on stale p_win for up to a day after a regime
-    # shift. Master toggle: EOD_CORRECTION_INTRADAY_ENABLED.
-
-    EOD_CORRECTION_INTRADAY_ENABLED: bool = True
-    EOD_CORRECTION_INTERVAL_HOURS: int = 4
+    # Bias is recomputed + nt_eod_actions rewritten every interval via
+    # correction-only passes at 04:30/08:30/12:30/16:30/20:30 UTC in addition
+    # to the nightly 00:30 full lookback. A 24h-only cadence left un-flagged
+    # symbols trading on stale p_win for up to a day after a regime shift.
+    #
+    # MOVED TO config/feature_flags.yaml (2026-10-20) — read via
+    # feature_flags.get_eod_correction_intraday_enabled() /
+    # get_eod_correction_interval_hours(). Env is no longer consulted; a
+    # leftover EOD_CORRECTION_* Secret now has zero effect.
 
     # How old an EOD action may be before enforcement stops applying it.
     # Shrunk 26 → 8h to match the 4h correction cadence (actions are refreshed
@@ -239,11 +267,12 @@ class Settings(BaseSettings):
     EOD_ACTION_FRESH_HOURS: int = 8
 
     # Rolling bias window (C): fetch_calibration_bias computes bias over records
-    # with entered_at within the last EOD_BIAS_WINDOW_DAYS days (min
-    # EOD_BIAS_MIN_RECORDS) instead of all-time, so a regime shift moves the
-    # bias in hours, not days.
-    EOD_BIAS_WINDOW_DAYS: int = 7
-    EOD_BIAS_MIN_RECORDS: int = 20
+    # with entered_at within the last window days (min min_records) instead of
+    # all-time, so a regime shift moves the bias in hours, not days.
+    #
+    # MOVED TO config/feature_flags.yaml (2026-10-20) — read via
+    # feature_flags.get_eod_bias_window_days() / get_eod_bias_min_records().
+    # Env is no longer consulted.
 
     # EOD_BIAS_MIN_DISTINCT_DAYS retired 2026-09-08 (worklog
     # 20260908_PRICING_SCORING_ROOT_CAUSE_AND_SCOPE.md): the distinct-
@@ -411,7 +440,9 @@ class Settings(BaseSettings):
     # predicted p_win. If the deviation exceeds EOD_DRIFT_THRESHOLD with at
     # least EOD_DRIFT_MIN_SAMPLE records AND no fresh action exists, an
     # immediate penalty action is written (bypasses the 4h cadence).
-    EOD_DRIFT_MONITOR_ENABLED: bool = True
+    #
+    # The master toggle MOVED TO config/feature_flags.yaml (2026-10-20) —
+    # read via feature_flags.get_eod_drift_monitor_enabled().
     EOD_DRIFT_WINDOW_HOURS: int = 48
     EOD_DRIFT_MIN_SAMPLE: int = 20
     EOD_DRIFT_THRESHOLD: float = 0.15

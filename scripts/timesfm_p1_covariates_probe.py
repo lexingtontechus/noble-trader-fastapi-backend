@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 import time
 from pathlib import Path
@@ -28,7 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260927_p1_timesfm_covariates.md"
 
-MODEL_ID = os.getenv("TIMESFM_MODEL_ID", "google/timesfm-2.5-200m-pytorch")
+from regime_platform.core.feature_flags import get_timesfm_model_id  # noqa: E402
+
+MODEL_ID = get_timesfm_model_id()
 HORIZON = 1
 CTX = 128  # lean context for the probe (not production 500)
 

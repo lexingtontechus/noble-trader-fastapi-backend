@@ -31,7 +31,7 @@ load_dotenv(ROOT / ".env.local")
 from regime_platform.sweep_orchestrator import cell_conditioning as cc  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 LOOKBACK_DAYS = int(os.environ.get("CELL_LOOKBACK_DAYS", "60"))
 N_FOLDS = int(os.environ.get("CELL_FOLDS", "5"))

@@ -354,12 +354,12 @@ class ReconciliationService:
             try:
                 import httpx
                 from regime_platform.core.settings import settings
-                if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+                if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY:
                     async with httpx.AsyncClient(
                         base_url=f"{settings.SUPABASE_URL}/rest/v1",
                         headers={
-                            "apikey": settings.SUPABASE_KEY,
-                            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                            "apikey": settings.SUPABASE_SECRET_KEY,
+                            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                         },
                         timeout=10.0,
                     ) as client:

@@ -30,7 +30,7 @@ import httpx
 
 s = Settings()
 url = s.SUPABASE_URL.rstrip('/')
-key = s.SUPABASE_KEY
+key = s.SUPABASE_SECRET_KEY
 headers = {**_headers(), "Content-Type": "application/json"}
 now = datetime.now(timezone.utc)
 

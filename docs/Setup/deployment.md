@@ -66,26 +66,31 @@ docker run -p 8000:8000 regime-platform
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUPABASE_URL` | `""` | Supabase project URL (e.g. `https://pcvscowltlrxzgxjurcr.supabase.co`) |
-| `SUPABASE_KEY` | `""` | Supabase **service_role** key (NOT the anon/publishable key) |
+| `SUPABASE_SECRET_KEY` | `""` | Supabase **secret** key (post-2026-10 name for the service_role key — NOT the anon/publishable key) |
 
-> **CRITICAL - Required on Render**: Both `SUPABASE_URL` and `SUPABASE_KEY` must be set
+> **CRITICAL - Required on Render**: Both `SUPABASE_URL` and `SUPABASE_SECRET_KEY` must be set
 > in the Render environment. If either is missing, the Renko pipeline endpoints will return
 > HTTP 500 because `runtime_config` cannot initialise and `RenkoConfig.from_runtime_config()`
 > will fail. The `/renko/health` diagnostic endpoint can be used to verify connectivity.
 >
 > **There is NO `SUPABASE_PUBLISHABLE_KEY` variable on the backend.** The backend requires
-> the **service_role** key because it needs full database access for `nt_system_config`,
+> the **secret** key because it needs full database access for `nt_system_config`,
 > `ta_renko_snapshot`, `api_keys`, `nt_system_config_audit`, and `rate_limit_violations` tables.
-> The anon/publishable key (`NEXT_PUBLIC_SUPABASE_ANON_KEY`) is for the **frontend only**
-> (Next.js on Vercel) and does NOT have sufficient permissions for backend operations.
+> The publishable/anon key (`SUPABASE_PUBLISHABLE_KEY` /
+> `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) is for the **frontend only** (Next.js on Vercel) and
+> does NOT have sufficient permissions for backend operations.
 >
 > **Summary of Supabase keys across the stack:**
 >
 > | Component | Env Var | Key Type | Purpose |
 > |-----------|---------|----------|--------|
-> | Backend (Render) | `SUPABASE_KEY` | service_role | Full DB access for config, snapshots, auth |
+> | Backend (Render) | `SUPABASE_SECRET_KEY` | secret (was service_role) | Full DB access for config, snapshots, auth |
 > | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_URL` | - | Supabase URL |
-> | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon/public | Client-side RLS-protected access |
+> | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | publishable (was anon) | Client-side RLS-protected access |
+>
+> **2026-10-20 rotation:** `SUPABASE_SECRET_KEY` replaces `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE`;
+> `SUPABASE_PUBLISHABLE_KEY` replaces `SUPABASE_ANON_KEY`. The old names are accepted as deprecated
+> aliases by `settings.py`'s `AliasChoices`, but new deployments should set only the new names.
 
 ### Trading
 

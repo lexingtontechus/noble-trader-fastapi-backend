@@ -123,8 +123,14 @@ async def main() -> None:
     logger.info("Starting sweep orchestrator (health port %d)...", health_port)
 
     su = bool(os.environ.get("SUPABASE_URL"))
-    sk = bool(os.environ.get("SUPABASE_KEY"))
-    print(f"[sweep-orch] SUPABASE_URL={'set' if su else 'NOT SET'}, SUPABASE_KEY={'set' if sk else 'NOT SET'}", flush=True)
+    # 2026-10-20 rotation: SUPABASE_SECRET_KEY is canonical; the two
+    # pre-rotation names are still accepted as aliases during transition.
+    sk = bool(
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE")
+    )
+    print(f"[sweep-orch] SUPABASE_URL={'set' if su else 'NOT SET'}, SUPABASE_SECRET_KEY={'set' if sk else 'NOT SET'}", flush=True)
 
     if not su or not sk:
         print("[sweep-orch] FATAL: Supabase not configured — sweeps cannot run", flush=True)

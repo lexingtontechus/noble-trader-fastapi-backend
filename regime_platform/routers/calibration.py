@@ -8,7 +8,7 @@ Calibration Loop endpoints.
 The Calibration Loop pairs predicted P_win at trade entry with the actual
 outcome, enabling bias detection and dynamic weight adjustment for the EV Engine.
 
-Requires SUPABASE_URL and SUPABASE_KEY to be configured.
+Requires SUPABASE_URL and SUPABASE_SECRET_KEY to be configured.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ router = APIRouter(prefix="/calibration", tags=["Calibration"])
 def _supabase_headers() -> dict[str, str]:
     """Build headers for Supabase PostgREST API calls."""
     return {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -53,7 +53,7 @@ def _supabase_url(table: str) -> str:
 
 async def _db_available() -> bool:
     """True if Supabase is configured."""
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
+    return bool(settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY)
 
 
 # ─── Request/Response Models ───────────────────────────────────────────
@@ -330,9 +330,9 @@ async def get_calibration_bias(
         "is the model itself still miscalibrated," independent of
         enforcement compensation.
 
-    ``window_days`` defaults to ``settings.EOD_BIAS_WINDOW_DAYS`` (7 days,
-    the same window the enforcement loop uses). Pass ``0`` for legacy
-    all-time (unwindowed) behavior.
+    ``window_days`` defaults to ``eod_bias.window_days`` in
+    config/feature_flags.yaml (7 days, the same window the enforcement loop
+    uses). Pass ``0`` for legacy all-time (unwindowed) behavior.
     """
     if not await _db_available():
         raise HTTPException(status_code=503, detail="Supabase not configured")
@@ -342,7 +342,9 @@ async def get_calibration_bias(
         fetch_calibration_bias_raw,
     )
 
-    win_days = window_days if window_days is not None else settings.EOD_BIAS_WINDOW_DAYS
+    from regime_platform.core.feature_flags import get_eod_bias_window_days
+
+    win_days = window_days if window_days is not None else get_eod_bias_window_days()
 
     try:
         enforced = await fetch_calibration_bias(symbol, venue=venue, window_days=win_days)
@@ -374,7 +376,7 @@ async def get_calibration_status(
       - CALIBRATED         — within the calibrated band
       - OVERCONFIDENT      — predictions too optimistic
       - UNDERCONFIDENT     — predictions too pessimistic
-      - INSUFFICIENT_DATA  — fewer than ``settings.EOD_BIAS_MIN_RECORDS``
+      - INSUFFICIENT_DATA  — fewer than ``eod_bias.min_records``
         records in the window
     """
     if not await _db_available():
@@ -386,7 +388,9 @@ async def get_calibration_status(
         fetch_calibration_bias_raw,
     )
 
-    win_days = window_days if window_days is not None else settings.EOD_BIAS_WINDOW_DAYS
+    from regime_platform.core.feature_flags import get_eod_bias_window_days
+
+    win_days = window_days if window_days is not None else get_eod_bias_window_days()
 
     try:
         symbols = await fetch_active_symbols()

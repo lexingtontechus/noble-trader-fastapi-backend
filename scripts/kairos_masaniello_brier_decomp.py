@@ -46,7 +46,7 @@ urgency_drift_ratio = cqg.urgency_drift_ratio
 urgency_threshold = cqg.urgency_threshold
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 
 LOOKBACK_DAYS = int(os.environ.get("CAL_LOOKBACK_DAYS", "45"))

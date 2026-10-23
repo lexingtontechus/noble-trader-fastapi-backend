@@ -48,7 +48,7 @@ load_dotenv(ROOT / ".env.local")
 from regime_platform.sweep_orchestrator import calibration_decomp as cd  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 LOOKBACK_DAYS = int(os.environ.get("RB_LOOKBACK_DAYS", "60"))
 HORIZONS = ("4h", "24h", "48h")     # the columns that exist (migration 170)

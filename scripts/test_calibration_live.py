@@ -146,7 +146,7 @@ async def main():
     args = parser.parse_args()
 
     supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
+    supabase_key = os.environ.get("SUPABASE_SECRET_KEY")
 
     if not supabase_url or not supabase_key:
         print("ERROR: Set SUPABASE_URL and SUPABASE_KEY env vars first.")

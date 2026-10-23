@@ -25,7 +25,7 @@ logger = logging.getLogger("regime.sweep.supabase")
 # ─── Internal helpers ─────────────────────────────────────────────
 
 def _headers() -> dict[str, str]:
-    key = settings.SUPABASE_KEY
+    key = settings.SUPABASE_SECRET_KEY
     return {
         "apikey": key,
         "Authorization": f"Bearer {key}",
@@ -42,7 +42,7 @@ def _url(table: str) -> str:
 
 async def fetch_active_symbols() -> list[dict[str, Any]]:
     """Return all rows from ``nt_symbol`` where ``active = true``."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         logger.warning("Supabase not configured — cannot fetch symbols")
         return []
 
@@ -528,7 +528,7 @@ async def mark_finding_triaged(finding_id: int) -> bool:
     now, once the Phase 3 triage job has produced a report for it (or
     given up on it) — so the job doesn't reprocess the same row every
     night. Best-effort: returns False on any failure, never raises."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -1033,7 +1033,7 @@ async def fetch_calibration_bias_cell(
     distance_atr_bucket: str,
 ) -> dict[str, Any] | None:
     """Fetch one R3 cell row (or None). Used by calibration_enforcement."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return None
     params = {
         "select": "symbol,side,vol_tier,distance_atr_bucket,n,wins,losses,avg_p_win,win_rate,bias,bias_shrunk,expectancy_r,computed_at",
@@ -2426,10 +2426,10 @@ async def fetch_calibration_bias(
 
     ROLLING WINDOW (2026-08-13, intraday cadence plan): the bias is computed
     over records with ``entered_at`` within the last ``window_days`` days
-    (default ``settings.EOD_BIAS_WINDOW_DAYS`` = 7) instead of all-time, so a
-    regime shift moves the bias in hours, not days. Pass ``window_days=0``
-    for the legacy all-time behaviour. ``min_records`` defaults to
-    ``settings.EOD_BIAS_MIN_RECORDS`` (20) — a cheap raw-count floor before
+    (default ``eod_bias.window_days`` = 7 in config/feature_flags.yaml)
+    instead of all-time, so a regime shift moves the bias in hours, not days.
+    Pass ``window_days=0`` for the legacy all-time behaviour. ``min_records``
+    defaults to ``eod_bias.min_records`` (20) — a cheap raw-count floor before
     bothering to compute anything.
 
     EPISODE COUNTING + DECAY WEIGHTING (2026-09-08, worklog
@@ -2460,10 +2460,14 @@ async def fetch_calibration_bias(
     if not settings.SUPABASE_URL:
         return None
 
-    from regime_platform.core.feature_flags import get_calibration_bias_min_episodes
+    from regime_platform.core.feature_flags import (
+        get_calibration_bias_min_episodes,
+        get_eod_bias_min_records,
+        get_eod_bias_window_days,
+    )
 
-    win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
-    min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
+    win_days = window_days if window_days is not None else get_eod_bias_window_days()
+    min_n = min_records if min_records is not None else get_eod_bias_min_records()
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
     min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
@@ -2576,10 +2580,14 @@ async def fetch_calibration_bias_raw(
     if not settings.SUPABASE_URL:
         return None
 
-    from regime_platform.core.feature_flags import get_calibration_bias_min_episodes
+    from regime_platform.core.feature_flags import (
+        get_calibration_bias_min_episodes,
+        get_eod_bias_min_records,
+        get_eod_bias_window_days,
+    )
 
-    win_days = window_days if window_days is not None else getattr(settings, "EOD_BIAS_WINDOW_DAYS", 7)
-    min_n = min_records if min_records is not None else getattr(settings, "EOD_BIAS_MIN_RECORDS", 20)
+    win_days = window_days if window_days is not None else get_eod_bias_window_days()
+    min_n = min_records if min_records is not None else get_eod_bias_min_records()
     half_life = getattr(settings, "EOD_BIAS_DECAY_HALFLIFE_DAYS", 3.0)
     min_eps = min_episodes if min_episodes is not None else get_calibration_bias_min_episodes()
 
@@ -2691,7 +2699,7 @@ async def _clear_stagnation_history(symbol: str) -> None:
 
     Best-effort: failures are logged, never raised.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return
     url = _url("nt_eod_actions")
     params = {
@@ -2742,7 +2750,7 @@ async def fetch_recent_action_bias(
     Best-effort: returns ``[]`` on any failure or when Supabase is not
     configured (never raises).
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return []
     url = _url("nt_eod_actions")
     params: dict[str, str] = {
@@ -2837,7 +2845,7 @@ async def upsert_calibration_state(
     never raises (a failed state write should not break the sweep tick;
     the next cycle's write will self-heal it).
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return False
     row = {
         "symbol": symbol,
@@ -2874,7 +2882,7 @@ async def fetch_calibration_state(symbol: str) -> dict[str, Any] | None:
     ``nt_symbol_calibration_state``. Returns ``None`` if the symbol has
     never had a verdict computed, or on any failure — never raises.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return None
     try:
         url = _url("nt_symbol_calibration_state")
@@ -2902,7 +2910,7 @@ async def fetch_latest_tuning_param(param_name: str) -> dict[str, Any] | None:
     ``None`` on failure / no rows. See
     worklog/PARAMETER_TUNING_PLAYBOOK.md §2.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return None
     url = _url("nt_tuning_params")
     params = {
@@ -2933,7 +2941,7 @@ async def fetch_tuning_param_history(param_name: str, limit: int = 10) -> list[d
     Best-effort: returns ``[]`` on any failure or when Supabase is not
     configured (never raises).
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return []
     url = _url("nt_tuning_params")
     params = {
@@ -2997,7 +3005,7 @@ async def update_tuning_param_cycle_result(row_id: str, cycle_result: str) -> bo
 
     Best-effort: returns False on any failure, never raises.
     """
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         return False
     url = _url("nt_tuning_params")
     try:

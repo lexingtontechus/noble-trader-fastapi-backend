@@ -23,15 +23,15 @@ async def get_config(key: str) -> Optional[str]:
     """Return the stored value for `key`, or None if absent/unreachable."""
     try:
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return None
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/nt_system_config",
                 headers={
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 },
                 params={"key": f"eq.{key}", "select": "value"},
             )
@@ -48,15 +48,15 @@ async def set_config(key: str, value: str, category: str = "operational") -> boo
     """Upsert `value` for `key`. Returns True on a confirmed write."""
     try:
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return False
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
                 f"{settings.SUPABASE_URL}/rest/v1/nt_system_config",
                 headers={
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                     "Content-Type": "application/json",
                     "Prefer": "resolution=merge-duplicates",
                 },
@@ -72,15 +72,15 @@ async def delete_config(key: str) -> bool:
     """Delete the row for `key`. Returns True on a confirmed delete."""
     try:
         from regime_platform.core.settings import settings
-        if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY):
             return False
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.delete(
                 f"{settings.SUPABASE_URL}/rest/v1/nt_system_config",
                 headers={
-                    "apikey": settings.SUPABASE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                    "apikey": settings.SUPABASE_SECRET_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 },
                 params={"key": f"eq.{key}"},
             )

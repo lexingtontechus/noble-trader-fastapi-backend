@@ -170,8 +170,8 @@ async def _alpaca_get(user_id: str, path: str, params: dict = None, org_id: str 
 def _supabase_headers() -> dict[str, str]:
     """Build headers for Supabase PostgREST API calls."""
     return {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -184,7 +184,7 @@ def _supabase_alerts_url() -> str:
 
 def _supabase_configured() -> bool:
     """Check if Supabase is configured for persistence."""
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
+    return bool(settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY)
 
 
 def _row_to_threshold(row: dict) -> AlertThreshold:

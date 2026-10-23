@@ -62,7 +62,7 @@ def fetch(cache: Path) -> list[dict]:
 
     from regime_platform.core.settings import settings as s
 
-    h = {"apikey": s.SUPABASE_KEY, "Authorization": f"Bearer {s.SUPABASE_KEY}"}
+    h = {"apikey": s.SUPABASE_SECRET_KEY, "Authorization": f"Bearer {s.SUPABASE_SECRET_KEY}"}
     url = f"{s.SUPABASE_URL}/rest/v1/nt_signal_sim"
     cols = ("signal_id,symbol,signal,ts,resolved_at,exit_ts,regime,regime_conf,outcome,"
             "pnl_bricks,sl_bricks,tp_bricks,qualified,source,entry_price,stop_loss,"

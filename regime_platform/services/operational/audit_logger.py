@@ -98,12 +98,12 @@ class AuditLogger:
         if self._client is None or self._client.is_closed:
             try:
                 from regime_platform.core.settings import settings
-                if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+                if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY:
                     self._client = httpx.AsyncClient(
                         base_url=f"{settings.SUPABASE_URL}/rest/v1",
                         headers={
-                            "apikey": settings.SUPABASE_KEY,
-                            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                            "apikey": settings.SUPABASE_SECRET_KEY,
+                            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                             "Content-Type": "application/json",
                             "Prefer": "return=representation",
                         },

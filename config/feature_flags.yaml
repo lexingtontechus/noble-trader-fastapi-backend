@@ -716,6 +716,25 @@ regime_edge:
   min_win_rate: 0.50
   rebuild_interval_hours: 24
 
+# edge_lab_run_mode (2026-10-21): the DAILY regime_edge proof-engine cadence.
+# DELIBERATELY separate from regime_edge_mode above — that one decides whether
+# the qualification GATE is live; this one decides whether the daily PROOF RUN
+# executes.  The run is the evidence that would justify a gate flip, so keying
+# the run to the gate's own mode makes the evidence unobservable exactly when it
+# is needed.
+#   off    — no job registered.
+#   shadow — refresh TDVA data, run the engine, write edge_lab.json to the
+#            worklog, heartbeat nt_roadmap(edge_lab_run).  No Supabase write.
+#   live   — shadow + publish edge_lab.json to nt_edge_lab_run (the
+#            nobletradingapp edge-lab page reads v_edge_lab_run).
+# Run is 18:30 UTC, 24 min after the heavy sweep, to avoid TradingView batch
+# collisions.  Kill/rollback: set back to "shadow" if the run perturbs the
+# nightly path or the publish is unwanted.
+edge_lab_run_mode: "shadow"
+edge_lab_run:
+  data_source: "tdva"   # the live path's own TradingView feed (never yfinance)
+  hours: 2160           # 90d of 1h bars; TDVA caps one fetch at 5000 bars
+
 # atr_anchored_evidence_mode (2026-09-19 P0): off | shadow | live.
 # live: when ATR-anchored shadow pick changes AND widened bucket has better
 # long-lag than baseline, allow ATR candidates into deadline-aware pool
@@ -1498,3 +1517,57 @@ ev_costs:
     crypto: 0.10
     equity: 0.06
     index: 0.05
+
+# ── EOD recalibration knobs (2026-10-20) ────────────────────────────────────
+# Migrated out of regime_platform/core/settings.py, where they were
+# env-overridable Settings fields — the same "a leftover Secret silently
+# overrides the code default" shape as MIN_RR
+# (worklog/20260904_MIN_RR_REGRESSION.md). `.env.local` carried none of these
+# and no Studio Secret was set, so the code defaults below ARE the live
+# values; YAML is now the sole source of truth and env is NOT consulted.
+#
+# intraday_enabled: master toggle for the 04:30/08:30/12:30/16:30/20:30 UTC
+#   correction-only passes (orchestrator._register_jobs). off = nightly-only.
+# interval_hours: cadence of those passes; must divide 24 evenly.
+eod_correction:
+  intraday_enabled: true
+  interval_hours: 4
+
+# window_days / min_records: fetch_calibration_bias(_raw) computes bias over
+# records entered within the last window_days, and returns None
+# (INSUFFICIENT_DATA) below min_records raw records.
+eod_bias:
+  window_days: 7
+  min_records: 20
+
+# monitor_enabled: the drift monitor's fast path between scheduled passes —
+# on each light sweep, a EOD_DRIFT_WINDOW_HOURS rolling win rate vs the mean
+# predicted p_win over EOD_DRIFT_THRESHOLD, with >= EOD_DRIFT_MIN_SAMPLE
+# records and no fresh action, writes an immediate bayesian_penalty
+# (drift_monitor.check_drift).
+eod_drift_monitor:
+  enabled: true
+
+# ── TimesFM service knobs (2026-10-20) ──────────────────────────────────────
+# model_id / max_context / max_horizon were read from env at server.py import
+# time; disable_fallback from env inside the orchestrator's fetch path. None
+# had a `.env.local` entry and no Studio Secret was set, so the code defaults
+# below are the live values.
+#
+# Kept as a SEPARATE block from the `timesfm` block above on purpose:
+# feature_flags._load() shallow-merges the YAML over _DEFAULTS, so folding
+# these into `timesfm` would replace that whole dict and drop
+# sigmoid_k/clamp_min/clamp_max.
+#
+# disable_fallback: false (default) = the orchestrator may still fall back to
+#   the direct :8002 URL when the gateway is unreachable. true = gateway only.
+#
+# TIMESFM_READY_TIMEOUT stays an ENV VAR, deliberately: it is read by
+# start.sh, lightningstudio/on_start.sh and the Dockerfile (shell has no YAML
+# parser), not by the Python config path. It is documented in .env.example as
+# infra, not as a trading knob.
+timesfm_service:
+  model_id: "google/timesfm-2.5-200m-pytorch"
+  max_context: 1024
+  max_horizon: 256
+  disable_fallback: false

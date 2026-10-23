@@ -51,10 +51,28 @@ logging.basicConfig(
 log = logging.getLogger("timesfm-server")
 
 # ── Model configuration -----------------------------------------------------
+# model_id / max_context / max_horizon are config, not env: they are read from
+# config/feature_flags.yaml's timesfm_service block (2026-10-20 migration —
+# they were TIMESFM_MODEL_ID / TIMESFM_MAX_CONTEXT / TIMESFM_MAX_HORIZON env
+# vars, which meant they could only be set as Studio Secrets). A leftover
+# Secret with those names now has zero effect.
+#
+# The getters are fail-safe: feature_flags._load() falls back to its hardcoded
+# _DEFAULTS on a missing/unreadable YAML, so a config problem degrades to the
+# shipped defaults rather than preventing the model server from starting.
+# sys.path is pinned explicitly because this file is launched directly
+# (``python server.py``) and may not be started from the repo root.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-MODEL_ID = os.getenv("TIMESFM_MODEL_ID", "google/timesfm-2.5-200m-pytorch")
-MAX_CONTEXT = int(os.getenv("TIMESFM_MAX_CONTEXT", "1024"))
-MAX_HORIZON = int(os.getenv("TIMESFM_MAX_HORIZON", "256"))
+from regime_platform.core.feature_flags import (  # noqa: E402
+    get_timesfm_max_context,
+    get_timesfm_max_horizon,
+    get_timesfm_model_id,
+)
+
+MODEL_ID = get_timesfm_model_id()
+MAX_CONTEXT = get_timesfm_max_context()
+MAX_HORIZON = get_timesfm_max_horizon()
 PORT = int(os.getenv("PORT", "8000"))
 
 # Rate limiting config

@@ -1729,7 +1729,7 @@ async def main() -> None:
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else None
     sym_filter = {"symbol": f"in.({','.join(symbols)})"} if symbols else {}
 
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         raise SystemExit(
             "SUPABASE_URL/SUPABASE_KEY not configured — nothing to measure. "
             "(Offline verification: py_compile + the pure-math self-tests require no network.)"

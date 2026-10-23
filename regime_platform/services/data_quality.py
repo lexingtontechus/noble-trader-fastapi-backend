@@ -31,8 +31,8 @@ class UniverseSnapshotService:
     @staticmethod
     def _headers() -> dict[str, str]:
         return {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
             "Content-Type": "application/json",
         }
 
@@ -55,7 +55,7 @@ class UniverseSnapshotService:
           2. Replay: start empty, add on 'added', remove on 'removed'.
           3. Return the final set.
         """
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
             return set()  # No data available
 
         try:
@@ -101,7 +101,7 @@ class UniverseSnapshotService:
 
         Efficient: fetches all events once, then replays forward.
         """
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
             return {}
 
         try:
@@ -244,8 +244,8 @@ class CorporateActionService:
     @staticmethod
     def _headers() -> dict[str, str]:
         return {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
             "Content-Type": "application/json",
         }
 
@@ -260,7 +260,7 @@ class CorporateActionService:
         end_date: date | None = None,
     ) -> list[dict]:
         """Fetch corporate actions for a ticker, optionally within a date range."""
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
             return []
 
         try:

@@ -277,8 +277,8 @@ async def _fetch_resolved_signals(limit: int = 2000) -> list[dict[str, Any]]:
             f"&limit={int(limit)}"
         )
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=headers)
@@ -301,8 +301,8 @@ async def _fetch_paper_rows(limit: int = 2000) -> list[dict[str, Any]]:
             f"&status=in.(closed,expired)&order=close_ts.asc&limit={int(limit)}"
         )
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=headers)

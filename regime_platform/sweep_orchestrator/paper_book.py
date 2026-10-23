@@ -141,8 +141,8 @@ async def _patch_position(position_id: Any, patch: dict[str, Any]) -> bool:
         import httpx
         url = f"{settings.SUPABASE_URL}/rest/v1/nt_paper_positions"
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.patch(
@@ -180,8 +180,8 @@ async def _lookup_signal_id(symbol: Any, ts: Any) -> Any:
             .format(symbol, str(ts).replace("+00:00", "Z").replace(" ", "T"))
         )
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(url, headers=headers)
@@ -209,8 +209,8 @@ async def _fetch_qualified_without_position(limit: int = 2000) -> list[dict[str,
         from regime_platform.core.settings import settings
         import httpx
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         select_cols = (
             "signal_id,symbol,venue,signal,entry_price,stop_loss,"
@@ -257,8 +257,8 @@ async def _fetch_open_positions() -> list[dict[str, Any]]:
         import httpx
         PAGE_SIZE = 1000
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         base_select = "?select=position_id,signal_id,status,size_units,open_ts"
         all_rows: list[dict[str, Any]] = []
@@ -313,8 +313,8 @@ async def _fetch_resolved_signals(
         ).replace(microsecond=0).isoformat()
         cutoff_encoded = cutoff.replace("+00:00", "Z")
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         select_cols = (
             "signal_id,symbol,outcome,exit_price,hold_bars,"
@@ -572,8 +572,8 @@ async def reconcile(
                 "&outcome=in.(tp_hit,sl_hit,expired)"
             )
             headers = {
-                "apikey": settings.SUPABASE_KEY,
-                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                "apikey": settings.SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
             }
             async with httpx.AsyncClient(timeout=15.0) as client:
                 for i in range(0, len(open_signal_ids), 500):

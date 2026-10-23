@@ -70,7 +70,7 @@ async def _fetch_count(url: str, headers: dict[str, str]) -> tuple[int, int]:
 
 
 def _sb_headers() -> dict[str, str]:
-    key = os.environ.get("SUPABASE_KEY", "[REDACTED]")
+    key = os.environ.get("SUPABASE_SECRET_KEY", "[REDACTED]")
     url = os.environ.get("SUPABASE_URL", "https://pcvscowltlrxzgxjurcr.supabase.co")
     return {
         "apikey": key,

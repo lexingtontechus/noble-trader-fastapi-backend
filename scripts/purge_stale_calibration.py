@@ -116,7 +116,7 @@ async def main() -> int:
     print(f"Mode: {'EXECUTE (DELETE committed)' if args.execute else 'DRY RUN (no changes)'}")
     print("=" * 70)
 
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         print("ERROR: Supabase credentials not configured in settings.")
         print("       Set SUPABASE_URL and SUPABASE_KEY in .env.local or Studio secrets.")
         return 1

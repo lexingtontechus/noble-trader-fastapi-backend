@@ -56,7 +56,7 @@ def fetch() -> pd.DataFrame:
             load_dotenv(p)
     from regime_platform.core.settings import Settings
     st = Settings()
-    u, k = st.SUPABASE_URL.rstrip("/"), st.SUPABASE_KEY
+    u, k = st.SUPABASE_URL.rstrip("/"), st.SUPABASE_SECRET_KEY
     h = {"apikey": k, "Authorization": f"Bearer {k}"}
     cols = ("signal_id,symbol,signal,ts,exit_ts,outcome,qualified,p_win,predicted_p_win_raw,"
             "entry_price,stop_loss,take_profit,regime," + EXTRA)

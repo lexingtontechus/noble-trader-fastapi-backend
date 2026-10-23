@@ -167,7 +167,7 @@ class NobleTraderRenkoBridge:
             if not self._supabase_warning_logged:
                 logger.warning(
                     "Supabase not configured - trade data not persisted. "
-                    "Set SUPABASE_URL and SUPABASE_KEY env vars."
+                    "Set SUPABASE_URL and SUPABASE_SECRET_KEY env vars."
                 )
                 self._supabase_warning_logged = True
             return False

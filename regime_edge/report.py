@@ -316,6 +316,10 @@ def build_verdicts(S, pooled, crosscheck, tsfm_obj):
         evidence="Code audit: band-centre/best-effort picks ship n=0/exp=0 metadata; cold-start brick "
                  "fallback (0.5, 3, 6) in absolute price units; pooled-evidence widening is dead code.",
         numbers={"cold_start_brick": [0.5, 3, 6]}, source="repo-measured"))
+    # enrich verdicts with fix metadata (empty fixes → MEASURED-ONLY)
+    for v in out:
+        v["fix_status"] = "MEASURED-ONLY"
+        v["fix_summary"] = None
     assert [v["id"] for v in out] == VERDICT_IDS
     return out
 

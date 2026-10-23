@@ -49,9 +49,9 @@ SYMBOLS = [
 def _get_supabase_config() -> tuple[str | None, str | None]:
     try:
         from regime_platform.core.settings import settings as s
-        return s.SUPABASE_URL, s.SUPABASE_KEY
+        return s.SUPABASE_URL, s.SUPABASE_SECRET_KEY
     except Exception:
-        return os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
+        return os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SECRET_KEY")
 
 
 def _headers(key: str) -> dict[str, str]:

@@ -117,7 +117,12 @@ def run_live(limit: int = 500) -> None:
     import httpx
 
     url = os.environ.get("SUPABASE_URL") or ""
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY") or ""
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or ""
+    )
     if not url or not key:
         print("SUPABASE_URL / key not set — skipping live pull.")
         return

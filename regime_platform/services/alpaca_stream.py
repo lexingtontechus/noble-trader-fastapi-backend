@@ -291,13 +291,13 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
       (api_key, secret_key, base_url) or None if no keys found.
     """
     # Try Supabase - org-level credentials first
-    if settings.SUPABASE_URL and settings.SUPABASE_KEY and org_id:
+    if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY and org_id:
         try:
             import httpx
             supabase_url = f"{settings.SUPABASE_URL}/rest/v1/credentials"
             headers = {
-                "apikey": settings.SUPABASE_KEY,
-                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                "apikey": settings.SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 "Content-Type": "application/json",
             }
             params = {
@@ -329,13 +329,13 @@ async def resolve_alpaca_credentials(user_id: str, org_id: str = None) -> Option
             log.warning(f"Supabase org-level credential lookup failed for org {org_id}: {e}")
 
     # Try Supabase - user-level credentials
-    if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+    if settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY:
         try:
             import httpx
             supabase_url = f"{settings.SUPABASE_URL}/rest/v1/credentials"
             headers = {
-                "apikey": settings.SUPABASE_KEY,
-                "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+                "apikey": settings.SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
                 "Content-Type": "application/json",
             }
             params = {

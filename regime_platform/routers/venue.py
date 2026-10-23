@@ -6,7 +6,7 @@ Venue Management endpoints.
   GET  /venue/{venue_id}/snapshots - Get snapshot history (paginated)
   GET  /venue/{venue_id}/status   - Venue health check
 
-Requires SUPABASE_URL and SUPABASE_KEY to be configured.
+Requires SUPABASE_URL and SUPABASE_SECRET_KEY to be configured.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ router = APIRouter(prefix="/venue", tags=["Venue Management"])
 def _supabase_headers() -> dict[str, str]:
     """Build headers for Supabase PostgREST API calls."""
     return {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -49,7 +49,7 @@ def _supabase_url(table: str) -> str:
 
 async def _db_available() -> bool:
     """True if Supabase is configured."""
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
+    return bool(settings.SUPABASE_URL and settings.SUPABASE_SECRET_KEY)
 
 
 # ─── Request/Response Models ───────────────────────────────────────────

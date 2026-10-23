@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env.local")
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260929_control_geometry_replay.md"
 

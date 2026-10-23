@@ -55,10 +55,10 @@ def _get_supabase_config() -> tuple[str | None, str | None]:
     """Read Supabase credentials from settings or environment."""
     try:
         from regime_platform.core.settings import settings
-        return settings.SUPABASE_URL, settings.SUPABASE_KEY
+        return settings.SUPABASE_URL, settings.SUPABASE_SECRET_KEY
     except Exception:
         url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_KEY")
+        key = os.environ.get("SUPABASE_SECRET_KEY")
         return url, key
 
 def _headers(key: str) -> dict[str, str]:

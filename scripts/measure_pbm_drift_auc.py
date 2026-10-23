@@ -817,7 +817,7 @@ async def main() -> None:
         if args.symbols else None
     )
 
-    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SECRET_KEY:
         raise SystemExit(
             "SUPABASE_URL/SUPABASE_KEY not configured — nothing to measure. "
             "(Offline verification: py_compile + the synthetic AUC self-test "

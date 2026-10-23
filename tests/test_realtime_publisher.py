@@ -58,7 +58,7 @@ class FakeWS:
 def _enabled_settings(monkeypatch):
     """Default test env: Supabase configured + broadcast enabled."""
     monkeypatch.setattr(settings, "SUPABASE_URL", "https://abc.supabase.co")
-    monkeypatch.setattr(settings, "SUPABASE_KEY", "service-role-key")
+    monkeypatch.setattr(settings, "SUPABASE_SECRET_KEY", "service-role-key")
     monkeypatch.setattr(settings, "NOBLE_REALTIME_BROADCAST", "1")
     monkeypatch.setattr(settings, "NOBLE_TRADER_PLAN_SIGNAL_SCOUT_ID", SCOUT_UUID)
     monkeypatch.setattr(settings, "NOBLE_TRADER_PLAN_PRECISION_PRO_ID", PRO_UUID)

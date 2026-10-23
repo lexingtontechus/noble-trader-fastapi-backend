@@ -8,6 +8,7 @@ its own hardcoded ±0.05 threshold.
 import pytest
 
 from regime_platform.core.settings import settings
+from regime_platform.core.feature_flags import get_eod_bias_window_days
 from regime_platform.middleware.rate_limit import limiter
 from regime_platform.routers import calibration as calibration_router
 from regime_platform.sweep_orchestrator import eod_correction
@@ -109,7 +110,7 @@ async def test_get_calibration_bias_calls_shared_fetch_functions(monkeypatch):
     (the exact functions eod_correction.py uses) rather than a separate
     all-time query, and must pass through the window_days it was given."""
     monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setattr(settings, "SUPABASE_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_SECRET_KEY", "test-key")
 
     calls = {}
 
@@ -138,10 +139,10 @@ async def test_get_calibration_bias_calls_shared_fetch_functions(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_calibration_bias_defaults_window_to_settings(monkeypatch):
     """When window_days is not passed, it must default to
-    settings.EOD_BIAS_WINDOW_DAYS — the same window the enforcement loop
-    uses — not the old all-time (unwindowed) behavior."""
+    eod_bias.window_days (config/feature_flags.yaml) — the same window the
+    enforcement loop uses — not the old all-time (unwindowed) behavior."""
     monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setattr(settings, "SUPABASE_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_SECRET_KEY", "test-key")
 
     seen = {}
 
@@ -157,13 +158,13 @@ async def test_get_calibration_bias_defaults_window_to_settings(monkeypatch):
         request=None, symbol="AAPL", venue=None, window_days=None,
     )
 
-    assert seen["window_days"] == settings.EOD_BIAS_WINDOW_DAYS
+    assert seen["window_days"] == get_eod_bias_window_days()
 
 
 @pytest.mark.asyncio
 async def test_get_calibration_status_iterates_active_symbols(monkeypatch):
     monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setattr(settings, "SUPABASE_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_SECRET_KEY", "test-key")
 
     async def fake_fetch_active_symbols():
         return [{"symbol": "AAPL"}, {"symbol": "US500"}]

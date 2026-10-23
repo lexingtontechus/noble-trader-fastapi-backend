@@ -112,7 +112,7 @@ class RuntimeConfig:
         self._lock = asyncio.Lock()
         self._schema_loaded = False
         self._supabase_url = settings.SUPABASE_URL
-        self._supabase_key = settings.SUPABASE_KEY
+        self._supabase_key = settings.SUPABASE_SECRET_KEY
         self._client: Optional[httpx.AsyncClient] = None
         self._on_change_callbacks: List[Any] = []  # list of async callables
 

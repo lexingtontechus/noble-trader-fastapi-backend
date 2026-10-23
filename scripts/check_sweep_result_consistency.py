@@ -25,7 +25,7 @@ with open(env_path, "r") as f:
         env[k.strip()] = v.strip().strip('"').strip("'")
 
 SUPABASE_URL = env.get("SUPABASE_URL", env.get("SB_URL", "")).rstrip("/")
-SUPABASE_KEY = env.get("SUPABASE_KEY", env.get("SUPABASE_SERVICE_ROLE_KEY", ""))
+SUPABASE_KEY = env.get("SUPABASE_SECRET_KEY", env.get("SUPABASE_KEY", env.get("SUPABASE_SERVICE_ROLE_KEY", "")))
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("FAIL: missing Supabase credentials")

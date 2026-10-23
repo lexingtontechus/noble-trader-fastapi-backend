@@ -217,14 +217,14 @@ class L2FeedManager:
         # Try Supabase first
         try:
             from regime_platform.core.settings import settings as _settings
-            if _settings.SUPABASE_URL and _settings.SUPABASE_KEY:
+            if _settings.SUPABASE_URL and _settings.SUPABASE_SECRET_KEY:
                 import httpx
                 async with httpx.AsyncClient(timeout=3.0) as client:
                     resp = await client.get(
                         f"{_settings.SUPABASE_URL}/rest/v1/nt_symbol",
                         headers={
-                            "apikey": _settings.SUPABASE_KEY,
-                            "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
+                            "apikey": _settings.SUPABASE_SECRET_KEY,
+                            "Authorization": f"Bearer {_settings.SUPABASE_SECRET_KEY}",
                         },
                         params={
                             "symbol": f"eq.{symbol}",

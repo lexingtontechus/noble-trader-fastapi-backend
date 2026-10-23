@@ -110,7 +110,7 @@ class _FakeEodActionsClient:
 def _run_fetch_latest(rows, actions=None):
     mock_settings = MagicMock()
     mock_settings.SUPABASE_URL = "https://x.supabase.co"
-    mock_settings.SUPABASE_KEY = "k"
+    mock_settings.SUPABASE_SECRET_KEY = "k"
     client = _FakeEodActionsClient(rows)
     with (
         patch("regime_platform.sweep_orchestrator.calibration_enforcement.settings", mock_settings),
@@ -195,7 +195,7 @@ async def _run_apply(p_win=0.65, kelly=0.2, state_row=None, enforce=True):
         "regime_platform.sweep_orchestrator.calibration_enforcement.settings"
     ) as mock_settings:
         mock_settings.SUPABASE_URL = "https://x.supabase.co"
-        mock_settings.SUPABASE_KEY = "k"
+        mock_settings.SUPABASE_SECRET_KEY = "k"
         mock_settings.EOD_CALIBRATION_ENFORCE = enforce
         with patch(
             "regime_platform.sweep_orchestrator.supabase_client.fetch_calibration_state",

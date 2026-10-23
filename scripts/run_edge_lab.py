@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import sys
 import time
@@ -58,6 +59,38 @@ HMM_NOTE = (
     "plus the rank-sort label map (regime_engine.py:1155-1156) — the repo's first-fit "
     "behavior and the exact behavior the 20261019 evaluation criticizes."
 )
+
+
+def _data_basis_note(data_dir: str) -> str:
+    """State the ACTUAL data basis from ``SOURCE.json`` (written by the export).
+
+    A hardcoded feed claim in the artifact is a lie the moment the export moves
+    to another source — the engine must report what it was actually fed.  The
+    2026-10-21 baseline hardcoded "yfinance proxies" while the CSVs were being
+    regenerated from TDVA; this replaces that with the marker's own record.
+    """
+    path = os.path.join(data_dir, "SOURCE.json")
+    if not os.path.exists(path):
+        return ("Data basis UNKNOWN — data/regime_edge/SOURCE.json is missing; run "
+                "scripts/export_edge_lab_data.py first.")
+    with open(path, encoding="utf-8") as fh:
+        prov = json.load(fh)
+    src = prov.get("source", "unknown")
+    fetched = (prov.get("fetched_at") or "")[:19].replace("T", " ")
+    bars = prov.get("bars", {}) or {}
+    total = sum(bars.values())
+    if src == "tdva":
+        detail = ("TDVA/TradingView — the live sweep's own feed, symbols resolved via "
+                  "nt_symbol.tradingview_symbol. XAUEUR/XAUAUD are REAL symbols under "
+                  "TDVA, so no GC=F/FX ratio construction is involved.")
+    else:
+        detail = ("yfinance proxies (LEGACY reproduction path) — GC=F/EURUSD=X and "
+                  "GC=F/AUDUSD=X constructed ratios for XAUEUR/XAUAUD.")
+    return (
+        f"Data basis: {src} ({len(bars)} symbols, {total:,} bars, fetched {fetched} UTC). "
+        f"{detail} Short series get the engine's adaptive walk-forward schedule "
+        f"(first_fit=max(1200, n//2), step=500) with a per-symbol note."
+    )
 
 
 def run_symbol(sym, bars, geo_cur, seed):
@@ -267,19 +300,11 @@ def main(argv=None):
         "Symbol set 2026-10-21: the FULL ACTIVE list (14 of 34 per the Supabase "
         "symbol table) — extends the 5-symbol test run 20261020_055039; per-symbol "
         "costs come from the repo's own ev_costs.cost_atr_by_class (forex 0.04 / "
-        "metals 0.06 / crypto 0.10 / equity 0.06 / index 0.05), with US500/US30USD "
-        "priced as INDEX while the live registry carries asset_class=stocks "
-        "(0.01 ATR/trade overcharge live, recorded in the Part-C worklog).",
-        "Data basis (data/regime_edge/*.csv, 1h x 730d yfinance proxies): BTCUSD=BTC-USD, "
-        "XAUUSD=GC=F, XAGUSD=SI=F, USDJPY=JPY=X, USDCHF=CHF=X, EURUSD=EURUSD=X, "
-        "GBPUSD=GBPUSD=X, USDCAD=USDCAD=X, AUDUSD=AUDUSD=X, AAPL=AAPL, US500=ES=F, "
-        "US30USD=YM=F; XAUEUR/XAUAUD are CONSTRUCTED as GC=F / EURUSD=X and "
-        "GC=F / AUDUSD=X on inner-joined hourly timestamps (same metal basis as the "
-        "XAUUSD proxy — isolates exactly the quote-currency difference; wick extremes "
-        "carry the quote-bar-close approximation, documented in "
-        "scripts/export_edge_lab_data.py). AAPL trades ~6.5h/day → ~3.8k bars vs "
-        "~13-17k for 24h symbols; short series get the engine's adaptive walk-forward "
-        "schedule (first_fit=max(1200, n//2), step=500) with a per-symbol note.",
+        "metals 0.06 / crypto 0.10 / equity 0.06 / index 0.05). US500/US30USD are "
+        "priced as INDEX, and migration 217 has since moved their nt_symbol."
+        "asset_class from 'stocks' to 'indices' (XAU*/XAG* 'commodities' -> "
+        "'metals'), so the registry and this engine now agree.",
+        _data_basis_note(args.data_dir),
         "kairos book: EV gate priced on the shipped ATR bracket in R units (the live gate prices "
         "the brick payoff x ATR probability — W-C1); p_win is the full-sample measured-table "
         "approximation (repo behavior).",
@@ -346,16 +371,17 @@ def main(argv=None):
     period_start = min(str(pd.Timestamp(data[s]["ts"][0]).isoformat()) for s in args.symbols)
     period_end = max(str(pd.Timestamp(data[s]["ts"][data[s]["n"] - 1]).isoformat()) for s in args.symbols)
     meta = {
-        "run_id": run_id,
-        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "engine": ENGINE,
-        "symbols": args.symbols,
-        "period_start": period_start,
-        "period_end": period_end,
-        "bars_per_symbol": {s: int(data[s]["n"]) for s in args.symbols},
-        "band_source": {"file": geo["source"]["file"], "lines": geo["source"]["lines"]},
-        "approximation_notes": notes,
-    }
+            "run_id": run_id,
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "engine": ENGINE,
+            "symbols": args.symbols,
+            "period_start": period_start,
+            "period_end": period_end,
+            "bars_per_symbol": {s: int(data[s]["n"]) for s in args.symbols},
+            "band_source": {"file": geo["source"]["file"], "lines": geo["source"]["lines"]},
+            "approximation_notes": notes,
+            "fix_manifest_note": "fixes: [] — filled by the Task 40-b coordinator from the repo-side implementation.",
+        }
     if args.bars_limit:
         meta["approximation_notes"].append(
             f"SMOKE RUN: --bars-limit {args.bars_limit} (first {args.bars_limit} bars per symbol)")

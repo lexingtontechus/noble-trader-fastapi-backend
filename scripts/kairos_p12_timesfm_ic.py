@@ -40,7 +40,7 @@ from regime_platform.sweep_orchestrator.kairos_rank import (  # noqa: E402
 )
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260927_p12_timesfm_ic.md"
 VOL_ORDER = ("low_vol", "med_low_vol", "med_high_vol", "high_vol")

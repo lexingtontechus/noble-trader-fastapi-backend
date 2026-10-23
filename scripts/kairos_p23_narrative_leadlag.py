@@ -29,7 +29,7 @@ from regime_platform.sweep_orchestrator.kairos import regime_cell  # noqa: E402
 from regime_platform.sweep_orchestrator.kairos_rank import transition_type  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 OUT = ROOT / "worklog" / "kairos" / "reports" / "20260928_p23_narrative_leadlag.md"
 VOL_ORDER = ("low_vol", "med_low_vol", "med_high_vol", "high_vol")

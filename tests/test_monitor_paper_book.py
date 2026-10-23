@@ -23,7 +23,7 @@ def test_sb_headers_format():
     """_sb_headers should return dict with apikey + Authorization."""
     with patch.dict(os.environ, {
         "SUPABASE_URL": "https://test.supabase.co",
-        "SUPABASE_KEY": "secret_key_123",
+        "SUPABASE_SECRET_KEY": "secret_key_123",
     }):
         headers = monitor_paper_book._sb_headers()
         assert "apikey" in headers
@@ -139,7 +139,7 @@ async def test_check_paper_book_health_healthy():
 
     with patch.dict(os.environ, {
         "SUPABASE_URL": "https://test.supabase.co",
-        "SUPABASE_KEY": "test_key",
+        "SUPABASE_SECRET_KEY": "test_key",
         "MONITOR_OPEN_THRESHOLD": "2000",
         "MONITOR_ORPHAN_THRESHOLD": "0",
         "PAPER_BOOK_METRICS_PATH": "/tmp/test_paper_book_metrics.json",
@@ -169,7 +169,7 @@ async def test_check_paper_book_health_supabase_failure():
 
     with patch.dict(os.environ, {
         "SUPABASE_URL": "https://test.supabase.co",
-        "SUPABASE_KEY": "test_key",
+        "SUPABASE_SECRET_KEY": "test_key",
         "PAPER_BOOK_METRICS_PATH": "/tmp/test_paper_book_metrics_fail.json",
     }):
         with patch("httpx.AsyncClient", return_value=client_instance):

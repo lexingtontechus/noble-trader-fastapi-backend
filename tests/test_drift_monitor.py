@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-from regime_platform.core.settings import settings
+from regime_platform.core import feature_flags
 from regime_platform.sweep_orchestrator.drift_monitor import check_drift
 
 
@@ -49,7 +49,9 @@ def _run(bias_info, current_state=None, insert_ok=True, state_ok=True):
 
 class TestDriftMonitor:
     def test_disabled_returns_none(self, monkeypatch):
-        monkeypatch.setattr(settings, "EOD_DRIFT_MONITOR_ENABLED", False)
+        monkeypatch.setattr(
+            feature_flags, "get_eod_drift_monitor_enabled", lambda: False
+        )
         result = asyncio.run(check_drift("EURUSD"))
         assert result is None
 

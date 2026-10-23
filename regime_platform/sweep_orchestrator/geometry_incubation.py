@@ -216,8 +216,8 @@ def _table_url(table: str) -> str:
 def _headers() -> dict[str, str]:
     from regime_platform.core.settings import settings
     return {
-        "apikey": settings.SUPABASE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "apikey": settings.SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
     }
 

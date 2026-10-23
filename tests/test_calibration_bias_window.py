@@ -134,7 +134,7 @@ class TestRollingWindow:
         assert result is None
 
     def test_default_min_records_uses_settings(self):
-        # settings.EOD_BIAS_MIN_RECORDS default 20 — 19 rows → None
+        # eod_bias.min_records default 20 — 19 rows → None
         result, _ = _run(rows=_rows(19, 10))
         assert result is None
 

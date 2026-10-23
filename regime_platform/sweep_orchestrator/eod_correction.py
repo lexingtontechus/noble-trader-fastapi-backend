@@ -349,8 +349,8 @@ async def _fetch_recent_win_rates(symbol: str) -> dict[str, float]:
         import httpx
 
         headers = {
-            "apikey": settings.SUPABASE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+            "apikey": settings.SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SECRET_KEY}",
         }
         recent_start = _days_ago(DECAY_LOOKBACK_DAYS)
         prior_start = _days_ago(DECAY_LOOKBACK_DAYS * 2)
@@ -501,8 +501,8 @@ async def run_eod_correction(raw_bias_mode: bool = False) -> dict[str, Any]:
                 from regime_platform.core.settings import settings as _settings
                 if _settings.SUPABASE_URL and get_geometry_tuning_sweep_mode() != "off":
                     _headers = {
-                        "apikey": _settings.SUPABASE_KEY,
-                        "Authorization": f"Bearer {_settings.SUPABASE_KEY}",
+                        "apikey": _settings.SUPABASE_SECRET_KEY,
+                        "Authorization": f"Bearer {_settings.SUPABASE_SECRET_KEY}",
                     }
                     async with _httpx.AsyncClient(timeout=8.0) as _c:
                         _r = await _c.get(

@@ -61,7 +61,7 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env.local")
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+SUPABASE_KEY = os.environ["SUPABASE_SECRET_KEY"]
 HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
 
 # PostgREST page size. 1000 matches every other script in this repo

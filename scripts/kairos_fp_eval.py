@@ -34,7 +34,7 @@ from regime_platform.sweep_orchestrator.kairos_quant import era_of  # noqa: E402
 from regime_platform.sweep_orchestrator.tiered_atr import EXPIRY_BARS  # noqa: E402
 
 U = os.environ["SUPABASE_URL"].rstrip("/")
-K = os.environ["SUPABASE_KEY"]
+K = os.environ["SUPABASE_SECRET_KEY"]
 H = {"apikey": K, "Authorization": f"Bearer {K}"}
 
 LOOKBACK_DAYS = int(os.environ.get("FP_EVAL_LOOKBACK_DAYS", "45"))

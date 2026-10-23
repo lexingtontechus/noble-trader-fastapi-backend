@@ -366,7 +366,7 @@ def _run_real_cycle(table, cal_raw, symbol="AAPL"):
 
     mock_settings = AsyncMock(wraps=real_settings)
     mock_settings.SUPABASE_URL = "https://x.supabase.co"
-    mock_settings.SUPABASE_KEY = "k"
+    mock_settings.SUPABASE_SECRET_KEY = "k"
 
     patches = [
         patch("regime_platform.sweep_orchestrator.supabase_client.fetch_active_symbols",
