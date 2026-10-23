@@ -105,11 +105,22 @@ Read: `worklog/20261001_PHASE2_FIRST_PASSAGE_RESULT.md` ·
 
 ## Version
 
+**v8.4.0** — **Router Edge Model (R2)**: the strategy router is now a MEASURED next-candle edge predictor — `p_router = P(up | symbol, archetype, direction)` from decay-weighted Beta cells anchored on the symbol base rate (PBM pattern), stamped/resolved/skill-scored every light-sweep tick, with **TimesFM scored on the same outcomes** (`timesfm_skill` vs `router_skill` — the TSFM-vs-router debate as a number) and a clean TSFM exit ladder (`timesfm_blend_mode` off/shadow/live). Ships shadow: EV byte-identical until the report promotes it. · TSFM-vs-reasoning-LLM decision matrix: `docs/scopes/20261023_TSFM_VS_REASONING_LLM_AND_ROUTER_EDGE.md`
+
 **v8.3.0** — **definitive weaknesses remediation** (`regime_edge` proof engine: numeric regime VALUES → measured conditional edge; 17 verdicts, 11 PROVEN-FAIL / 6 MEASURED) · **7 corrective fixes LIVE, no shadow** (shipped-bracket EV, heavy fail-closed, cost-aware EV, chop gate, direction stability, barrier floor, calibration cutover predicate) · first-passage physics now constrains every published bracket
 
 **v8.2.0** — **first-passage pivot** (HMM detour retired; `p_markov_hold_n` withdrawn) · **Kairos** research stack (RANK board, event-time transitions, walk-forward `rank_score`) · **TimesFM quantile & covariate capture** · Renko live-grid hygiene · Settlement / calibration measurement honesty
 
 ### Highlights
+
+#### Router Edge Model — the strategy router as a measured next-candle edge predictor (2026-10-23)
+
+- **R2 of the router+registry split**: R1 stamps the archetype; `router_edge.py` turns the verdict into `p_router = P(next candle up | symbol, archetype, direction)` — a decay-weighted Beta posterior per cell (2^(−age/τ), PBM convention) anchored on the symbol's own base rate. The same stamp/resolve loop skill-scores **p_timesfm on the identical outcomes** — TSFM-vs-router becomes a measured competition (`scripts/measure_router_edge.py`), not an argument. Verdict gates documented (promote router / A/B / exit TimesFM).
+- **`p_router` is a first-class EV blend source** (peer weight 5/14 of p_timesfm; renormalization handles presence/absence; short-inversion matches p_timesfm's convention) — gated by `router_edge_mode: shadow` (default: EV **byte-identical**; regression-tested to the ulp) with a per-cell `n_eff ≥ 30` live gate.
+- **`timesfm_blend_mode` exit ladder**: live (today, byte-identical) → shadow (fetch+score, withheld from the blend — the A/B) → **off (not fetched — zero network cost)**; wired on BOTH light and heavy sweeps.
+- **Zero schema change, restart-safe**: cells/stamps/skills live in `param_store` tiers (local-SQLite authority + existing Supabase mirror). Macro/trend reads hoisted above `compute_ev` and REUSED by the 5b1/5b2 blocks (sentinels) — identical fetch count, no double round-trips.
+- **TSFM-vs-reasoning-LLM decision matrix** (zero-shot numbers = the mirage, ruled out; agentic categorical = the future rung): `docs/scopes/20261023_TSFM_VS_REASONING_LLM_AND_ROUTER_EDGE.md`.
+- Tests: **38 new** (`test_router_edge.py`), full suite at the clean-HEAD baseline (20 pre-existing env failures, byte-verified via git stash), regime_edge 19/19.
 
 #### Definitive remediation (2026-10-20)
 

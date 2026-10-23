@@ -443,6 +443,48 @@ timesfm_k_adaptive_mode: "shadow"
 timesfm_k_floor: 5.0     # defensive lower bound (rarely binds -- k >= base_k always in the current formula)
 timesfm_k_ceiling: 60.0  # defensive upper bound -- caps k at 3x the default base_k=20 at full trend strength
 
+# ── Router Edge Model (R2, 2026-10-23) ──────────────────────────────────────
+# The strategy router as a MEASURED next-candle edge predictor — the R2
+# build of the router+registry split (scope
+# 20261023_TSFM_VS_REASONING_LLM_AND_ROUTER_EDGE.md; module
+# regime_platform/sweep_orchestrator/router_edge.py).
+#
+# Every light-sweep tick, per symbol: resolve the previous stamp's
+# next-candle outcome (close-vs-close on the first newer bar), update the
+# decay-weighted Beta cell for (symbol, archetype, direction) anchored on
+# the symbol's own base rate (PBM shrinkage convention), then route the
+# CURRENT tick and emit
+#     p_router = P(next candle up | symbol, archetype, direction)
+# stamped point-in-time for the next tick's resolution. The SAME outcome
+# stream skill-scores p_timesfm — the TSFM-vs-router competition measured,
+# not argued (report: scripts/measure_router_edge.py or
+# router_edge.router_edge_report()).
+#
+# router_edge_mode: off | shadow | live.
+#   shadow (default): measure + stamp only; the EV blend is byte-identical.
+#     Promote to live only on evidence: cell n_eff >= router_edge_min_n_eff
+#     AND router_skill > timesfm_skill on the same stream (then consider
+#     timesfm_blend_mode shadow/off for the A/B or the exit).
+#   live: p_router additionally enters compute_ev as a blend source
+#     (evidence-gated per cell; the engine's renormalization handles its
+#     presence/absence exactly like every other source).
+router_edge_mode: "shadow"
+router_edge_weight: 5.0     # relative blend weight when live (5.0 = p_timesfm's peer)
+router_edge_k0: 20.0        # shrinkage pseudo-counts anchoring cells on the base rate
+router_edge_tau_days: 90.0  # evidence half-life (days), 2^(-age/tau) decay
+router_edge_min_n_eff: 30.0 # per-cell gate before p_router may enter the live blend
+
+# timesfm_blend_mode (the TSFM exit ladder, same date): off | shadow | live.
+#   live (default): p_timesfm feeds the directional EV blend exactly as
+#     today — byte-identical; nothing changes until the evidence says so.
+#   shadow: TimesFM still fetched + skill-scored on the router-edge outcome
+#     stream, but withheld from compute_ev (blend renormalizes) — the A/B.
+#   off: not fetched at all (zero network cost); blend renormalizes.
+# The verdict comes from router_edge_report(): timesfm_skill vs
+# router_skill on the SAME stamped outcomes. Do NOT flip to shadow/off
+# before that report exists with real n_eff.
+timesfm_blend_mode: "live"
+
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
 # simulation found the heavy sweep's Sharpe-only grid pick sometimes

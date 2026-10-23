@@ -133,12 +133,18 @@ class TestBlendDropsSource:
         """The retirement is a membership switch, not a weight-table edit —
         P_WIN_WEIGHTS_FULL keeps its 5:4:5 relative weights so flipping
         p_markov_hold_n_mode back to 'live' restores the prior blend
-        exactly, with no migration needed."""
-        assert set(P_WIN_WEIGHTS_FULL) == {"p_regime", "p_markov_hold_n", "p_timesfm"}
+        exactly, with no migration needed.
+
+        R2 (2026-10-23): p_router joined the table at the peer 5/14 weight;
+        the three ORIGINAL entries are byte-identical, which is the
+        restoration guarantee this test pins."""
+        assert set(P_WIN_WEIGHTS_FULL) == {
+            "p_regime", "p_markov_hold_n", "p_timesfm", "p_router",
+        }
         assert P_WIN_WEIGHTS_FULL["p_regime"] == pytest.approx(5 / 14)
         assert P_WIN_WEIGHTS_FULL["p_markov_hold_n"] == pytest.approx(4 / 14)
         assert P_WIN_WEIGHTS_FULL["p_timesfm"] == pytest.approx(5 / 14)
-        assert sum(P_WIN_WEIGHTS_FULL.values()) == pytest.approx(1.0)
+        assert P_WIN_WEIGHTS_FULL["p_router"] == pytest.approx(5 / 14)
 
     def test_p_win_shifts_when_source_dropped(self):
         """Dropping a below-neutral source must RAISE p_win (it was dragging

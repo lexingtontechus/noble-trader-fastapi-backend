@@ -439,6 +439,16 @@ _DEFAULTS: dict[str, Any] = {
     "timesfm_k_adaptive_mode": "shadow",
     "timesfm_k_floor": 5.0,
     "timesfm_k_ceiling": 60.0,
+    # ── Router Edge Model (R2, 2026-10-23) — the strategy router as a
+    # measured next-candle edge predictor + the TimesFM exit ladder.
+    # See router_edge.py's module docstring and
+    # docs/scopes/20261023_TSFM_VS_REASONING_LLM_AND_ROUTER_EDGE.md.
+    "router_edge_mode": "shadow",
+    "router_edge_weight": 5.0,
+    "router_edge_k0": 20.0,
+    "router_edge_tau_days": 90.0,
+    "router_edge_min_n_eff": 30.0,
+    "timesfm_blend_mode": "live",
     "trend": {
         "sma_short_days": 10,
         "sma_mid_days": 20,
@@ -832,7 +842,84 @@ def get_timesfm_k_floor() -> float:
     try:
         return float(_load().get("timesfm_k_floor", _DEFAULTS["timesfm_k_floor"]))
     except (TypeError, ValueError):
-        return _DEFAULTS["timesfm_k_floor"]
+        return float(_DEFAULTS["timesfm_k_floor"])
+
+
+def get_timesfm_blend_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — the TimesFM EXIT ladder (R2,
+    2026-10-23; router_edge.py). ``live`` (default): p_timesfm feeds the
+    directional EV blend exactly as today (byte-identical). ``shadow``:
+    TimesFM is still fetched and skill-scored on the router-edge outcome
+    stream, but p_timesfm is withheld from compute_ev (the blend
+    renormalizes over the remaining sources) — the A/B measurement that
+    decides keep-vs-cut. ``off``: not fetched at all (zero network cost);
+    the renormalization handles its absence. The measured verdict comes
+    from router_edge_report()['timesfm_skill'] vs ['router_skill'] on the
+    SAME stamped outcomes."""
+    mode = str(_load().get(
+        "timesfm_blend_mode", _DEFAULTS["timesfm_blend_mode"],
+    )).lower()
+    return mode if mode in ("off", "shadow", "live") else "live"
+
+
+def get_router_edge_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — the Router Edge Model (R2).
+    ``shadow`` (default): the router's verdict is turned into a measured
+    P(next candle up | symbol, archetype, direction) — stamped, resolved,
+    skill-scored per tick — with NO live effect (the EV blend is
+    byte-identical). ``live``: p_router additionally enters compute_ev as
+    a blend source (evidence-gated per cell by router_edge_min_n_eff).
+    ``off``: the tick is skipped entirely (zero cost)."""
+    mode = str(_load().get(
+        "router_edge_mode", _DEFAULTS["router_edge_mode"],
+    )).lower()
+    return mode if mode in ("off", "shadow", "live") else "shadow"
+
+
+def get_router_edge_weight() -> float:
+    """Relative blend weight for p_router when router_edge_mode=live.
+    Default 5.0 = a peer of p_timesfm's 5 (same scale as the raw weights
+    behind P_WIN_WEIGHTS_FULL; the engine renormalises at blend time)."""
+    try:
+        return float(_load().get(
+            "router_edge_weight", _DEFAULTS["router_edge_weight"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["router_edge_weight"])
+
+
+def get_router_edge_k0() -> float:
+    """Shrinkage pseudo-counts anchoring each cell on the symbol base rate
+    (the PBM anchor convention; see router_edge.predict_p_up)."""
+    try:
+        return float(_load().get(
+            "router_edge_k0", _DEFAULTS["router_edge_k0"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["router_edge_k0"])
+
+
+def get_router_edge_tau_days() -> float:
+    """Evidence half-life (days) for the decay-weighted cell counts —
+    2^(-age/tau), the PBM decay convention."""
+    try:
+        return float(_load().get(
+            "router_edge_tau_days", _DEFAULTS["router_edge_tau_days"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["router_edge_tau_days"])
+
+
+def get_router_edge_min_n_eff() -> float:
+    """Per-cell effective-sample gate before p_router may enter the live
+    blend (shadow stamps always flow — being wrong in shadow costs
+    nothing). Default 30."""
+    try:
+        return float(_load().get(
+            "router_edge_min_n_eff", _DEFAULTS["router_edge_min_n_eff"],
+        ))
+    except (TypeError, ValueError):
+        return float(_DEFAULTS["router_edge_min_n_eff"])
 
 
 def get_timesfm_k_ceiling() -> float:

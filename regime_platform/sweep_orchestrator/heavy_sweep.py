@@ -693,10 +693,17 @@ class HeavySweepMixin:
             # section for the full history. This sweep always runs to
             # completion; TimesFM's forecast is fetched purely as an
             # input to the EV blend further down.
-            p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
+            # R2 (2026-10-23): timesfm_blend_mode=off skips the fetch
+            # entirely (the exit ladder — see router_edge.py); shadow
+            # fetches (kept for result.p_timesfm observability) but the
+            # compute_ev call below withholds it from the blend.
+            from regime_platform.core.feature_flags import get_timesfm_blend_mode
+            _heavy_tsfm_mode = get_timesfm_blend_mode()
             p_timesfm: Optional[float] = None
-            if p_timesfm_result is not None:
-                p_timesfm, _ = p_timesfm_result
+            if _heavy_tsfm_mode != "off":
+                p_timesfm_result = await _fetch_timesfm_cached(symbol, prices)
+                if p_timesfm_result is not None:
+                    p_timesfm, _ = p_timesfm_result
             result.p_timesfm = p_timesfm
 
             # ── 3. ATR(14) + 5 brick sizes ────────────────────────────
@@ -1567,7 +1574,13 @@ class HeavySweepMixin:
                     direction=direction,
                     transition_matrix=markov_T if _p_markov_hold_n_live else None,
                     current_state=markov_current if _p_markov_hold_n_live else "FLAT",
-                    p_timesfm=p_timesfm,
+                    # R2: withhold from the blend in shadow mode (the A/B);
+                    # renormalization handles the absence. NOTE: the router
+                    # edge source is deliberately light-sweep-only (the heavy
+                    # path is the geometry grid, not a next-candle instrument
+                    # — documented in the R2 scope doc) so heavy/light
+                    # p_win_raw diverge slightly when router_edge_mode=live.
+                    p_timesfm=(p_timesfm if _heavy_tsfm_mode == "live" else None),
                     brick_size=best.brick_size,
                     sl_bricks=best.sl_bricks,
                     tp_bricks=best.tp_bricks,

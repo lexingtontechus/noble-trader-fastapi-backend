@@ -108,8 +108,15 @@ def test_markov_weight_is_the_renormalised_5_4_5_share():
 
 def test_markov_weight_matches_the_weight_table():
     w = P_WIN_WEIGHTS_FULL
+    # R2 (2026-10-23): the denominator is the LIVE source subset
+    # (flag-aware in markov_weight). At the shipped default
+    # router_edge_mode=shadow that is the historical 3-source table —
+    # p_router sits in the table but not the denominator until it goes
+    # live, so the counterfactual matches the blend that actually
+    # produced the stored p_win_raw rows.
+    live_total = w["p_regime"] + w["p_markov_hold_n"] + w["p_timesfm"]
     assert le.markov_weight() == pytest.approx(
-        w["p_markov_hold_n"] / sum(w.values())
+        w["p_markov_hold_n"] / live_total
     )
 
 

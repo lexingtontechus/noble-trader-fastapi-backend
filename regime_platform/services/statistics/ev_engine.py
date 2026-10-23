@@ -115,6 +115,15 @@ P_WIN_WEIGHTS_FULL = {
     "p_regime": 5.0 / 14.0,
     "p_markov_hold_n": 4.0 / 14.0,
     "p_timesfm": 5.0 / 14.0,
+    # R2 (2026-10-23, router_edge.py): the strategy router's measured
+    # P(next candle up | symbol, archetype, direction) as a FOURTH source.
+    # Peer weight 5 on the SAME /14 denominator as the others — the
+    # renormalizer only sees RATIOS, so a shared denominator is what makes
+    # p_router a true peer of p_timesfm (5:4:5:5). When all four sources
+    # are live the renormalized shares are 5/19, 4/19, 5/19, 5/19. NO
+    # existing caller passes p_router, so the available-source map never
+    # includes it and every historical blend is byte-identical.
+    "p_router": 5.0 / 14.0,
 }
 
 # Regime shift meta-signal thresholds
@@ -147,6 +156,7 @@ class EVFullResult:
     p_historical: float
     p_markov: float               # T^N multi-step hold probability
     p_timesfm: float = 0.0
+    p_router: float = 0.0         # R2 (2026-10-23): router-edge source (0.0 = absent)
     ev: float = 0.0
     ev_per_dollar: float = 0.0
     rr: float = 0.0
@@ -339,6 +349,7 @@ class EVEngine:
         "p_regime",
         "p_markov_hold_n",
         "p_timesfm",
+        "p_router",
     )
 
     def set_weights(self, weights: Dict[str, float]) -> None:
@@ -618,6 +629,7 @@ class EVEngine:
         sl_bricks: int = 3,
         brick_size: float = 0.50,
         p_timesfm: Optional[float] = None,
+        p_router: Optional[float] = None,
         n_steps: Optional[int] = None,
         p_markov_override: Optional[float] = None,
         cost_price: float = 0.0,
@@ -652,6 +664,12 @@ class EVEngine:
             brick_size: Dollar size of one Renko brick.
             p_timesfm: TimesFM P(up next bar) forecast. None if
                        unavailable.
+            p_router: Router Edge Model P(up next candle | symbol,
+                       archetype, direction) — the R2 source (2026-10-23,
+                       router_edge.py). P(up) in [0,1]; inverted for shorts
+                       exactly like p_timesfm below. None (every historical
+                       caller) keeps the blend byte-identical — the source
+                       simply never enters the available map.
             n_steps: Optional override for T^N. Defaults to ``tp_bricks``
                      (1 brick per bar — brick velocity model).
             p_markov_override: When provided, used AS the P_markov_hold_N
@@ -698,6 +716,16 @@ class EVEngine:
         ):
             p_timesfm_val = 1.0 - float(p_timesfm_val)
 
+        # R2 (2026-10-23): same P(up)→P(win-for-direction) convention for
+        # the router edge source. The orchestrator passes P(next candle
+        # up | cell) — for a sell the cell is direction-conditioned, so the
+        # win probability is its complement.
+        p_router_val = p_router  # may be None
+        if p_router_val is not None and str(direction).lower() in (
+            "short", "sell", "s",
+        ):
+            p_router_val = 1.0 - float(p_router_val)
+
         # Step 2: Build the available-source map and renormalise weights
         # Missing sources are dropped; remaining weights rescaled to sum
         # to 1.0. This prevents dilution toward 0.5 when a source is
@@ -710,6 +738,8 @@ class EVEngine:
             available["p_markov_hold_n"] = p_markov_hold_n
         if p_timesfm_val is not None:
             available["p_timesfm"] = p_timesfm_val
+        if p_router_val is not None:
+            available["p_router"] = p_router_val
 
         # Renormalise weights over available sources only
         raw_weights = {
@@ -767,6 +797,7 @@ class EVEngine:
             p_historical=round(p_historical_computed, 4) if p_historical_computed is not None else 0.0,
             p_markov=round(p_markov_hold_n, 4) if p_markov_hold_n is not None else 0.0,
             p_timesfm=round(p_timesfm_val, 4) if p_timesfm_val is not None else 0.0,
+            p_router=round(p_router_val, 4) if p_router_val is not None else 0.0,
             ev=round(ev, 4),
             ev_per_dollar=round(ev_per_dollar, 4),
             rr=round(rr, 4),

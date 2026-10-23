@@ -51,10 +51,21 @@ def test_weights_full_has_no_ghost_historical():
     """Batch F (2026-09-16): p_historical removed from the live weight
     table — the 0.30 row was a ghost (never fed by production since
     2026-09-09) that renormalized out and misled readers. set_weights()
-    still accepts the key for API compat."""
+    still accepts the key for API compat.
+
+    R2 (2026-10-23): the table gained p_router (5/14, the router-edge
+    source) — the "sums to 1" property was a legacy accident of the
+    3-source table; the REAL invariant is the ratio set (5:4:5:5 on a
+    shared /14 denominator — only ratios reach the renormalizer)."""
     assert "p_pattern" not in P_WIN_WEIGHTS_FULL
     assert "p_historical" not in P_WIN_WEIGHTS_FULL
-    assert abs(sum(P_WIN_WEIGHTS_FULL.values()) - 1.0) < 1e-9
+    assert set(P_WIN_WEIGHTS_FULL) == {
+        "p_regime", "p_markov_hold_n", "p_timesfm", "p_router",
+    }
+    assert P_WIN_WEIGHTS_FULL["p_regime"] == pytest.approx(5 / 14)
+    assert P_WIN_WEIGHTS_FULL["p_markov_hold_n"] == pytest.approx(4 / 14)
+    assert P_WIN_WEIGHTS_FULL["p_timesfm"] == pytest.approx(5 / 14)
+    assert P_WIN_WEIGHTS_FULL["p_router"] == pytest.approx(5 / 14)
 
 
 def test_p_historical_none_renormalizes_like_old_p_pattern():

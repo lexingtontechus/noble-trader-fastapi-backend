@@ -81,10 +81,24 @@ def markov_weight() -> float:
     sources that were present live — ``p_historical`` was already retired and
     renormalised out, so the applied weight is ``4/14``, not ``4/14`` of a
     different denominator.
+
+    R2 (2026-10-23): ``p_router`` joined the table at the peer 5/14 weight
+    but only participates in the blend when ``router_edge_mode=live`` — the
+    denominator here is flag-aware so the counterfactual matches whatever
+    blend actually produced the stored ``p_win_raw`` rows being measured.
     """
     w = P_WIN_WEIGHTS_FULL
-    total = sum(w.values())
-    return float(w["p_markov_hold_n"]) / float(total)
+    keys = ["p_regime", "p_markov_hold_n", "p_timesfm"]
+    try:
+        from regime_platform.core.feature_flags import get_router_edge_mode
+        if get_router_edge_mode() == "live":
+            keys.append("p_router")
+    except Exception:  # noqa: BLE001 — diagnostic helper, flag read is best-effort
+        pass
+    total = sum(float(w.get(k, 0.0)) for k in keys)
+    if total <= 0:
+        return 0.0
+    return float(w["p_markov_hold_n"]) / total
 
 
 # ─── The counterfactual ────────────────────────────────────────────────────

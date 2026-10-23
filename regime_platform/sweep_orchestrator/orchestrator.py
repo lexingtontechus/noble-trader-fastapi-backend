@@ -3927,20 +3927,32 @@ class SweepOrchestrator(HeavySweepMixin):
                         "(%s: %s), using base k", symbol, type(exc).__name__, exc,
                     )
 
-            # Fetch TimesFM (cached 15min)
-            p_timesfm_result = await _fetch_timesfm_cached(
-                symbol, prices,
-                k_override=timesfm_k_override, shadow_k=timesfm_shadow_k,
-            )
+            # Fetch TimesFM (cached 15min). timesfm_blend_mode=off skips the
+            # fetch entirely (the R2 exit ladder — zero network cost; the EV
+            # blend renormalizes over the remaining sources). shadow/live
+            # still fetch: shadow withholds p_timesfm from compute_ev but
+            # keeps it flowing into the router-edge skill scoring (the A/B
+            # measurement); live is today's behaviour byte-identical.
+            p_timesfm: float | None = None
+            timesfm_confidence: float | None = None
+            _tsfm_blend_mode = get_timesfm_blend_mode()
+            p_timesfm_result = None
+            if _tsfm_blend_mode != "off":
+                p_timesfm_result = await _fetch_timesfm_cached(
+                    symbol, prices,
+                    k_override=timesfm_k_override, shadow_k=timesfm_shadow_k,
+                )
 
             # Validate TimesFM result before processing
             if p_timesfm_result is None:
-                logger.warning(
-                    f"[sweep:orch] {symbol}: TimesFM unavailable — skipping qualification checks, "
-                    f"using fallback mode (p_timesfm=None)"
-                )
-                sweep_window = "sweep-light (TimesFM unavailable)"
-                p_timesfm = None
+                if _tsfm_blend_mode != "off":
+                    logger.warning(
+                        f"[sweep:orch] {symbol}: TimesFM unavailable — skipping qualification checks, "
+                        f"using fallback mode (p_timesfm=None)"
+                    )
+                    sweep_window = "sweep-light (TimesFM unavailable)"
+                else:
+                    sweep_window = "sweep-light (timesfm_blend_mode=off)"
             else:
                 sweep_window = "sweep-light"
                 p_timesfm, timesfm_confidence = p_timesfm_result
@@ -4802,6 +4814,113 @@ class SweepOrchestrator(HeavySweepMixin):
                     symbol, type(exc).__name__, exc,
                 )
 
+        # ── 5b-3c. Router Edge Model (R2, 2026-10-23) — the router as a
+        # MEASURED next-candle edge predictor ──────────────────────
+        # router_edge.py: resolve the previous stamp's next-candle outcome,
+        # update the (symbol, archetype, direction) Beta cells + BOTH skill
+        # accumulators (router + p_timesfm on the SAME outcomes), then route
+        # THIS tick and emit p_router = P(next candle up | cell). Runs for
+        # EVERY tick (not only qualified signals — conditioning on the
+        # qualified sub-population would select on the gates we measure
+        # past) and BEFORE compute_ev so p_router_blend can feed the blend
+        # below when router_edge_mode=live. shadow (default): measurement
+        # only — p_router_blend stays None and the blend is byte-identical.
+        # Fail-open (module contract): never breaks the tick.
+        #
+        # LABEL HOIST: route() needs macro/trend labels, which blocks 5b1/
+        # 5b2 below fetch AFTER compute_ev. When the router-edge model is
+        # on and the signal is qualifiable, the SAME fetches (same guards:
+        # mode != off) are done HERE once — 5b1/5b2 then reuse them via the
+        # _edge_prefetched_* sentinels (no double round-trip; identical
+        # fetch count, just earlier in the tick — the rows are nightly/
+        # daily tables, so position within a tick cannot change the values).
+        macro_label: str | None = None
+        macro_strength: float | None = None
+        trend_label: str | None = None
+        trend_strength: float | None = None
+        _edge_prefetched_macro = False
+        _edge_prefetched_trend = False
+        signal_is_qualifiable = trade_signal["signal"] not in ("neutral", "unknown")
+        p_router_blend: float | None = None
+        try:
+            from regime_platform.core.feature_flags import (
+                get_router_edge_k0,
+                get_router_edge_min_n_eff,
+                get_router_edge_mode,
+                get_router_edge_tau_days,
+            )
+            _router_edge_mode = get_router_edge_mode()
+            if _router_edge_mode != "off" and signal_is_qualifiable:
+                # Pre-fetch macro/trend (same guards as 5b1/5b2) so route()
+                # sees the labels the R1 stamp below will see.
+                from regime_platform.core.feature_flags import (
+                    get_macro_regime_mode,
+                    get_trend_regime_mode,
+                )
+                if get_macro_regime_mode() != "off":
+                    try:
+                        from regime_platform.sweep_orchestrator.macro_filter import (
+                            get_macro_regime,
+                        )
+                        macro_row = await get_macro_regime(symbol)
+                        if macro_row:
+                            macro_label = macro_row.get("macro_label")
+                            macro_strength = macro_row.get("macro_strength")
+                    except Exception as _pf_exc:
+                        logger.debug(
+                            "[router:edge] %s macro pre-fetch failed: %s",
+                            symbol, _pf_exc,
+                        )
+                    _edge_prefetched_macro = True
+                if get_trend_regime_mode() != "off":
+                    try:
+                        from regime_platform.sweep_orchestrator.trend_filter import (
+                            get_trend_regime,
+                        )
+                        trend_row = await get_trend_regime(symbol)
+                        if trend_row:
+                            trend_label = trend_row.get("trend_label")
+                            trend_strength = trend_row.get("trend_strength")
+                    except Exception as _pf_exc:
+                        logger.debug(
+                            "[router:edge] %s trend pre-fetch failed: %s",
+                            symbol, _pf_exc,
+                        )
+                    _edge_prefetched_trend = True
+            if _router_edge_mode != "off":
+                from regime_platform.sweep_orchestrator.router_edge import (
+                    router_edge_tick,
+                )
+                _edge = await router_edge_tick(
+                    symbol=symbol,
+                    signal=trade_signal.get("signal"),
+                    regime_label=regime_label,
+                    asset_class=asset_class,
+                    macro_label=macro_label,
+                    trend_label=trend_label,
+                    prices=prices,
+                    timestamps=timestamps,
+                    p_timesfm=p_timesfm,
+                    mode=_router_edge_mode,
+                    k0=get_router_edge_k0(),
+                    tau_days=get_router_edge_tau_days(),
+                    min_n_eff=get_router_edge_min_n_eff(),
+                )
+                if _edge is not None:
+                    p_router_blend = _edge.p_router_blend
+                    logger.info(
+                        "[router:edge] %s arch=%s dir=%s p_router=%s "
+                        "(n_eff=%.1f base=%s) resolved=%s%s%s",
+                        symbol, _edge.archetype, _edge.direction,
+                        (f"{_edge.p_router:.4f}" if _edge.p_router is not None else "n/a"),
+                        _edge.cell_n_eff, _edge.base_rate,
+                        _edge.resolved_outcome or "no",
+                        (f" -> blend={p_router_blend:.4f}" if p_router_blend is not None else ""),
+                        " (LIVE)" if _router_edge_mode == "live" else " (shadow)",
+                    )
+        except Exception as _edge_exc:  # noqa: BLE001 — measurement must not break the tick
+            logger.debug("[router:edge] %s failed: %s", symbol, _edge_exc)
+
         # R4: apply the non-convergence discount (empty dict = no-op, exact
         # pre-R4 behaviour) around the compute_ev() call itself, not a
         # separately-tracked parallel state.
@@ -4809,13 +4928,33 @@ class SweepOrchestrator(HeavySweepMixin):
         # slippage + entry-lag allowance) × current ATR, charged ONCE per
         # trade. 0.0 when ev_costs.mode is off/shadow → byte-identical to the
         # historical cost-blind EV.
-        with self._ev_engine.temp_weights(_regime_weight_override):
+        # R2 (2026-10-23): p_router enters here when router_edge_mode=live
+        # (evidence-gated per cell upstream); p_timesfm is withheld when
+        # timesfm_blend_mode=shadow (the A/B). Both default to today's
+        # behaviour — live/live — so this call is byte-identical unless an
+        # operator flips a flag. The renormalization inside compute_ev
+        # handles whichever subset of sources arrives.
+        _tsfm_blend_for_ev = p_timesfm if get_timesfm_blend_mode() == "live" else None
+        _router_weight_override: dict[str, float] = {}
+        if p_router_blend is not None:
+            from regime_platform.core.feature_flags import get_router_edge_weight
+            # See P_WIN_WEIGHTS_FULL's R2 comment: entries share the /14
+            # denominator; ratios are all the renormalizer sees, which is
+            # what keeps the flag's "5.0 = p_timesfm's peer" honest.
+            _router_weight_override = {
+                "p_router": get_router_edge_weight() / 14.0,
+            }
+        with self._ev_engine.temp_weights({
+            **_regime_weight_override,
+            **_router_weight_override,
+        }):
             ev_result = self._ev_engine.compute_ev(
                 trend_probs=_smoothed_trend_probs,
                 direction=direction,
                 transition_matrix=_markov_T if _p_markov_hold_n_live else None,
                 current_state=_markov_current_state if _p_markov_hold_n_live else "FLAT",
-                p_timesfm=p_timesfm,
+                p_timesfm=_tsfm_blend_for_ev,
+                p_router=p_router_blend,
                 brick_size=brick_size,
                 sl_bricks=sl_bricks,
                 tp_bricks=tp_bricks,
@@ -5169,8 +5308,9 @@ class SweepOrchestrator(HeavySweepMixin):
         # nt_signal_sim regardless of mode (feeds the win/loss+PnL
         # evidence diagnostic, macro_edge.py); the Kelly multiplier is
         # only APPLIED when macro_regime_mode=live.
-        macro_label: str | None = None
-        macro_strength: float | None = None
+        # R2 (2026-10-23): when the router-edge model pre-fetched the macro
+        # row above compute_ev (identical guards upstream), this block
+        # REUSES it and only applies the multiplier — no second round-trip.
         if signal_is_qualifiable:
             from regime_platform.core.feature_flags import get_macro_regime_mode, is_macro_enabled_for_symbol
             macro_mode = get_macro_regime_mode()
@@ -5180,31 +5320,32 @@ class SweepOrchestrator(HeavySweepMixin):
                     kelly_macro_multiplier,
                 )
                 try:
-                    macro_row = await get_macro_regime(symbol)
-                    if macro_row:
-                        macro_label = macro_row.get("macro_label")
-                        macro_strength = macro_row.get("macro_strength")
-                        if macro_mode == "live" and macro_label is not None:
-                            # Stage 2 (2026-10-05): per-symbol macro enable/disable.
-                            # AAPL's 200-day SMA is a constant (always "bull"),
-                            # not a signal — macro filter disabled for AAPL.
-                            if not is_macro_enabled_for_symbol(symbol):
-                                logger.info(
-                                    "[sweep:orch] %s: macro filter DISABLED for symbol "
-                                    "(per-symbol config) — skipping multiplier",
-                                    symbol,
-                                )
-                            else:
-                                macro_mult = kelly_macro_multiplier(
-                                    macro_label, macro_strength, trade_signal["signal"],
-                                )
-                                effective_kelly = effective_kelly * macro_mult
-                                logger.info(
-                                    "[sweep:orch] %s: macro filter LIVE — label=%s "
-                                    "strength=%.4f mult=%.4f, kelly→%.6f",
-                                    symbol, macro_label, macro_strength or 0.0,
-                                    macro_mult, effective_kelly,
-                                )
+                    if not _edge_prefetched_macro:
+                        macro_row = await get_macro_regime(symbol)
+                        if macro_row:
+                            macro_label = macro_row.get("macro_label")
+                            macro_strength = macro_row.get("macro_strength")
+                    if macro_mode == "live" and macro_label is not None:
+                        # Stage 2 (2026-10-05): per-symbol macro enable/disable.
+                        # AAPL's 200-day SMA is a constant (always "bull"),
+                        # not a signal — macro filter disabled for AAPL.
+                        if not is_macro_enabled_for_symbol(symbol):
+                            logger.info(
+                                "[sweep:orch] %s: macro filter DISABLED for symbol "
+                                "(per-symbol config) — skipping multiplier",
+                                symbol,
+                            )
+                        else:
+                            macro_mult = kelly_macro_multiplier(
+                                macro_label, macro_strength, trade_signal["signal"],
+                            )
+                            effective_kelly = effective_kelly * macro_mult
+                            logger.info(
+                                "[sweep:orch] %s: macro filter LIVE — label=%s "
+                                "strength=%.4f mult=%.4f, kelly→%.6f",
+                                symbol, macro_label, macro_strength or 0.0,
+                                macro_mult, effective_kelly,
+                            )
                 except Exception as exc:
                     logger.warning(
                         "[sweep:orch] %s: macro filter read failed (%s: %s), skipping",
@@ -5217,8 +5358,8 @@ class SweepOrchestrator(HeavySweepMixin):
         # to the macro filter above, separate concern (recent reversal/
         # momentum, not the 200-day structural level), same nullable-
         # capture-regardless-of-mode / apply-only-when-live shape.
-        trend_label: str | None = None
-        trend_strength: float | None = None
+        # R2 (2026-10-23): reuses the router-edge pre-fetch when present —
+        # no second round-trip.
         if signal_is_qualifiable:
             from regime_platform.core.feature_flags import get_trend_regime_mode
             trend_mode = get_trend_regime_mode()
@@ -5228,21 +5369,22 @@ class SweepOrchestrator(HeavySweepMixin):
                     kelly_trend_multiplier,
                 )
                 try:
-                    trend_row = await get_trend_regime(symbol)
-                    if trend_row:
-                        trend_label = trend_row.get("trend_label")
-                        trend_strength = trend_row.get("trend_strength")
-                        if trend_mode == "live" and trend_label is not None:
-                            trend_mult = kelly_trend_multiplier(
-                                trend_label, trend_strength, trade_signal["signal"],
-                            )
-                            effective_kelly = effective_kelly * trend_mult
-                            logger.info(
-                                "[sweep:orch] %s: trend filter LIVE — label=%s "
-                                "strength=%.4f mult=%.4f, kelly→%.6f",
-                                symbol, trend_label, trend_strength or 0.0,
-                                trend_mult, effective_kelly,
-                            )
+                    if not _edge_prefetched_trend:
+                        trend_row = await get_trend_regime(symbol)
+                        if trend_row:
+                            trend_label = trend_row.get("trend_label")
+                            trend_strength = trend_row.get("trend_strength")
+                    if trend_mode == "live" and trend_label is not None:
+                        trend_mult = kelly_trend_multiplier(
+                            trend_label, trend_strength, trade_signal["signal"],
+                        )
+                        effective_kelly = effective_kelly * trend_mult
+                        logger.info(
+                            "[sweep:orch] %s: trend filter LIVE — label=%s "
+                            "strength=%.4f mult=%.4f, kelly→%.6f",
+                            symbol, trend_label, trend_strength or 0.0,
+                            trend_mult, effective_kelly,
+                        )
                 except Exception as exc:
                     logger.warning(
                         "[sweep:orch] %s: trend filter read failed (%s: %s), skipping",
