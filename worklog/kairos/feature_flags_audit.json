@@ -1,0 +1,359 @@
+{
+  "flags": {
+    "atr_anchored_evidence_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "atr_reopt_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "barrier_floor.mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "calibration_cutover_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "calibration_evidence_pool_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "calibration_resolve_hourly_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "chop_gate.mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "clef_flash_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "context_alignment_gate_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "direction_stability.mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "dynamic_atr_consistency_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "dynamic_atr_light_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "dynamic_atr_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "dynamic_atr_walkforward_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "dynamic_deadline_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "dynamic_min_rr_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "edge_lab_run_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "eod_correction.intraday_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "eod_resolver_basis": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "intrabar"
+    },
+    "eod_resolver_scan_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "full"
+    },
+    "ev_costs.mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "ev_scale_sizing_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "geometry_incubation_adaptive_days_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "geometry_incubation_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "geometry_intraday_scale_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "geometry_tuning_sweep_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "heavy_sweep_atr_anchored_bricks_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "heavy_sweep_deadline_aware_scoring_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "heavy_sweep_reachability_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "kairos_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "knowledge_index_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "light_sweep_catchup_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "macro_forecast_agent_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "macro_regime_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "markov_source_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "legacy_hmm"
+    },
+    "p_markov_hold_n_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "off",
+      "value": "off"
+    },
+    "p_win_bracket_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "p_win_in_ev_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "pbm_ev_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "off",
+      "value": "off"
+    },
+    "pbm_geometry_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "grid"
+    },
+    "pbm_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "pbm_sizing_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "legacy"
+    },
+    "rank_score_calibration_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "regime_edge_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "regime_label_debounce_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "regime_state_persist_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "regime_warm_start_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "off",
+      "value": "off"
+    },
+    "router_edge_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "self_learning_detectors_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "self_learning_triage_enabled": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "on",
+      "value": "on"
+    },
+    "settlement_contract_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "settlement_expiry_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "fixed"
+    },
+    "signal_stream_meta_model_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "off",
+      "value": "off"
+    },
+    "timesfm_blend_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "timesfm_gate_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "config",
+      "value": "soft"
+    },
+    "timesfm_k_adaptive_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    },
+    "timesfm_map_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "zmap_live"
+    },
+    "trend_probs_gate_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "live",
+      "value": "live"
+    },
+    "trend_regime_mode": {
+      "date_changed": "2026-10-24T01:05:42Z",
+      "date_checked": "2026-10-24T01:13:14Z",
+      "status": "shadow",
+      "value": "shadow"
+    }
+  },
+  "last_run": "2026-10-24T01:13:14Z"
+}

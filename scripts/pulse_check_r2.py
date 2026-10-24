@@ -10,6 +10,11 @@ a subprocess — the instrument, not a copy — plus the cheap PBM ledger-state 
 and the phase flags. ``--no-pbm`` skips just that step; ``--no-liveness`` skips
 the gate.
 
+Also runs the Router Edge Model skill report (``measure_router_edge.py``) and a
+comprehensive feature-flag audit (``config/feature_flags.yaml`` parsed directly,
+persisted to ``worklog/kairos/feature_flags_audit.json``). ``--no-router-edge``
+skips just the report.
+
     PYTHONPATH="$PWD" ./.venv/Scripts/python.exe scripts/pulse_check_r2.py
 """
 
@@ -379,6 +384,266 @@ def run_pbm_calibration(since: str | None, extra: str | None) -> None:
     print()
 
 
+def print_router_edge_flags() -> None:
+    """R2 feature flags — the TSFM-vs-router competition controls.
+
+    ``router_edge_mode``: off | shadow | live — whether the router edge model's
+    prediction participates in the EV blend.  Default shadow (measured only).
+    ``timesfm_blend_mode``: off | shadow | live — the TimesFM exit ladder.  live
+    = the 50% blend weight that has never been skill-measured; shadow = fetched +
+    scored but blend-excluded (the A/B measurement); off = not fetched at all.
+    """
+    print("=== router_edge_flags (config/feature_flags.yaml) ===")
+    try:
+        from regime_platform.core.feature_flags import (
+            get_router_edge_k0,
+            get_router_edge_min_n_eff,
+            get_router_edge_mode,
+            get_router_edge_tau_days,
+            get_router_edge_weight,
+            get_timesfm_blend_mode,
+            get_timesfm_k_adaptive_mode,
+        )
+
+        m = get_router_edge_mode()
+        t = get_timesfm_blend_mode()
+        print(f"  router_edge_mode    = {m:<8s} # off=disabled, shadow=measured-only, live=in EV blend")
+        print(f"  timesfm_blend_mode  = {t:<8s} # off=scored-excluded, shadow=A/B, live=50% blend")
+        ka = get_timesfm_k_adaptive_mode()
+        print(f"  timesfm_k_adaptive  = {ka:<8s} # k-scheduling for the TSFM forecast horizon")
+        w = get_router_edge_weight()
+        print(f"  router_edge_weight  = {w:<8.2f}  # blend weight vs timesfm (0=exclude, 1=pure)")
+        k0 = get_router_edge_k0()
+        print(f"  router_edge_k0      = {k0:<8.0f}  # pseudo-counts (PBM shrinkage)")
+        tau = get_router_edge_tau_days()
+        print(f"  router_edge_tau     = {tau:<8.0f}  # half-life days for decay")
+        neff = get_router_edge_min_n_eff()
+        print(f"  router_edge_min_n_eff = {neff:<8.0f}  # n_eff floor for promotion to live")
+    except Exception as exc:  # pragma: no cover — script must still run standalone
+        print(f"  (unreadable: {exc})")
+    print()
+
+
+def run_router_edge_report() -> None:
+    """Run the Router Edge Model skill report as a subprocess.
+
+    Calls ``scripts/measure_router_edge.py --json`` (the instrument itself, not
+    a copy) and renders a concise verdict for the TSFM-vs-router competition
+    (decision gates: docs/scopes/20261023_TSFM_VS_REASONING_LLM_AND_ROUTER_EDGE.md):
+
+        1. Promote router_edge_mode shadow -> live  (router skill > TimesFM,
+           cell n_eff >= router_edge_min_n_eff)
+        2. Demote timesfm_blend_mode live -> shadow (A/B measurement mode)
+        3. Exit TimesFM entirely: timesfm_blend_mode -> off (negative skill)
+
+    Gated on ``router_edge_mode != 'off'``: when the router edge is disabled the
+    report shows a one-line note instead of running the measurement.
+    """
+    script = Path(__file__).resolve().parent / "measure_router_edge.py"
+    if not script.exists():
+        print("=== router_edge_report ===")
+        print("(scripts/measure_router_edge.py not found)\\n")
+        return
+
+    mode = "shadow"
+    try:
+        from regime_platform.core.feature_flags import get_router_edge_mode
+
+        mode = get_router_edge_mode()
+    except Exception:  # pragma: no cover
+        pass
+
+    if mode == "off":
+        print("=== router_edge_report ===")
+        print("router_edge_mode = off — report suppressed (no stamps collected).\\n")
+        return
+
+    cmd = [sys.executable, str(script), "--json"]
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+    except Exception as exc:  # pragma: no cover
+        print(f"=== router_edge_report ===\\n(failed to launch: {exc})\\n")
+        return
+
+    import json as _json
+
+    report: dict[str, object] | None = None
+    try:
+        report = _json.loads(proc.stdout) if proc.stdout else None
+    except Exception:
+        report = None
+
+    print(f"=== router_edge_report (mode={mode}, exit {proc.returncode}) ===")
+
+    if report and "error" in report:
+        print(f"ERROR: {report['error']}\\n")
+        return
+
+    if report and report.get("symbols"):
+        syms = report["symbols"]
+        r_neff = sum((s.get("router_skill") or {}).get("n_eff") or 0.0 for s in syms.values())
+        t_neff = sum((s.get("timesfm_skill") or {}).get("n_eff") or 0.0 for s in syms.values())
+        r_skills = [
+            (s.get("router_skill") or {}).get("skill_vs_majority")
+            for s in syms.values()
+            if (s.get("router_skill") or {}).get("skill_vs_majority") is not None
+        ]
+        t_skills = [
+            (s.get("timesfm_skill") or {}).get("skill_vs_majority")
+            for s in syms.values()
+            if (s.get("timesfm_skill") or {}).get("skill_vs_majority") is not None
+        ]
+
+        def _mean(xs: list) -> float | None:
+            xs = [x for x in xs if x is not None]
+            return sum(xs) / len(xs) if xs else None
+
+        r_mean, t_mean = _mean(r_skills), _mean(t_skills)
+        print(f"  symbols measured:  {len(syms)}")
+        print(f"  aggregate n_eff:   router={r_neff:.0f}  timesfm={t_neff:.0f}")
+        if r_mean is not None and t_mean is not None:
+            print(f"  mean skill vs majority:  router={r_mean:+.4f}  timesfm={t_mean:+.4f}")
+
+        # Decision gates (mirrors measure_router_edge.py verdict logic)
+        if r_neff < 30 and t_neff < 30:
+            print("  verdict: insufficient evidence (n_eff < 30) — keep accumulating stamps.")
+        elif r_mean is not None and t_mean is not None:
+            if r_mean > t_mean:
+                print("  verdict: router OUTPERFORMS TimesFM — promotion candidate (router_edge_mode -> live).")
+            elif t_mean > r_mean:
+                print("  verdict: TimesFM outperforms router — keep timesfm_blend_mode live, router stays shadow.")
+            else:
+                print("  verdict: parity — keep both, keep measuring.")
+    else:
+        print("  (no stamps collected yet — every light sweep tick adds one per active symbol)")
+    print()
+
+
+def print_feature_flags_audit() -> None:
+    """Comprehensive audit of all mode flags — persists to
+    worklog/kairos/feature_flags_audit.json.
+
+    Parses config/feature_flags.yaml directly (sole source of truth — NOT
+    getattr, which silently misses flags that exist only in YAML).  Classifies
+    every mode/toggle flag by its current status and records value + date_checked
+    + date_changed.  Each pulse check updates the timestamp; the summary
+    highlights flags still in transitional states (shadow / on) so the operator
+    can drive each toward 'live' or 'off'.
+    """
+    import json as _json
+    from collections import Counter
+    from datetime import datetime, timezone
+
+    import yaml
+
+    print("=== feature_flags_audit (all mode flags) ===")
+    print("  source: config/feature_flags.yaml")
+    print()
+
+    root = Path(__file__).resolve().parents[1]
+    flags_yaml = root / "config" / "feature_flags.yaml"
+    audit_file = root / "worklog" / "kairos" / "feature_flags_audit.json"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        raw = yaml.safe_load(flags_yaml.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"  (cannot read {flags_yaml}: {exc})\\n")
+        return
+
+    # Flatten the YAML into dotted key paths, keeping only mode/toggle flags.
+    mode_flags: dict[str, str] = {}
+
+    def _flatten(d: dict, prefix: str = "") -> None:
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                _flatten(v, key)
+            elif (
+                k.endswith("_mode")
+                or k == "mode"
+                or k.endswith("_enabled")
+                or k in ("eod_resolver_basis", "eod_resolver_scan_mode")
+            ):
+                if isinstance(v, bool):
+                    mode_flags[key] = "on" if v else "off"
+                else:
+                    mode_flags[key] = str(v)
+
+    _flatten(raw)
+
+    # Load previous audit for change tracking
+    prev: dict[str, dict] = {}
+    try:
+        if audit_file.exists():
+            prev = _json.loads(audit_file.read_text()).get("flags", {})
+    except Exception:
+        prev = {}
+
+    # Build new audit record
+    audit: dict[str, dict] = {}
+    for name in sorted(mode_flags):
+        val = mode_flags[name]
+        prev_entry = prev.get(name, {})
+        if val != prev_entry.get("value"):
+            date_changed = now
+        else:
+            date_changed = prev_entry.get("date_changed", now)
+        # Classify status: live/zmap_live -> live, off -> off, shadow -> shadow,
+        # on -> on, everything else -> config (not lifecycle-managed)
+        if val in ("live", "zmap_live"):
+            status = "live"
+        elif val == "off":
+            status = "off"
+        elif val == "shadow":
+            status = "shadow"
+        elif val == "on":
+            status = "on"
+        else:
+            status = "config"
+        audit[name] = {
+            "value": val,
+            "status": status,
+            "date_checked": now,
+            "date_changed": date_changed,
+        }
+
+    # Persist
+    try:
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text(
+            _json.dumps({"last_run": now, "flags": audit}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"  (warning: could not write audit file: {exc})\\n")
+
+    # Summary
+    counts = Counter(a["status"] for a in audit.values())
+    order = ["live", "off", "shadow", "on", "config"]
+    print(f"  {'status':10s} {'count':>5s}  flags")
+    print(f"  {'-' * 10} {'-' * 5}  {'-' * 50}")
+    for status in order:
+        if status not in counts:
+            continue
+        flag_names = sorted(n for n, a in audit.items() if a["status"] == status)
+        marker = "✓" if status in ("live", "off") else "●"
+        print(f"  {marker} {status:8s} {counts[status]:>5d}  {', '.join(flag_names)}")
+
+    # Highlight transitional flags (need a live/off decision)
+    transitional = sorted(n for n, a in audit.items() if a["status"] in ("shadow", "on"))
+    print()
+    if transitional:
+        print(f"  ⚠ {len(transitional)} flag(s) in transition — drive to 'live' or 'off':")
+        for name in transitional:
+            a = audit[name]
+            print(f"    {name:55s} {a['value']:8s}  checked {a['date_checked']}  changed {a['date_changed']}")
+    else:
+        print("  ✓ All mode flags are live or off.")
+    print()
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Pulse check: roadmap / expectancy / B5 / PBM calibration.",
@@ -404,6 +669,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="extra args passed through to measure_pbm_calibration.py (e.g. '--min-n 200')",
     )
+    ap.add_argument(
+        "--no-router-edge",
+        action="store_true",
+        help="skip the Router Edge Model skill report (R2 flag reads + full audit still run)",
+    )
     return ap.parse_args(argv)
 
 
@@ -415,8 +685,12 @@ async def main() -> None:
     for name, sql in QUERIES.items():
         await run(name, sql)
     print_pbm_flags()
+    print_router_edge_flags()
+    print_feature_flags_audit()
     if not args.no_pbm:
         run_pbm_calibration(args.pbm_since, args.pbm_args)
+    if not args.no_router_edge:
+        run_router_edge_report()
     if not live:
         # Exit 2 = the signal engine is not producing. The full report still
         # prints first, so a scheduled run leaves evidence behind.
