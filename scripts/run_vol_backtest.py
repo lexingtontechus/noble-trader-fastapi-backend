@@ -53,7 +53,15 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from vol_backtest.arms import NaiveRV, EWMARV, LogHAR, HAR_EWMA, GARCH11  # noqa: E402
+from vol_backtest.arms import (  # noqa: E402
+    NaiveRV,
+    EWMARV,
+    LogHAR,
+    HAR_EWMA,
+    GARCH11,
+    GJRGARCH11T,
+    EGARCH11T,
+)
 from vol_backtest.model_arms import TimesFM25HTTP, Chronos2, Chronos2Covariate  # noqa: E402
 from vol_backtest.harness import backtest_symbol, aggregate_metrics, dm_family  # noqa: E402
 from vol_backtest.data import THESIS_SYMBOLS, load_data_dir, load_synthetic, load_tdva  # noqa: E402
@@ -67,6 +75,8 @@ def build_arms(selected: list[str]) -> list:
         "har": LogHAR,
         "har_ewma": HAR_EWMA,
         "garch": GARCH11,
+        "gjr": GJRGARCH11T,
+        "egarch": EGARCH11T,
         "timesfm25": TimesFM25HTTP,
         "chronos2": Chronos2,
         "chronos2_cov": Chronos2Covariate,

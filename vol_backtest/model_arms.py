@@ -35,7 +35,19 @@ import time
 
 import numpy as np
 
-from .arms import Arm, ArmForecast, rv_from_quantile_spread, Z80
+from .arms import (
+    Arm,
+    ArmForecast,
+    rv_from_quantile_spread,
+    Z80,
+    NaiveRV,
+    EWMARV,
+    LogHAR,
+    HAR_EWMA,
+    GARCH11,
+    GJRGARCH11T,
+    EGARCH11T,
+)
 
 QUANTILE_LEVELS = [0.05, 0.10, 0.50, 0.90, 0.95]
 
@@ -360,6 +372,8 @@ def default_arms(model_arms_enabled: bool = True) -> list[Arm]:
         LogHAR(),
         HAR_EWMA(),
         GARCH11(),
+        GJRGARCH11T(),
+        EGARCH11T(),
     ]
     if model_arms_enabled:
         arms += [TimesFM25HTTP(), Chronos2(), Chronos2Covariate()]

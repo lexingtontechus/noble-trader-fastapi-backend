@@ -12,6 +12,12 @@ Two families:
                       "simple average matches the best single" fallback)
     * ``garch``       GARCH(1,1) via the `arch` package — OPTIONAL, skipped
                       with a reason when not installed
+    * ``gjr``         GJR-GARCH(1,1)-t (threshold/TGARCH, Student-t)
+                      via `arch` — the asymmetry variant the crypto
+                      GARCH-selection literature keeps flagging for BTC
+    * ``egarch``      EGARCH(1,1)-t via `arch` — log-variance asymmetry,
+                      multi-step by seeded simulation (arch has no analytic
+                      multi-step for EGARCH)
 
   **Model arms (optional, degrade gracefully)** — the thesis's candidates:
     * ``timesfm25``      incumbent TimesFM 2.5 via the repo's own server.py
@@ -265,14 +271,23 @@ class HAR_EWMA(Arm):
 
 
 # ---------------------------------------------------------------------------
-# GARCH(1,1) — optional (`arch` package)
+# GARCH family — optional (`arch` package), unit-variance rescaled
+#
+# Standardization note: returns are rescaled to unit variance before the MLE
+# (r' = r / s0, s0 = std of the window's returns) and the forecast variance
+# is converted back — the lab-proven convention (omega on the raw FX scale
+# ~1e-8 starves the optimizer; the historical *100 hack still left EGARCH
+# fits diverging on USDCHF with alpha=-68/beta=1.0). Fits remain per-call
+# (rolling window semantics, frozen at each cutoff).
 # ---------------------------------------------------------------------------
 
-class GARCH11(Arm):
-    """GARCH(1,1) on hourly returns; H-step variance via the analytic
-    recursive forecast. Skipped (available=False) when `arch` is absent."""
+class _ArchArmBase(Arm):
+    """Shared machinery: availability guard, unit-variance rescale, H-step
+    aggregate variance, sqrt-scale 80% interval."""
 
-    name = "garch"
+    vol: str = "Garch"
+    dist: str = "normal"
+    order: dict | None = None
 
     def __init__(self, min_bars: int = 720) -> None:
         super().__init__()
@@ -286,28 +301,99 @@ class GARCH11(Arm):
             self.available = False
             self.unavailable_reason = f"arch not installed ({e.__class__.__name__})"
 
+    def _fit_forecast_variance(self, r: np.ndarray, horizon: int) -> np.ndarray | None:
+        """H-step conditional-variance path in ORIGINAL return units, or None."""
+        s0 = float(np.std(r))
+        if not np.isfinite(s0) or s0 <= 0:
+            return None
+        try:
+            from arch import arch_model
+
+            kw = self.order or {}
+            am = arch_model(r / s0, vol=self.vol, dist=self.dist, rescale=False, **kw)
+            res = am.fit(disp="off", show_warning=False)
+            f = self._forecast(res, horizon)
+            var_path = np.asarray(f.variance.values[0], dtype=float)[:horizon]
+            var_path = var_path * (s0 * s0)  # back to original units
+            if not np.isfinite(var_path).all() or np.any(var_path <= 0):
+                return None
+            return var_path
+        except Exception:
+            return None
+
+    def _forecast(self, res, horizon: int):
+        """Analytic multi-step forecast (GARCH/GJR). EGARCH overrides: arch
+        has no analytic multi-step for EGARCH, so seeded simulation."""
+        return res.forecast(horizon=horizon, reindex=False)
+
     def forecast(self, prices, timestamps, horizon) -> ArmForecast | None:
         if not self.available:
             return None
         r = log_returns(prices)
         if len(r) < self.min_bars:
             return None
-        try:
-            from arch import arch_model
-
-            am = arch_model(r * 100.0, vol="Garch", p=1, q=1, dist="normal", rescale=False)
-            res = am.fit(disp="off", show_warning=False)
-            f = res.forecast(horizon=horizon, reindex=False)
-            var_path = f.variance.values[0] / 10000.0  # back to return scale
-            var_h = float(np.sum(var_path[:horizon]))
-            rv = float(np.sqrt(max(var_h, 0.0)))
-            if not np.isfinite(rv) or rv <= 0:
-                return None
-            # interval: normal approx on the sqrt scale
-            half = Z80 * rv / np.sqrt(2.0 * horizon)
-            return ArmForecast(rv=rv, lo80=float(max(rv - half, 1e-16)), hi80=float(rv + half))
-        except Exception:
+        var_path = self._fit_forecast_variance(r, horizon)
+        if var_path is None:
             return None
+        var_h = float(np.sum(var_path[:horizon]))
+        rv = float(np.sqrt(max(var_h, 0.0)))
+        if not np.isfinite(rv) or rv <= 0:
+            return None
+        # interval: normal approx on the sqrt scale (sampling noise of RV_H
+        # shrinks with the effective sample 2H — same convention as EWMA)
+        half = Z80 * rv / np.sqrt(2.0 * horizon)
+        return ArmForecast(rv=rv, lo80=float(max(rv - half, 1e-16)), hi80=float(rv + half))
+
+
+class GARCH11(_ArchArmBase):
+    """GARCH(1,1), normal innovations; H-step variance via the analytic
+    recursive forecast. The classic conditional-variance incumbent."""
+
+    name = "garch"
+    vol = "Garch"
+    dist = "normal"
+    order = {"p": 1, "q": 1}
+
+
+class GJRGARCH11T(_ArchArmBase):
+    """GJR-GARCH(1,1) (threshold/TGARCH) with Student-t innovations —
+    negative shocks hit the variance harder; the asymmetry variant the
+    crypto GARCH-selection literature keeps flagging for BTC. H-step
+    variance via arch's analytic recursive forecast (the gamma/2
+    persistence term is handled internally)."""
+
+    name = "gjr"
+    vol = "Garch"
+    dist = "t"
+    order = {"p": 1, "o": 1, "q": 1}
+
+
+class EGARCH11T(_ArchArmBase):
+    """EGARCH(1,1) with Student-t innovations — asymmetry in log-variance
+    space, no positivity constraints on parameters, multiplicative
+    volatility dynamics. arch has NO analytic multi-step forecast for
+    EGARCH, so the H-step variance path is the mean of seeded simulations
+    (fixed RNG -> reproducible; non-finite paths degrade to None)."""
+
+    name = "egarch"
+    vol = "EGARCH"
+    dist = "t"
+    order = {"p": 1, "o": 1, "q": 1}
+
+    def __init__(self, min_bars: int = 720, simulations: int = 300, seed: int = 7) -> None:
+        super().__init__(min_bars=min_bars)
+        self.simulations = simulations
+        self.seed = seed
+
+    def _forecast(self, res, horizon: int):
+        sim_rng = np.random.default_rng(self.seed)
+        return res.forecast(
+            horizon=horizon,
+            method="simulation",
+            simulations=self.simulations,
+            rng=sim_rng.standard_normal,
+            reindex=False,
+        )
 
 
 # ---------------------------------------------------------------------------
