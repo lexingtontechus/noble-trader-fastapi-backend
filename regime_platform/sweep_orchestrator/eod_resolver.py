@@ -964,6 +964,21 @@ async def _resolve_one(sig: dict[str, Any], closes: list[float]) -> str | None:
             sig.get("symbol"), exc,
         )
 
+    # ── Claims resolver hook (Phase A, 2026-10-27) ──────────────────
+    # Score this signal's open nt_signal_claims rows with the SAME verdict
+    # and the SAME post-entry closes the signal was just resolved on —
+    # one resolver, one bar window, two ledgers in lockstep. Fail-open.
+    try:
+        from regime_platform.sweep_orchestrator.claims_resolver import (
+            score_claims_for_signal as _score_claims,
+        )
+        await _score_claims(sig, resolved, closes)
+    except Exception as exc:
+        logger.debug(
+            "eod_resolver: claims scoring %s failed: %s",
+            sig.get("signal_id"), exc,
+        )
+
     return resolved["outcome"]
 
 
@@ -1033,6 +1048,22 @@ async def _resolve_one_bars(sig: dict[str, Any], bars: list[dict[str, Any]]) -> 
             sig.get("symbol"), exc,
         )
 
+    # ── Claims resolver hook (Phase A, 2026-10-27) — intrabar twin ──
+    # Same contract as _resolve_one: the claim inherits this verdict and is
+    # scored on the closes of the SAME OHLC window the intrabar walk judged
+    # (both close/c key aliases). Fail-open.
+    try:
+        from regime_platform.sweep_orchestrator.claims_resolver import (
+            bars_to_closes,
+            score_claims_for_signal,
+        )
+        await score_claims_for_signal(sig, resolved, bars_to_closes(bars))
+    except Exception as exc:
+        logger.debug(
+            "eod_resolver: claims scoring %s failed: %s",
+            sig.get("signal_id"), exc,
+        )
+
     return resolved["outcome"]
 
 
@@ -1099,6 +1130,20 @@ async def resolve_pending_signals(limit: int = 200, max_total: int = 0) -> dict[
     # run-scoped reachability index once, up front, so the pure _judge sites
     # can read it synchronously. No-op in fixed mode.
     await _ensure_reach_index()
+
+    # Claims index (Phase A, 2026-10-27, worklog/20261027_KAIROS_CLAIMS_
+    # LAYER_DESIGN.md): prime the open-claims ledger once per run so the
+    # _resolve_one hooks can score each claim with the SAME verdict and the
+    # SAME bars its signal row received. Fail-open: an empty index (flag
+    # off, table missing, fetch error) makes every hook a no-op and the
+    # claims stay open for the next run's re-prime.
+    try:
+        from regime_platform.sweep_orchestrator.claims_resolver import (
+            ensure_claims_index as _ensure_claims_idx,
+        )
+        await _ensure_claims_idx()
+    except Exception as exc:
+        logger.warning("eod_resolver: claims index prime failed: %s", exc)
 
     fetch_ts = datetime.now(timezone.utc)
     # Only resolve signals whose entry falls inside the candle window the

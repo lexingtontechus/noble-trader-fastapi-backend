@@ -87,6 +87,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -2036,6 +2037,11 @@ class HeavySweepMixin:
                         regime_conf=result.regime_conf,
                         source="sweep-heavy",
                         qualified=qualified,
+                        # Claims layer (Phase A, 2026-10-27): pre-mint the UUID
+                        # so the nt_signal_claims bracket claim below can key
+                        # on the same signal_id as this row (log_signal_sim
+                        # honors a pre-set id).
+                        signal_id=str(uuid.uuid4()),
                         kelly_f=result.kelly_f,
                         effective_kelly=result.kelly_f * ev_result.ev_scale,
                         atr=atr,
@@ -2088,6 +2094,37 @@ class HeavySweepMixin:
                     if qualified:
                         from regime_platform.sweep_orchestrator.paper_book import open_position
                         asyncio.create_task(open_position(sim_payload))
+                        # ── Claims layer registration (Phase A, 2026-10-27;
+                        # heavy twin of the orchestrator block — one
+                        # definition, both paths) ──────────────────────────
+                        # One nt_signal_claims BRACKET claim per QUALIFIED
+                        # heavy signal: live bracket + price-space ATR
+                        # normal-approx fan + the probabilities already
+                        # computed at qualification; scored at resolution by
+                        # the SAME settlement contract. Shadow writes only.
+                        try:
+                            from regime_platform.sweep_orchestrator.claims import (
+                                record_bracket_claim as _record_claim,
+                            )
+                            asyncio.create_task(_record_claim(
+                                signal_id=sim_payload["signal_id"],
+                                symbol=symbol,
+                                ts_iso=sim_payload["ts"],
+                                direction=trade_signal["signal"],
+                                entry_price=sim_payload["entry_price"],
+                                stop_loss=sim_payload["stop_loss"],
+                                take_profit=sim_payload["take_profit"],
+                                atr=atr,
+                                source="sweep-heavy",
+                                p_resolve=_p_resolve,
+                                p_win_given_resolve=_p_win_resolve,
+                                p_win_bracket=_p_win_bracket,
+                            ))
+                        except Exception as _claim_exc:
+                            logger.debug(
+                                "[sweep:heavy] %s: claims registration dispatch failed: %s",
+                                symbol, _claim_exc,
+                            )
                         # ── 10a1. Realtime broadcast (Talaria dashboard) ──
                         # Fire-and-forget publish of the QUALIFIED heavy
                         # signal to the realtime:signals broadcast channel,

@@ -620,8 +620,13 @@ async def log_signal_sim(payload: dict[str, Any]) -> None:
     sim_payload = _filter_payload(payload, NT_SIGNAL_SIM_COLUMNS)
     # nt_signal_sim.signal_id is UUID PRIMARY KEY with no DB default —
     # the capture path must supply it. Generated here (not in the payload
-    # builder) so every call site gets a fresh id.
-    sim_payload["signal_id"] = str(uuid.uuid4())
+    # builder) so every call site gets a fresh id — UNLESS the caller
+    # already minted one (claims layer, 2026-10-27: the capture path
+    # generates the UUID BEFORE this insert so the nt_signal_claims
+    # bracket claim can key on the same signal_id; the get-default keeps
+    # every legacy caller byte-identical, including a None value).
+    if not sim_payload.get("signal_id"):
+        sim_payload["signal_id"] = str(uuid.uuid4())
 
     # Best-effort insert. Failures are logged but don't propagate.
     # signal_id is client-generated → the insert is idempotent (a retry

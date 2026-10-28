@@ -1025,6 +1025,15 @@ pbm_posterior_k0: 30.0        # prior pseudo-counts (evidence to leave physics)
 pbm_posterior_tau_days: 14.0  # outcome decay half-life basis, days
 pbm_sigma_atr: 1.0            # per-bar log-vol in ATR units (TR-ATR/price by construction)
 pbm_ev_bound_q: 0.05          # the ONE gate: EV lower credible bound mass
+
+# ── Claims layer (2026-10-27, worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md) ──
+# Phase A: register one bracket claim per QUALIFIED signal (nt_signal_claims,
+# migration 218) — live bracket + price-space ATR normal-approx fan + the
+# probabilities already computed at qualification — and score it inside the
+# EOD resolver through the SAME settlement contract (coverage/CRPS/pinball/
+# Brier). Shadow = writes only; NOTHING reads the ledger until Phase B's
+# claims_publish flip. Same flip discipline as pbm_*: evidence, not calendar.
+claims_mode: "shadow"         # off|shadow — claims ledger writes + resolver scoring
 # Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
 # round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
 # 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_

@@ -308,6 +308,12 @@ _DEFAULTS: dict[str, Any] = {
     # evidence-triggered reopt: minimum NEW resolved outcomes per symbol
     # before a re-solve is worth its churn (Phase C)
     "pbm_reopt_min_new_outcomes": 25,
+    # claims layer (2026-10-27, worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md):
+    #   claims_mode  off|shadow — Phase A: nt_signal_claims registration at
+    #   qualification (bracket claim mandatory) + resolver-side scoring through
+    #   the SAME settlement contract. shadow = writes only; nothing reads the
+    #   ledger until Phase B's claims_publish flip. Fails open on read error.
+    "claims_mode": "shadow",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1303,6 +1309,18 @@ def get_pbm_reopt_min_new_outcomes() -> int:
         )))
     except (TypeError, ValueError):
         return _DEFAULTS["pbm_reopt_min_new_outcomes"]
+
+
+def get_claims_mode() -> str:
+    """Claims layer, Phase A: ``off`` | ``shadow`` — ledger writes + scoring.
+
+    ``shadow`` (shipped): register bracket claims at qualification and score
+    them inside the EOD resolver through the same settlement contract;
+    nothing downstream reads ``nt_signal_claims``. ``off`` = full no-op
+    (no registration, no scoring). A ``live`` value behaves as ``shadow``
+    until Phase B gives it distinct meaning.
+    """
+    return str(_load().get("claims_mode", _DEFAULTS["claims_mode"])).lower()
 
 
 def get_calibration_bias_published_only() -> bool:

@@ -20,6 +20,7 @@ import math
 import os
 import sys
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -1144,6 +1145,7 @@ def _build_signal_sim_payload(
     regime_conf: float,
     source: str,
     qualified: bool,
+    signal_id: str | None = None,
     kelly_f: float | None = None,
     effective_kelly: float | None = None,
     predicted_p_win_raw: float | None = None,
@@ -1284,6 +1286,12 @@ def _build_signal_sim_payload(
         "raw_p_regime": round(float(raw_p_regime), 4) if raw_p_regime is not None else None,
         "gated_p_regime": round(float(gated_p_regime), 4) if gated_p_regime is not None else None,
     }
+    # Claims layer key (Phase A, 2026-10-27): the capture path may pre-mint
+    # the UUID so the nt_signal_claims bracket claim can key on the same
+    # signal_id as this row. Omitted when the caller didn't mint one —
+    # log_signal_sim generates it then (unchanged legacy behavior).
+    if signal_id is not None:
+        payload["signal_id"] = signal_id
     # Batch B (2026-09-16): always persist pre-enforcement p_win when we have
     # it. Capture flag remains for emergency off; when on and raw is missing,
     # still omit the column but log an error so measurement gaps are visible.
@@ -2308,6 +2316,24 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[eod:lookback] paper reconcile failed: %s", exc)
+
+        # ── Claims layer Phase A (2026-10-27): stale-claim hygiene ──────
+        # The claims themselves are scored INSIDE the resolver (same bars,
+        # same verdict — the no-second-resolver contract). What remains
+        # here is the void sweep for claims orphaned by repeated scoring
+        # failures, so the open pool can never grow without bound.
+        # Best-effort, same contract as every other part.
+        try:
+            from regime_platform.sweep_orchestrator.claims_resolver import (
+                void_stale_claims,
+            )
+            voided = await void_stale_claims()
+            if voided:
+                logger.info(
+                    "[eod:lookback] claims void sweep: %d stale claim(s) voided", voided,
+                )
+        except Exception as exc:
+            logger.error("[eod:lookback] claims void sweep failed: %s", exc)
 
         try:
             correction_summary = await run_eod_correction()
@@ -6637,6 +6663,11 @@ class SweepOrchestrator(HeavySweepMixin):
                     p_win_bracket=_p_win_bracket,
                     p_resolve=_p_resolve,
                     p_win_resolve=_p_win_resolve,
+                    # Claims layer (Phase A, 2026-10-27): mint the UUID HERE
+                    # so the nt_signal_claims bracket claim below can key on
+                    # the same signal_id as the nt_signal_sim row
+                    # (log_signal_sim honors a pre-set id).
+                    signal_id=str(uuid.uuid4()),
                     bracket_bucket=_bracket_bucket,
                     bracket_vol_tier=_bracket_vol_tier,
                     bracket_gate_shadow=_bracket_gate_shadow,
@@ -6741,6 +6772,43 @@ class SweepOrchestrator(HeavySweepMixin):
                 if qualified:
                     from regime_platform.sweep_orchestrator.paper_book import open_position
                     asyncio.create_task(open_position(sim_payload))
+                    # ── Claims layer registration (Phase A, 2026-10-27) ──
+                    # One nt_signal_claims BRACKET claim per QUALIFIED signal
+                    # — the same population the paper book above opens and
+                    # the broadcast below publishes (the acted-on book, the
+                    # book whose brackets the frontend sees). Pre-registers
+                    # the live bracket + a price-space ATR normal-approx fan
+                    # + the probabilities already computed at qualification;
+                    # scored at resolution by the SAME settlement contract
+                    # (claims_resolver hook in eod_resolver). Shadow writes
+                    # only (claims_mode: "shadow"); never breaks the sweep.
+                    try:
+                        from regime_platform.sweep_orchestrator.claims import (
+                            record_bracket_claim as _record_claim,
+                        )
+                        asyncio.create_task(_record_claim(
+                            signal_id=sim_payload["signal_id"],
+                            symbol=symbol,
+                            ts_iso=sim_payload["ts"],
+                            direction=trade_signal["signal"],
+                            entry_price=sim_payload["entry_price"],
+                            stop_loss=sim_payload["stop_loss"],
+                            take_profit=sim_payload["take_profit"],
+                            atr=atr,
+                            source=source,
+                            p_resolve=_p_resolve,
+                            p_win_given_resolve=_p_win_resolve,
+                            p_win_bracket=_p_win_bracket,
+                            expected_resolution_hours=(
+                                _deadline_tier.median_hours
+                                if _deadline_tier is not None else None
+                            ),
+                        ))
+                    except Exception as _claim_exc:
+                        logger.debug(
+                            "[sweep:orch] %s: claims registration dispatch failed: %s",
+                            symbol, _claim_exc,
+                        )
                     # ── 11a1. Realtime broadcast (Talaria dashboard) ──────
                     # Fire-and-forget publish of the QUALIFIED signal to the
                     # realtime:signals broadcast channel. Built from the sim
