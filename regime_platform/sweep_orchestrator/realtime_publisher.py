@@ -143,6 +143,7 @@ def build_signal_payload(
     soft_deadline_hours: float | None = None,
     hard_deadline_hours: float | None = None,
     p_clef_wait: float | None = None,
+    claim: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the ``signal`` broadcast payload for one qualified signal.
 
@@ -161,6 +162,13 @@ def build_signal_payload(
     (20261005_REACHABILITY_REDESIGN) — omitted when null (fail-open).
     The confidence field (high/medium/low) is ALWAYS present alongside
     the numeric estimate when deadline data is available.
+
+    ``claim`` is the claims-layer transport (Phase B, 2026-10-28 worklog):
+    the PERSISTED ``nt_signal_claims`` row (fan + bracket_ref +
+    claimed_probs) attached by ``register_and_publish_bracket_claim`` —
+    omitted when null (fail-open, the ``p_clef_wait`` convention). MT5/EA/
+    bridge consumers read named fields only; the extra key is inert to
+    them (design §1 transport contract: MT5 consumers excluded).
     """
     out: dict[str, Any] = {
         "symbol": symbol,
@@ -195,6 +203,12 @@ def build_signal_payload(
         out["hard_deadline_hours"] = round(float(hard_deadline_hours), 1)
     if p_clef_wait is not None:
         out["p_clef_wait"] = round(float(p_clef_wait), 4)
+    # Claims layer, Phase B (20261028_KAIROS_CLAIMS_PHASE_BC_BUILD.md):
+    # the registered claim object rides the SAME event, omitted when
+    # absent (p_clef_wait convention). Passed through verbatim — the row
+    # is already column-whitelisted and price-space at the boundary.
+    if claim is not None:
+        out["claim"] = claim
     return out
 
 

@@ -1034,6 +1034,16 @@ pbm_ev_bound_q: 0.05          # the ONE gate: EV lower credible bound mass
 # Brier). Shadow = writes only; NOTHING reads the ledger until Phase B's
 # claims_publish flip. Same flip discipline as pbm_*: evidence, not calendar.
 claims_mode: "shadow"         # off|shadow — claims ledger writes + resolver scoring
+# Phase B (2026-10-28, worklog/20261028_KAIROS_CLAIMS_PHASE_BC_BUILD.md):
+# transport. off (shipped) = the broadcast `signal` event carries NO claim
+# object; the dashboard's claims surface is the migration-219
+# v_talaria_latest_signals extension only (bundle path, 5-min pg_cron).
+# live = after a bracket claim PERSISTS, the sweep re-publishes the signal
+# broadcast with the claim row attached (fan on the wire; fail-open,
+# p_clef_wait convention; MT5/EA/bridge read named fields only — inert).
+# Flip to live only after migration 219 is applied AND the Phase C
+# SignalContextCard is verified in the dashboard.
+claims_publish: "off"         # off|live — broadcast claim transport (fan on the wire)
 # Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
 # round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
 # 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_

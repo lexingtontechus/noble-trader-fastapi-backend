@@ -6772,43 +6772,6 @@ class SweepOrchestrator(HeavySweepMixin):
                 if qualified:
                     from regime_platform.sweep_orchestrator.paper_book import open_position
                     asyncio.create_task(open_position(sim_payload))
-                    # ── Claims layer registration (Phase A, 2026-10-27) ──
-                    # One nt_signal_claims BRACKET claim per QUALIFIED signal
-                    # — the same population the paper book above opens and
-                    # the broadcast below publishes (the acted-on book, the
-                    # book whose brackets the frontend sees). Pre-registers
-                    # the live bracket + a price-space ATR normal-approx fan
-                    # + the probabilities already computed at qualification;
-                    # scored at resolution by the SAME settlement contract
-                    # (claims_resolver hook in eod_resolver). Shadow writes
-                    # only (claims_mode: "shadow"); never breaks the sweep.
-                    try:
-                        from regime_platform.sweep_orchestrator.claims import (
-                            record_bracket_claim as _record_claim,
-                        )
-                        asyncio.create_task(_record_claim(
-                            signal_id=sim_payload["signal_id"],
-                            symbol=symbol,
-                            ts_iso=sim_payload["ts"],
-                            direction=trade_signal["signal"],
-                            entry_price=sim_payload["entry_price"],
-                            stop_loss=sim_payload["stop_loss"],
-                            take_profit=sim_payload["take_profit"],
-                            atr=atr,
-                            source=source,
-                            p_resolve=_p_resolve,
-                            p_win_given_resolve=_p_win_resolve,
-                            p_win_bracket=_p_win_bracket,
-                            expected_resolution_hours=(
-                                _deadline_tier.median_hours
-                                if _deadline_tier is not None else None
-                            ),
-                        ))
-                    except Exception as _claim_exc:
-                        logger.debug(
-                            "[sweep:orch] %s: claims registration dispatch failed: %s",
-                            symbol, _claim_exc,
-                        )
                     # ── 11a1. Realtime broadcast (Talaria dashboard) ──────
                     # Fire-and-forget publish of the QUALIFIED signal to the
                     # realtime:signals broadcast channel. Built from the sim
@@ -6816,11 +6779,15 @@ class SweepOrchestrator(HeavySweepMixin):
                     # (6dp full-value) and sizing inputs that were persisted.
                     # Never raises: broadcast_signal swallows failures and
                     # skips silently when there is no running event loop.
+                    # Built into a variable (Phase B, 2026-10-28) so the
+                    # claims task below can re-publish the SAME payload with
+                    # the persisted claim row attached when claims_publish
+                    # flips to live — one payload authority, two events.
                     from regime_platform.sweep_orchestrator.realtime_publisher import (
                         broadcast_signal,
                         build_signal_payload,
                     )
-                    broadcast_signal(build_signal_payload(
+                    _signal_broadcast = build_signal_payload(
                         symbol=symbol,
                         direction=trade_signal["signal"],
                         entry_price=sim_payload["entry_price"],
@@ -6839,7 +6806,52 @@ class SweepOrchestrator(HeavySweepMixin):
                         soft_deadline_hours=sim_payload.get("soft_deadline_hours"),
                         hard_deadline_hours=sim_payload.get("hard_deadline_hours"),
                         p_clef_wait=sim_payload.get("p_clef_wait"),
-                    ), plan_ids=sym.get("plan_ids") or [])
+                    )
+                    broadcast_signal(_signal_broadcast, plan_ids=sym.get("plan_ids") or [])
+                    # ── Claims layer registration (Phase A) + Phase B ────
+                    # transport, one fire-and-forget task ──────────────────
+                    # One nt_signal_claims BRACKET claim per QUALIFIED signal
+                    # — the same population the paper book above opens and
+                    # the broadcast above publishes (the acted-on book, the
+                    # book whose brackets the frontend sees). Pre-registers
+                    # the live bracket + a price-space ATR normal-approx fan
+                    # + the probabilities already computed at qualification;
+                    # scored at resolution by the SAME settlement contract
+                    # (claims_resolver hook in eod_resolver). Shadow default:
+                    # writes only. When claims_publish flips to live, the
+                    # task re-publishes _signal_broadcast with the PERSISTED
+                    # claim row attached (fan shown ⟺ ledger holds it — a
+                    # failed stamp never surfaces as a fan). Never breaks
+                    # the sweep.
+                    try:
+                        from regime_platform.sweep_orchestrator.claims import (
+                            register_and_publish_bracket_claim as _register_claim,
+                        )
+                        asyncio.create_task(_register_claim(
+                            signal_id=sim_payload["signal_id"],
+                            symbol=symbol,
+                            ts_iso=sim_payload["ts"],
+                            direction=trade_signal["signal"],
+                            entry_price=sim_payload["entry_price"],
+                            stop_loss=sim_payload["stop_loss"],
+                            take_profit=sim_payload["take_profit"],
+                            atr=atr,
+                            source=source,
+                            p_resolve=_p_resolve,
+                            p_win_given_resolve=_p_win_resolve,
+                            p_win_bracket=_p_win_bracket,
+                            expected_resolution_hours=(
+                                _deadline_tier.median_hours
+                                if _deadline_tier is not None else None
+                            ),
+                            broadcast_payload=_signal_broadcast,
+                            plan_ids=sym.get("plan_ids") or [],
+                        ))
+                    except Exception as _claim_exc:
+                        logger.debug(
+                            "[sweep:orch] %s: claims registration dispatch failed: %s",
+                            symbol, _claim_exc,
+                        )
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and
                 # persist one row per brick for the admin plugin's chart.

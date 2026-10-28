@@ -31,6 +31,12 @@ resolver, no gate/EV/geometry/p_win/MT5 changes (Phase A non-goals).
 Write pattern: ``posterior.record_pbm_shadow`` — fail-open httpx POST,
 module-owned column whitelist, fire-and-forget dispatch, never raises.
 Flag: ``claims_mode`` (off|shadow, default shadow).
+
+Phase B transport (2026-10-28): ``register_and_publish_bracket_claim``
+below adds the flag-gated broadcast surface — after the claim PERSISTS,
+``claims_publish: live`` re-publishes the signal broadcast with the claim
+row attached (``p_clef_wait`` optional-field convention); the matview
+extension (migration 219) is the ungated bundle surface.
 """
 
 from __future__ import annotations
@@ -348,3 +354,97 @@ async def record_bracket_claim(
     except Exception as exc:
         logger.debug("claims stamp %s failed: %s", symbol, exc)
         return None
+
+
+# ─── Phase B transport: publish the PERSISTED claim (flag-gated) ────────────
+#
+# worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md §4 Phase B + §3 item 3:
+# the broadcast `signal` event gains an OPTIONAL `claim` object, omitted when
+# absent (the p_clef_wait fail-open convention). Transport #2 rides the wire
+# only AFTER the ledger write succeeded — the dashboard shows a fan exactly
+# when nt_signal_claims actually holds it (shown ⟺ persisted; a failed stamp
+# never surfaces as a fan). Transport #1 is migration 219 (the matview claim
+# column), which is ungated DB-side state read through the bundle.
+
+
+def claims_publish() -> str:
+    """``off`` | ``live`` — Phase B claim transport on the broadcast wire.
+
+    ``off`` (shipped): the broadcast ``signal`` event carries no ``claim``
+    object; the dashboard's claims surface is the migration-219
+    ``v_talaria_latest_signals`` extension only (bundle path, 5-min pg_cron
+    cadence). ``live``: after a bracket claim PERSISTS, the sweep
+    re-publishes the signal broadcast with the claim row attached so the
+    frontend renders the fan the moment the ledger holds it (seconds after
+    qualification, not the next bundle tick). MT5/EA/bridge consumers read
+    named fields only — the extra ``claim`` key is inert to them.
+    """
+    return str(_flag("claims_publish", "off")).lower()
+
+
+async def register_and_publish_bracket_claim(
+    *,
+    signal_id: str,
+    symbol: str,
+    ts_iso: str,
+    direction: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    atr: float | None,
+    source: str | None,
+    p_resolve: float | None = None,
+    p_win_given_resolve: float | None = None,
+    p_win_bracket: float | None = None,
+    expected_resolution_hours: float | None = None,
+    expiry_bars: int = EXPIRY_BARS,
+    broadcast_payload: dict[str, Any] | None = None,
+    plan_ids: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Phase A registration + Phase B transport in one fire-and-forget task.
+
+    Registers the bracket claim exactly like ``record_bracket_claim``
+    (identical parameters, identical fail-open semantics, identical returned
+    row), then — ONLY when ``claims_publish`` is ``live`` AND the row
+    actually persisted AND a ``broadcast_payload`` was supplied —
+    re-publishes that payload with the claim row attached as ``claim``.
+
+    The re-publish is a second ``signal`` broadcast event for the same
+    symbol/ts: frontend rows replace per-symbol (``setLiveSignals`` dedupes
+    by symbol), and the EA/bridge dedupes on ``symbol|sweep_timestamp`` —
+    over-delivery is benign, under-delivery is not (the _plan_signal_topics
+    doctrine). Never raises; a failed publish is a lost fan chip, not a
+    lost claim (the ledger row is already written). Lazy-imports
+    realtime_publisher to keep the import graph acyclic in the sweep path.
+    """
+    row = await record_bracket_claim(
+        signal_id=signal_id,
+        symbol=symbol,
+        ts_iso=ts_iso,
+        direction=direction,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        atr=atr,
+        source=source,
+        p_resolve=p_resolve,
+        p_win_given_resolve=p_win_given_resolve,
+        p_win_bracket=p_win_bracket,
+        expected_resolution_hours=expected_resolution_hours,
+        expiry_bars=expiry_bars,
+    )
+    if row is None or broadcast_payload is None:
+        return row
+    if claims_publish() != "live":
+        return row
+    try:
+        from regime_platform.sweep_orchestrator.realtime_publisher import (
+            broadcast_signal,
+        )
+        broadcast_signal(
+            {**broadcast_payload, "claim": row},
+            plan_ids=plan_ids,
+        )
+    except Exception as exc:
+        logger.debug("claims publish %s: rebroadcast failed: %s", symbol, exc)
+    return row

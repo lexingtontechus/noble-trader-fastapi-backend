@@ -2094,19 +2094,48 @@ class HeavySweepMixin:
                     if qualified:
                         from regime_platform.sweep_orchestrator.paper_book import open_position
                         asyncio.create_task(open_position(sim_payload))
-                        # ── Claims layer registration (Phase A, 2026-10-27;
-                        # heavy twin of the orchestrator block — one
-                        # definition, both paths) ──────────────────────────
+                        # ── 10a1. Realtime broadcast (Talaria dashboard) ──
+                        # Fire-and-forget publish of the QUALIFIED heavy
+                        # signal to the realtime:signals broadcast channel,
+                        # built from the sim payload (6dp full-value prices).
+                        # Never raises: broadcast_signal swallows failures
+                        # and skips silently without a running event loop.
+                        # Built into a variable (Phase B, 2026-10-28) so the
+                        # claims task below can re-publish the SAME payload
+                        # with the persisted claim row attached when
+                        # claims_publish flips to live — one payload
+                        # authority, two events (orchestrator light twin).
+                        from regime_platform.sweep_orchestrator.realtime_publisher import (
+                            broadcast_signal,
+                            build_signal_payload,
+                        )
+                        _signal_broadcast = build_signal_payload(
+                            symbol=symbol,
+                            direction=trade_signal["signal"],
+                            entry_price=sim_payload["entry_price"],
+                            stop_loss=sim_payload["stop_loss"],
+                            take_profit=sim_payload["take_profit"],
+                            kelly_f=sim_payload.get("kelly_f"),
+                            effective_kelly=sim_payload.get("effective_kelly"),
+                        )
+                        broadcast_signal(_signal_broadcast, plan_ids=sym.get("plan_ids") or [])
+                        # ── Claims layer registration (Phase A) + Phase B
+                        # transport, one fire-and-forget task; heavy twin of
+                        # the orchestrator block — one definition, both
+                        # paths ────────────────────────────────────────────
                         # One nt_signal_claims BRACKET claim per QUALIFIED
                         # heavy signal: live bracket + price-space ATR
                         # normal-approx fan + the probabilities already
                         # computed at qualification; scored at resolution by
-                        # the SAME settlement contract. Shadow writes only.
+                        # the SAME settlement contract. Shadow default:
+                        # writes only; claims_publish=live re-publishes
+                        # _signal_broadcast with the PERSISTED claim row
+                        # attached. Never breaks the sweep.
                         try:
                             from regime_platform.sweep_orchestrator.claims import (
-                                record_bracket_claim as _record_claim,
+                                register_and_publish_bracket_claim as _register_claim,
                             )
-                            asyncio.create_task(_record_claim(
+                            asyncio.create_task(_register_claim(
                                 signal_id=sim_payload["signal_id"],
                                 symbol=symbol,
                                 ts_iso=sim_payload["ts"],
@@ -2119,31 +2148,14 @@ class HeavySweepMixin:
                                 p_resolve=_p_resolve,
                                 p_win_given_resolve=_p_win_resolve,
                                 p_win_bracket=_p_win_bracket,
+                                broadcast_payload=_signal_broadcast,
+                                plan_ids=sym.get("plan_ids") or [],
                             ))
                         except Exception as _claim_exc:
                             logger.debug(
                                 "[sweep:heavy] %s: claims registration dispatch failed: %s",
                                 symbol, _claim_exc,
                             )
-                        # ── 10a1. Realtime broadcast (Talaria dashboard) ──
-                        # Fire-and-forget publish of the QUALIFIED heavy
-                        # signal to the realtime:signals broadcast channel,
-                        # built from the sim payload (6dp full-value prices).
-                        # Never raises: broadcast_signal swallows failures
-                        # and skips silently without a running event loop.
-                        from regime_platform.sweep_orchestrator.realtime_publisher import (
-                            broadcast_signal,
-                            build_signal_payload,
-                        )
-                        broadcast_signal(build_signal_payload(
-                            symbol=symbol,
-                            direction=trade_signal["signal"],
-                            entry_price=sim_payload["entry_price"],
-                            stop_loss=sim_payload["stop_loss"],
-                            take_profit=sim_payload["take_profit"],
-                            kelly_f=sim_payload.get("kelly_f"),
-                            effective_kelly=sim_payload.get("effective_kelly"),
-                        ), plan_ids=sym.get("plan_ids") or [])
                 except RuntimeError:
                     # No running event loop — skip capture.
                     pass

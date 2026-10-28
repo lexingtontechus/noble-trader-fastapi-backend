@@ -314,6 +314,13 @@ _DEFAULTS: dict[str, Any] = {
     #   the SAME settlement contract. shadow = writes only; nothing reads the
     #   ledger until Phase B's claims_publish flip. Fails open on read error.
     "claims_mode": "shadow",
+    # claims_publish  off|live — Phase B transport: after a bracket claim
+    #   PERSISTS, re-publish the qualified signal's broadcast with the claim
+    #   row attached (fan on the wire; shown ⟺ ledger holds it). The
+    #   migration-219 v_talaria_latest_signals extension is the ungated
+    #   bundle surface; this flag gates only the broadcast wire. MT5/EA/bridge
+    #   consumers read named fields only — the extra claim key is inert.
+    "claims_publish": "off",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1321,6 +1328,21 @@ def get_claims_mode() -> str:
     until Phase B gives it distinct meaning.
     """
     return str(_load().get("claims_mode", _DEFAULTS["claims_mode"])).lower()
+
+
+def get_claims_publish() -> str:
+    """Claims layer, Phase B: ``off`` | ``live`` — claim transport.
+
+    ``off`` (shipped): the broadcast ``signal`` event carries no ``claim``
+    object; the dashboard's claims surface is the migration-219
+    ``v_talaria_latest_signals`` extension only (bundle path, 5-min pg_cron
+    cadence). ``live``: after a bracket claim persists, the sweep
+    re-publishes the signal broadcast with the claim row attached
+    (fail-open, ``p_clef_wait`` convention) so the frontend renders the fan
+    the moment the ledger holds it. Flip only after migration 219 is
+    applied and the Phase C SignalContextCard is verified.
+    """
+    return str(_load().get("claims_publish", _DEFAULTS["claims_publish"])).lower()
 
 
 def get_calibration_bias_published_only() -> bool:
