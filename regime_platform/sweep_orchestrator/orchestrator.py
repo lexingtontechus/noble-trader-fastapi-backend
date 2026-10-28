@@ -6852,6 +6852,49 @@ class SweepOrchestrator(HeavySweepMixin):
                             "[sweep:orch] %s: claims registration dispatch failed: %s",
                             symbol, _claim_exc,
                         )
+                    # ── Claims layer, Phase D: the recalibrated vol fan ──
+                    # Second fire-and-forget task — kind='vol_fan',
+                    # source='vol_backtest_recalib': the GARCH-family arm
+                    # fitted on the qualification window + the MZ+k recalib
+                    # artifact, the fan the atr_normal baseline must beat.
+                    # AND-gated (claims_mode + claims_vol_fan_mode, default
+                    # off) and fail-open on every dependency (arch, window,
+                    # artifact, insert) — a lost fan is a lost claim, never
+                    # a lost signal. The light window (~200 bars) is below
+                    # the arm floor, so the task fetches its own 2160-bar
+                    # window inside itself; the sweep never waits.
+                    try:
+                        from regime_platform.sweep_orchestrator.claims_vol_fan import (
+                            register_vol_fan_claim as _register_vol_claim,
+                        )
+                        asyncio.create_task(_register_vol_claim(
+                            signal_id=sim_payload["signal_id"],
+                            symbol=symbol,
+                            ts_iso=sim_payload["ts"],
+                            direction=trade_signal["signal"],
+                            entry_price=sim_payload["entry_price"],
+                            stop_loss=sim_payload["stop_loss"],
+                            take_profit=sim_payload["take_profit"],
+                            atr=atr,
+                            source=source,
+                            sym=sym,
+                            prices=prices,
+                            timestamps=timestamps,
+                            p_resolve=_p_resolve,
+                            p_win_given_resolve=_p_win_resolve,
+                            p_win_bracket=_p_win_bracket,
+                            expected_resolution_hours=(
+                                _deadline_tier.median_hours
+                                if _deadline_tier is not None else None
+                            ),
+                            broadcast_payload=_signal_broadcast,
+                            plan_ids=sym.get("plan_ids") or [],
+                        ))
+                    except Exception as _vol_claim_exc:
+                        logger.debug(
+                            "[sweep:orch] %s: vol_fan claims dispatch failed: %s",
+                            symbol, _vol_claim_exc,
+                        )
                 # ── 11b. Renko brick capture (nt_renko_bricks) ─────────
                 # Rebuild the brick series from the sweep's price window and
                 # persist one row per brick for the admin plugin's chart.

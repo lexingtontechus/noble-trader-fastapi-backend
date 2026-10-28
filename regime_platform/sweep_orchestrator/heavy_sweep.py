@@ -2156,6 +2156,40 @@ class HeavySweepMixin:
                                 "[sweep:heavy] %s: claims registration dispatch failed: %s",
                                 symbol, _claim_exc,
                             )
+                        # ── Claims layer, Phase D: the recalibrated vol
+                        # fan — heavy twin of the orchestrator block ────
+                        # kind='vol_fan' GARCH-family fan on the sweep's OWN
+                        # 2160-bar window (the exact prices the signal was
+                        # computed on — no refetch), MZ+k recalibrated.
+                        # AND-gated + fail-open like the bracket sibling;
+                        # default off (research-only, as today).
+                        try:
+                            from regime_platform.sweep_orchestrator.claims_vol_fan import (
+                                register_vol_fan_claim as _register_vol_claim,
+                            )
+                            asyncio.create_task(_register_vol_claim(
+                                signal_id=sim_payload["signal_id"],
+                                symbol=symbol,
+                                ts_iso=sim_payload["ts"],
+                                direction=trade_signal["signal"],
+                                entry_price=sim_payload["entry_price"],
+                                stop_loss=sim_payload["stop_loss"],
+                                take_profit=sim_payload["take_profit"],
+                                atr=atr,
+                                source="sweep-heavy",
+                                sym=sym,
+                                prices=prices,
+                                p_resolve=_p_resolve,
+                                p_win_given_resolve=_p_win_resolve,
+                                p_win_bracket=_p_win_bracket,
+                                broadcast_payload=_signal_broadcast,
+                                plan_ids=sym.get("plan_ids") or [],
+                            ))
+                        except Exception as _vol_claim_exc:
+                            logger.debug(
+                                "[sweep:heavy] %s: vol_fan claims dispatch failed: %s",
+                                symbol, _vol_claim_exc,
+                            )
                 except RuntimeError:
                     # No running event loop — skip capture.
                     pass

@@ -326,6 +326,24 @@ class _ArchArmBase(Arm):
         has no analytic multi-step for EGARCH, so seeded simulation."""
         return res.forecast(horizon=horizon, reindex=False)
 
+    def variance_path(self, prices, horizon: int) -> np.ndarray | None:
+        """Public H-step conditional-variance path in ORIGINAL return units.
+
+        The exact per-horizon path ``forecast()`` collapses into the H-bar
+        RV aggregate — exposed as a thin public seam for the claims layer's
+        Phase D vol_fan price fan (regime_platform.sweep_orchestrator.
+        claims_vol_fan; worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md §4).
+        Same guards as ``forecast``: unavailable arm, short window, or a
+        degenerate fit ⇒ None. Deterministic for a frozen window (analytic
+        for GARCH/GJR, seeded simulation for EGARCH).
+        """
+        if not self.available:
+            return None
+        r = log_returns(prices)
+        if len(r) < self.min_bars:
+            return None
+        return self._fit_forecast_variance(r, horizon)
+
     def forecast(self, prices, timestamps, horizon) -> ArmForecast | None:
         if not self.available:
             return None

@@ -321,6 +321,27 @@ _DEFAULTS: dict[str, Any] = {
     #   bundle surface; this flag gates only the broadcast wire. MT5/EA/bridge
     #   consumers read named fields only — the extra claim key is inert.
     "claims_publish": "off",
+    # claims_vol_fan_mode  off|shadow — Phase D (2026-10-28, worklog
+    #   20261027_KAIROS_CLAIMS_LAYER_DESIGN.md §4): register a SECOND claim
+    #   per qualified signal, kind='vol_fan' + source='vol_backtest_recalib',
+    #   whose price fan comes from the vol_backtest GARCH family (GARCH(1,1)-N
+    #   / GJR-t / EGARCH-t) fitted on the qualification window and
+    #   recalibrated with the MZ+k artifact. AND-gated on claims_mode.
+    #   off (shipped) = the design doc's "research-only, as today" — full
+    #   no-op, the ATR normal-approx bracket fan stays the only claim.
+    "claims_vol_fan_mode": "off",
+    # claims_vol_fan_arm  garch|gjr|egarch — the PRE-REGISTERED fan arm.
+    #   Default egarch = the lab's measured prior (EGARCH-t best-in-family,
+    #   skillRatio 0.944 vs Log-HAR; GARCH/GJR worse at long horizons on
+    #   metals). Setting the flag IS the pre-registration; each claim row
+    #   stamps `arm` (migration 220) so arm switches are auditable evidence,
+    #   never silent cherry-picking.
+    "claims_vol_fan_arm": "egarch",
+    # claims_vol_fan_calib_path — repo-relative recalib.json artifact the
+    #   vol fan consumes (mtime hot-reload, the feature_flags convention).
+    #   Missing/unreadable artifact ⇒ identity calibration, stamped
+    #   calib_level='none' on the claim row — honest, never an error.
+    "claims_vol_fan_calib_path": "config/claims_vol_fan_recalib.json",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1343,6 +1364,37 @@ def get_claims_publish() -> str:
     applied and the Phase C SignalContextCard is verified.
     """
     return str(_load().get("claims_publish", _DEFAULTS["claims_publish"])).lower()
+
+
+def get_claims_vol_fan_mode() -> str:
+    """Claims layer, Phase D: ``off`` | ``shadow`` — vol_fan registration.
+
+    AND-gated on ``claims_mode`` (both must be non-off). ``shadow``: every
+    qualified signal additionally registers a ``kind='vol_fan'`` claim
+    whose fan is the vol_backtest GARCH-family arm recalibrated with the
+    MZ+k artifact — the arm the Phase A ``atr_normal`` baseline must beat
+    (design §6; scored by the same resolver, zero resolver changes).
+    ``off`` (shipped) = full no-op. A ``live`` value behaves as ``shadow``.
+    Requires migration 220 + the optional ``arch`` package; degrades to a
+    no-op claim when either is absent (fail-open).
+    """
+    return str(_load().get("claims_vol_fan_mode", _DEFAULTS["claims_vol_fan_mode"])).lower()
+
+
+def get_claims_vol_fan_arm() -> str:
+    """Claims layer, Phase D: ``garch`` | ``gjr`` | ``egarch`` (default).
+
+    The PRE-REGISTERED GARCH-family arm for the vol_fan fan. Defaults to
+    egarch on the lab's best-in-family prior; the claim row stamps ``arm``
+    so the ledger can always tell which arm produced which fan.
+    """
+    arm = str(_load().get("claims_vol_fan_arm", _DEFAULTS["claims_vol_fan_arm"])).lower()
+    return arm if arm in ("garch", "gjr", "egarch") else _DEFAULTS["claims_vol_fan_arm"]
+
+
+def get_claims_vol_fan_calib_path() -> str:
+    """Claims layer, Phase D: repo-relative recalib.json artifact path."""
+    return str(_load().get("claims_vol_fan_calib_path", _DEFAULTS["claims_vol_fan_calib_path"]))
 
 
 def get_calibration_bias_published_only() -> bool:

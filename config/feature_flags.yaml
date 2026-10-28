@@ -1044,6 +1044,27 @@ claims_mode: "shadow"         # off|shadow — claims ledger writes + resolver s
 # Flip to live only after migration 219 is applied AND the Phase C
 # SignalContextCard is verified in the dashboard.
 claims_publish: "off"         # off|live — broadcast claim transport (fan on the wire)
+# Phase D (2026-10-28, worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md §4):
+# the recalibrated vol fan — a SECOND claim per qualified signal (kind=
+# vol_fan, source=vol_backtest_recalib, migration 220) whose price fan is
+# the vol_backtest GARCH family fitted on the qualification window + the
+# MZ+k recalib artifact (config/claims_vol_fan_recalib.json). This is the
+# arm the Phase A atr_normal baseline must beat; scored by the SAME
+# resolver with zero changes (kind-agnostic kernels). off (shipped) = the
+# design doc's "research-only, as today". Flip to shadow only after
+# migration 220 is applied AND `arch` is installed AND the recalib
+# artifact is in place (otherwise: honest no-op, calib_level='none').
+claims_vol_fan_mode: "off"    # off|shadow — vol_fan claim registration (AND-gated on claims_mode)
+# The PRE-REGISTERED fan arm (garch|gjr|egarch). Default egarch = the lab's
+# best-in-family prior (EGARCH-t skillRatio 0.944 vs Log-HAR). Setting this
+# flag IS the pre-registration; claim rows stamp `arm` so switches are
+# auditable evidence, never silent cherry-picking.
+claims_vol_fan_arm: "egarch"  # garch|gjr|egarch — which GARCH-family arm builds the fan
+# Repo-relative recalib.json the vol fan consumes (mtime hot-reload). The
+# artifact is minted by scripts/run_vol_backtest.py + `python -m
+# vol_backtest.recalib` (see the Phase D build worklog for the exact
+# commands). Missing ⇒ identity calibration, stamped calib_level='none'.
+claims_vol_fan_calib_path: "config/claims_vol_fan_recalib.json"
 # Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
 # round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
 # 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_

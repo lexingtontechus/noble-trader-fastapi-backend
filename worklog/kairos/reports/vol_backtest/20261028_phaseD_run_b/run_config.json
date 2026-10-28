@@ -1,0 +1,22 @@
+{
+  "source": "csv:data/vol_backtest",
+  "symbols": [
+    "USDJPY",
+    "USDCHF"
+  ],
+  "horizons": [
+    6,
+    12,
+    24,
+    48
+  ],
+  "arms": [
+    "garch",
+    "gjr",
+    "egarch"
+  ],
+  "spacing": 72,
+  "cutoffs_cap": null,
+  "min_train": 720,
+  "skipped_arms": {}
+}
