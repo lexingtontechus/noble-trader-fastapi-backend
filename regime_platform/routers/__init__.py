@@ -3,6 +3,7 @@
 from . import (
     backtest,
     calibration,
+    claims,
     config,
     feeds,
     gpu,

@@ -121,7 +121,7 @@ from regime_platform.routers import operational
 # Phase 5: P&L Analytics (intraday, risk dashboard, CSV export, alerts)
 from regime_platform.routers import pnl
 # Phase 10: TimesFM Calibration Loop + Venue Management
-from regime_platform.routers import calibration, venue
+from regime_platform.routers import calibration, claims, venue
 # Phase 9: Runtime Configuration (admin-adjustable params)
 from regime_platform.routers import config as config_router_module
 # Phase 11: Price Data Proxy (Lightning AI, replaces Yahoo scraping)
@@ -442,6 +442,7 @@ def create_app() -> FastAPI:
     app.include_router(pnl.router)
     app.include_router(config_router_module.config_router)
     app.include_router(calibration.router)
+    app.include_router(claims.router)
     app.include_router(venue.router)
     app.include_router(prices_router_module.router)
 

@@ -342,6 +342,21 @@ _DEFAULTS: dict[str, Any] = {
     #   Missing/unreadable artifact ⇒ identity calibration, stamped
     #   calib_level='none' on the claim row — honest, never an error.
     "claims_vol_fan_calib_path": "config/claims_vol_fan_recalib.json",
+    # claims_prior_mode  off|live — Phase E (2026-10-28, design doc §4 row E
+    #   + §6): the OPTIONAL claims→calibration bridge. When ``live``,
+    #   resolved-claim coverage evidence (claims_leaderboard
+    #   .fetch_symbol_claims_evidence: vol_fan rows preferred once they clear
+    #   the n≥10 floor, bracket control otherwise; pooled coverage80 in the
+    #   §6 [0.80, 0.95] acceptance band, Wilson-accepted) modulates the
+    #   calibration-enforcement Bayesian shrink PRIOR COUNT by ×[0.75, 1.5]:
+    #   proven-calibrated ⇒ shrink LESS (trust the raw p_win more),
+    #   proven-miscalibrated ⇒ shrink MORE. Gentle bounds by construction:
+    #   claims measure the FAN's coverage, an adjacent (not identical)
+    #   object to directional p_win. off (shipped) = the shrink never reads
+    #   the ledger — byte-identical to pre-Phase-E. Flip only when
+    #   GET /claims/leaderboard shows calibrated cells for the symbols in
+    #   question — evidence, not calendar.
+    "claims_prior_mode": "off",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -1395,6 +1410,23 @@ def get_claims_vol_fan_arm() -> str:
 def get_claims_vol_fan_calib_path() -> str:
     """Claims layer, Phase D: repo-relative recalib.json artifact path."""
     return str(_load().get("claims_vol_fan_calib_path", _DEFAULTS["claims_vol_fan_calib_path"]))
+
+
+def get_claims_prior_mode() -> str:
+    """Claims layer, Phase E: ``off`` | ``live`` — claims evidence → shrink prior.
+
+    ``off`` (shipped): the calibration-enforcement Bayesian shrink never
+    reads ``nt_signal_claims`` — byte-identical to pre-Phase-E. ``live``:
+    per-symbol resolved-claim coverage evidence (pooled coverage80 in the
+    design doc §6 [0.80, 0.95] acceptance band, Wilson-accepted, n ≥ 10)
+    modulates the shrink prior count ×[0.75, 1.5] via
+    ``calibration_enforcement._claims_prior`` — fail-open to the standard
+    shrink on ANY error (no ledger, no evidence, no fetch ⇒ no modulation).
+    Evidence-gated by construction: the gate itself refuses to modulate
+    below the evidence floor, so flipping this flag changes nothing until
+    the ledger has accrued resolved claims.
+    """
+    return str(_load().get("claims_prior_mode", _DEFAULTS["claims_prior_mode"])).lower()
 
 
 def get_calibration_bias_published_only() -> bool:

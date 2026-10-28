@@ -97,7 +97,9 @@ PENALTY_ACTIONS = (
 AUDIT_ONLY_ACTIONS = ("parameter_decay_check",)
 
 
-def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
+def bayesian_adjusted_p_win(
+    p_win: float, n_records: int, *, prior_mult: float = 1.0,
+) -> float:
     """Shrink ``p_win`` toward 0.5 with a Bayesian prior.
 
     p_win' = (p_win * n + 0.5 * prior_count) / (n + prior_count)
@@ -106,6 +108,13 @@ def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     many records the observed p_win dominates (shrink less).
     ``prior_count`` (BAYES_PRIOR_COUNT) is registry-tunable (Layer 1); the
     0.5 anchor (BAYES_PRIOR_PWIN) is not — see §2.5.2.1.
+
+    ``prior_mult`` (Phase E, default 1.0 = the exact historical formula):
+    an optional multiplier on the prior COUNT, not on the anchor — the
+    claims_prior_mode evidence bridge scales how much the prior pulls, so
+    proven-calibrated claim coverage (×0.75) shrinks a little less and
+    proven miscalibration (×1.5) shrinks a little more. It can never touch
+    the 0.5 anchor, the observation count, or the raw p_win itself.
 
     NOT the same function as ``eod_correction.bayesian_adjusted_p_win``
     despite the identical name/formula — this one deliberately returns
@@ -122,7 +131,9 @@ def bayesian_adjusted_p_win(p_win: float, n_records: int) -> float:
     if n == 0:
         # No records — no evidence to shrink on; keep the raw p_win.
         return float(p_win)
-    prior_count = _settings_number("BAYES_PRIOR_COUNT", BAYES_PRIOR_COUNT)
+    prior_count = _settings_number("BAYES_PRIOR_COUNT", BAYES_PRIOR_COUNT) * max(
+        0.0, float(prior_mult)
+    )
     return (float(p_win) * n + BAYES_PRIOR_PWIN * prior_count) / (
         n + prior_count
     )
@@ -274,6 +285,9 @@ async def apply_calibration_adjustment(
           "kelly_f": float,
           "reason": str,
           "source": "cell" | "symbol" | "system",
+          "claims_prior": dict | None   (Phase E additive stamp — the
+                        claims-evidence gate result when
+                        claims_prior_mode=live, else None)
         }
     """
     noop = {
@@ -331,6 +345,28 @@ async def apply_calibration_adjustment(
     )
     source = evidence.get("source") or "system"
 
+    # Phase E (design doc §4 row E + §1): the OPTIONAL claims-evidence
+    # modulation of the shrink prior. claims_prior_mode=off (shipped) ⇒
+    # _claims_prior returns None without any I/O and prior_mult stays 1.0
+    # — the exact pre-Phase-E arithmetic. The bridge can only scale the
+    # EXISTING Bayesian shrink's prior count (×[0.75, 1.5], gentle by
+    # design); it never gates, never rewires geometry/EV, and fail-opens
+    # to the standard shrink on any error. Per the 5-clause consistency
+    # contract this reads the shadow ledger — it writes nothing.
+    claims_prior = await _claims_prior(symbol)
+    prior_mult = (
+        float(claims_prior.get("prior_mult", 1.0))
+        if isinstance(claims_prior, dict)
+        else 1.0
+    )
+    if claims_prior and abs(prior_mult - 1.0) > 1e-12:
+        log.info(
+            "[calibration:enforce] %s: claims prior verdict=%s kind=%s cov80=%s n=%s "
+            "→ prior_mult %.2f",
+            symbol, claims_prior.get("verdict"), claims_prior.get("kind"),
+            claims_prior.get("coverage80_pooled"), claims_prior.get("n_claims"), prior_mult,
+        )
+
     if source == "cell":
         status = str(evidence.get("status") or "").upper()
         bias = evidence.get("bias")
@@ -348,11 +384,13 @@ async def apply_calibration_adjustment(
                 "kelly_f": float(kelly_f),
                 "reason": "cell_calibrated",
                 "source": "cell",
+                "claims_prior": claims_prior,
             }
         if status == "UNDERCONFIDENT":
             adjusted_p_win = _rank_conditioned_shrink(
                 p_win, n_records, rank_score,
                 slope=_rank_calibration_slope(),
+                prior_mult=prior_mult,
             )
             log.info(
                 "[calibration:enforce] %s: CELL UNDERCONFIDENT bias=%s n=%s "
@@ -367,12 +405,14 @@ async def apply_calibration_adjustment(
                 "kelly_f": float(kelly_f),
                 "reason": "underconfidence_no_kelly_cut",
                 "source": "cell",
+                "claims_prior": claims_prior,
             }
         if status == "OVERCONFIDENT":
             kelly_reduction = _settings_number("KELLY_REDUCTION", KELLY_REDUCTION)
             adjusted_p_win = _rank_conditioned_shrink(
                 p_win, n_records, rank_score,
                 slope=_rank_calibration_slope(),
+                prior_mult=prior_mult,
             )
             adjusted_kelly = float(kelly_f) * kelly_reduction
             log.info(
@@ -388,6 +428,7 @@ async def apply_calibration_adjustment(
                 "kelly_f": adjusted_kelly,
                 "reason": "penalty:cell_overconfident",
                 "source": "cell",
+                "claims_prior": claims_prior,
             }
         return {
             "applied": False,
@@ -397,15 +438,24 @@ async def apply_calibration_adjustment(
             "kelly_f": float(kelly_f),
             "reason": f"cell_status:{status or 'unknown'}",
             "source": "cell",
+            "claims_prior": claims_prior,
         }
 
     if source == "system":
-        return {**noop, "reason": evidence.get("reason") or "no_eod_action"}
+        return {
+            **noop,
+            "reason": evidence.get("reason") or "no_eod_action",
+            "claims_prior": claims_prior,
+        }
 
     # ── symbol path (legacy) ──────────────────────────────────────────
     state = evidence.get("_state") or symbol_state
     if not state or state.get("action") in (None, "none"):
-        return {**noop, "reason": "no_eod_action"}
+        return {
+            **noop,
+            "reason": "no_eod_action",
+            "claims_prior": claims_prior,
+        }
 
     action_name = state.get("action")
 
@@ -416,6 +466,7 @@ async def apply_calibration_adjustment(
             "bias": _num(state.get("bias")),
             "reason": "action_stale",
             "source": "symbol",
+            "claims_prior": claims_prior,
         }
 
     detail = state.get("detail") if isinstance(state.get("detail"), dict) else {}
@@ -439,6 +490,7 @@ async def apply_calibration_adjustment(
         adjusted_p_win = _rank_conditioned_shrink(
             p_win, n_records, rank_score,
             slope=_rank_calibration_slope(),
+            prior_mult=prior_mult,
         )
         adjusted_kelly = float(kelly_f)
         log.info(
@@ -454,11 +506,13 @@ async def apply_calibration_adjustment(
             "kelly_f": adjusted_kelly,
             "reason": "underconfidence_no_kelly_cut",
             "source": "symbol",
+            "claims_prior": claims_prior,
         }
 
     adjusted_p_win = _rank_conditioned_shrink(
         p_win, n_records, rank_score,
         slope=_rank_calibration_slope(),
+        prior_mult=prior_mult,
     )
     adjusted_kelly = float(kelly_f) * kelly_reduction
     # status: read directly from the state row (2026-09-09) — it was
@@ -482,6 +536,7 @@ async def apply_calibration_adjustment(
         "kelly_f": adjusted_kelly,
         "reason": f"penalty:{action_name}",
         "source": "symbol",
+        "claims_prior": claims_prior,
     }
 
 
@@ -504,12 +559,43 @@ def _rank_calibration_slope() -> float:
         return 0.5
 
 
+async def _claims_prior(symbol: str) -> Optional[dict[str, Any]]:
+    """Phase E: the claims-evidence gate behind ``claims_prior_mode``.
+
+    Design doc §1 ("it may *inform* the shrink prior via a feature flag —
+    opt-in, evidence-gated, same discipline as pbm_*_mode") + §4 row E.
+    Returns the per-symbol evidence dict from
+    ``claims_leaderboard.fetch_symbol_claims_evidence`` (pooled coverage80,
+    Wilson band, verdict, prior_mult) when the flag is ``live``; ``None``
+    in every other case — including flag off (no I/O at all), any fetch
+    or parse error (fail-open to the standard shrink), and an unparseable
+    payload. The module import is lazy to keep the claims layer out of
+    this module's import graph (same convention as _rank_calibration_slope).
+    """
+    try:
+        from regime_platform.core.feature_flags import get_claims_prior_mode
+        if get_claims_prior_mode() != "live":
+            return None
+    except Exception:
+        return None
+    try:
+        from regime_platform.sweep_orchestrator.claims_leaderboard import (
+            fetch_symbol_claims_evidence,
+        )
+        evidence = await fetch_symbol_claims_evidence(symbol)
+        return evidence if isinstance(evidence, dict) else None
+    except Exception as exc:
+        log.debug("claims prior %s unavailable (fail-open): %s", symbol, exc)
+        return None
+
+
 def _rank_conditioned_shrink(
     p_win: float,
     n_records: int,
     rank_score: Optional[float],
     *,
     slope: float = 0.5,
+    prior_mult: float = 1.0,
 ) -> float:
     """Bayesian shrink modulated by ``rank_score`` (2026-10-04).
 
@@ -524,23 +610,27 @@ def _rank_conditioned_shrink(
     - ``slope=0.0`` → standard shrink (no modulation)
     - ``slope=1.0`` → high-rank gets 50% less shrink, low-rank gets 50% more
 
+    ``prior_mult`` (Phase E) passes through to the prior count for the
+    claims-evidence bridge — orthogonal to the rank modulation and
+    multiplicative with it.
+
     When ``rank_score`` is None, returns the standard shrink (fail-open).
     """
     if rank_score is None:
-        return bayesian_adjusted_p_win(p_win, n_records)
+        return bayesian_adjusted_p_win(p_win, n_records, prior_mult=prior_mult)
     try:
         rs = float(rank_score)
     except (TypeError, ValueError):
-        return bayesian_adjusted_p_win(p_win, n_records)
+        return bayesian_adjusted_p_win(p_win, n_records, prior_mult=prior_mult)
     if not (0.0 <= rs <= 1.0):
-        return bayesian_adjusted_p_win(p_win, n_records)
+        return bayesian_adjusted_p_win(p_win, n_records, prior_mult=prior_mult)
     # Effective prior count: n_eff = n * (1 + slope * (0.5 - rs) * 2)
     # At rs=1.0 (high rank): n_eff = n * (1 - slope)  → less shrink
     # At rs=0.0 (low rank):  n_eff = n * (1 + slope)  → more shrink
     # At rs=0.5 (mid):       n_eff = n               → standard shrink
     n_eff = n_records * (1.0 + slope * (0.5 - rs) * 2.0)
     n_eff = max(0.0, n_eff)
-    return bayesian_adjusted_p_win(p_win, n_eff)
+    return bayesian_adjusted_p_win(p_win, n_eff, prior_mult=prior_mult)
 
 
 def normalize_side(side: Optional[str]) -> Optional[str]:

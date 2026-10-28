@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-28T00:00:00+00:00",
+  "description": "TSFM lab arm table — the measured rolling-origin verdicts the kairos claims ledger is scored against ('kairos = arm 11'). Ratios are arm-vs-baseline CRPS (or Brier) skill ratios on the lab's independent harness; verdicts are Diebold-Mariano tested. Committed verbatim from worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md section 0 (re-measured 2026-10-27 after the trend/regime covariate fix).",
+  "provenance": {
+    "source_doc": "worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md (section 0, measured motivation)",
+    "measured_date": "2026-10-27",
+    "rolling_origins": 90,
+    "lab": "TSFM Probabilistic Forecast Lab (independent harness, built outside this repo; arms frozen, DM-tested with Newey-West variance)",
+    "caveat": "Lab cells are arm-vs-baseline RATIO tables. Kairos claims resolve at horizon 48h (the settlement contract window), so the leaderboard joins lab cells by SYMBOL as context and provenance — never number-vs-number across different horizons. The leaderboard's primary statistic is the PAIRED bracket-vs-vol_fan DM test inside the ledger (same signal, same bars, same resolver, same units)."
+  },
+  "params": {
+    "alpha": 0.05,
+    "min_n_verdict": 8,
+    "metric_semantics": "crps_ratio < 1 = arm beats baseline (lower is better); brier = mean Brier score (lower is better); verdicts: PASS = DM-significant win, FAIL = DM-significant loss or no skill, UNPROVEN = right direction, not significant"
+  },
+  "cells": [
+    {
+      "symbol": "BTCUSD",
+      "lane": "vol",
+      "horizon_bars": 6,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.727,
+      "dm_p": 0.0001,
+      "verdict": "PASS",
+      "note": "the one live lane — TSFM vol fan beats Log-HAR decisively at 6h"
+    },
+    {
+      "symbol": "BTCUSD",
+      "lane": "vol",
+      "horizon_bars": 24,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.828,
+      "dm_p": 0.0023,
+      "verdict": "PASS",
+      "note": "second significant BTCUSD vol cell"
+    },
+    {
+      "symbol": "USDCHF",
+      "lane": "vol",
+      "horizon_bars": 6,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.826,
+      "dm_p": null,
+      "verdict": "PASS",
+      "note": "significant per the design doc's 5/15 tally; per-cell DM p not reproduced in the doc"
+    },
+    {
+      "symbol": "USDJPY",
+      "lane": "vol",
+      "horizon_bars": 24,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.959,
+      "dm_p": null,
+      "verdict": "PASS",
+      "note": "significant per the design doc's 5/15 tally; per-cell DM p not reproduced in the doc"
+    },
+    {
+      "symbol": "USDJPY",
+      "lane": "vol",
+      "horizon_bars": 72,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.91,
+      "dm_p": null,
+      "verdict": "PASS",
+      "note": "significant per the design doc's 5/15 tally; per-cell DM p not reproduced in the doc"
+    },
+    {
+      "symbol": "XAUUSD",
+      "lane": "vol",
+      "horizon_bars": 24,
+      "baseline": "log_har",
+      "metric": "crps_ratio",
+      "value": 0.973,
+      "dm_p": 0.365,
+      "verdict": "UNPROVEN",
+      "note": "downgraded from PASS on the 2026-10-27 re-measure (Task 54-d) — right direction, not significant"
+    },
+    {
+      "symbol": "*",
+      "lane": "price",
+      "horizon_bars": 24,
+      "baseline": "rw",
+      "metric": "crps_ratio",
+      "value": 1.073,
+      "dm_p": 0.103,
+      "verdict": "FAIL",
+      "note": "calibrated but unskilled — the trend/regime covariate fan does not beat random walk"
+    },
+    {
+      "symbol": "*",
+      "lane": "direction",
+      "horizon_bars": null,
+      "baseline": "coin",
+      "metric": "brier",
+      "value": 0.2686,
+      "baseline_value": 0.2497,
+      "dm_p": null,
+      "verdict": "FAIL",
+      "note": "no directional skill; covariates hurt"
+    },
+    {
+      "symbol": "*",
+      "lane": "garch_family",
+      "horizon_bars": null,
+      "baseline": "log_har",
+      "metric": "skill_ratio",
+      "value": 0.944,
+      "dm_p": 0.085,
+      "verdict": "UNPROVEN",
+      "note": "EGARCH-t best-in-family, no HAR displacement; GARCH owns USDCHF 72h (~0.89); TSFM beats the best GARCH arm 11/15 — the family is a recalibration substrate, not an edge"
+    },
+    {
+      "symbol": "*",
+      "lane": "power_control",
+      "horizon_bars": null,
+      "baseline": "seasonal_naive",
+      "metric": "crps_ratio",
+      "value": 0.323,
+      "dm_p": null,
+      "verdict": "PASS",
+      "note": "harness meta-row: the machinery detects skill when it exists (Tetouan power control)"
+    }
+  ],
+  "notes": [
+    "Only the cells documented in the design doc are committed here; the full 15-cell vol table (5 horizons x 3 symbols) lives in the lab. Extend this file cell-by-cell as the lab re-measures — cells are additive evidence, never edited in place.",
+    "Kairos claims carry no PnL and no winrate by design; this table is the fixed external yardstick the ledger's CRPS/coverage cells are read against.",
+    "Design doc section 6 acceptance bar for the vol_fan arm: pooled claim coverage80 lands in [0.80, 0.95] (Wilson-accepted) — enforced by claims_leaderboard, not by this file."
+  ]
+}

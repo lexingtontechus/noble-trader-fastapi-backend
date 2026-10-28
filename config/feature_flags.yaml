@@ -1065,6 +1065,18 @@ claims_vol_fan_arm: "egarch"  # garch|gjr|egarch — which GARCH-family arm buil
 # vol_backtest.recalib` (see the Phase D build worklog for the exact
 # commands). Missing ⇒ identity calibration, stamped calib_level='none'.
 claims_vol_fan_calib_path: "config/claims_vol_fan_recalib.json"
+# Phase E (2026-10-28, design doc §4 row E + §6): the optional claims →
+# calibration bridge. off (shipped) = the enforcement shrink prior never
+# reads the claims ledger (byte-identical to pre-Phase-E). live = per-
+# symbol resolved-claim coverage evidence (vol_fan rows preferred once
+# n ≥ 10, bracket control otherwise; pooled coverage80 in the [0.80, 0.95]
+# acceptance band, Wilson-accepted) modulates the Bayesian shrink prior
+# count ×[0.75, 1.5] — proven-calibrated ⇒ shrink LESS (trust the raw
+# p_win more), proven-miscalibrated ⇒ shrink MORE. Gentle bounds by
+# design: fan coverage is adjacent evidence for directional p_win, not a
+# measurement of it. Flip only when GET /claims/leaderboard shows
+# calibrated cells for the symbols in question — evidence, not calendar.
+claims_prior_mode: "off"      # off|live — claims-evidence modulation of the shrink prior
 # Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
 # round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
 # 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_

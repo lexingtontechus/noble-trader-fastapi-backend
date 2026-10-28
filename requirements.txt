@@ -37,8 +37,12 @@ apscheduler>=3.10.0
 # Self-learning local knowledge index (2026-09-10) — reuses the torch/
 # huggingface-hub already installed above for TimesFM.
 sentence-transformers>=3.0.0
-# --- vol_backtest (Phase 0 RV-forecast benchmark) — OPTIONAL research deps ---
+# --- vol_backtest (Phase 0 RV-forecast benchmark) — research deps ---
 # Chronos-2 arms (chronos2 / chronos2_cov): Apache-2.0, 120M encoder, CPU-fine.
 # chronos-forecasting>=2.0
-# GARCH(1,1) baseline arm (skipped gracefully when absent)
-# arch>=7.0.0
+# GARCH family (Phase D, 2026-10-28): ACTIVATED for the kairos-claims
+# vol_fan arm — GARCH(1,1)/GJR/EGARCH via vol_backtest.arms power the
+# kind='vol_fan' claims (claims_vol_fan.py) behind claims_vol_fan_mode.
+# Without it that flag fails open to an honest silent no-op
+# (calib_level='none' fans never register). Pulls statsmodels transitively.
+arch>=7.0.0
