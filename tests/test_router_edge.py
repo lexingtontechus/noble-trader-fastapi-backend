@@ -480,10 +480,13 @@ class TestFlags:
         assert ff._DEFAULTS["router_edge_min_n_eff"] == 30.0
 
     def test_yaml_values(self):
-        # The shipped config sets exactly these (shadow measurement, live
-        # TimesFM — byte-identical until evidence says otherwise).
+        # The shipped config sets exactly these. router edge: shadow
+        # (measurement only). TimesFM: live -> shadow 2026-10-28 (rebuild T4,
+        # the direction decision — the operator flip and its recorded
+        # evidence basis live in the yaml comment and the T4 build worklog;
+        # _DEFAULTS above still pins the "live" code fallback).
         assert ff.get_router_edge_mode() == "shadow"
-        assert ff.get_timesfm_blend_mode() == "live"
+        assert ff.get_timesfm_blend_mode() == "shadow"
         assert ff.get_router_edge_weight() == pytest.approx(5.0)
         assert ff.get_router_edge_k0() == pytest.approx(20.0)
         assert ff.get_router_edge_tau_days() == pytest.approx(90.0)

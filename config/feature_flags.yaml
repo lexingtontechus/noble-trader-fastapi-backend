@@ -475,15 +475,28 @@ router_edge_tau_days: 90.0  # evidence half-life (days), 2^(-age/tau) decay
 router_edge_min_n_eff: 30.0 # per-cell gate before p_router may enter the live blend
 
 # timesfm_blend_mode (the TSFM exit ladder, same date): off | shadow | live.
-#   live (default): p_timesfm feeds the directional EV blend exactly as
-#     today — byte-identical; nothing changes until the evidence says so.
+#   live: p_timesfm feeds the directional EV blend exactly as today.
 #   shadow: TimesFM still fetched + skill-scored on the router-edge outcome
 #     stream, but withheld from compute_ev (blend renormalizes) — the A/B.
 #   off: not fetched at all (zero network cost); blend renormalizes.
 # The verdict comes from router_edge_report(): timesfm_skill vs
-# router_skill on the SAME stamped outcomes. Do NOT flip to shadow/off
-# before that report exists with real n_eff.
-timesfm_blend_mode: "live"
+# router_skill on the SAME stamped outcomes.
+timesfm_blend_mode: "shadow"  # off|shadow|live — the TSFM exit ladder
+# T4 flip record (2026-10-28, rebuild T4 — the direction decision, worklog/
+# 20261028_KAIROS_TIMESFM_REBUILD_T4_BUILD.md): operator decision, live →
+# shadow — p_timesfm withheld from the directional EV blend on BOTH cadences
+# (the unmeasured ~50% blend weight cut; fetch + skill scoring CONTINUE, so
+# the A/B measurement keeps accumulating). Evidence basis, recorded: the lab
+# direction-lane verdict — Brier 0.2686 vs coin 0.2497, DM-tested on 90
+# rolling origins (measured no-skill, worse than a coin); the post-deploy
+# probes (2026-09-17) pinned live p_timesfm at 0.496–0.501 on 100% of sweeps
+# (a z-map-saturated near-coin signal); the raw sigmoid mapping saturated at
+# p≈0.5 before the zmap existed (timesfm_map_mode history). The sanctioned
+# live-stream number — router_edge_report() timesfm_skill at real n_eff — is
+# PENDING production stamps (param_store is box-local, never committed); the
+# R2 scope's gates then arbitrate the next rung: off at timesfm_skill < 0 and
+# n_eff ≳ 100, back to live if it surprises. Code fallback stays "live" —
+# a corrupted yaml must not silently demote or promote anything.
 
 # Phase 3a of the calibration reframe (2026-08-28, worklog
 # 20260825_CALIBRATION_REFRAME_SCOPE.md "Phase 3 scope"). A live
