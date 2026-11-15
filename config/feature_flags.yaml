@@ -1055,18 +1055,27 @@ claims_publish: "off"         # off|live — broadcast claim transport (fan on t
 # migration 220 is applied AND `arch` is installed AND the recalib
 # artifact is in place (otherwise: honest no-op, calib_level='none').
 claims_vol_fan_mode: "off"    # off|shadow — vol_fan claim registration (AND-gated on claims_mode)
-# The PRE-REGISTERED fan arm (garch|gjr|egarch|tsfm). Default egarch = the lab's
-# best-in-family prior (EGARCH-t skillRatio 0.944 vs Log-HAR). Setting this
-# flag IS the pre-registration; claim rows stamp `arm` so switches are
-# auditable evidence, never silent cherry-picking. tsfm (rebuild T1,
-# 2026-10-28, worklog/20261028_KAIROS_TIMESFM_REBUILD_DESIGN.md): the
-# TimesFM sidecar vol-lane arm — variance path from the model's own q10..q90
-# log-price spread on the last 512 bars, rows stamped
+# The PRE-REGISTERED fan arm (garch|gjr|egarch|tsfm). Code fallback egarch =
+# the lab's best-in-family prior (EGARCH-t skillRatio 0.944 vs Log-HAR).
+# Setting this flag IS the pre-registration; claim rows stamp `arm` so
+# switches are auditable evidence, never silent cherry-picking. tsfm
+# (rebuild T1, 2026-10-28, worklog/20261028_KAIROS_TIMESFM_REBUILD_DESIGN.md):
+# the TimesFM sidecar vol-lane arm — variance path from the model's own
+# q10..q90 log-price spread on the last 512 bars, rows stamped
 # source='tsfm_sidecar' (zero migration), service probed lazily + fail-open
-# (unreachable TimesFM ⇒ no vol_fan claim, bracket unaffected). Flip to tsfm
-# only after the T2 recalib artifact carries tsfm cells AND the GARCH-era
-# baseline shows on GET /claims/leaderboard — evidence, not calendar.
-claims_vol_fan_arm: "egarch"  # garch|gjr|egarch|tsfm — which arm builds the vol_fan
+# (unreachable TimesFM ⇒ no vol_fan claim, bracket unaffected).
+claims_vol_fan_arm: "tsfm"    # garch|gjr|egarch|tsfm — which arm builds the vol_fan
+# T3 flip record (2026-10-28, rebuild T3, worklog/
+# 20261028_KAIROS_TIMESFM_REBUILD_T3_BUILD.md): operator decision, shipped
+# DARK (claims_vol_fan_mode stays off — zero live change until Phase D's
+# shadow deploy; this line is the pre-registration the design doc §5 T3
+# describes). Evidence-gate status, honestly: T2's mint path is landed
+# (3d67c8d) but the deployed artifact carries garch/gjr/egarch cells only —
+# tsfm runs identity calibration (calib_level='none') until the operator
+# mint (run_vol_backtest --arms garch,gjr,egarch,tsfm + vol_backtest.recalib);
+# the GARCH-era leaderboard baseline has NOT yet accumulated (the Phase D
+# shadow deploy that starts that clock is still pending). Flipping back is
+# one line; the code fallback stays egarch.
 # Repo-relative recalib.json the vol fan consumes (mtime hot-reload). The
 # artifact is minted by scripts/run_vol_backtest.py + `python -m
 # vol_backtest.recalib` (see the Phase D build worklog for the exact
