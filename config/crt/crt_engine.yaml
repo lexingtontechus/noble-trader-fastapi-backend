@@ -97,6 +97,22 @@ sizing:                                       # v4 EA confidence sizing + caps,
   daily_loss_stop_percent: 2.0                # realized paper PnL vs UTC day
   one_position_per_symbol: true
 
+claims:                                        # CRT-2 (migration 221): the
+  enabled: true                                #   option-claims layer — one
+  source: "crt_walkforward"                     #   kind='crt_option' claim per
+                                               #   paper fill (frozen C2-close
+                                               #   monitor state + implied
+                                               #   p_win + kelly SHADOW),
+                                               #   resolved by the CRT close
+                                               #   pass; fail-open stamps.
+
+monitors:                                      # CRT-2: monitor persistence
+  persist: true                                 #   nt_crt_monitor_state rows
+  flush_seconds: 3600                          #   throttled: on transition
+  rolling_daily: true                           #   or TTL; daily rolling
+                                               #   snapshot to
+                                               #   nt_crt_rolling_daily.
+
 discord:                                      # engine events to #crt (the webhook
   enabled: true                               #   URL comes from DISCORD_WEBHOOK_CRT)
   username: "CRT-1 Engine"
@@ -104,4 +120,5 @@ discord:                                      # engine events to #crt (the webho
   events:
     fill: true                                # setup armed + paper fill
     resolve: true                             # paper position resolved
+    monitor: true                            # decay state transition
     error: true

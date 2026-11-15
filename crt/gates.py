@@ -111,6 +111,12 @@ class GateDecision:
     risk_pct: float
     frozen_at: float          # epoch seconds — the C2 close
     option_key: tuple[str, int]
+    # CRT-2 provenance: the monitor snapshot AS CONSUMED at freeze time
+    # (state/s_cusum/live_n/live_ev/roll_ev/rl_n/rl_ev) — stamped by the
+    # engine right after freeze_decision, read by the claims builder so
+    # the claim records the decision INPUTS, not a re-derivation. Never
+    # read by any gate rule.
+    monitor: dict | None = None
 
 
 def vol_bit(p: float, vol_low: float = 0.33, vol_high: float = 0.67) -> int:

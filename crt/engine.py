@@ -50,6 +50,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from crt import claims as crt_claims
 from crt import paper
 from crt.candles import to_arrays
 from crt.config_loader import TF_SECONDS, OptionCfg
@@ -65,6 +66,7 @@ FROZEN_MAX = 256      # bounded per-setup decision memory (EA keeps one)
 SESS_NAMES = {0: "OUT", 1: "NY", 2: "ASIA"}
 SESS_IDS = {name: sid for sid, name in SESS_NAMES.items()}
 MODEL_NAMES = {0: "STOP", 1: "C3C", 2: "CONT"}
+_STATE_NAMES = {0: "NORMAL", 1: "CAUTION", 2: "OFF"}   # decay states (EM_*)
 
 
 @dataclass
@@ -72,6 +74,7 @@ class PositionState:
     """An open CRT paper position's resolution state."""
 
     position_id: str
+    signal_id: str                 # the claim's ledger sibling key (CRT-2)
     symbol: str
     tf: str
     session_id: int
@@ -137,6 +140,11 @@ class SymbolTFEngine:
             self.decay_cfg.setdefault(key, default)
         self.decay_cfg.setdefault("use_monitor", True)
         self.decay_cfg.setdefault("caution_mult", 0.5)
+        # CRT-2 claims hooks (engine_cfg['claims'] absent -> OFF: the CRT-1
+        # contract holds byte-identical — claims are opt-in via config)
+        self.claims_cfg = dict(engine_cfg.get("claims") or {})
+        self.claims_enabled = bool(self.claims_cfg.get("enabled", False))
+        self.artifact_runid = engine_cfg.get("artifact_runid")  # CRT-0 mint stamp
         # cross-tick state
         self.frozen: dict[float, Any] = {}
         self.emitted: set[float] = set()
@@ -234,7 +242,9 @@ class SymbolTFEngine:
                            "with the row's)", self.symbol, self.tf,
                            str(row.get("position_id"))[:8])
         return PositionState(
-            position_id=str(row.get("position_id")), symbol=self.symbol,
+            position_id=str(row.get("position_id")),
+            signal_id=str(row.get("signal_id") or ""),
+            symbol=self.symbol,
             tf=self.tf, session_id=sess, trade_buy=trade_buy,
             c3_open=open_ts - self.tf_seconds, open_ts_epoch=open_ts,
             entry_ref=entry_ref, fill=fill, sl=sl, tp=tp, risk=risk,
@@ -287,7 +297,16 @@ class SymbolTFEngine:
             by_option.setdefault(row.option.key, []).append(row)
         for opt_rows in by_option.values():
             option = opt_rows[0].option
+            prev_state = option.state
             apply_monitor(option, replay_monitor(option, opt_rows, self.decay_cfg))
+            if option.enabled and option.state != prev_state:
+                # decay transition — operationally material (the edge's
+                # health verdict changed); bounded by transition rarity
+                self.signal("monitor", f"{self.symbol} {self.tf} decay",
+                            f"{option.dir} {SESS_NAMES.get(option.sess, option.sess)}: "
+                            f"{_STATE_NAMES.get(prev_state, prev_state)} -> "
+                            f"{option.state_name()} (S {option.s_cusum:.1f}, "
+                            f"live EV {option.live_ev:+.2f}R n{option.live_n})")
         per, tf_roll = compute_rolling(rows, now_epoch, self.roll.roll_days)
         apply_rolling(self.options, per)
 
@@ -303,6 +322,17 @@ class SymbolTFEngine:
                     self.chop_thresholds, self.sizing, self.roll,
                     use_decay_monitor=bool(self.decay_cfg.get("use_monitor", True)),
                     now_epoch=s.c2_open + self.tf_seconds)
+                # CRT-2: stamp the freeze-time monitor snapshot — the claim
+                # records the decision INPUTS (no lookahead, no hindsight)
+                decision.monitor = {
+                    "state": option.state_name(),
+                    "s_cusum": round(float(option.s_cusum), 6),
+                    "live_n": int(option.live_n),
+                    "live_ev": round(float(option.live_ev), 6),
+                    "roll_ev": round(float(option.roll_ev), 6),
+                    "rl_n": int(option.rl_n),
+                    "rl_ev": round(float(option.rl_ev), 6),
+                }
                 if len(self.frozen) >= FROZEN_MAX:
                     self.frozen.pop(next(iter(self.frozen)))
                 self.frozen[s.c2_open] = decision
@@ -369,8 +399,24 @@ class SymbolTFEngine:
             self.signal("error", f"{self.symbol} paper insert failed",
                         f"position for C2 {setup.c2_open:.0f} not recorded")
             return False
+        # CRT-2: mint the option claim (fail-open — a lost stamp is a lost
+        # stamp; the paper book stays the durable record). Awaited BEFORE
+        # the ambiguous-C3 close so mint/resolve can never race on the same
+        # signal_id.
+        claim_minted = False
+        if self.claims_enabled:
+            claim_row = crt_claims.build_option_claim(
+                symbol=self.symbol, tf=self.tf, option=option,
+                decision=decision, label=label, position_row=row,
+                artifact_runid=self.artifact_runid, open_ts_epoch=open_ts,
+                cash_risk=cash_risk,
+                source=str(self.claims_cfg.get("source")
+                           or crt_claims.CRT_CLAIM_SOURCE))
+            claim_minted = await crt_claims.mint_option_claim(claim_row)
         state = PositionState(
-            position_id=row["position_id"], symbol=self.symbol, tf=self.tf,
+            position_id=row["position_id"],
+            signal_id=str(row.get("signal_id") or ""),
+            symbol=self.symbol, tf=self.tf,
             session_id=setup.session_id, trade_buy=label.trade_buy,
             c3_open=setup.c3_open, open_ts_epoch=open_ts,
             entry_ref=label.entry_ref, fill=label.fill_price, sl=label.sl,
@@ -383,7 +429,8 @@ class SymbolTFEngine:
                     f"{option.state_name()} | entry {label.fill_price:.5g} "
                     f"SL {label.sl:.5g} TP {label.tp:.5g} ({option.r:g}R, "
                     f"hold {option.hold}) | risk {decision.risk_pct:.2f}% "
-                    f"= {cash_risk:.0f} | {decision.reason}")
+                    f"= {cash_risk:.0f} | {decision.reason}"
+                    + ("" if claim_minted else " | claim NOT minted (fail-open)"))
         # the ambiguous-C3 case: resolved within the entry bar itself
         if label.closed:
             await self._close_position(state, label, stats)
@@ -426,10 +473,21 @@ class SymbolTFEngine:
         self.positions.pop(state.position_id, None)
         if ok:
             stats.positions_resolved += 1
+            # CRT-2: resolve the position's claim through the SAME verdict
+            # (fail-open; guarded by status=eq.open — a voided claim is
+            # never re-touched)
+            claim_resolved = False
+            if self.claims_enabled and state.signal_id:
+                outcome = crt_claims.build_claim_outcome(
+                    label, cash_risk=state.cash_risk, close_ts_epoch=close_ts)
+                claim_resolved = await crt_claims.resolve_position_claim(
+                    state.signal_id, outcome)
             self.signal("resolve", f"{self.symbol} paper resolved",
                         f"{self.tf} {state.position_id[:8]} -> "
                         f"{label.outcome_name} {label.r:+.3f}R "
-                        f"({patch['realized_pnl']:+.2f})")
+                        f"({patch['realized_pnl']:+.2f})"
+                        + ("" if claim_resolved or not self.claims_enabled
+                           else " | claim NOT resolved (fail-open)"))
         else:
             self.signal("error", f"{self.symbol} paper patch failed",
                         f"position {state.position_id[:8]} "

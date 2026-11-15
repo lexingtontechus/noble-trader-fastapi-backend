@@ -47,6 +47,13 @@ _LAST_CLOSED: dict[tuple[str, str], float] = {}
 _NOTIFIER: Any = None
 _NOTIFIER_LOADED = False
 
+# CRT-2 persistence state (throttled flush + daily rolling snapshot)
+_MON_FLUSH_TS: float = 0.0
+_MON_SIG: dict[tuple[tuple[str, str], tuple[str, int]], tuple] = {}
+_ROLL_DAY: str | None = None
+_MON_STATUS: dict[str, Any] = {"persist": False, "rows": 0,
+                              "last_flush": None, "last_rolling_day": None}
+
 try:  # stdlib-fallback: the engine config is yaml like every CRT knob
     import yaml
 except ImportError:  # pragma: no cover - pyyaml is a repo requirement
@@ -135,7 +142,7 @@ def _rebuild_needed(cfg: dict[str, Any]) -> bool:
 
 def _build_engines(cfg: dict[str, Any]) -> None:
     """(Re)build the (symbol, tf) engine registry from config x artifact."""
-    global _ENGINES, _META
+    global _ENGINES, _META, _MON_SIG
     from crt import config_loader
     from crt.engine import SymbolTFEngine
 
@@ -147,7 +154,9 @@ def _build_engines(cfg: dict[str, Any]) -> None:
     by_stf = config_loader.options_by_symbol_tf(options)
     symbols = cfg.get("symbols") or []
     engine_cfg = {k: v for k, v in cfg.items()
-                  if k in ("chop", "sessions", "rolling", "decay", "sizing")}
+                  if k in ("chop", "sessions", "rolling", "decay", "sizing",
+                           "claims")}
+    engine_cfg["artifact_runid"] = meta.get("runid")   # CRT-2 mint stamp
     engines: dict[tuple[str, str], Any] = {}
     for entry in symbols:
         if not isinstance(entry, dict):
@@ -166,8 +175,100 @@ def _build_engines(cfg: dict[str, Any]) -> None:
                 signal=_signal_fn(cfg))
     _ENGINES = engines
     _LAST_CLOSED.clear()
+    _MON_SIG = {}    # engine rebuild: monitor signatures start fresh
     logger.info("crt.jobs: %d engine(s) from %s (%d option rows)",
                 len(engines), artifact_path, len(options))
+
+
+async def _preregister_monitors(cfg: dict[str, Any]) -> None:
+    """CRT-2 config-deploy pre-registration: one nt_crt_monitor_state row
+    per option — the artifact's PROMISED numbers (oos_ev/sd/t/n, train_end)
+    plus the deploy-time gate thresholds, before any live evidence exists.
+    The pre-registration precedes the evidence by construction (the claim
+    discipline); fail-open, throttled to rebuilds.
+    """
+    if not (cfg.get("monitors") or {}).get("persist", False) or not _ENGINES:
+        return
+    try:
+        from dataclasses import asdict
+
+        from crt import state_store
+        rows = []
+        for (sym, tf), engine in _ENGINES.items():
+            for opt in engine.options.values():
+                rows.append(state_store.build_monitor_row(
+                    opt, decay_cfg=engine.decay_cfg,
+                    roll_cfg=asdict(engine.roll),
+                    artifact_runid=_META.get("runid")))
+        n = await state_store.upsert_monitor_rows(rows)
+        if n:
+            _MON_STATUS.update({"persist": True, "rows": n,
+                                "last_flush": state_store.now_iso()})
+            logger.info("crt.jobs: pre-registered %d CRT option row(s)", n)
+    except Exception as exc:  # noqa: BLE001 - fail-open by contract
+        logger.warning("crt.jobs: monitor pre-registration failed: %s", exc)
+
+
+async def _flush_monitors_if_due(cfg: dict[str, Any], now: float) -> None:
+    """Throttled monitor flush: upsert state rows when ANY option's
+    signature changed (a decay/rolling transition) or the TTL elapsed —
+    bounded writes, never per-tick chatter. Fail-open."""
+    global _MON_FLUSH_TS, _MON_SIG
+    mcfg = cfg.get("monitors") or {}
+    if not mcfg.get("persist", False) or not _ENGINES:
+        return
+    try:
+        from crt import state_store
+        sig = {}
+        for key, engine in _ENGINES.items():
+            for opt in engine.options.values():
+                sig[(key, opt.key)] = state_store.monitor_signature(opt)
+        ttl = float(mcfg.get("flush_seconds", 3600))
+        if sig == _MON_SIG and (now - _MON_FLUSH_TS) < ttl:
+            return
+        from dataclasses import asdict
+        rows = []
+        for (sym, tf), engine in _ENGINES.items():
+            for opt in engine.options.values():
+                rows.append(state_store.build_monitor_row(
+                    opt, decay_cfg=engine.decay_cfg,
+                    roll_cfg=asdict(engine.roll),
+                    artifact_runid=_META.get("runid")))
+        n = await state_store.upsert_monitor_rows(rows)
+        if n:
+            _MON_SIG, _MON_FLUSH_TS = sig, now
+            _MON_STATUS.update({"persist": True, "rows": n,
+                                "last_flush": state_store.now_iso()})
+    except Exception as exc:  # noqa: BLE001 - fail-open by contract
+        logger.warning("crt.jobs: monitor flush failed: %s", exc)
+
+
+async def _snapshot_rolling_if_new_day(cfg: dict[str, Any], now: float) -> None:
+    """Daily rolling snapshot: one nt_crt_rolling_daily row per option per
+    UTC day (idempotent upsert — fires on day change AND once per process
+    start; the migration-163 daily-upsert discipline). Fail-open."""
+    global _ROLL_DAY
+    mcfg = cfg.get("monitors") or {}
+    if not mcfg.get("rolling_daily", False) or not _ENGINES:
+        return
+    try:
+        from crt import state_store
+        day = state_store.utc_day(now)
+        if _ROLL_DAY == day:
+            return
+        rows = []
+        for (sym, tf), engine in _ENGINES.items():
+            pool = state_store.tf_pool(list(engine.options.values()))
+            for opt in engine.options.values():
+                rows.append(state_store.build_rolling_row(
+                    opt, day=day, tf_pool=pool,
+                    open_positions=len(engine.positions)))
+        n = await state_store.upsert_rolling_rows(rows)
+        if n:
+            _ROLL_DAY = day
+            _MON_STATUS.update({"persist": True, "last_rolling_day": day})
+    except Exception as exc:  # noqa: BLE001 - fail-open by contract
+        logger.warning("crt.jobs: rolling snapshot failed: %s", exc)
 
 
 async def crt_engine_tick() -> dict[str, Any]:
@@ -182,6 +283,7 @@ async def crt_engine_tick() -> dict[str, Any]:
         return {"mode": "disabled-by-config"}
     if _rebuild_needed(cfg) or not _ENGINES:
         _build_engines(cfg)
+        await _preregister_monitors(cfg)   # CRT-2 deploy pre-registration
         if _ENGINES:
             await _signal("handshake", "CRT-1 engine online",
                           f"mode {mode} | {len(_ENGINES)} engine(s) | "
@@ -264,6 +366,9 @@ async def crt_engine_tick() -> dict[str, Any]:
                 logger.error("crt.jobs: %s %s tick failed: %s", sym, tf, exc)
                 await _signal("error", f"{sym} {tf} engine tick failed",
                               f"```\n{exc!r}\n```")
+    # CRT-2 persistence: throttled monitor flush + daily rolling snapshot
+    await _flush_monitors_if_due(cfg, now)
+    await _snapshot_rolling_if_new_day(cfg, now)
     _LAST_STATS.update({"ts": now, "engines": len(_ENGINES),
                         "fills": stats.get("fills", 0)})
     return stats
@@ -302,4 +407,7 @@ def engine_snapshots() -> dict[str, Any]:
         "engines": [e.snapshot() for e in _ENGINES.values()],
         "artifact": _META,
         "last_tick": _LAST_STATS,
+        "claims": {"kind": "crt_option",
+                   "enabled": any(e.claims_enabled for e in _ENGINES.values())},
+        "monitors": _MON_STATUS,
     }

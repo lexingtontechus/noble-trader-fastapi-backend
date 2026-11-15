@@ -9,7 +9,9 @@ side effects:
   about liveness; ``crt_mode`` says whether the engine is dark);
 - ``GET /crt/state``   — per-(symbol, tf) snapshots: option monitor states
   (NORMAL/CAUTION/OFF/DISABLED, CUSUM S, live/rolling EV), open positions,
-  frozen decisions, last tick.
+  frozen decisions, last tick + CRT-2 persistence status;
+- ``GET /crt/claims``  — resolved ``crt_option`` claims: per-option and
+  pooled evidence (n / win-rate / EV / t / LCB) — CRT-3's gate surface.
 
 FastAPI is optional (the renko pattern): without it ``crt_router`` is None
 and main.py's guarded mount skips. Mount (main.py, next to the renko seam):
@@ -72,6 +74,26 @@ if FASTAPI_AVAILABLE:
                              "(leaderboard-gated); running paper semantics"
                              if mode == "live" else "")
         return view
+
+    @crt_router.get("/claims")
+    async def crt_claims(limit: int = 2000) -> dict:
+        """CRT-2: resolved crt_option claims — the evidence pool.
+
+        Read-only aggregation (n / win-rate / EV / t / LCB per option and
+        pooled); the CRT-3 promotion gate reads the same kernels. Never
+        raises; unconfigured Supabase or a failed fetch yields an honest
+        empty view.
+        """
+        from crt import claims as crt_claims_mod
+        limit = max(1, min(int(limit), 5000))
+        try:
+            rows = await crt_claims_mod.fetch_resolved_claims(limit=limit)
+            view = crt_claims_mod.claims_view(rows)
+            view["limit"] = limit
+            return view
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never raise
+            return {"kind": crt_claims_mod.CRT_CLAIM_KIND, "error": repr(exc),
+                    "pooled": None, "per_option": [], "n_rows": 0}
 
 else:
     crt_router = None  # type: ignore[assignment]

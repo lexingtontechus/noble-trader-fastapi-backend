@@ -1696,8 +1696,8 @@ timesfm_service:
   disable_fallback: false
 
 # ── CRT (Candle Range Theory) v5 CONT — the ladder (2026-11-15, worklog
-#    20261115_CRT_V5_CONT_INTEGRATION_ASSESSMENT.md §6 + the CRT-0/CRT-1
-#    build worklogs) ──────────────────────────────────────────────────────
+#    20261115_CRT_V5_CONT_INTEGRATION_ASSESSMENT.md §6 + the CRT-0/CRT-1/
+#    CRT-2 build worklogs) ────────────────────────────────────────────────
 # The CRT research twin (regime_edge_crt + scripts/run_crt_lab.py) is
 # OFFLINE research: no live surface, no claims writes, no migrations, and
 # it never reads this flag. CRT-1 LANDED 2026-11-15 (commit history: the
@@ -1708,6 +1708,13 @@ timesfm_service:
 #   shadow        = CRT-1 engine runs: per-closed-bar detection -> gates
 #                   (frozen at C2 close) -> paper fills on
 #                   nt_paper_positions(source='crt_cont'); zero live effect.
+#                   CRT-2 LANDED 2026-11-15 (migration 221, apply manually):
+#                   the same run now mints kind='crt_option' claims per
+#                   fill (frozen C2-close state, resolved by the CRT close
+#                   pass) and persists monitor state (nt_crt_monitor_state
+#                   pre-registration + throttled flush, nt_crt_rolling_daily
+#                   daily snapshots) — evidence only, gated in
+#                   config/crt/crt_engine.yaml (claims/monitors blocks).
 #   live          = NO live-execution path exists until CRT-3 (the
 #                   leaderboard-gated promotion, the same contract as the
 #                   TSFM sidecar — claims evidence, never operator

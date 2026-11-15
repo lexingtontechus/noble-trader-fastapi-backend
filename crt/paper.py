@@ -49,8 +49,8 @@ PAPER_COLUMNS = (
     "close_ts", "resolved_at", "source",
 )
 
-SELECT_OPEN = ("position_id,symbol,venue,direction,entry_price,stop_loss,"
-               "take_profit,size_units,size_notional,open_ts")
+SELECT_OPEN = ("position_id,signal_id,symbol,venue,direction,entry_price,"
+               "stop_loss,take_profit,size_units,size_notional,open_ts")
 
 
 def _iso(ts: float) -> str:
