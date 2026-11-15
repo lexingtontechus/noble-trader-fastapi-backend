@@ -1,0 +1,34 @@
+# config/crt/crt_discord.yaml — the SELF-CONTAINED #crt Discord signal config.
+#
+# The CRT lab signals land in the operator's Discord channel #crt via this
+# webhook (operator-provided, 2026-11-15). The sender is fail-open: any
+# failure (timeout, 4xx/5xx, 429) is logged to stderr and skipped — a
+# Discord outage never fails the lab run. --no-discord disables per run;
+# enabled: false disables globally.
+#
+# NOTE: the webhook URL is a secret committed to the repo by explicit
+# operator instruction. If this repo ever widens its audience, rotate the
+# webhook (Discord channel -> Integrations -> Webhooks) and update this one
+# line — zero code changes.
+
+enabled: true
+channel_label: "#crt"
+username: "CRT-0 Lab"
+webhook_url: "https://discord.com/api/webhooks/1571387144126079047/LmFhynBT9TnqwmtrxXQ1MHrQRMfFR79B_SbkYE8gfezuQta3aVfrXFGP0sfswqkqie0g"
+
+timeout_seconds: 10.0
+max_attempts: 2                                # 1 retry on 429/5xx (bounded)
+
+rate_limit:                                    # Discord's documented budget
+  messages_per_window: 5
+  window_seconds: 2.0
+  max_sleep: 3.0                               # cap on any single throttle/retry-after sleep
+
+max_content_chars: 1900                        # < Discord's 2000 cap
+
+events:                                       # which lab events reach #crt
+  handshake: true                              # run start: runid, symbols, span
+  baseline: true                               # A0 verdict: edge after costs at v3 settings?
+  walkforward: true                             # OOS verdict: options enabled, EV/t, gated sums
+  mint: true                                   # artifact minted: path, rows, enabled, train_end
+  error: true                                  # pipeline failure (the run still exits cleanly)

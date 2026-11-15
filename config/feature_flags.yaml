@@ -1694,3 +1694,23 @@ timesfm_service:
   max_context: 1024
   max_horizon: 256
   disable_fallback: false
+
+# ── CRT (Candle Range Theory) v5 CONT — the ladder (2026-11-15, worklog
+#    20261115_CRT_V5_CONT_INTEGRATION_ASSESSMENT.md §6 + the CRT-0 build
+#    worklog) ─────────────────────────────────────────────────────────────
+# The CRT research twin (regime_edge_crt + scripts/run_crt_lab.py) is
+# OFFLINE research: no live surface, no claims writes, no migrations, and
+# it never reads this flag. This registers the CRT-1 ladder BEFORE any
+# engine ships, so the flag surface exists (and drift audits stay clean)
+# when crt/ (the renko-style engine package + CRTOrchestrator job family
+# — deliberately NOT a regime_platform_crt fork) lands:
+#   off (shipped) = nothing CRT touches the platform (byte-identical).
+#   shadow        = CRT-1 engine ships dark: per-closed-bar detection ->
+#                   gates (frozen at C2 close) -> paper fills on
+#                   nt_paper_positions(source='crt_cont'); zero live effect.
+#   live          = leaderboard-gated promotion only (CRT-3), the same
+#                   contract as the TSFM sidecar — claims evidence, never
+#                   operator eyeballing.
+# ALL CRT knobs (thresholds, decay monitor, discord #crt signal webhook)
+# live SELF-CONTAINED in config/crt/*.yaml — nothing else in this file.
+crt_mode: "off"

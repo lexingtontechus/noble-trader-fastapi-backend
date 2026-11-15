@@ -1,0 +1,73 @@
+# config/crt/crt_lab.yaml — the SELF-CONTAINED CRT research-twin config.
+#
+# Every CRT knob lives in this directory (config/crt/); the platform's config
+# files receive exactly ONE additive key (crt_mode, the CRT-1 ladder flag in
+# config/feature_flags.yaml). Nothing CRT-related scatters anywhere else.
+# Values are the MT4 toolkit's defaults VERBATIM (CRT_v5_CONT_MT4.zip —
+# crt_ev_optimizer.py argparse defaults + baseline_check.py v3 defaults).
+# Changing a value here is an operator decision; the defaults mirror the
+# toolkit and must not drift from it silently (fidelity checklist, Task 67).
+#
+# Data plan (worklog/20261115_KAIROS_CRT0_BUILD.md §6):
+#   MT4 CRT_EV_Research_Export.mq4 v1.10 (ExportCONT=true) ->
+#   CRT_CONT_RESEARCH_<SYMBOL>.csv copied into data/crt/raw/ ->
+#   python scripts/run_crt_lab.py
+
+engine: "regime_edge_crt v1"
+
+data:
+  raw_dir: "data/crt/raw"                     # MT4 research CSVs land here
+  file_glob: "CRT_CONT_RESEARCH_*.csv"
+  start: ""                                   # e.g. "2021-01-01" (README step 2/3)
+  models: "CONT"                              # v5 CONT leg (README default)
+
+# ── Experiment A0: the v3 baseline, no fitting (README step 2) ──────────────
+baseline:
+  model: "CONT"
+  max_sweep: 0.75
+  min_sweep: 0.0
+  chop: 1
+  sessions: "1,2"                             # 1=NY 2=ASIA 0=outside
+  eb: 0.0
+  sb: 0.0
+  r: 1.5
+  hold: 24
+
+# ── Walk-forward (README step 3; crt_ev_optimizer.py defaults verbatim) ────
+walkforward:
+  stage: 1                                    # 1 = eb/sb/R/hold; 2 = + sweep/chop/vol/c3dir
+  train_months: 24
+  test_months: 6
+  anchored: false
+  z: 1.28                                     # LCB multiplier (the fidelity bar)
+  min_train_n: 30
+  min_oos_n: 30
+  min_oos_ev: 0.02
+  min_oos_t: 1.0
+  require_final_lcb: true
+  vol_low: 0.33
+  vol_high: 0.67
+  baseline: "lcb"                             # decay replay baseline (EA uses OOS EV)
+  prefix: "CRT_CONT_"                         # EA v5 (CONT) config file prefix
+
+# ── Edge-decay monitor (MUST match the EA inputs — fidelity checklist §7) ─
+decay:
+  kappa_frac: 0.5
+  kappa_min: 0.05
+  h_caution: 12.0
+  h_off: 18.0
+  roll_n: 60
+  roll_off_ev: -0.10
+  react_n: 10
+  caution_mult: 0.5
+
+report:
+  out_root: "worklog/kairos/reports/regime_edge_crt"   # <runid>/ dirs land here
+
+artifact:
+  path: "config/crt_cont.json"                # the CRT-1 engine artifact (minted)
+
+selftest:
+  seed: 7
+  months: 41
+  symbols: ["XAUUSD", "EURUSD"]

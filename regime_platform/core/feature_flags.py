@@ -362,6 +362,18 @@ _DEFAULTS: dict[str, Any] = {
     #   GET /claims/leaderboard shows calibrated cells for the symbols in
     #   question — evidence, not calendar.
     "claims_prior_mode": "off",
+    # crt_mode  off|shadow|live — the CRT (Candle Range Theory) v5 CONT
+    #   ladder (2026-11-15, worklog/20261115_CRT_V5_CONT_INTEGRATION_
+    #   ASSESSMENT.md §6 + the CRT-0 build worklog). CRT-0 (the regime_
+    #   edge_crt research twin) is offline-only and never reads this flag;
+    #   it is registered so the CRT-1 engine (the renko-style crt/ package +
+    #   CRTOrchestrator job family, NOT a regime_platform_crt fork) has a
+    #   flag surface BEFORE it ships. off (shipped) = nothing CRT touches
+    #   the platform — byte-identical. shadow = engine dark, paper fills on
+    #   nt_paper_positions(source='crt_cont'). live = leaderboard-gated
+    #   promotion (CRT-3), evidence not eyeballing. All CRT knobs live
+    #   self-contained in config/crt/*.yaml.
+    "crt_mode": "off",
     # ev_hard_floor (2026-10-11, worklog 20261011_CALIBRATION_REACHABILITY_REFRAME.md):
     # when p_win_in_ev_mode=live, the p_win hard floor is 0.0 (the bracket
     # probability is on a different scale), so negative-EV signals were
@@ -914,6 +926,22 @@ def get_timesfm_blend_mode() -> str:
         "timesfm_blend_mode", _DEFAULTS["timesfm_blend_mode"],
     )).lower()
     return mode if mode in ("off", "shadow", "live") else "live"
+
+
+def get_crt_mode() -> str:
+    """``off`` | ``shadow`` | ``live`` — the CRT v5 CONT ladder (2026-11-15).
+    ``off`` (shipped): nothing CRT touches the platform. CRT-0 — the
+    regime_edge_crt research twin — is offline research that never reads
+    this flag; it is registered so the CRT-1 engine (renko-style ``crt/``
+    package + CRTOrchestrator job family) ships dark behind it later:
+    ``shadow`` = per-closed-bar detection -> frozen-at-C2-close gates ->
+    paper fills on nt_paper_positions(source='crt_cont'), zero live
+    effect; ``live`` = leaderboard-gated promotion (CRT-3). All CRT
+    knobs live self-contained in config/crt/*.yaml."""
+    mode = str(_load().get(
+        "crt_mode", _DEFAULTS["crt_mode"],
+    )).lower()
+    return mode if mode in ("off", "shadow", "live") else "off"
 
 
 def get_router_edge_mode() -> str:
