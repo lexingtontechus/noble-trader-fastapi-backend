@@ -1969,6 +1969,18 @@ class SweepOrchestrator(HeavySweepMixin):
             coalesce=True,
         )
 
+        # CRT-1 engine job family (2026-11-15, worklog/
+        # 20261115_KAIROS_CRT1_BUILD.md): one boundary-gated interval tick
+        # (crt-engine-tick) for the CRT v5 CONT paper engine. Additive and
+        # guarded — a CRT failure can never break platform startup; the job
+        # itself returns before any fetch/DB touch while crt_mode is off
+        # (ships dark), and the mode is re-read per fire so a feature_flags
+        # flip needs no restart.
+        try:
+            from crt.jobs import register_crt_jobs
+            register_crt_jobs(self)
+        except Exception:
+            logger.exception("CRT job registration failed — engine stays dark")
 
         self._scheduler.start()
         logger.info("Sweep orchestrator scheduler started")

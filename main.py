@@ -129,6 +129,14 @@ from regime_platform.routers import prices as prices_router_module
 from regime_platform.middleware.kill_switch_gate import KillSwitchGateMiddleware
 # v5.0 Renko HFT pipeline
 from renko.router import renko_router
+# CRT-1 (2026-11-15): the CRT v5 CONT engine's read surface — renko-seam
+# mount, guarded so a CRT import error can never break the platform (the
+# engine itself ships dark behind crt_mode: off; see crt/ and worklog/
+# 20261115_KAIROS_CRT1_BUILD.md).
+try:
+    from crt.router import crt_router
+except Exception:  # noqa: BLE001 - dark-engine import guard
+    crt_router = None
 
 log = logging.getLogger("regime.app")
 
@@ -437,6 +445,10 @@ def create_app() -> FastAPI:
 
     if renko_router is not None:
         app.include_router(renko_router)
+
+    # CRT-1 read surface (/crt/health, /crt/state) — read-only, dark-safe
+    if crt_router is not None:
+        app.include_router(crt_router)
 
     app.include_router(operational.router)
     app.include_router(pnl.router)

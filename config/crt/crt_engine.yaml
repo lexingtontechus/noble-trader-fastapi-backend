@@ -1,0 +1,107 @@
+# config/crt/crt_engine.yaml — the SELF-CONTAINED CRT-1 engine config.
+#
+# The CRT-0 contract carries forward (operator requirement, 2026-11-15):
+# every CRT knob lives in config/crt/*.yaml; the platform's config files
+# carry exactly ONE additive CRT key — crt_mode (off|shadow|live) in
+# config/feature_flags.yaml. This file is the engine's entire surface:
+# symbols, costs, thresholds, sizing, caps, cadence.
+#
+# SHIPS DARK: crt_mode: "off" means the crt-engine-tick job returns before
+# any fetch or DB touch. shadow = paper fills on nt_paper_positions
+# (source='crt_cont'). live = identical to shadow until CRT-3 (the
+# leaderboard-gated promotion) — no live execution path exists yet.
+
+enabled: true                                 # master off-switch (with crt_mode)
+
+artifact:
+  path: "config/crt_cont.json"                # CRT-0 mint; engines idle without it
+
+timeframes: ["M15", "M30", "H1"]              # the per-chart family (EA Monitor*)
+
+# ── Symbols: CRT's universe (self-contained; nt_symbol registry untouched) ──
+# tradingview_symbol: the TDVA feed (repo conventions: OANDA: FX/metals,
+#   COINBASE: BTC). spread_price/slip_price: the EA's per-symbol points
+#   converted to PRICE units (README_v5_CONT §1: 10 pts XAUUSD, 2 pts
+#   majors, half-spread BTC — the MT4 research #meta line is the authority
+#   for research parity; adjust here for the feeds you actually trade).
+symbols:
+  - symbol: XAUUSD
+    tradingview_symbol: "OANDA:XAUUSD"
+    spread_price: 0.10                        # 10 pts x 0.01 point
+    slip_price: 0.00
+  - symbol: EURUSD
+    tradingview_symbol: "OANDA:EURUSD"
+    spread_price: 0.00002                     # 2 pts x 0.00001 point
+    slip_price: 0.0
+  - symbol: GBPUSD
+    tradingview_symbol: "OANDA:GBPUSD"
+    spread_price: 0.00002
+    slip_price: 0.0
+  - symbol: USDJPY
+    tradingview_symbol: "OANDA:USDJPY"
+    spread_price: 0.002                       # 2 pts x 0.001 point
+    slip_price: 0.0
+  - symbol: BTCUSD
+    tradingview_symbol: "COINBASE:BTCUSD"
+    spread_price: 5.0                         # OPERATOR: set to half your
+    slip_price: 5.0                           # feed's spread (README note)
+
+candles:
+  m15_bars: 4800                              # ~50d M15: rolling 45d + vol pct
+  h1_bars: 1700                               #   500 + hold + margin (TDVA 5000 cap)
+  tick_seconds: 60                            # scheduler cadence (boundary-gated
+                                              #   inside: effective fetches = TF grid)
+
+liquidity_lookback: 10                        # EA LiquidityLookback (recorded only)
+atr_period: 14                                # EA ATRPeriod
+vol_lookback: 500                             # EA VolLookback (ATR percentile)
+
+chop:                                         # EA chop inputs (fidelity §7)
+  lookback: 6
+  max_wick_ratio: 0.70
+  max_overlap_ratio: 0.75
+  max_direction_changes: 4
+
+sessions:                                     # ET windows, inclusive (EA defaults)
+  ny_start: "09:30"
+  ny_end: "12:00"
+  asia_start: "20:00"
+  asia_end: "22:00"
+
+rolling:                                      # v5 EA rolling-window gate
+  use_gate: true
+  roll_days: 45
+  roll_min_n: 15
+  roll_min_ev: 0.0
+  scope: "option_then_tf"
+
+decay:                                        # EA Decay* inputs (same block as
+  use_monitor: true                           #   crt_lab.yaml — one set of rules)
+  kappa_frac: 0.5
+  kappa_min: 0.05
+  h_caution: 12.0
+  h_off: 18.0
+  roll_n: 60
+  roll_off_ev: -0.10
+  react_n: 10
+  caution_mult: 0.5
+
+sizing:                                       # v4 EA confidence sizing + caps,
+  use_confidence_sizing: true                 #   on a paper basis
+  base_risk_percent: 0.25                     # at OOS t <= conf_t_low
+  max_risk_percent: 0.50                      # at OOS t >= conf_t_high
+  conf_t_low: 1.0
+  conf_t_high: 3.0
+  paper_equity: 100000.0                      # the paper account basis
+  max_open_risk_percent: 1.0                  # all CRT positions, all symbols
+  daily_loss_stop_percent: 2.0                # realized paper PnL vs UTC day
+  one_position_per_symbol: true
+
+discord:                                      # engine events to #crt (the webhook
+  enabled: true                               #   URL comes from DISCORD_WEBHOOK_CRT)
+  username: "CRT-1 Engine"
+  label: "CRT-1"
+  events:
+    fill: true                                # setup armed + paper fill
+    resolve: true                             # paper position resolved
+    error: true
