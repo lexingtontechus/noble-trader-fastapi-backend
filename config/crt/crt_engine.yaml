@@ -113,6 +113,18 @@ monitors:                                      # CRT-2: monitor persistence
                                                #   snapshot to
                                                #   nt_crt_rolling_daily.
 
+promotion:                                    # CRT-3: the leaderboard-gated
+  min_n: 30                                    #   live rung — the optimizer's
+  min_ev: 0.02                                 #   OWN enable thresholds
+  min_t: 1.0                                   #   (n>=30, EV>0.02, t>=1.0,
+  lcb_z: 1.28                                  #   LCB>0 at z=1.28) applied
+  require_decay_not_off: true                  #   to LIVE paper claims; plus
+  cache_seconds: 300                          #   no enabled option in decay
+                                               #   OFF. The claims ledger
+                                               #   arbitrates — never operator
+                                               #   eyeballing; demotion on
+                                               #   evidence decay is automatic.
+
 discord:                                      # engine events to #crt (the webhook
   enabled: true                               #   URL comes from DISCORD_WEBHOOK_CRT)
   username: "CRT-1 Engine"
@@ -121,4 +133,5 @@ discord:                                      # engine events to #crt (the webho
     fill: true                                # setup armed + paper fill
     resolve: true                             # paper position resolved
     monitor: true                            # decay state transition
+    promotion: true                          # CRT-3 eligibility change (CRT-3 label)
     error: true

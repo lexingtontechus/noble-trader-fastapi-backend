@@ -1715,10 +1715,19 @@ timesfm_service:
 #                   pre-registration + throttled flush, nt_crt_rolling_daily
 #                   daily snapshots) — evidence only, gated in
 #                   config/crt/crt_engine.yaml (claims/monitors blocks).
-#   live          = NO live-execution path exists until CRT-3 (the
-#                   leaderboard-gated promotion, the same contract as the
-#                   TSFM sidecar — claims evidence, never operator
-#                   eyeballing); live currently runs paper semantics.
+#   live          = CRT-3 LANDED 2026-11-15: the leaderboard-gated rung —
+#                   the claims ledger arbitrates (config/crt/crt_engine.yaml
+#                   promotion block: n>=30, EV>0.02R after costs, t>=1.0,
+#                   LCB>0 at z=1.28, no enabled option in decay OFF — the
+#                   optimizer's OWN enable thresholds on live paper
+#                   evidence). Unmet bars: paper semantics continue + the
+#                   refusal is recorded (never silent — /crt/promotion).
+#                   Bars met: the #crt signal stream becomes the actionable
+#                   live surface ([LIVE] prefix) — the ONLY live path under
+#                   the standing contract: MT5 untouched, no nt_signal_sim
+#                   writes, no order execution. Demotion on evidence decay
+#                   is automatic (TTL-cached verdict). No operator eyeballing
+#                   — the TSFM-sidecar contract.
 # ALL CRT knobs (thresholds, decay monitor, discord #crt signal webhook)
 # live SELF-CONTAINED in config/crt/*.yaml — nothing else in this file.
 crt_mode: "off"

@@ -11,7 +11,9 @@ side effects:
   (NORMAL/CAUTION/OFF/DISABLED, CUSUM S, live/rolling EV), open positions,
   frozen decisions, last tick + CRT-2 persistence status;
 - ``GET /crt/claims``  — resolved ``crt_option`` claims: per-option and
-  pooled evidence (n / win-rate / EV / t / LCB) — CRT-3's gate surface.
+  pooled evidence (n / win-rate / EV / t / LCB) — CRT-3's gate surface;
+- ``GET /crt/promotion`` — the leaderboard-gated live verdict (bars vs
+  evidence; the refusal is never silent).
 
 FastAPI is optional (the renko pattern): without it ``crt_router`` is None
 and main.py's guarded mount skips. Mount (main.py, next to the renko seam):
@@ -59,7 +61,7 @@ if FASTAPI_AVAILABLE:
 
     @crt_router.get("/state")
     async def crt_state() -> dict:
-        from crt import jobs
+        from crt import jobs, promotion
         mode = _mode()
         if mode == "off":
             return {"crt_mode": "off",
@@ -70,9 +72,15 @@ if FASTAPI_AVAILABLE:
         except Exception as exc:  # noqa: BLE001 - diagnostics must never raise
             return {"crt_mode": mode, "error": repr(exc)}
         view["crt_mode"] = mode
-        view["mode_note"] = ("live has no live-execution path until CRT-3 "
-                             "(leaderboard-gated); running paper semantics"
+        view["mode_note"] = ("live dispatch is CRT-3 leaderboard-gated "
+                             "(claims evidence — /crt/promotion); unmet bars "
+                             "run paper semantics"
                              if mode == "live" else "")
+        try:
+            view["promotion"] = await promotion.current_verdict(
+                engines=list(jobs._ENGINES.values()))
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never raise
+            view["promotion"] = {"error": repr(exc)}
         return view
 
     @crt_router.get("/claims")
@@ -94,6 +102,26 @@ if FASTAPI_AVAILABLE:
         except Exception as exc:  # noqa: BLE001 - diagnostics must never raise
             return {"kind": crt_claims_mod.CRT_CLAIM_KIND, "error": repr(exc),
                     "pooled": None, "per_option": [], "n_rows": 0}
+
+    @crt_router.get("/promotion")
+    async def crt_promotion() -> dict:
+        """CRT-3: the leaderboard-gated live promotion verdict.
+
+        The claims evidence vs the pre-registered bars (the optimizer's own
+        enable thresholds applied to live paper evidence — n >= 30, EV >
+        0.02R after costs, t >= 1.0, LCB > 0 at z=1.28, no enabled option in
+        decay OFF). TTL-cached; never raises. "live" runs paper semantics
+        until every bar holds — the operator flips the flag, the LEDGER
+        arbitrates (no operator eyeballing; the TSFM-sidecar contract).
+        """
+        from crt import jobs, promotion
+        mode = _mode()
+        try:
+            verdict = await promotion.current_verdict(
+                engines=list(jobs._ENGINES.values()))
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never raise
+            return {"crt_mode": mode, "error": repr(exc)}
+        return {"crt_mode": mode, **verdict}
 
 else:
     crt_router = None  # type: ignore[assignment]

@@ -54,6 +54,10 @@ _ROLL_DAY: str | None = None
 _MON_STATUS: dict[str, Any] = {"persist": False, "rows": 0,
                               "last_flush": None, "last_rolling_day": None}
 
+# CRT-3 promotion state (leaderboard-gated live dispatch)
+_LIVE_DISPATCH: bool = False          # set per tick when mode=live AND bars met
+_LAST_PROMO_ELIGIBLE: bool | None = None   # eligibility-change signal memory
+
 try:  # stdlib-fallback: the engine config is yaml like every CRT knob
     import yaml
 except ImportError:  # pragma: no cover - pyyaml is a repo requirement
@@ -116,14 +120,73 @@ async def _signal(event: str, title: str, body: str) -> None:
 
 
 def _signal_fn(cfg: dict[str, Any]):
-    """The engines' sync signal callback (spawns a task; never blocks)."""
+    """The engines' sync signal callback (spawns a task; never blocks).
+
+    Titles are prefixed ``[LIVE]`` while the CRT-3 promotion gate holds
+    (``_LIVE_DISPATCH`` — read at call time so a bar flip mid-process
+    changes the stream immediately)."""
     def fn(event: str, title: str, body: str) -> None:
+        if _LIVE_DISPATCH:
+            title = f"[LIVE] {title}"
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_signal(event, title, body))
         except RuntimeError:
             _signal_sync(event, title, body)
     return fn
+
+
+def _signal_promotion_sync(title: str, body: str) -> None:
+    """CRT-3 promotion notices — labeled CRT-3 through the same sender."""
+    notifier = _NOTIFIER
+    if notifier is None or not notifier.enabled:
+        return
+    if not notifier.events.get("promotion", True):
+        return
+    try:
+        from regime_edge_crt.discord_notify import event_message
+        notifier.send(event_message("promotion", title, body, label="CRT-3"))
+    except Exception:  # noqa: BLE001 - fail-open by contract
+        pass
+
+
+async def _signal_promotion(title: str, body: str) -> None:
+    try:
+        await asyncio.to_thread(_signal_promotion_sync, title, body)
+    except Exception:  # noqa: BLE001 - fail-open by contract
+        pass
+
+
+async def _apply_promotion(mode: str, stats: dict[str, Any]) -> None:
+    """CRT-3 enforcement: ``live`` runs paper semantics until every
+    pre-registered bar holds; bars met set the live-dispatch flag (the #crt
+    stream becomes the actionable surface). The refusal is never silent —
+    recorded on the tick stats AND signaled to #crt on eligibility change
+    (bounded: state-change transitions only)."""
+    global _LIVE_DISPATCH, _LAST_PROMO_ELIGIBLE
+    _LIVE_DISPATCH = False
+    if mode != "live":
+        _LAST_PROMO_ELIGIBLE = None    # shadow/off never carry a live verdict
+        return
+    from crt import promotion
+    verdict = await promotion.current_verdict(engines=list(_ENGINES.values()))
+    eligible = bool(verdict.get("eligible"))
+    _LIVE_DISPATCH = eligible
+    if eligible:
+        stats["live"] = True
+    else:
+        stats["live_refused"] = verdict.get("reasons") or ["no evidence"]
+    if _LAST_PROMO_ELIGIBLE is None or _LAST_PROMO_ELIGIBLE != eligible:
+        ev = verdict.get("evidence") or {}
+        head = (f"PROMOTED to live dispatch — bars met: n {ev.get('n')} / "
+                f"EV {ev.get('ev_r', 0):+.3f}R / t {ev.get('t_stat', 0):.2f} / "
+                f"LCB {ev.get('lcb_r', 0):+.3f}R"
+                if eligible else
+                "live REFUSED — bars unmet, paper semantics continue")
+        await _signal_promotion(head, "reasons: " + ("; ".join(
+            verdict.get("reasons") or ["eligible"])[:6] if not eligible
+            else "evidence holds; demotion is automatic on evidence decay"))
+    _LAST_PROMO_ELIGIBLE = eligible
 
 
 def _rebuild_needed(cfg: dict[str, Any]) -> bool:
@@ -293,6 +356,12 @@ async def crt_engine_tick() -> dict[str, Any]:
     if not _ENGINES:
         return {"mode": mode, "engines": 0}
 
+    stats = {"mode": mode, "engines": len(_ENGINES), "fills": 0, "resolved": 0}
+
+    # CRT-3: the leaderboard-gated live rung (shadow passes through — the
+    # verdict is surfaced at /crt/promotion + /crt/state either way)
+    await _apply_promotion(mode, stats)
+
     now = time.time()
     tick_cfg = cfg.get("candles") or {}
     m15_bars = int(tick_cfg.get("m15_bars", 4800))
@@ -307,7 +376,7 @@ async def crt_engine_tick() -> dict[str, Any]:
             fetch_syms.append({"symbol": sym,
                                "tradingview_symbol": str(entry.get("tradingview_symbol") or "")})
     if not fetch_syms:
-        return {"mode": mode, "engines": len(_ENGINES)}
+        return stats
 
     from crt.candles import aggregate_m30, closed_bars, expected_closed_open
 
@@ -319,11 +388,11 @@ async def crt_engine_tick() -> dict[str, Any]:
                    for e in fetch_syms)
     need_h1 = any(_need(e["symbol"], "H1", 3600) for e in fetch_syms)
     if not (need_m15 or need_h1):
-        return {"mode": mode, "engines": len(_ENGINES), "idle": True}
+        stats["idle"] = True
+        return stats
 
     from regime_platform.sweep_orchestrator.price_fetcher import fetch_candles_for_symbols
 
-    stats = {"mode": mode, "engines": len(_ENGINES), "fills": 0, "resolved": 0}
     ohlcv_15: dict[str, list[dict[str, Any]]] = {}
     ohlcv_1h: dict[str, list[dict[str, Any]]] = {}
     try:
