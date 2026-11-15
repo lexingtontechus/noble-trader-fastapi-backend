@@ -10,6 +10,9 @@ Layout:
                    optional GARCH(1,1)
     model_arms.py  optional TSFM arms: TimesFM 2.5 (repo server :8002),
                    Chronos-2 univariate, Chronos-2 covariate (endgame arm)
+    tsfm_fan_arm.py rebuild T2: the claims vol_fan arm's research adapter —
+                   rv = sqrt(sum variance_path) = the fan's own σ_raw (name
+                   'tsfm' is the claims arm key the recalib cells mint under)
     data.py        CSV / yfinance / synthetic loaders
     harness.py     rolling-origin backtest with frozen cutoffs
     recalib.py     Phase 0.5 post-hoc calibration: MZ center (a, b) +

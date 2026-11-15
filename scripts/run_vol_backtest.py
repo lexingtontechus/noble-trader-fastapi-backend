@@ -38,6 +38,13 @@ Examples:
     # with the repo's TimesFM server up (:8002) and Chronos-2 installed
     TIMESFM_BASE_URL=http://localhost:8002 TIMESFM_API_KEY=... \
     python scripts/run_vol_backtest.py --data-dir data/vol_backtest ...
+
+    # rebuild T2 — mint recalib cells for the claims vol_fan arm (the arm
+    # key 'tsfm' must survive to the cells; see vol_backtest/tsfm_fan_arm.py)
+    python scripts/run_vol_backtest.py --data-dir data/vol_backtest \
+        --symbols BTCUSD,XAUUSD,XAGUSD,USDJPY,USDCHF \
+        --arms garch,gjr,egarch,tsfm --horizons 6,12,24,48
+    python -m vol_backtest.recalib --run-dir <run_dir>
 """
 from __future__ import annotations
 
@@ -63,6 +70,7 @@ from vol_backtest.arms import (  # noqa: E402
     EGARCH11T,
 )
 from vol_backtest.model_arms import TimesFM25HTTP, Chronos2, Chronos2Covariate  # noqa: E402
+from vol_backtest.tsfm_fan_arm import TimesFMVolFanResearchArm  # noqa: E402
 from vol_backtest.harness import backtest_symbol, aggregate_metrics, dm_family  # noqa: E402
 from vol_backtest.data import THESIS_SYMBOLS, load_data_dir, load_synthetic, load_tdva  # noqa: E402
 from vol_backtest.realized import annualize_horizon  # noqa: E402
@@ -78,6 +86,7 @@ def build_arms(selected: list[str]) -> list:
         "gjr": GJRGARCH11T,
         "egarch": EGARCH11T,
         "timesfm25": TimesFM25HTTP,
+        "tsfm": TimesFMVolFanResearchArm,  # rebuild T2: claims vol_fan arm — name='tsfm' is the arm key the recalib cells mint under (NOT timesfm25)
         "chronos2": Chronos2,
         "chronos2_cov": Chronos2Covariate,
     }
