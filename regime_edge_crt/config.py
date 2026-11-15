@@ -98,6 +98,7 @@ DISCORD_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "channel_label": "#crt",
     "username": "CRT-0 Lab",
+    "label": "CRT-0",
     "webhook_url": "",
     "timeout_seconds": 10.0,
     "max_attempts": 2,
@@ -161,10 +162,23 @@ def load_lab_config(path: str | None = None) -> dict:
 
 
 def load_discord_config(path: str | None = None) -> dict:
-    """Load config/crt/crt_discord.yaml over DISCORD_DEFAULTS. Fail-open."""
+    """Load config/crt/crt_discord.yaml over DISCORD_DEFAULTS. Fail-open.
+
+    The webhook URL resolves ENV-FIRST (operator instruction, 2026-11-15):
+    ``DISCORD_WEBHOOK_CRT`` overrides the yaml ``webhook_url`` so the secret
+    lives in the environment, not the repo. The yaml value is a documented
+    fallback for deployments that prefer file config. Neither set → the
+    sender stays disabled (fail-open: signals skipped, ``_status`` says so).
+    """
     cfg_path = path or DISCORD_CONFIG_PATH
     doc, status = _read_yaml(cfg_path)
     cfg = _merge(DISCORD_DEFAULTS, doc)
+    env_url = (os.environ.get("DISCORD_WEBHOOK_CRT") or "").strip()
+    if env_url:
+        cfg["webhook_url"] = env_url
+        cfg["_webhook_source"] = "env:DISCORD_WEBHOOK_CRT"
+    else:
+        cfg["_webhook_source"] = "yaml" if cfg.get("webhook_url") else "unset"
     cfg["_path"] = cfg_path
     cfg["_status"] = status
     if not cfg.get("webhook_url"):

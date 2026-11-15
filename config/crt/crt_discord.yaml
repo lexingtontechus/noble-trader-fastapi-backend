@@ -1,20 +1,23 @@
 # config/crt/crt_discord.yaml — the SELF-CONTAINED #crt Discord signal config.
 #
-# The CRT lab signals land in the operator's Discord channel #crt via this
-# webhook (operator-provided, 2026-11-15). The sender is fail-open: any
-# failure (timeout, 4xx/5xx, 429) is logged to stderr and skipped — a
-# Discord outage never fails the lab run. --no-discord disables per run;
-# enabled: false disables globally.
+# The CRT lab + engine signals land in the operator's Discord channel #crt.
+# The sender is fail-open: any failure (timeout, 4xx/5xx, 429) is logged to
+# stderr and skipped — a Discord outage never fails a run. --no-discord
+# disables per run; enabled: false disables globally.
 #
-# NOTE: the webhook URL is a secret committed to the repo by explicit
-# operator instruction. If this repo ever widens its audience, rotate the
-# webhook (Discord channel -> Integrations -> Webhooks) and update this one
-# line — zero code changes.
+# WEBHOOK URL (operator instruction, 2026-11-15): set the environment
+# variable DISCORD_WEBHOOK_CRT — it takes precedence over any value here,
+# so the secret lives in the environment, not the repo:
+#   export DISCORD_WEBHOOK_CRT="https://discord.com/api/webhooks/<id>/<token>"
+# The webhook_url below is a documented fallback for deployments that prefer
+# file config (empty by default). If the webhook is ever exposed, rotate it
+# (Discord channel -> Integrations -> Webhooks) and update the env var —
+# zero code changes.
 
 enabled: true
 channel_label: "#crt"
 username: "CRT-0 Lab"
-webhook_url: "https://discord.com/api/webhooks/1571387144126079047/LmFhynBT9TnqwmtrxXQ1MHrQRMfFR79B_SbkYE8gfezuQta3aVfrXFGP0sfswqkqie0g"
+webhook_url: ""                       # prefer DISCORD_WEBHOOK_CRT (see header)
 
 timeout_seconds: 10.0
 max_attempts: 2                                # 1 retry on 429/5xx (bounded)

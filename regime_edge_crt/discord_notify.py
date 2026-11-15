@@ -1,9 +1,13 @@
 """discord_notify.py — the #crt Discord signal sender (operator addition, 2026-11-15).
 
-Sends CRT lab signals to the operator's Discord channel **#crt** via webhook,
-configured ENTIRELY from ``config/crt/crt_discord.yaml`` (the self-contained
-signal config; the webhook URL lives there by the operator's explicit
-instruction). Events: handshake / baseline / walkforward / mint / error.
+Sends CRT lab signals to the operator's Discord channel **#crt** via webhook.
+Configured from ``config/crt/crt_discord.yaml`` (the self-contained signal
+config) — but the webhook URL itself resolves ENV-FIRST: the
+``DISCORD_WEBHOOK_CRT`` environment variable overrides the yaml's
+``webhook_url`` (operator instruction, 2026-11-15 — the secret lives in the
+environment, not the repo; see ``regime_edge_crt.config.load_discord_config``).
+Events: handshake / baseline / walkforward / mint / error (engine events,
+e.g. ``fill``/``resolve``, pass through with default-on gating).
 
 Contract (the lab never breaks because Discord did):
 
@@ -44,6 +48,7 @@ class CRTDiscord:
         self.enabled = bool(cfg.get("enabled")) and bool(cfg.get("webhook_url"))
         self.webhook_url = str(cfg.get("webhook_url") or "")
         self.username = str(cfg.get("username") or "CRT Lab")
+        self.label = str(cfg.get("label") or "CRT-0")
         self.timeout = float(cfg.get("timeout_seconds", 10.0))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
         rl = cfg.get("rate_limit") or {}
@@ -136,7 +141,8 @@ class CRTDiscord:
         """Event-gated send with the uniform envelope: bold CRT header + body."""
         if not self.events.get(event, True):
             return False
-        return self.send(event_message(event, title, body))
+        text = f"**{self.label} | {event.upper()} — {title}**\n{body}"
+        return self.send(text)
 
     def close(self) -> None:
         if self._client is not None:
@@ -151,6 +157,6 @@ def from_config(cfg: dict) -> CRTDiscord:
     return CRTDiscord(cfg)
 
 
-def event_message(event: str, title: str, body: str) -> str:
+def event_message(event: str, title: str, body: str, label: str = "CRT-0") -> str:
     """Uniform event envelope: bold CRT header + body (Markdown-safe)."""
-    return f"**CRT-0 | {event.upper()} — {title}**\n{body}"
+    return f"**{label} | {event.upper()} — {title}**\n{body}"
