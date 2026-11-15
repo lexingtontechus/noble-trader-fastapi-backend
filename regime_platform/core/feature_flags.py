@@ -330,12 +330,17 @@ _DEFAULTS: dict[str, Any] = {
     #   off (shipped) = the design doc's "research-only, as today" — full
     #   no-op, the ATR normal-approx bracket fan stays the only claim.
     "claims_vol_fan_mode": "off",
-    # claims_vol_fan_arm  garch|gjr|egarch — the PRE-REGISTERED fan arm.
+    # claims_vol_fan_arm  garch|gjr|egarch|tsfm — the PRE-REGISTERED fan arm.
     #   Default egarch = the lab's measured prior (EGARCH-t best-in-family,
     #   skillRatio 0.944 vs Log-HAR; GARCH/GJR worse at long horizons on
     #   metals). Setting the flag IS the pre-registration; each claim row
     #   stamps `arm` (migration 220) so arm switches are auditable evidence,
-    #   never silent cherry-picking.
+    #   never silent cherry-picking. tsfm (rebuild T1, 2026-10-28, worklog/
+    #   20261028_KAIROS_TIMESFM_REBUILD_DESIGN.md): the TimesFM sidecar
+    #   vol-lane arm — variance path from the model's own q10..q90 log-price
+    #   spread, rows stamped source='tsfm_sidecar' (zero migration). Flip
+    #   only after the T2 recalib artifact carries tsfm cells AND the
+    #   GARCH-era baseline shows on the leaderboard — evidence, not calendar.
     "claims_vol_fan_arm": "egarch",
     # claims_vol_fan_calib_path — repo-relative recalib.json artifact the
     #   vol fan consumes (mtime hot-reload, the feature_flags convention).
@@ -1397,14 +1402,18 @@ def get_claims_vol_fan_mode() -> str:
 
 
 def get_claims_vol_fan_arm() -> str:
-    """Claims layer, Phase D: ``garch`` | ``gjr`` | ``egarch`` (default).
+    """Claims layer: ``garch`` | ``gjr`` | ``egarch`` | ``tsfm`` (default egarch).
 
-    The PRE-REGISTERED GARCH-family arm for the vol_fan fan. Defaults to
-    egarch on the lab's best-in-family prior; the claim row stamps ``arm``
-    so the ledger can always tell which arm produced which fan.
+    The PRE-REGISTERED fan arm for the vol_fan claim. Defaults to egarch on
+    the lab's best-in-family prior; the claim row stamps ``arm`` so the
+    ledger can always tell which arm produced which fan. ``tsfm`` (rebuild
+    T1) selects the TimesFM sidecar arm (claims_tsfm_arm.TimesFMVolFanArm,
+    source='tsfm_sidecar'); the service is probed lazily and fail-open —
+    an unreachable TimesFM costs one health probe, never a claim-blocking
+    exception.
     """
     arm = str(_load().get("claims_vol_fan_arm", _DEFAULTS["claims_vol_fan_arm"])).lower()
-    return arm if arm in ("garch", "gjr", "egarch") else _DEFAULTS["claims_vol_fan_arm"]
+    return arm if arm in ("garch", "gjr", "egarch", "tsfm") else _DEFAULTS["claims_vol_fan_arm"]
 
 
 def get_claims_vol_fan_calib_path() -> str:

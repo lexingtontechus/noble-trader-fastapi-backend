@@ -60,9 +60,17 @@ Determinism: GARCH/GJR forecasts are analytic; EGARCH's is the mean of SEEDED
 simulations (seed=7) — the same window always produces the same fan, which is
 what claim immutability requires.
 
+Rebuild T1 (2026-10-28, worklog/20261028_KAIROS_TIMESFM_REBUILD_DESIGN.md):
+the arm roster gains ``tsfm`` — the TimesFM sidecar arm
+(``claims_tsfm_arm.TimesFMVolFanArm``) whose ``variance_path`` comes from
+the model's own q10..q90 log-price spread, stamped ``source='tsfm_sidecar'``
+(already legal in migration 218's CHECK — zero migration). Same fan builder,
+same MZ+k artifact, same resolver, same leaderboard; the arm flag selects
+the single vol_fan slot's occupant, rows stay auditable via ``arm``.
+
 Fail-open everywhere (Phase A convention): arch not installed, too few bars,
-fetch failure, unfittable window, missing artifact, insert error ⇒ no claim,
-never an exception, never a sweep impact.
+fetch failure, unfittable window, missing artifact, insert error, TimesFM
+service unreachable ⇒ no claim, never an exception, never a sweep impact.
 """
 
 from __future__ import annotations
@@ -110,7 +118,17 @@ VOL_FAN_CLAIM_COLUMNS: frozenset[str] = NT_SIGNAL_CLAIMS_COLUMNS | {
 VOL_FAN_MIN_BARS = 720          # _ArchArmBase floor; the arm refuses less
 VOL_FAN_FETCH_HOURS = 2160      # the heavy sweep's own 90d hourly window
 
-_ARM_NAMES = ("garch", "gjr", "egarch")
+_ARM_NAMES = ("garch", "gjr", "egarch", "tsfm")
+
+# The claim row's `source` (migration 218 CHECK whitelist), keyed by arm:
+# the GARCH family mints from the vol_backtest recalib pipeline; the TSFM
+# sidecar arm is the source value 218 anticipated from day one.
+_ARM_SOURCE: dict[str, str] = {
+    "garch": "vol_backtest_recalib",
+    "gjr": "vol_backtest_recalib",
+    "egarch": "vol_backtest_recalib",
+    "tsfm": "tsfm_sidecar",
+}
 
 
 def claims_vol_fan_mode() -> str:
@@ -125,13 +143,15 @@ def claims_vol_fan_mode() -> str:
 
 
 def claims_vol_fan_arm() -> str:
-    """``garch`` | ``gjr`` | ``egarch`` — the PRE-REGISTERED fan arm.
+    """``garch`` | ``gjr`` | ``egarch`` | ``tsfm`` — the PRE-REGISTERED fan arm.
 
     Defaults to ``egarch`` on the lab's measured prior (EGARCH-t
     best-in-family, skillRatio 0.944 vs Log-HAR; GARCH/GJR worse at long
     horizons on metals). Setting this flag IS the pre-registration: the
     claims ledger records ``arm`` per row, so arm switching is auditable,
-    never silent cherry-picking.
+    never silent cherry-picking. ``tsfm`` (rebuild T1) selects the TimesFM
+    sidecar arm — flip only after the T2 recalib artifact carries tsfm
+    cells AND the GARCH-era baseline shows on the leaderboard.
     """
     arm = str(_flag("claims_vol_fan_arm", "egarch")).lower()
     return arm if arm in _ARM_NAMES else "egarch"
@@ -300,7 +320,30 @@ def vol_fan_multiplier(
 
 
 def _arm_instance(arm_name: str):
-    """Construct the pre-registered arm; None when arch is unavailable."""
+    """Construct the pre-registered arm; None when unavailable.
+
+    GARCH family: None when vol_backtest/arch is unavailable. TSFM (rebuild
+    T1): the sidecar arm from ``claims_tsfm_arm`` — None only when httpx
+    itself is unavailable; service reachability is probed lazily inside
+    ``variance_path`` so a down service costs one 5 s probe, not a storm.
+    """
+    if arm_name == "tsfm":
+        try:
+            from regime_platform.sweep_orchestrator.claims_tsfm_arm import (
+                TimesFMVolFanArm,
+            )
+        except Exception as exc:
+            logger.debug("claims vol_fan: claims_tsfm_arm import failed: %s", exc)
+            return None
+        try:
+            arm = TimesFMVolFanArm()
+        except Exception as exc:
+            logger.debug("claims vol_fan: arm tsfm construction failed: %s", exc)
+            return None
+        if not getattr(arm, "available", False):
+            logger.debug("claims vol_fan: arm tsfm unavailable: %s", getattr(arm, "unavailable_reason", ""))
+            return None
+        return arm
     try:
         from vol_backtest.arms import EGARCH11T, GARCH11, GJRGARCH11T
     except Exception as exc:
@@ -393,6 +436,11 @@ def build_garch_price_fan(
     if var_path is None or len(var_path) < horizon_h:
         return None
     var_path = np.asarray(var_path, dtype=float)
+    # Rebuild T1: the TSFM arm reports how many telescoping increments it
+    # clamped (vol contraction) — build meta carries it, the registration
+    # stamps it into claimed_probs (honesty over silence). GARCH arms never
+    # report (analytic/simulated paths are per-bar direct, no telescoping).
+    clamped_increments = int(getattr(arm, "last_negative_increments", 0) or 0)
     # Degenerate-fit guards: the arms' research aggregate only checks
     # finiteness/positivity, but a blown EGARCH fit (e.g. beta≈1 on an
     # ARCH-free window) can stay "finite" while its simulated variance path
@@ -438,6 +486,8 @@ def build_garch_price_fan(
         "calib_level": terminal_level,
         "horizon_h": horizon_h,
     }
+    if clamped_increments:
+        meta["clamped_increments"] = clamped_increments
     return fan, meta
 
 
@@ -560,13 +610,22 @@ async def register_vol_fan_claim(
         except Exception as exc:
             logger.debug("claims vol_fan %s: barrier null unavailable: %s", symbol, exc)
 
+    # Rebuild T1: TSFM vol contractions surface here as an auditable build
+    # stat (claimed_probs is the row's only free JSONB besides fan and
+    # bracket_ref; the resolver's brier fields read named keys only).
+    if meta.get("clamped_increments"):
+        claimed_probs["tsfm_clamped_increments"] = int(meta["clamped_increments"])
+
     row: dict[str, Any] = {
         "signal_id": str(signal_id),
         "symbol": str(symbol),
         "ts": str(ts_iso),
         "deadline_ts": _shift_iso_hours(ts_iso, horizon_h),
         "kind": "vol_fan",
-        "source": "vol_backtest_recalib",
+        # Rebuild T1: keyed off the arm — 'tsfm_sidecar' for the TSFM arm
+        # (whitelisted in 218's CHECK from day one), 'vol_backtest_recalib'
+        # for the GARCH family, exactly as before.
+        "source": _ARM_SOURCE.get(arm_name, "vol_backtest_recalib"),
         "space": "price",
         "horizon_h": float(horizon_h),
         "fan": fan,
