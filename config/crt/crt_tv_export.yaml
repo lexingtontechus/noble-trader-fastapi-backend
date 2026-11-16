@@ -1,0 +1,92 @@
+# config/crt/crt_tv_export.yaml — Path B: the TDVA-basis corpus export
+# (scripts/run_crt_tv_export.py, 2026-11-16).
+#
+# SELF-CONTAINED (the CRT-0 contract): every knob for the TV corpus export
+# lives in config/crt/; the platform's config files stay untouched. Values:
+#   - grids/core/sessions = the MT4 toolkit's CRT_EV_Research_Export.mq4
+#     v1.10 input defaults VERBATIM;
+#   - symbols/costs = a BUILD-TIME COPY of config/crt/crt_engine.yaml's
+#     values (2026-11-15). crt_engine.yaml is the live authority and is NOT
+#     read by the export — keep the two in step by hand when the operator
+#     edits the engine's costs.
+#
+# BASIS HONESTY: the corpus is stamped basis=tdva_tv in the #meta line and
+# the minted config/crt_cont.json carries a basis block. Depth honesty:
+# we request more bars than TDVA's depth (the range knobs below) and the
+# export report prints the span it actually got per TF; a THIN<30m flag
+# means the default 24m/6m walk-forward cannot form full folds for that TF.
+
+engine: "regime_edge_crt tv-export v1"
+
+symbols:                                  # mirror of crt_engine.yaml (2026-11-15)
+  - symbol: XAUUSD
+    tradingview_symbol: "OANDA:XAUUSD"
+    point: 0.01                           # display tick (risk_pts/atr_pts units)
+    digits: 2
+    spread_price: 0.10                    # 10 pts x 0.01 (EA README §1)
+    slip_price: 0.00
+  - symbol: EURUSD
+    tradingview_symbol: "OANDA:EURUSD"
+    point: 0.00001
+    digits: 5
+    spread_price: 0.00002
+    slip_price: 0.0
+  - symbol: GBPUSD
+    tradingview_symbol: "OANDA:GBPUSD"
+    point: 0.00001
+    digits: 5
+    spread_price: 0.00002
+    slip_price: 0.0
+  - symbol: USDJPY
+    tradingview_symbol: "OANDA:USDJPY"
+    point: 0.001
+    digits: 3
+    spread_price: 0.002
+    slip_price: 0.0
+  - symbol: BTCUSD
+    tradingview_symbol: "COINBASE:BTCUSD"
+    point: 0.1
+    digits: 1
+    spread_price: 5.0                     # OPERATOR: crt_engine.yaml carries the
+    slip_price: 5.0                       # same half-spread note
+
+# ── Research grid (EA EntryBufGrid/SLBufGrid/RGridResearch/HoldGrid) ───────
+grid:
+  entry_buf: [0.0, 0.05, 0.10]            # ATR, stop legs
+  sl_buf: [0.0, 0.10, 0.20]               # ATR beyond the leg's stop extreme
+  r: [1.0, 1.5, 2.0]                      # R grid (b_<R> columns)
+  hold: [12, 24, 48]                      # bars after C3 (c_<H> columns)
+
+# ── Core EA inputs (same numbers as crt_engine.yaml) ───────────────────────
+core:
+  atr_period: 14
+  chop_lookback: 6
+  liquidity_lookback: 10
+  vol_lookback: 500
+  max_wick_ratio: 0.70
+  max_overlap_ratio: 0.75
+  max_direction_changes: 4
+
+sessions:                                 # ET windows, inclusive (EA defaults)
+  ny_start: "09:30"
+  ny_end: "12:00"
+  asia_start: "20:00"
+  asia_end: "22:00"
+
+timeframes:                               # EA ExportH1/ExportM30/ExportM15
+  H1: true
+  M30: true                               # derived: 2x15m aggregation (engine parity)
+  M15: true
+
+fetch:
+  m15_range: 60000                        # request more than TDVA depth; the
+  h1_range: 25000                         # server returns what it has (the
+  timeout_seconds: 120.0                  # reconstruct_signal_history precedent)
+
+out_dir: "data/crt/tv"                    # CRT_CONT_RESEARCH_<SYM>.csv land here
+cache_dir: "data/crt/tv/cache"            # raw bars cache (--offline re-runs)
+start: ""                                 # optional trim: epoch or ISO date
+
+discord:                                  # one tvexport signal per run (the
+  enabled: true                           # webhook URL comes from
+  label: "CRT-TV"                         # DISCORD_WEBHOOK_CRT, env-first)

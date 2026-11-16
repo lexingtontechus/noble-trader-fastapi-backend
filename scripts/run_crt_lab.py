@@ -202,7 +202,7 @@ def main() -> int:
             sig("walkforward", f"stage {wf_cfg['stage']} OOS verdict", _walkforward_message(wf))
 
             # ── mint the CRT-1 engine artifact ─────────────────────────────
-            artifact = crt_report.build_artifact(cfg, wf, manifest, runid)
+            artifact = crt_report.build_artifact(cfg, wf, manifest, runid, metas)
             crt_report.write_json(artifact_path, artifact)
             n_en = sum(1 for r in artifact["rows"] if r.get("enabled"))
             print(f"minted {artifact_path}  ({n_en}/{len(artifact['rows'])} options enabled)")
@@ -216,7 +216,8 @@ def main() -> int:
         # ── the run record + summary ───────────────────────────────────────
         crt_report.write_json(os.path.join(out_dir, "crt_lab.json"),
                               crt_report.build_run_record(cfg, runid, manifest,
-                                                           baseline_result, wf, events_sent))
+                                                           baseline_result, wf,
+                                                           events_sent, metas))
         with open(os.path.join(out_dir, "summary.md"), "w", encoding="utf-8") as fh:
             fh.write(crt_report.build_summary_md(runid, cfg, baseline_result, wf, artifact_path))
         print(f"\nrun {runid} complete: {out_dir}{os.sep}"

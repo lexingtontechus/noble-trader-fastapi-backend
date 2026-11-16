@@ -53,12 +53,29 @@ def write_json(path: str, payload) -> str:
     return path
 
 
-def build_artifact(cfg: dict, wf: dict, manifest: list, runid: str) -> dict:
+def _basis_block(metas: dict | None) -> dict:
+    """Basis stamping (Path B, 2026-11-16): the corpus CSVs' ``#meta`` keys
+    travel into the artifact when present — a TV-basis export stamps
+    ``basis=tdva_tv`` and the artifact says so (auditable end to end).
+    MT4 exports carry no ``basis`` key -> empty dict (byte-identical for
+    them; the param is additive and optional). Returns the INNER mapping
+    ``{symbol: basis}`` — callers assign it under ``meta.basis``.
+    """
+    if not metas:
+        return {}
+    return {str(sym): str(m.get("basis")) for sym, m in metas.items()
+            if isinstance(m, dict) and m.get("basis")}
+
+
+def build_artifact(cfg: dict, wf: dict, manifest: list, runid: str,
+                   metas: dict | None = None) -> dict:
     """The CRT-1 engine artifact: meta (provenance + thresholds echo) + rows
-    (the deploy config per picked option — schema mirrors the EA CSV)."""
+    (the deploy config per picked option — schema mirrors the EA CSV).
+    ``metas`` (optional): the loader's per-symbol ``#meta`` dicts — stamps
+    the corpus basis block when the export carried one."""
     wf_cfg = cfg["walkforward"]
     dec_cfg = cfg["decay"]
-    return {
+    artifact = {
         "meta": {
             "engine": ENGINE,
             "source": SOURCE_ZIP,
@@ -89,12 +106,18 @@ def build_artifact(cfg: dict, wf: dict, manifest: list, runid: str) -> dict:
         },
         "rows": wf.get("deploy_rows") or [],
     }
+    basis = _basis_block(metas)
+    if basis:
+        artifact["meta"]["basis"] = basis
+    return artifact
 
 
 def build_run_record(cfg: dict, runid: str, manifest: list, baseline: dict | None,
-                     wf: dict | None, discord_events: list) -> dict:
+                     wf: dict | None, discord_events: list,
+                     metas: dict | None = None) -> dict:
     """crt_lab.json — the full run record (config echo + A0 + walk-forward +
-    the Discord signal trail). Research provenance, one file, per runid."""
+    the Discord signal trail). Research provenance, one file, per runid.
+    ``metas`` (optional): per-symbol ``#meta`` dicts — stamps the basis."""
     buckets = []
     if wf:
         for b in wf.get("report_buckets") or []:
@@ -110,7 +133,7 @@ def build_run_record(cfg: dict, runid: str, manifest: list, baseline: dict | Non
                 "gated_ev": b["gated_ev"], "folds_pos": b["folds_pos"],
                 "stab": b["stab"], "off_share": b["off_share"],
             })
-    return {
+    record = {
         "meta": {
             "engine": ENGINE, "source": SOURCE_ZIP, "runid": runid,
             "config": {"path": cfg.get("_path"), "status": cfg.get("_status")},
@@ -127,6 +150,10 @@ def build_run_record(cfg: dict, runid: str, manifest: list, baseline: dict | Non
             "n_rows": wf.get("n_rows") if wf else None,
         },
     }
+    basis = _basis_block(metas)
+    if basis:
+        record["meta"]["basis"] = basis
+    return record
 
 
 def build_summary_md(runid: str, cfg: dict, baseline: dict | None, wf: dict | None,

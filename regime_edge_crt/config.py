@@ -195,3 +195,78 @@ def resolve_repo_relative(path_value: str, cfg_path: str) -> str:
     if os.path.isabs(path_value):
         return path_value
     return os.path.normpath(os.path.join(REPO_ROOT, path_value))
+
+
+# ── Path B: the TDVA-basis corpus export (2026-11-16) ─────────────────────
+TV_EXPORT_CONFIG_PATH = os.path.join(REPO_ROOT, "config", "crt", "crt_tv_export.yaml")
+
+TV_EXPORT_DEFAULTS: dict[str, Any] = {
+    "engine": "regime_edge_crt tv-export v1",
+    # The five symbols + costs MIRROR config/crt/crt_engine.yaml at build
+    # time (2026-11-15 values, build-time copy — the engine yaml is the
+    # live authority and is NOT read here; keep the two in step by hand).
+    "symbols": [
+        {"symbol": "XAUUSD", "tradingview_symbol": "OANDA:XAUUSD",
+         "point": 0.01, "digits": 2, "spread_price": 0.10, "slip_price": 0.00},
+        {"symbol": "EURUSD", "tradingview_symbol": "OANDA:EURUSD",
+         "point": 0.00001, "digits": 5, "spread_price": 0.00002, "slip_price": 0.0},
+        {"symbol": "GBPUSD", "tradingview_symbol": "OANDA:GBPUSD",
+         "point": 0.00001, "digits": 5, "spread_price": 0.00002, "slip_price": 0.0},
+        {"symbol": "USDJPY", "tradingview_symbol": "OANDA:USDJPY",
+         "point": 0.001, "digits": 3, "spread_price": 0.002, "slip_price": 0.0},
+        {"symbol": "BTCUSD", "tradingview_symbol": "COINBASE:BTCUSD",
+         "point": 0.1, "digits": 1, "spread_price": 5.0, "slip_price": 5.0},
+    ],
+    # Research grid — EA CRT_EV_Research_Export.mq4 defaults verbatim.
+    "grid": {
+        "entry_buf": [0.0, 0.05, 0.10],
+        "sl_buf": [0.0, 0.10, 0.20],
+        "r": [1.0, 1.5, 2.0],
+        "hold": [12, 24, 48],
+    },
+    # Core EA inputs — same numbers as crt_engine.yaml (build-time copy).
+    "core": {
+        "atr_period": 14,
+        "chop_lookback": 6,
+        "liquidity_lookback": 10,
+        "vol_lookback": 500,
+        "max_wick_ratio": 0.70,
+        "max_overlap_ratio": 0.75,
+        "max_direction_changes": 4,
+    },
+    "sessions": {
+        "ny_start": "09:30",
+        "ny_end": "12:00",
+        "asia_start": "20:00",
+        "asia_end": "22:00",
+    },
+    "timeframes": {"H1": True, "M30": True, "M15": True},   # EA ExportH1/M30/M15
+    "fetch": {
+        # Request MORE bars than TDVA's depth; the server returns all it has
+        # (the scripts/reconstruct_signal_history.py precedent, range=20000).
+        # The export REPORTS the depth it got — thin spans are visible, never
+        # silently padded.
+        "m15_range": 60000,
+        "h1_range": 25000,
+        "timeout_seconds": 120.0,
+    },
+    "out_dir": os.path.join("data", "crt", "tv"),
+    "cache_dir": os.path.join("data", "crt", "tv", "cache"),
+    "start": "",                                   # optional epoch/ISO trim
+    "discord": {"enabled": True, "label": "CRT-TV"},
+}
+
+
+def load_tv_export_config(path: str | None = None) -> dict:
+    """Load config/crt/crt_tv_export.yaml over TV_EXPORT_DEFAULTS (fail-open).
+
+    Same discipline as the lab config: missing/unparsable -> defaults + a
+    ``_status`` stamp, so an export never silently claims a config that was
+    not applied.
+    """
+    cfg_path = path or TV_EXPORT_CONFIG_PATH
+    doc, status = _read_yaml(cfg_path)
+    cfg = _merge(TV_EXPORT_DEFAULTS, doc)
+    cfg["_path"] = cfg_path
+    cfg["_status"] = status
+    return cfg
