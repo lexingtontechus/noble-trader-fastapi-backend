@@ -30,18 +30,31 @@ dependencies = [
     "scipy>=1.13.0",
     "pandas>=2.2.0",
     "pydantic>=2.11.2",
-    "python-multipart>=0.0.9",
-    "httpx>=0.28.1",
+    # Security floors 2026-11-18 (scan finding 1): python-multipart DoS/file-
+    # write advisories fixed >=0.0.31; httpx capped <2.0 — the httpx2 2.9.x
+    # line carries SOCKS-TLS/decompression/SSE advisories and the installed
+    # 0.28.x line is unaffected; torch checkpoint-RCE fixed >=2.13.0.
+    "python-multipart>=0.0.32",
+    "httpx>=0.28.1,<2.0",
     "fastapi-mcp>=0.4.0",
+    # mcp session-exhaustion / cross-origin-redirect advisories fixed >=1.30.0;
+    # keep <2.0 (fastapi-mcp 0.4.0 Server(name, description) incompatibility).
+    "mcp>=1.30.0,<2.0.0",
+    # transformers save_pretrained path traversal fixed >=5.10.0 (direct
+    # import in llm_server.py / llm_client.py — explicit pin, not transitive).
+    "transformers>=5.10.0",
     "slowapi>=0.1.9",
     "pydantic-settings>=2.0.0",
     "websockets>=12.0",
     "alpaca-py>=0.32.0",
+    # urllib3 stays <2.0: alpaca-py requires the 1.x API (urllib3_compat.py).
+    # Residual 1.26.x decompression advisories are bounded to the trusted
+    # Alpaca data feed; revisit when alpaca-py supports urllib3 2.x.
     "urllib3<2.0",
     "yfinance>=0.2.31",
     # TimesFM forecasting
     "timesfm>=2.0.1",
-    "torch>=2.4.0",
+    "torch>=2.13.0",
     "huggingface-hub>=1.0",
     "safetensors>=0.6",
     "gunicorn>=26.0.0",
@@ -54,11 +67,11 @@ dependencies = [
 
 [project.optional-dependencies]
 torch = [
-    "torch>=2.4",
+    "torch>=2.13.0",
 ]
 gpu = [
     "pomegranate>=1.0.0",    # GPU-accelerated HMM
-    "torch>=2.4.0",          # already in core, explicit for GPU path
+    "torch>=2.13.0",         # already in core, explicit for GPU path
 ]
 dev = [
     "pytest>=8.0",

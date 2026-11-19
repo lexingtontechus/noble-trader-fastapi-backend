@@ -31,5 +31,6 @@ no_bundle = true
 binding = "AI"
 
 # Variables (set via: npx wrangler secret put CF_WORKER_SECRET)
-# CF_WORKER_SECRET — optional shared secret for auth
-# (if set, the Studio must pass x-worker-secret header)
+# CF_WORKER_SECRET — REQUIRED shared secret for auth (2026-11-18 security fix).
+# The worker fails closed (503) when it is unset; every caller must pass the
+# x-worker-secret header. Set it before deploying: npx wrangler secret put CF_WORKER_SECRET

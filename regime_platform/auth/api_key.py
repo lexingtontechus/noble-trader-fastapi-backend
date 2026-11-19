@@ -35,6 +35,7 @@ Usage
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Optional
 
 from fastapi import Depends, HTTPException, WebSocket, status
@@ -61,7 +62,14 @@ class WebSocketAuthError(Exception):
 
 
 def _valid(key: Optional[str]) -> bool:
-    return bool(settings.API_KEY) and key == settings.API_KEY
+    # Fail closed when no key is configured; constant-time compare otherwise
+    # (scan finding 14: `==` leaks the shared secret via timing).
+    if not settings.API_KEY or not key:
+        return False
+    try:
+        return secrets.compare_digest(key, settings.API_KEY)
+    except TypeError:
+        return False
 
 
 async def require_api_key(api_key: Optional[str] = Depends(_api_key_hdr)) -> None:
@@ -83,7 +91,10 @@ async def ws_auth(websocket: WebSocket, api_key: Optional[str] = None) -> None:
     """Authenticate a WebSocket connection BEFORE calling accept().
 
     Checks the ?api_key=<key> query param, falling back to the
-    X-API-Key header.
+    X-API-Key header. Header auth is preferred; the query param remains for
+    browser clients that cannot set headers, and is scrubbed from access logs
+    by SensitiveDataFilter (record-factory, see utils/log_filter.py) so the
+    key is not persisted in uvicorn.access logs (scan finding 16).
     """
     key = api_key or websocket.headers.get("x-api-key")
     if not _valid(key):

@@ -14,6 +14,11 @@
 .env
 .env.local
 .env.*.local
+# Hyphenated variants (.env-0xdweb.local) do NOT match .env.*.local — the
+# dot-glob silently missed them and COPY . . baked credentials into images
+# (scan finding 9, 2026-11-18). Catch-all covers every .env*.local shape.
+.env-*.local
+.env*.local
 *.pem
 *.key
 

@@ -123,6 +123,25 @@ def _local_base_url() -> str:
     return raw
 
 
+def _local_api_key() -> str:
+    """X-API-Key for the local llm_server: env first, else the server's
+    protected dev-key file (same host). The server is fail-closed since the
+    2026-11-18 security fix; key material is never logged."""
+    key = os.getenv("LOCAL_LLM_API_KEY", "").split(",")[0].strip()
+    if key:
+        return key
+    dev_file = os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")),
+        ".cache",
+        "local_llm_api_key",
+    )
+    try:
+        with open(dev_file, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 _local_pipe = None
 
 
@@ -137,7 +156,14 @@ def _get_local_pipe():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-        trust = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "1") == "1"
+        # Fail-safe default (scan finding 3): in-process remote modeling code
+        # executes only on explicit opt-in, same contract as llm_server.py.
+        trust = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "0") == "1"
+        if trust:
+            logger.warning(
+                "llm_client: LOCAL_LLM_TRUST_REMOTE_CODE=1 — third-party modeling "
+                "code will execute inside the backend process"
+            )
         tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust)
         mdl = AutoModelForCausalLM.from_pretrained(
             model_id, device_map="auto", trust_remote_code=trust
@@ -163,10 +189,14 @@ async def _call_local(system_prompt: str, user_prompt: str, max_tokens: int) -> 
     base = _local_base_url()
     if base:
         try:
+            headers = {"Content-Type": "application/json"}
+            llm_key = _local_api_key()
+            if llm_key:
+                headers["X-API-Key"] = llm_key
             async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
                 resp = await client.post(
                     f"{base}/v1/chat/completions",
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     json={
                         "model": _local_model_id() or "local",
                         "messages": [

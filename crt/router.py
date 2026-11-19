@@ -1,9 +1,11 @@
 """router.py — the /crt read surface (CRT-1, renko-seam mount in main.py).
 
 Read-only diagnostics (the assessment: "read surface becomes REST + the
-claims leaderboard" — CRT-2 adds claims). GET only, no auth (the renko
-``/renko/health`` precedent for operator diagnostics), no writes, no
-side effects:
+claims leaderboard" — CRT-2 adds claims). GET only. ``/crt/health`` is a
+public liveness probe; ``/crt/state``, ``/crt/claims`` and ``/crt/promotion``
+require the shared API key (2026-11-18 security fix — they serve strategy
+configuration, position counts and claims evidence, not just liveness).
+No writes, no side effects:
 
 - ``GET /crt/health``  — process health + mode + engine count (never lies
   about liveness; ``crt_mode`` says whether the engine is dark);
@@ -31,9 +33,12 @@ from __future__ import annotations
 import time
 
 try:
-    from fastapi import APIRouter
+    from fastapi import APIRouter, Depends
+    from regime_platform.auth.api_key import require_api_key
     FASTAPI_AVAILABLE = True
 except ImportError:  # pragma: no cover - repo requirement, guarded like renko
+    # Fail closed: without FastAPI or the auth module the data surface is
+    # not mounted at all (main.py's guarded mount skips a None router).
     FASTAPI_AVAILABLE = False
 
 if FASTAPI_AVAILABLE:
@@ -60,7 +65,7 @@ if FASTAPI_AVAILABLE:
         }
 
     @crt_router.get("/state")
-    async def crt_state() -> dict:
+    async def crt_state(_auth: None = Depends(require_api_key)) -> dict:
         from crt import jobs, promotion
         mode = _mode()
         if mode == "off":
@@ -84,7 +89,7 @@ if FASTAPI_AVAILABLE:
         return view
 
     @crt_router.get("/claims")
-    async def crt_claims(limit: int = 2000) -> dict:
+    async def crt_claims(limit: int = 2000, _auth: None = Depends(require_api_key)) -> dict:
         """CRT-2: resolved crt_option claims — the evidence pool.
 
         Read-only aggregation (n / win-rate / EV / t / LCB per option and
@@ -104,7 +109,7 @@ if FASTAPI_AVAILABLE:
                     "pooled": None, "per_option": [], "n_rows": 0}
 
     @crt_router.get("/promotion")
-    async def crt_promotion() -> dict:
+    async def crt_promotion(_auth: None = Depends(require_api_key)) -> dict:
         """CRT-3: the leaderboard-gated live promotion verdict.
 
         The claims evidence vs the pre-registered bars (the optimizer's own

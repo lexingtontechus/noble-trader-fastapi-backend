@@ -165,9 +165,31 @@ VALID_KEYS = frozenset(
 )
 
 if not VALID_KEYS:
-    dev_key = secrets.token_urlsafe(32)
+    # Fail-closed dev fallback: require a random key persisted to a protected
+    # local file — NEVER log the key itself (scan finding 10: the logged dev
+    # key was a valid /forecast credential readable by anyone with log access).
+    _DEV_KEY_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".cache", "timesfm_dev_key"
+    )
+    try:
+        with open(_DEV_KEY_FILE, "r", encoding="utf-8") as _fh:
+            dev_key = _fh.read().strip()
+    except OSError:
+        dev_key = ""
+    if not dev_key:
+        dev_key = secrets.token_urlsafe(32)
+        os.makedirs(os.path.dirname(_DEV_KEY_FILE), exist_ok=True)
+        with open(_DEV_KEY_FILE, "w", encoding="utf-8") as _fh:
+            _fh.write(dev_key + "\n")
+        try:
+            os.chmod(_DEV_KEY_FILE, 0o600)
+        except OSError:
+            pass  # best-effort on platforms without POSIX modes
     VALID_KEYS = frozenset({dev_key})
-    log.warning(f"No TIMESFM_API_KEYS env var set. Generated dev key: {dev_key}")
+    log.warning(
+        "No TIMESFM_API_KEYS env var set — requiring the dev key persisted at %s "
+        "(key material is never logged).", _DEV_KEY_FILE
+    )
     log.warning("Set TIMESFM_API_KEYS in Studio env vars for production.")
 else:
     log.info(f"Loaded {len(VALID_KEYS)} API key(s)")
@@ -218,9 +240,11 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
 
 class ForecastRequest(BaseModel):
     horizon: int = Field(..., ge=1, le=MAX_HORIZON, description="Forecast horizon length")
+    # Bounded batch (scan finding 20): 256 series is far above the 14-symbol
+    # roster but caps per-request memory/GPU work for authenticated callers.
     inputs: list[list[float]] = Field(
-        ..., min_length=1,
-        description="List of input time series. Each series is a list of floats (max length = max_context)."
+        ..., min_length=1, max_length=256,
+        description="Input time series (max 256 series). Each series: floats, max length = max_context."
     )
 
     @field_validator("inputs")

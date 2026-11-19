@@ -11,7 +11,17 @@ Secrets / env:
   LOCAL_LLM_MODEL     HF id or local path
                       (default XHToken/Spark-X2.5-1.7B-INT8)
   LOCAL_LLM_PORT      default 8004 (8003 is sweep orchestrator)
-  LOCAL_LLM_API_KEY   optional shared secret (X-API-Key)
+  LOCAL_LLM_API_KEY   shared secret (X-API-Key). When unset, the server
+                      generates a random dev key, persists it to
+                      .cache/local_llm_api_key (0600, NEVER logged) and
+                      requires it — auth is fail-closed (scan finding 5).
+                      Same-host clients (llm_client) read the file.
+  LOCAL_LLM_HOST      bind address, default 127.0.0.1 (loopback). Set
+                      0.0.0.0 only when external access is intended AND a
+                      real LOCAL_LLM_API_KEY is provisioned.
+  LOCAL_LLM_TRUST_REMOTE_CODE  default 0 (fail-safe). Set 1 explicitly to
+                      execute custom modeling code (Spark-X2.5 needs it;
+                      start.sh / on_start.sh export it).
   HF_HOME             Honor Studio hf_cache (same as TimesFM). Only falls
                       back to <repo>/.cache/huggingface when unset.
 
@@ -23,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 
@@ -54,8 +65,17 @@ log = logging.getLogger("llm-server")
 # custom Spark modeling. Set LOCAL_LLM_MODEL to override (e.g. LFM or Q4 GGUF).
 MODEL_ID = os.getenv("LOCAL_LLM_MODEL", "XHToken/Spark-X2.5-1.7B-INT8")
 PORT = int(os.getenv("LOCAL_LLM_PORT", "8004"))
+HOST = os.getenv("LOCAL_LLM_HOST", "127.0.0.1")
 DEVICE = os.getenv("LOCAL_LLM_DEVICE", "auto")
-TRUST_REMOTE_CODE = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "1") == "1"
+# Fail-safe default (scan finding 2): remote modeling code executes only on
+# explicit opt-in. The shipped launchers export LOCAL_LLM_TRUST_REMOTE_CODE=1
+# for the custom Spark architecture; a bare run no longer executes repo code.
+TRUST_REMOTE_CODE = os.getenv("LOCAL_LLM_TRUST_REMOTE_CODE", "0") == "1"
+if TRUST_REMOTE_CODE:
+    log.warning(
+        "LOCAL_LLM_TRUST_REMOTE_CODE=1 — third-party modeling code will execute "
+        "at load time. Vendor/hash-pin the model tree and audit it."
+    )
 
 
 def _resolve_model_path(model_id: str) -> str:
@@ -103,16 +123,49 @@ state: dict = {"pipe": None, "tokenizer": None}
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# Dev key lives in a protected local file, never in the log stream (the
+# TimesFM-style "log the generated key" pattern leaked a valid credential —
+# scan finding 10). Stable across restarts so same-host callers can read it.
+_DEV_KEY_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".cache", "local_llm_api_key"
+)
+
+
+def _load_or_create_dev_key() -> str:
+    try:
+        with open(_DEV_KEY_FILE, "r", encoding="utf-8") as fh:
+            existing = fh.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    key = secrets.token_urlsafe(32)
+    os.makedirs(os.path.dirname(_DEV_KEY_FILE), exist_ok=True)
+    with open(_DEV_KEY_FILE, "w", encoding="utf-8") as fh:
+        fh.write(key + "\n")
+    try:
+        os.chmod(_DEV_KEY_FILE, 0o600)
+    except OSError:
+        pass  # best-effort on platforms without POSIX modes
+    return key
+
 
 def _valid_keys() -> frozenset[str]:
-    return frozenset(k.strip() for k in os.getenv("LOCAL_LLM_API_KEY", "").split(",") if k.strip())
+    env_keys = frozenset(
+        k.strip() for k in os.getenv("LOCAL_LLM_API_KEY", "").split(",") if k.strip()
+    )
+    if env_keys:
+        return env_keys
+    # No configured key: still require authentication — a random dev key
+    # persisted to .cache/local_llm_api_key. Fail-closed, not fail-open.
+    return frozenset({_load_or_create_dev_key()})
 
 
 async def verify_api_key(api_key: str | None = Security(api_key_header)) -> None:
     keys = _valid_keys()
     if not keys:
-        return
-    if not api_key or api_key not in keys:
+        raise HTTPException(status_code=503, detail="LLM server auth not configured")
+    if not api_key or not any(secrets.compare_digest(api_key, k) for k in keys):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
@@ -239,4 +292,10 @@ async def chat(req: ChatRequest, _auth: None = Depends(verify_api_key)):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
+    if not os.getenv("LOCAL_LLM_API_KEY", "").strip():
+        log.warning(
+            "No LOCAL_LLM_API_KEY set — requiring the dev key persisted at %s "
+            "(key material is never logged). Set LOCAL_LLM_API_KEY for production.",
+            _DEV_KEY_FILE,
+        )
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")

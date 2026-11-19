@@ -5,20 +5,25 @@ numpy>=2.0.0
 scipy>=1.13.0
 pandas>=2.2.0
 pydantic>=2.11.2
-python-multipart>=0.0.9
-httpx>=0.28.1
+# Security floors 2026-11-18 (scan finding 1): multipart DoS/file-write fixed
+# >=0.0.31; httpx capped <2.0 (httpx2 2.9.x advisories; 0.28.x unaffected).
+python-multipart>=0.0.32
+httpx>=0.28.1,<2.0
 # MCP (Model Context Protocol) - exposes FastAPI endpoints as AI agent tools
 fastapi-mcp>=0.4.0
 # Pin mcp below 2.0 — fastapi-mcp 0.4.0 calls Server(name, description), but
 # mcp 2.0 changed Server.__init__ to a single positional arg → TypeError on
-# startup (Render deploy 2026-08-06). Local venv has mcp 1.28.1; keep the
-# upper bound so pip resolves a compatible 1.x.
-mcp>=1.12.0,<2.0.0
+# startup (Render deploy 2026-08-06). Floor >=1.30.0 fixes the session-
+# exhaustion / cross-origin-redirect advisories (scan finding 19).
+mcp>=1.30.0,<2.0.0
 # v3.0 GPU HMM (install for 10-50x speedup on large datasets)
 # pomegranate>=1.0.0
 # TimesFM forecasting service (server.py)
 timesfm>=2.0.1
-torch>=2.4.0
+# torch checkpoint-RCE advisories fixed >=2.13.0; transformers save_pretrained
+# traversal fixed >=5.10.0 (direct imports — explicit pins).
+torch>=2.13.0
+transformers>=5.10.0
 huggingface-hub>=1.0
 safetensors>=0.6
 # Rate limiting
@@ -29,6 +34,8 @@ pydantic-settings>=2.0.0
 websockets>=12.0
 # Feed adapters (install only the adapter you need)
 alpaca-py>=0.32.0
+# urllib3 stays <2.0 (alpaca-py 1.x API). Residual 1.26.x decompression
+# advisories are bounded to the trusted Alpaca feed; revisit on alpaca 2.x.
 urllib3<2.0
 # ib_async>=0.9.0           # Interactive Brokers
 # Yahoo Finance (for backend warmup / cold-start - optional, falls back to HTTP API)

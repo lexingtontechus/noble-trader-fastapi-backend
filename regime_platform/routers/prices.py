@@ -7,17 +7,27 @@ the Yahoo chart API fallback) and returns clean close-price arrays.
 
 Edge functions call: GET /prices/{ticker}?range=90d&interval=1h
 
-This endpoint is intentionally unauthenticated — it is called internally by
-Supabase Edge Functions (service-to-service). In production, restrict via
-network policy (VPC / firewall) rather than per-request auth.
+This endpoint requires the shared X-API-Key (2026-11-18 security fix — the
+previous "intentionally unauthenticated, restrict via network policy" design
+had no enforcing control in any shipped deployment). ticker/range are
+validated and URL-encoded before reaching the fixed-host upstream URL.
 """
 
-from fastapi import APIRouter, Query, HTTPException
+import re
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional
 import logging
 
+from regime_platform.auth.api_key import require_api_key
+
 router = APIRouter(prefix="/prices", tags=["Price Data Proxy"])
 log = logging.getLogger("regime.prices")
+
+# Yahoo-style symbols: letters/digits plus . _ - ^ = (indices/futures).
+_TICKER_RE = re.compile(r"[A-Za-z0-9._\-\^=]{1,32}")
+_RANGE_RE = re.compile(r"[A-Za-z0-9]{1,8}")
 
 
 @router.get("/{ticker}", summary="Fetch close prices for a ticker")
@@ -25,6 +35,7 @@ async def get_prices(
     ticker: str,
     range: str = Query("90d", description="Lookback range (e.g. 5d, 1mo, 3mo, 6mo, 1y, 2y, 90d)"),
     interval: str = Query("1h", description="Bar interval (1h, 1d, etc.)"),
+    _auth: None = Depends(require_api_key),
 ):
     """
     Return a JSON array of close prices for the given ticker, sorted oldest → newest.
@@ -39,6 +50,13 @@ async def get_prices(
     try:
         import yfinance as yf
         import numpy as np
+
+        # Input boundary (scan finding 7): reject anything that could carry
+        # query/fragment/path material into the upstream request.
+        if not _TICKER_RE.fullmatch(ticker):
+            raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+        if not _RANGE_RE.fullmatch(range):
+            raise HTTPException(status_code=400, detail="Invalid range")
 
         # Map common range aliases
         period_map = {
@@ -81,8 +99,8 @@ async def get_prices(
             yahoo_range = "3mo"
 
         url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-            f"?range={yahoo_range}&interval={yf_interval}"
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}"
+            f"?range={quote(yahoo_range, safe='')}&interval={yf_interval}"
         )
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
@@ -120,4 +138,5 @@ async def get_prices(
         raise
     except Exception as e:
         log.error(f"Failed to fetch prices for {ticker}: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        # Generic detail — internal exception text is not returned to callers.
+        raise HTTPException(status_code=502, detail="Upstream price fetch failed")

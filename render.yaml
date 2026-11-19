@@ -7,8 +7,13 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
-      # ── CORS ───────────────────────────────────────────────────────
-      - key: CORS_ORIGINS
+      # ── Hardening + CORS ─────────────────────────────────────────────
+      # DEPLOY_ENV gates error sanitization + the CORS-wildcard refusal.
+      # The app reads CORS_ALLOWED_ORIGINS (NOT CORS_ORIGINS — the old key
+      # here was inert). Fixed 2026-11-18 (scan finding 11).
+      - key: DEPLOY_ENV
+        value: production
+      - key: CORS_ALLOWED_ORIGINS
         value: https://noble-trader-agent-frontend.vercel.app
       # ── Alpaca Trading API ───────────────────────────────────────
       - key: ALPACA_API_KEY
@@ -24,15 +29,12 @@ services:
         sync: false
       - key: DISCORD_WEBHOOK_STATUS
         sync: false
-      # ── CORS ──────────────────────────────────────────────────────
-      - key: CORS_ORIGINS
-        value: https://noble-trader-agent-frontend.vercel.app
       # ── Auth ──────────────────────────────────────────────────────
       - key: API_KEY
         sync: false
-	      # ═════════════════════════════════════════════════════════════
-	      # TimesFM env vars are NOT needed here.
-	      # TimesFM is called by Supabase Edge Functions (sweep), not FastAPI.
-	      # Set TIMESFM_INFERENCE_URL + TIMESFM_API_KEYS + SB_SERVICE_ROLE_KEY
-	      # in Supabase Dashboard → Edge Functions → Secrets.
-	      # ═════════════════════════════════════════════════════════════
+      # ═════════════════════════════════════════════════════════════
+      # TimesFM env vars are NOT needed here.
+      # TimesFM is called by Supabase Edge Functions (sweep), not FastAPI.
+      # Set TIMESFM_INFERENCE_URL + TIMESFM_API_KEYS + SB_SERVICE_ROLE_KEY
+      # in Supabase Dashboard → Edge Functions → Secrets.
+      # ═════════════════════════════════════════════════════════════

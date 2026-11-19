@@ -84,9 +84,12 @@ class TestAttachPivot:
 
 class TestSelectCandidates:
     def test_policy_ranks_high(self):
-        import time
+        from datetime import datetime, timezone
 
-        now = time.time()
+        # Anchor "now" to the fixture timeline, not live time: the selector
+        # drops events older than max_age_days=30, so a live now_ts makes this
+        # test fail once the calendar moves past the hardcoded Sept-2026 dates.
+        now = datetime(2026, 9, 22, tzinfo=timezone.utc).timestamp()
         evs = [
             {"title": "Retail Sales", "country": "US", "importance": 1, "date": "2026-09-20T00:00:00Z"},
             {"title": "FOMC Statement", "country": "US", "importance": 1, "date": "2026-09-21T00:00:00Z"},

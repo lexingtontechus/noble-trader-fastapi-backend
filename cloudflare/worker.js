@@ -9,7 +9,7 @@
 //
 // DEPLOYMENT:
 //   npx wrangler deploy worker.js --no-bundle
-//   npx wrangler secret put CF_WORKER_SECRET       # optional auth for the Studio caller
+//   npx wrangler secret put CF_WORKER_SECRET       # REQUIRED auth for every caller
 //   npx wrangler secret put CF_API_TOKEN           # Cloudflare API token (fallback if no AI binding)
 //
 // Worker URL after deploy: https://nobletradingapp.lexington.workers.dev
@@ -35,6 +35,14 @@
 const CLOUDFLARE_ACCOUNT_ID = "e787a0b54e75a41d1c25d8a9bc9f8809";
 const CF_API_BASE = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run`;
 
+// Allowlist (2026-11-18 security fix): the caller-supplied model name is
+// interpolated into the token-bearing Cloudflare API path — only these two
+// documented identifiers may ever reach _callAi.
+const ALLOWED_MODELS = new Set([
+  "@cf/baai/bge-small-en-v1.5",
+  "@cf/cloudflare/clef-flash",
+]);
+
 export default {
   async fetch(request, env, ctx) {
     // ── CORS + auth ──────────────────────────────────────────────────────
@@ -48,15 +56,20 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Optional auth: if CF_WORKER_SECRET is set, require matching header
-    if (env.CF_WORKER_SECRET) {
-      const provided = request.headers.get("x-worker-secret");
-      if (provided !== env.CF_WORKER_SECRET) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
+    // Auth is REQUIRED (2026-11-18 security fix): fail closed when the secret
+    // is not provisioned — never serve anonymous inference on the account quota.
+    if (!env.CF_WORKER_SECRET) {
+      return new Response(JSON.stringify({ error: "Worker secret not configured" }), {
+        status: 503,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const provided = request.headers.get("x-worker-secret");
+    if (provided !== env.CF_WORKER_SECRET) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const url = new URL(request.url);
@@ -97,6 +110,10 @@ export default {
 // ─── Helper: call AI via env.AI binding or Cloudflare API ──────────────────────
 
 async function _callAi(env, model, params) {
+  // Defense in depth: the handlers already 400 on non-allowlisted models.
+  if (!ALLOWED_MODELS.has(model)) {
+    throw new Error("Model not allowed");
+  }
   if (env.AI) {
     // Preferred: env.AI binding (no token needed, true edge-free)
     return await env.AI.run(model, params);
@@ -151,6 +168,12 @@ async function _handleEmbeddings(request, env, corsHeaders) {
 
   const texts = Array.isArray(body.input) ? body.input : [body.input];
   const model = body.model || "@cf/baai/bge-small-en-v1.5";
+  if (!ALLOWED_MODELS.has(model)) {
+    return new Response(
+      JSON.stringify({ error: "Unsupported model", allowed: [...ALLOWED_MODELS] }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
 
   // Cloudflare Workers AI: env.AI binding or Cloudflare API via CF_API_TOKEN
   const result = await _callAi(env, model, { text: texts });
@@ -223,6 +246,12 @@ async function _handleDecision(request, env, corsHeaders) {
   }
 
   const model = body.model || "@cf/cloudflare/clef-flash";
+  if (!ALLOWED_MODELS.has(model)) {
+    return new Response(
+      JSON.stringify({ error: "Unsupported model", allowed: [...ALLOWED_MODELS] }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
   const { state, questions } = body;
 
   // Cloudflare Workers AI Clef-Flash.

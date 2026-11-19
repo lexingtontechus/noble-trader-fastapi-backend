@@ -345,7 +345,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "production")).lower()
         
         # Log the full error with stack trace in all environments
         log.error(f"FATAL ERROR during request {request.method} {request.url}: {exc}", exc_info=True)
@@ -366,7 +366,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """Handler for FastAPI request validation errors."""
-        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "production")).lower()
         
         # Log validation errors in all environments
         log.warning(f"Validation error: {exc}")
@@ -387,7 +387,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         """Handler for HTTP exceptions."""
-        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+        _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "production")).lower()
         
         # Log HTTP exceptions in all environments
         log.warning(f"HTTP {exc.status_code}: {exc.detail}")
@@ -410,7 +410,7 @@ def create_app() -> FastAPI:
         for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
         if o.strip()
     ]
-    _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "development")).lower()
+    _deploy_env = os.getenv("DEPLOY_ENV", os.getenv("NODE_ENV", "production")).lower()
     if _deploy_env in ("production", "staging") and "*" in cors_origins:
         log.error("FATAL: CORS wildcard not allowed in production/staging. Set CORS_ALLOWED_ORIGINS explicitly.")
         raise RuntimeError("CORS wildcard not allowed in production/staging")

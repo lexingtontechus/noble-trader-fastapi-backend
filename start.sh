@@ -188,6 +188,11 @@ echo "  (model load happens in background — will wait for it below)"
 # ── 1b. Local LLM (port 8004) ─────────────────────────────────────────────
 echo ""
 echo "[1b] Starting Local LLM on port 8004..."
+# Spark-X2.5 custom modeling needs trust_remote_code — explicit opt-in (the
+# code default is now 0, fail-safe). Auth is fail-closed: without
+# LOCAL_LLM_API_KEY the server requires the dev key in .cache/local_llm_api_key
+# (never logged); llm_client reads the same file automatically.
+export LOCAL_LLM_TRUST_REMOTE_CODE="${LOCAL_LLM_TRUST_REMOTE_CODE:-1}"
 LOCAL_LLM_PORT=8004 python llm_server.py &
 LLM_PID=$!
 echo "  PID: $LLM_PID"

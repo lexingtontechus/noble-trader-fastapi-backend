@@ -85,6 +85,10 @@ celerybeat-schedule
 # Environments
 .env
 .env.local
+# Catch-all for variant env files (.env-0xdweb.local, .env.foo.local, ...).
+# Security fix 2026-11-18: .env-0xdweb.local holds live-format credentials and
+# was previously neither ignored nor docker-ignored (scan finding 4/9).
+.env*.local
 .venv
 env/
 venv/
