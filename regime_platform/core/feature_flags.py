@@ -308,6 +308,16 @@ _DEFAULTS: dict[str, Any] = {
     # evidence-triggered reopt: minimum NEW resolved outcomes per symbol
     # before a re-solve is worth its churn (Phase C)
     "pbm_reopt_min_new_outcomes": 25,
+    # TSFM lab R2 publish (2026-11-18, docs/scopes/20261118_TSFM_R2_BACKEND_PUBLISH_SCOPE.md):
+    #   hourly :52 — the sweep's OWN TDVA client publishes the lab's 5000-bar
+    #   CSVs + manifest.json to R2 through the secret-gated nt-tsfm-data bridge
+    #   PUT (TSFM_R2_WRITE_SECRET). off = no-op; shadow = fetch+validate+log,
+    #   zero uploads; live = publish. Retires the duplicated tsfm-refresh CF
+    #   cron design. Best-effort; never raises into the scheduler.
+    "tsfm_r2_publish_mode": "off",
+    # The lab's fixed 5 series (design.ts SERIES_IDS). All-active-symbols
+    # extension is scoped (§8 of the scope doc) — change the list then.
+    "tsfm_r2_publish_symbols": ["BTCUSD", "USDJPY", "USDCHF", "XAUUSD", "XAGUSD"],
     # claims layer (2026-10-27, worklog/20261027_KAIROS_CLAIMS_LAYER_DESIGN.md):
     #   claims_mode  off|shadow — Phase A: nt_signal_claims registration at
     #   qualification (bracket claim mandatory) + resolver-side scoring through
@@ -1397,6 +1407,31 @@ def get_claims_mode() -> str:
     until Phase B gives it distinct meaning.
     """
     return str(_load().get("claims_mode", _DEFAULTS["claims_mode"])).lower()
+
+
+def get_tsfm_r2_publish_mode() -> str:
+    """TSFM lab R2 publish: ``off`` | ``shadow`` | ``live``.
+
+    2026-11-18 (docs/scopes/20261118_TSFM_R2_BACKEND_PUBLISH_SCOPE.md): the
+    hourly :52 job publishing the lab's TDVA CSVs + manifest to R2 through the
+    secret-gated bridge PUT. ``off`` (shipped) = full no-op; ``shadow`` =
+    fetch + validate + serialize + log, zero uploads; ``live`` = publish.
+    """
+    return str(_load().get("tsfm_r2_publish_mode", _DEFAULTS["tsfm_r2_publish_mode"])).lower()
+
+
+def get_tsfm_r2_publish_symbols() -> list[str]:
+    """The series the R2 publish job covers (default: the lab's fixed 5).
+
+    The all-active-symbols extension is scoped (§8 of the scope doc); until
+    then this list mirrors nobletradingapp's design.ts SERIES_IDS.
+    """
+    v = _load().get("tsfm_r2_publish_symbols", _DEFAULTS["tsfm_r2_publish_symbols"])
+    if isinstance(v, list) and all(isinstance(s, str) for s in v):
+        cleaned = [s.strip().upper() for s in v if s.strip()]
+        if cleaned:
+            return cleaned
+    return list(_DEFAULTS["tsfm_r2_publish_symbols"])
 
 
 def get_claims_publish() -> str:

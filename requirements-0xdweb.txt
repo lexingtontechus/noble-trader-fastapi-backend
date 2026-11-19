@@ -1,0 +1,55 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+hmmlearn>=0.3.2
+numpy>=2.0.0
+scipy>=1.13.0
+pandas>=2.2.0
+pydantic>=2.11.2
+# Security floors 2026-11-18 (scan finding 1): multipart DoS/file-write fixed
+# >=0.0.31; httpx capped <2.0 (httpx2 2.9.x advisories; 0.28.x unaffected).
+python-multipart>=0.0.32
+httpx>=0.28.1,<2.0
+# MCP (Model Context Protocol) - exposes FastAPI endpoints as AI agent tools
+fastapi-mcp>=0.4.0
+# Pin mcp below 2.0 — fastapi-mcp 0.4.0 calls Server(name, description), but
+# mcp 2.0 changed Server.__init__ to a single positional arg → TypeError on
+# startup (Render deploy 2026-08-06). Floor >=1.30.0 fixes the session-
+# exhaustion / cross-origin-redirect advisories (scan finding 19).
+mcp>=1.30.0,<2.0.0
+# v3.0 GPU HMM (install for 10-50x speedup on large datasets)
+# pomegranate>=1.0.0
+# TimesFM forecasting service (server.py)
+timesfm>=2.0.1
+# torch checkpoint-RCE advisories fixed >=2.13.0; transformers save_pretrained
+# traversal fixed >=5.10.0 (direct imports — explicit pins).
+torch>=2.13.0
+transformers>=5.10.0
+huggingface-hub>=1.0
+safetensors>=0.6
+# Rate limiting
+slowapi>=0.1.9
+# Centralized settings (pydantic-settings v2+)
+pydantic-settings>=2.0.0
+# Real-time P&L streaming (Alpaca trade + data WebSocket)
+websockets>=12.0
+# Feed adapters (install only the adapter you need)
+alpaca-py>=0.32.0
+# urllib3 stays <2.0 (alpaca-py 1.x API). Residual 1.26.x decompression
+# advisories are bounded to the trusted Alpaca feed; revisit on alpaca 2.x.
+urllib3<2.0
+# ib_async>=0.9.0           # Interactive Brokers
+# Yahoo Finance (for backend warmup / cold-start - optional, falls back to HTTP API)
+yfinance>=0.2.31
+apscheduler>=3.10.0
+# Self-learning local knowledge index (2026-09-10) — reuses the torch/
+# huggingface-hub already installed above for TimesFM.
+sentence-transformers>=3.0.0
+# --- vol_backtest (Phase 0 RV-forecast benchmark) — research deps ---
+# Chronos-2 arms (chronos2 / chronos2_cov): Apache-2.0, 120M encoder, CPU-fine.
+# chronos-forecasting>=2.0
+# GARCH family (Phase D, 2026-10-28): ACTIVATED for the kairos-claims
+# vol_fan arm — GARCH(1,1)/GJR/EGARCH via vol_backtest.arms power the
+# kind='vol_fan' claims (claims_vol_fan.py) behind claims_vol_fan_mode.
+# Without it that flag fails open to an honest silent no-op
+# (calib_level='none' fans never register). Pulls statsmodels transitively.
+arch>=7.0.0

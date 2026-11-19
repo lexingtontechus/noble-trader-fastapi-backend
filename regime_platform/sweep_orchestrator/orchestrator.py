@@ -1866,6 +1866,21 @@ class SweepOrchestrator(HeavySweepMixin):
             coalesce=True,
         )
 
+        # TSFM lab R2 publish (2026-11-18, docs/scopes/
+        # 20261118_TSFM_R2_BACKEND_PUBLISH_SCOPE.md): hourly :52 — clear of the
+        # :48 incubation reconcile, :38 calibration resolve, the :05/:20/:35/:50
+        # pre-sweep grid and the 15-min light grid. Reuses the sweep's own TDVA
+        # client (one batch call, 5 symbols); mode (off|shadow|live) is read per
+        # run, so a feature_flags.yaml flip needs no restart. Best-effort.
+        self._scheduler.add_job(
+            self._run_tsfm_r2_publish,
+            trigger=CronTrigger.from_crontab("52 * * * *"),
+            id="tsfm-r2-publish",
+            name="TSFM lab R2 publish (hourly)",
+            misfire_grace_time=1800,
+            coalesce=True,
+        )
+
         # Dynamic tier optimization (2026-10-07, worklog/
         # 20261007_TABLE_FRESHNESS_AND_DYNAMIC_TIER_DESIGN.md §5.4):
         # pre-sweep refresh of dynamic ATR, dynamic deadline, regime edge,
@@ -2789,6 +2804,37 @@ class SweepOrchestrator(HeavySweepMixin):
             )
         except Exception as exc:
             logger.error("[geometry-incubation] reconcile failed: %s", exc)
+
+    async def _run_tsfm_r2_publish(self) -> None:
+        """TSFM lab R2 publish (hourly :52) — the backend-owned TDVA→R2 refresh.
+
+        2026-11-18 (docs/scopes/20261118_TSFM_R2_BACKEND_PUBLISH_SCOPE.md):
+        reuses the sweep's own ``fetch_tradingview_batch`` (one batch call,
+        ``ohlcv_out`` ascending rows = the lab CSV schema) and PUTs the lab
+        CSVs + manifest through the secret-gated ``nt-tsfm-data`` bridge.
+        Retires the duplicated ``tsfm-refresh`` CF cron design. Mode
+        (off|shadow|live) is read per run; ``off`` returns before any I/O.
+        Best-effort: failures are logged, never raised into the scheduler.
+        """
+        from regime_platform.core.feature_flags import get_tsfm_r2_publish_mode
+        from regime_platform.sweep_orchestrator.tsfm_r2_publish import (
+            publish_tsfm_prices,
+        )
+
+        mode = get_tsfm_r2_publish_mode()
+        if mode == "off":
+            return
+        try:
+            summary = await publish_tsfm_prices(mode)
+            logger.info(
+                "[tsfm-r2-publish] done mode=%s published=%d skipped=%d "
+                "manifest=%s errors=%d",
+                mode, summary.get("published", 0), summary.get("skipped", 0),
+                summary.get("manifest_written", False),
+                len(summary.get("errors", {})),
+            )
+        except Exception as exc:
+            logger.error("[tsfm-r2-publish] failed: %s", exc)
 
     async def _run_bracket_reachability(self) -> None:
         """Bracket reachability diagnostic (weekly, Sun 07:00 UTC), then

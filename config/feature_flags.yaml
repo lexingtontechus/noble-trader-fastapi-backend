@@ -1106,6 +1106,20 @@ claims_vol_fan_calib_path: "config/claims_vol_fan_recalib.json"
 # measurement of it. Flip only when GET /claims/leaderboard shows
 # calibrated cells for the symbols in question — evidence, not calendar.
 claims_prior_mode: "off"      # off|live — claims-evidence modulation of the shrink prior
+
+# ── TSFM lab R2 publish (2026-11-18, docs/scopes/20261118_TSFM_R2_BACKEND_PUBLISH_SCOPE.md) ──
+# Hourly :52 orchestrator job: fetch the lab symbols' 5000-bar 1h window through
+# the sweep's OWN TDVA client (fetch_tradingview_batch, ohlcv_out) and publish
+# CSVs + manifest.json to R2 via the secret-gated nt-tsfm-data bridge PUT
+# (TSFM_R2_WRITE_SECRET). off = no-op; shadow = fetch+validate+log, zero
+# uploads; live = publish. Retires the duplicated tsfm-refresh CF cron design.
+# Freshness couples to Studio uptime by design (dedup over independence); the
+# lab serves the last vintage with a dataVintage age stamp during outages.
+tsfm_r2_publish_mode: "off"   # off|shadow|live
+# The lab's fixed 5 series (nobletradingapp lib/tsfm-lab/design.ts SERIES_IDS).
+# Extension to ALL nt_symbol active symbols is scoped (§8 of the scope doc) —
+# change the list then, not now.
+tsfm_r2_publish_symbols: [BTCUSD, USDJPY, USDCHF, XAUUSD, XAGUSD]
 # Per-symbol round-trip costs, ATR units (proposal §4): (spread + slippage)
 # round-trip ÷ 1h ATR — the same ATR already stamped on nt_signal_sim rows.
 # 2026-10-14: {} → this table (worklog 20261014_TP_FENCE_COSTS_AND_ENTRY_

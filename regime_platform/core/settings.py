@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     TRADINGVIEW_API_HOST: str = os.getenv("TRADINGVIEW_API_HOST", "tradingview-data1.p.rapidapi.com")
     TRADINGVIEW_BASE_URL: str = os.getenv("TRADINGVIEW_BASE_URL", "https://tradingview-data1.p.rapidapi.com")
 
+    # ── TSFM lab R2 publish (2026-11-18) ─────────────────────────────────────
+    # Shared secret for the nt-tsfm-data bridge's PUT route (X-Write-Secret).
+    # The same value lives on the Worker (wrangler secret put WRITE_SECRET)
+    # and in Studio Secrets. Empty = the publish job fails closed (no uploads).
+    TSFM_R2_WRITE_SECRET: str = os.getenv("TSFM_R2_WRITE_SECRET", "")
+    TSFM_R2_BRIDGE_URL: str = os.getenv(
+        "TSFM_R2_BRIDGE_URL", "https://nt-tsfm-data.lexington.workers.dev"
+    )
+
     # ── Interactive Brokers ─────────────────────────────────────────────────
     IB_HOST: str = "127.0.0.1"
     IB_PORT: int = 7497
